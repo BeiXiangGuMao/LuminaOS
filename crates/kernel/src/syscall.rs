@@ -100,8 +100,13 @@ const _: () = assert!(size_of::<SyscallFrame>() == 72);
 // yield_now 恢复点无条件 sti（内核任务 IF 约定），使系统调用尾声
 // （恢复 r11/rcx → sysretq）在 IF=1 下运行——节拍恰好落在 sysretq
 // 边缘时 TCG 把 r11→RFLAGS 的恢复搅坏（VM 位入旗，后续任何 iretq
-// 即 #GP(0x28)，S31 实测链）。尾声恢复前 cli 关断该窗口：sysret 后
-// 由 r11 的 IF 位在 ring3 侧自然重开，积压节拍经正常 IDT 路径交付。
+// 即 #GP(0x28)，S31 实测链）。初版缓解为尾声恢复前 cli 关断该窗口；
+// v0.10.1 裸机压测（2/30 复发，TCG 边界注入不受 IF 遮蔽）确认 cli
+// 缓解不彻底——**正解 = iretq 返回**（Linux 对 SYSRET 竞态的同款
+// 缓解）：帧尾显式构造 [RIP|CS=0x1B|RFLAGS|RSP|SS=0x23] 五元组，
+// 特权降级走显式段检查路径，帧内容内核全权构造，无 MSR 快照窗口；
+// sysret 后 IF 重开语义由 RFLAGS 槽（r11 原值，IF=1）经 iretq 恢复
+// 等价达成，积压节拍经正常 IDT 路径交付。
 //
 // 开发期缺陷一（64 位 disp32 符号扩展）：`mov ecx, [0xFEE00020]`
 // 绝对寻址在长模式下把 disp32 **符号扩展**至 64 位（0xFEE00020 > 2^31
@@ -138,16 +143,29 @@ global_asm! {
     "    mov [rsp + 64], rax",
     "    mov rdi, rsp",
     "    call lumina_syscall_dispatch",
-    "    cli",
-    "    mov r11, [rsp + 0]",
-    "    mov rcx, [rsp + 8]",
+    // ---- v0.10.1：iretq 返回（SYSRET 边缘竞态的 TCG 侧根治，见上注）----
+    // 五元组就地构造在帧尾（num 槽之后，128 字节帧区余量充足）：
+    //   [rsp+72]=RIP  [rsp+80]=CS(0x1B)  [rsp+88]=RFLAGS
+    //   [rsp+96]=RSP  [rsp+104]=SS(0x23)
+    "    mov [rsp + 64], rax",                 // 返回值暂存 num 槽
+    "    mov rax, [rsp + 8]",
+    "    mov [rsp + 72], rax",                 // RIP ← rcx 槽
+    "    mov qword ptr [rsp + 80], 0x1B",      // CS（ucode|3；显式段检查路径）
+    "    mov rax, [rsp + 0]",
+    "    mov [rsp + 88], rax",                 // RFLAGS ← r11 槽（IF=1，出环即开）
+    "    mov rax, [rsp + 56]",
+    "    mov [rsp + 96], rax",                 // RSP ← 用户 rsp
+    "    mov qword ptr [rsp + 104], 0x23",     // SS
     "    mov rdi, [rsp + 16]",
     "    mov rsi, [rsp + 24]",
     "    mov rdx, [rsp + 32]",
     "    mov r10, [rsp + 40]",
     "    mov r8, [rsp + 48]",
-    "    mov rsp, [rsp + 56]",
-    "    sysretq",
+    "    mov rax, [rsp + 64]",                 // 返回值 → rax
+    "    mov rcx, [rsp + 8]",
+    "    mov r11, [rsp + 0]",
+    "    add rsp, 72",                         // 栈顶 = 五元组 RIP 槽
+    "    iretq",
 }
 
 /// 装载 SYSCALL/SYSRET 全套 MSR 约定（EFER.SCE / STAR / LSTAR / FMASK）。
