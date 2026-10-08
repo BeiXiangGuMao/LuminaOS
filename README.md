@@ -1,7 +1,32 @@
 # Lumina OS（曜光系统）· 开发工作区
 
-100% Rust framekernel 桌面操作系统。本工作区当前处于 **M2 里程碑**：
-QEMU 裸机启动与串口输出（SPEC 表 19-1 P0 / 表 2-3 Bedrock 阶段门禁）。
+100% Rust framekernel 桌面操作系统。本工作区已完成 **M1（策略核心）+ M2（裸机启动自检闭环）
++ M3（内存 / 中断 / 任务）+ M4（抢占 / TSC / 用户态 / 系统调用 / 双机联测）
++ M5（SMP：AP 启动 / TLB 击落 / IPC 快速路径 / 按需分页 + 能力化映射）
++ M6（per-CPU 统一调度器 / IPC 系统调用面能力化 / TLB 击落批量化 / swap 预留位）
++ M7（per-CPU TSS 与用户任务跨核 / swap 换页 I/O 与驻留位图）
++ M8（swapgs 纪律定版与 per-CPU syscall 栈接线 / 页表级 swap 回收全链 /
+  优先级调度面与定向门铃）+ M9（进程模型：跨任务能力授予与句柄生命周期 /
+  换页异步化：swapd 分页任务与零 I/O 快路径 / 优先级老化与饥饿防护）**：内核可在
+QEMU（`-smp 2`）上经 multiboot1 裸机启动至 x86_64 长模式，物理帧管理、四级页表
+（MMU 实机往返）、中断链、**抢占式调度**、**TSC 校准计时与基准**、**ring3 用户进程**、
+**SYSCALL/SYSRET 系统调用**、**TLV 宿主-客户机双向联测**、**双核 SMP
+（LAPIC + ACPI MADT 探测 + INIT-SIPI 启动 AP + 跨核工作池 + IPI TLB 击落）**、
+**无锁 SPSC IPC 快速路径（BSP↔AP 双环基准）**、**#PF 驱动按需分页
+（Vanguard 能力门禁）**、**per-CPU 统一调度（全局队列跨核派发 + LAPIC 定时器
+统一抢占源 + 栈上 PreemptPlan + AP idle 循环）**、**能力化 IPC 系统调用面
+（SYS_IPC_SEND/RECV + 回声服务 + ring3 客户端负探针）**、**批量 TLB 击落
+（多页批量 + 全量 CR3 重写 two-shot）**、**per-CPU TSS/RSP0 与用户任务跨核
+（每核 GDT/TSS + AP 侧 TR 补装 + SYSCALL MSR per-CPU 补装 + 门铃对称化）**、
+**swap 换页 I/O（ATA PIO HW-15 + 驻留位图 + vmm 坐标面协同）**、
+**swapgs 纪律定版（无状态 LAPIC 索引入口桩 + per-CPU syscall 栈——双核并发
+syscall 竞态消除）**、**页表级 swap 回收全链（A 位二次机会淘汰 + unmap/击落/
+坐标释放 + 内核态换入重映射）**、**优先级调度面（四级就绪队列 + 高优先抢前 +
+SYS_SET_PRIO/GET_PRIO + fn(usize) 定向门铃）**、**进程模型（SYS_CAP_GRANT/
+REVOKE/GET_PID 任务句柄表 + 父进程面授予门禁 + 槽位单属主生命周期）**、
+**换页异步化（swapd 分页任务 + 请求队列 + #PF 零 I/O 快路径 + 同步回退）**、
+**优先级老化（base/effective 分离 + 等待计账逐级提升 + 回队衰减）** 全部在环，
+三十三项自检全绿并自动验收。
 
 ## 文档体系（唯一事实源）
 
@@ -19,17 +44,20 @@ QEMU 裸机启动与串口输出（SPEC 表 19-1 P0 / 表 2-3 Bedrock 阶段门�
 
 ```
 lumina-os/                 ← 源码树（保持干爽，永不出现编译产物）
-├── Cargo.toml             workspace：16 组件 crate + bedrock-boot + xtask
-├── .cargo/config.toml     target-dir 重定向 + [unstable] build-std（裸机路径专用）
+├── Cargo.toml             workspace：17 组件 crate + xtask（版本 0.8.0）
+├── CHANGELOG.md           版本变更记录
+├── .cargo/config.toml     target-dir → 源码树之外；内核目标 rustflags
 ├── rust-toolchain.toml    锁定 stable 1.99.0 + rustfmt/clippy
 ├── rustfmt.toml           行宽 100（DEV-002 4.1）
-├── targets/
-│   └── x86_64-lumina.json 自定义 target（kernel 代码模型/soft-float/关 red-zone，DEV-002 2.3）
+├── targets/               x86_64-lumina.json 自定义目标规范（待门控稳定启用）
 ├── crates/
-│   ├── ostd/        unsafe 基元层（自旋锁/引导信息/早期控制台/16550 串口/CPU 指令）
-│   ├── bedrock-boot/ 磐基引导内核（唯一裸机 bin：bootloader 入口 + 串口横幅 + hlt 空闲）
-│   ├── bedrock/     磐基内核策略面（syscall ABI v0、TLV 编帧、IPC 端点信箱）
-│   ├── harbor/      港湾分配器（Bump + 统计，GlobalAlloc 契约）
+│   ├── ostd/        unsafe 基元层（自旋锁/引导信息/控制台、hw 硬件基元 HW-01…08、
+│   │                mm 物理帧+四级页表、time 节拍、task 上下文切换、interrupt IDT；
+│   │                SAFETY 四行模板）
+│   ├── kernel/      内核映像（multiboot1 启动汇编 + VGA/串口控制台 + 中断子系统
+│   │                + 协作式任务调度 + 十一项自检）
+│   ├── bedrock/     磐基内核（syscall ABI v0、TLV 编帧、IPC 端点信箱）
+│   ├── harbor/      港湾分配器（Bump + 统计 + 启动期 rebind，GlobalAlloc 契约）
 │   ├── vanguard/    前卫能力模型（权限位、派生收窄、撤销）
 │   ├── meridian/    经纬监管者（幂等恢复、指数退避封顶 30s）
 │   ├── conduit/     通衢 ABI 快照（Linux 5.15 errno/syscall 常量表）
@@ -43,49 +71,73 @@ lumina-os/                 ← 源码树（保持干爽，永不出现编译产�
 │   ├── mirror/      映境合成（矩形几何、损伤包围盒、跳帧快速通道）
 │   ├── cascade/     流域外壳（状态机、窗口焦点序 LRU）
 │   └── aurora/      极光应用框架（.luapp 校验、六态生命周期、AF-P03 拦截）
-├── tools/xtask/           七阶段 CI 编排（fmt/clippy/build/test/doc/boot/report）
+├── tools/xtask/           九阶段 CI 编排（宿主五阶段 + 内核 lint/build/冒烟 + 报告）
 ├── docs/METRICS.md        指标 → 代码位置映射
 └── README.md
 
-lumina-build/              ← 编译产物 + 日志 + 报告 + 运行时（源码树外）
+lumina-build/              ← 编译产物 + 日志 + 报告（源码树外）
 ├── target/                cargo 产物（.cargo/config.toml 重定向至此）
-├── target/x86_64-lumina/release/bootimage-bedrock-boot.bin   引导镜像产物
-├── logs/                  devlog.md + 每步命令日志（step*.log、S1-S7 阶段日志）
+├── logs/                  devlog.md + 每步命令日志（step*.log、S1-S8 阶段日志、boot-smoke.log）
 ├── reports/               xtask CI 汇总报告
-└── runtime/qemu-root/     QEMU 10.0.13 无 root 运行时（apt 闭包解包）
+└── runtime/qemu-root/     用户态解包的 QEMU 运行时（无 root 冒烟环境）
 ```
 
 ## 构建与门禁
 
 ```bash
-cargo build                  # 宿主侧构建（default-members，不含 bedrock-boot）
-cargo test                   # 宿主侧测试（64 用例，跨线程用例含背压协议）
-cargo run -p xtask -- ci     # 七阶段门禁（fail-fast，报告落 lumina-build/reports）
-cargo run -p xtask -- image  # 构建 bedrock-boot 引导镜像（nightly + build-std）
-cargo run -p xtask -- run    # 构建并 QEMU 烟测，串口日志直通打印
-cargo run -p xtask -- check  # 仅 fmt + clippy 快速门禁
+cargo build --workspace          # 全仓构建（17 crate）
+cargo test  --workspace          # 全仓测试（87 用例，宿主）+ 30 项裸机自检（S8）
+cargo run -p xtask -- ci         # 九阶段门禁（S1-S7 + S8 裸机冒烟 + S9 报告，fail-fast）
+cargo run -p xtask -- smoke      # 仅内核：lint + build + QEMU 裸机自检
+cargo run -p xtask -- check      # 仅宿主快速门禁（fmt + clippy）
 ```
 
-裸机构建说明：`bedrock-boot` 是 no_std bin，只能以 `targets/x86_64-lumina.json`
-+ build-std（nightly）编译，已排除在 workspace default-members 之外；
-`.cargo/config.toml` 的 `[unstable]` 段仅在使用 `--target` 时生效，宿主构建不受影响。
+## 内核构建与裸机运行
+
+```bash
+# 构建内核映像（自定义目标语义：内置 none 目标 + rustflags 等效承载，
+# 详见 .cargo/config.toml 注释与 targets/x86_64-lumina.json）
+cargo build -p lumina-kernel --features boot --release --target x86_64-unknown-none
+
+# 产出 32 位可装载裸映像（QEMU multiboot1 要求）
+objcopy -O binary \
+  /home/z/my-project/lumina-build/target/x86_64-unknown-none/release/lumina-kernel \
+  /home/z/my-project/lumina-build/target/x86_64-unknown-none/release/lumina-kernel.bin
+
+# 裸机启动（串口落盘 + isa-debug-exit 自动退出，退出码 33 = 自检全过）
+qemu-system-x86_64 -L <seabios> -L <qemu-data> \
+  -kernel lumina-kernel.bin -m 256M -display none -no-reboot \
+  -serial file:boot.log -device isa-debug-exit,iobase=0xf4,iosize=0x04
+```
+
+或者直接：`cargo run -p xtask -- smoke`（自动完成上述全部步骤并断言结果）。
 
 ## 工程纪律（对指南的承接）
 
-- **unsafe 收口**：全仓 unsafe 仅存在于 `ostd`（端口 I/O、原子锁、裸指针触达）
-  与 `harbor` 分配器契约内，逐处携带 SAFETY 四行注释（前置条件/不变式/并发/
-  违反后果）；`unsafe_op_in_unsafe_fn = deny` 全仓生效。bedrock-boot 自身
-  零 unsafe（hlt/cli 已收敛为 `ostd::cpu` 的 safe 包装）。
-- **panic = abort**：release 配置与自定义 target JSON 双重落实（DEV-002 第四章）。
-- **依赖方向**：ostd → {harbor, vanguard} → bedrock；bedrock-boot 仅依赖 ostd
-  与 bootloader（引导契约）；用户态 crate 零内核依赖。
-- **背压协议**：跨线程用例中可重试错误一律让步重试，禁止升级为 panic
-  （M2 修复 M1 遗留竞态：MailboxFull → 消费侧假死）。
+- **unsafe 收口**：全仓 unsafe 仅存在于 `ostd`（hw 硬件基元 + 同步/引导/控制台基元）、
+  `harbor` 分配器契约与 `kernel::boot` 启动汇编（框架内核白名单模块）内，
+  逐处携带 SAFETY 四行注释（前置条件/不变式/并发/违反后果）；
+  `unsafe_op_in_unsafe_fn = deny` 全仓生效。
+- **生产路径零 unwrap/expect**：workspace clippy `unwrap_used/expect_used = deny`，
+  测试模块显式豁免（DEV-002 第四章）。
+- **panic = abort**：release 配置全局生效（DEV-002 第四章）。
+- **依赖方向**：ostd → {harbor, vanguard} → bedrock；用户态 crate 零内核依赖。
 - **可复现数值**：Ripple 弹簧、Loom 网格、Glyph 档位与美术指南逐项一致，改动须联合评审。
 
 ## 当前里程碑
 
-M2（v0.2.0）：bedrock-boot 引导内核经 bootloader 进入长模式，QEMU 启动打印
-启动横幅与内存映射摘要至 COM1 串口（16 区域 / 128 MiB 可用），随后进入 hlt
-空闲循环——SPEC 表 2-3 P0 门禁第①项达成；CI 扩展为七阶段（S6-boot 引导烟测）。
-页表/物理帧分配/上下文切换/IPC 四件套基准（P0 门禁第②项）为下一里程碑（M3）。
+- **M1（已完成）**：16 组件策略核心与内核栈骨架在宿主机全绿。
+- **M2（已完成，v0.2.0）**：multiboot1 裸机启动 → x86_64 长模式；VGA/串口双通道
+  早期控制台；内核堆（Harbor）启动期绑定；七项自检全绿；QEMU 退出码 33 自动验收
+  （SPEC 表 19-1 P0「裸机可启动内核」达成）。
+- **M3–M7（已完成，v0.3.0–v0.7.0）**：内存/中断/任务、抢占/TSC/用户态/系统
+  调用/双机联测、SMP（AP 启动/TLB 击落/IPC 快速路径/按需分页）、per-CPU 统一
+  调度/IPC 能力化/TLB 批量击落/swap 预留位、per-CPU TSS/用户任务跨核/swap 换页
+  I/O——详见 CHANGELOG 各版条目。
+- **M8（已完成，v0.8.0）**：swapgs 纪律定版与 per-CPU syscall 栈接线（无状态
+  LAPIC 索引入口桩，双核并发 syscall 竞态消除，自检 28）；页表级 swap 回收全链
+  （A 位二次机会淘汰 + unmap/击落/坐标释放 + 内核态换入重映射，自检 29）；
+  优先级调度面与定向门铃（四级就绪队列 + 高优先抢前 + SYS_SET_PRIO/GET_PRIO，
+  自检 30）；宿主测试 86 → 87 用例。
+- **下一里程碑 M9（候选）**：进程模型（跨任务能力授予与句柄生命周期）、
+  换页异步化与多任务并发缺页、优先级老化与饥饿防护。

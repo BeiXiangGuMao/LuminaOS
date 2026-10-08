@@ -6,8 +6,12 @@ target-dir = "/home/z/my-project/lumina-build/target"
 [term]
 color = "auto"
 
-# 内核裸机构建（bootloader/bootimage 路径）专用：仅在使用 --target 时生效（DEV-002 2.3）。
-[unstable]
-build-std = ["core", "compiler_builtins"]
-build-std-features = ["compiler-builtins-mem"]
-json-target-spec = true
+# 内核构建目标（M2）：stable 工具链下自定义 JSON 目标规范被 -Zjson-target-spec
+# 门控，故以内置 x86_64-unknown-none + 全量 rustflags 等效承载 Lumina 规范
+# （内置 none 目标默认禁 SSE/红区=软浮点语义；此处补 static 重定位与 panic=abort）。targets/x86_64-lumina.json
+# 保留为规范定义，待门控稳定后切换为 --target x86_64-lumina。
+[target.x86_64-unknown-none]
+rustflags = [
+    "-C", "panic=abort",
+    "-C", "relocation-model=static",
+]

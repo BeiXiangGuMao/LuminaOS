@@ -46,6 +46,7 @@ pub fn hovered_size(size: u32) -> Result<f32, GlyphError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{
         hovered_size, map_point, scale_factor, GlyphError, HOVER_DURATION_MS, HOVER_SCALE, SIZES,

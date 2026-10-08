@@ -69,32 +69,10 @@ impl Console for MemConsole {
     }
 }
 
-/// [`Console`] 到 [`core::fmt::Write`] 的适配器：使 `write!`/`writeln!`
-/// 格式化宏可以直接驱动早期控制台。
-///
-/// 格式化失败不可能发生（写入永不失败），错误一律返回 `Ok`。
-pub struct FmtWriter<'a, C: Console> {
-    inner: &'a mut C,
-}
-
-impl<'a, C: Console> FmtWriter<'a, C> {
-    /// 包装一个可变控制台引用。
-    pub fn new(inner: &'a mut C) -> Self {
-        Self { inner }
-    }
-}
-
-impl<C: Console> core::fmt::Write for FmtWriter<'_, C> {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        self.inner.write_str(s);
-        Ok(())
-    }
-}
-
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::{Console, FmtWriter, MemConsole, NullConsole};
-    use core::fmt::Write as _;
+    use super::{Console, MemConsole, NullConsole};
 
     #[test]
     fn mem_console_records_and_caps() {
@@ -111,13 +89,5 @@ mod tests {
     fn null_console_accepts_anything() {
         let mut c = NullConsole;
         c.write_str("ignored");
-    }
-
-    #[test]
-    fn fmt_writer_formats_into_console() {
-        let mut c = MemConsole::new();
-        let mut w = FmtWriter::new(&mut c);
-        let _ = write!(w, "regions={}, usable={} KiB", 7, 3072);
-        assert_eq!(c.as_bytes(), b"regions=7, usable=3072 KiB");
     }
 }

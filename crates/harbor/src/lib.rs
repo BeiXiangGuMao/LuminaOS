@@ -107,6 +107,34 @@ impl HarborBump {
         }
     }
 
+    /// 无后备区域构造：内核启动期惯用法——先创建全局分配器，
+    /// 再在 `kmain` 早期用 [`HarborBump::rebind`] 绑定后备区域。
+    pub const fn new_unbacked() -> Self {
+        Self::new(core::ptr::null_mut(), 0)
+    }
+
+    /// 启动期绑定后备区域：cursor 清零、统计归零。
+    ///
+    /// 返回 `false` 表示拒绝重绑：分配器已有在用分配（cursor ≠ 0），
+    /// 此时换区域会令既有指针悬垂；调用方 MUST 仅在启动期、首次分配
+    /// 之前调用一次。
+    ///
+    /// # SAFETY（调用方义务）
+    /// `base` 指向调用方保证的 `size` 字节、独占、对齐 ≥ 8 的内存区域，
+    /// 其生命期必须覆盖分配器自本调用起的全部使用期（静态区域天然满足）。
+    pub fn rebind(&self, base: *mut u8, size: usize) -> bool {
+        let g = self.inner.lock();
+        let h = unsafe { &mut *g.get() };
+        if h.cursor != 0 {
+            return false;
+        }
+        h.base = base;
+        h.size = size;
+        h.cursor = 0;
+        h.stats = AllocStats::default();
+        true
+    }
+
     /// 当前统计快照。
     pub fn stats(&self) -> AllocStats {
         // SAFETY: 仅在锁内读取。
@@ -119,6 +147,7 @@ impl HarborBump {
 extern crate std;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{AllocStats, HarborBump};
     use core::alloc::{GlobalAlloc, Layout};
@@ -177,5 +206,19 @@ mod tests {
                 peak_bytes: 100
             }
         );
+    }
+
+    #[test]
+    fn rebind_after_unbacked_and_rejects_when_busy() {
+        let h = HarborBump::new_unbacked();
+        // 未绑定区域时分配失败（返回 null），不 panic。
+        let p = unsafe { h.alloc(Layout::from_size_align(8, 8).unwrap()) };
+        assert!(p.is_null());
+        // 绑定后可正常分配。
+        assert!(h.rebind(ARENA_BYTES.0.as_ptr() as *mut u8, ARENA));
+        let p = unsafe { h.alloc(Layout::from_size_align(8, 8).unwrap()) };
+        assert!(!p.is_null());
+        // 已有在用分配（cursor ≠ 0）时拒绝重绑，避免悬垂指针。
+        assert!(!h.rebind(ARENA_BYTES.0.as_ptr() as *mut u8, ARENA));
     }
 }

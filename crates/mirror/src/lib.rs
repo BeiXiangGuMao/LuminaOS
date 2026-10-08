@@ -69,23 +69,19 @@ impl DamageTracker {
 
     /// 包围盒；无损伤返回 None（本帧可跳过合成——预算面最重要的快速通道）。
     pub fn bounding_box(&self) -> Option<Rect> {
-        if self.rects.is_empty() {
-            return None;
+        // 生产路径零 expect：以首元素 + 折叠展开，空列表自然返回 None。
+        let mut rects = self.rects.iter();
+        let first = *rects.next()?;
+        let mut x1 = first.x;
+        let mut y1 = first.y;
+        let mut x2 = first.x + first.w as i32;
+        let mut y2 = first.y + first.h as i32;
+        for r in rects {
+            x1 = x1.min(r.x);
+            y1 = y1.min(r.y);
+            x2 = x2.max(r.x + r.w as i32);
+            y2 = y2.max(r.y + r.h as i32);
         }
-        let x1 = self.rects.iter().map(|r| r.x).min().expect("non-empty");
-        let y1 = self.rects.iter().map(|r| r.y).min().expect("non-empty");
-        let x2 = self
-            .rects
-            .iter()
-            .map(|r| r.x + r.w as i32)
-            .max()
-            .expect("non-empty");
-        let y2 = self
-            .rects
-            .iter()
-            .map(|r| r.y + r.h as i32)
-            .max()
-            .expect("non-empty");
         Some(Rect {
             x: x1,
             y: y1,
@@ -101,6 +97,7 @@ impl DamageTracker {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{DamageTracker, Rect};
 

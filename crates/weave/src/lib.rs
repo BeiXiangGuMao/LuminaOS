@@ -174,6 +174,7 @@ impl Transaction {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{Dep, Manifest, Transaction, TxState, Version, VersionReq};
 

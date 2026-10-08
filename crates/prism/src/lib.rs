@@ -91,6 +91,7 @@ pub fn can_transition(from: PowerState, to: PowerState) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{Action, Observation, PowerState, Thresholds};
 

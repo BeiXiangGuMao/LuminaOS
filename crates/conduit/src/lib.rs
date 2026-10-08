@@ -111,6 +111,7 @@ pub fn linux_syscall_name(num: u64) -> Option<&'static str> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{errno_name, linux_syscall_name, LINUX_ABI_VERSION};
 

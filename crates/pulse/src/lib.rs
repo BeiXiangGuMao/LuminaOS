@@ -137,6 +137,7 @@ unsafe impl<T: Send, const N: usize> Sync for SpscRing<T, N> {}
 extern crate std;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     extern crate std;
     use super::{SocketAddr, SpscRing};

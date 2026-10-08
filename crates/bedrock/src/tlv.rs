@@ -67,6 +67,7 @@ pub fn encode(out: &mut alloc::vec::Vec<u8>, tag: u16, value: &[u8]) -> Result<(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{decode_all, decode_one, encode, Frame, TlvError};
 

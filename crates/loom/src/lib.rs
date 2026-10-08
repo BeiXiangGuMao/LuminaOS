@@ -102,6 +102,7 @@ impl Theme {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{
         font_size, on_grid, spacing, ColorToken, SemanticSlot, Theme, DOCK_HEIGHT, GRID,

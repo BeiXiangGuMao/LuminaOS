@@ -8,7 +8,6 @@ members = [
     "crates/harbor",
     "crates/vanguard",
     "crates/bedrock",
-    "crates/bedrock-boot",
     "crates/conduit",
     "crates/meridian",
     "crates/crystal",
@@ -21,35 +20,12 @@ members = [
     "crates/mirror",
     "crates/cascade",
     "crates/aurora",
-    "tools/xtask",
-]
-
-# 默认成员 = 宿主侧（S1–S5）构建与测试的范围。bedrock-boot 是 no_std 裸机 bin，
-# 只能以自定义 target + build-std 编译（DEV-002 2.3），经 xtask image/run/S6-boot
-# 的 bootimage 路径构建；任何宿主 target 的编译都会失败，故排除在默认成员外。
-# fmt --all 与文档归档仍覆盖全部成员。
-default-members = [
-    "crates/ostd",
-    "crates/harbor",
-    "crates/vanguard",
-    "crates/bedrock",
-    "crates/conduit",
-    "crates/meridian",
-    "crates/crystal",
-    "crates/pulse",
-    "crates/weave",
-    "crates/prism",
-    "crates/loom",
-    "crates/ripple",
-    "crates/glyph",
-    "crates/mirror",
-    "crates/cascade",
-    "crates/aurora",
+    "crates/kernel",
     "tools/xtask",
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.9.0"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 authors = ["Lumina OS Project"]
@@ -72,9 +48,8 @@ glyph = { path = "crates/glyph" }
 mirror = { path = "crates/mirror" }
 cascade = { path = "crates/cascade" }
 aurora = { path = "crates/aurora" }
-
-# 第三方（DEV-002 2.3：版本统一由 workspace 持有）
-bootloader = "0.9"
+# 内核映像二进制（不被其他 crate 依赖；仅 S6 内核构建阶段单独编译）
+kernel = { path = "crates/kernel" }
 
 [workspace.lints.rust]
 # 内核纪律：unsafe 块内的 unsafe 操作必须显式（SPEC 第十七章）
@@ -82,8 +57,11 @@ unsafe_op_in_unsafe_fn = "deny"
 missing_docs = "warn"
 
 [workspace.lints.clippy]
-# 全仓基线（DEV-002 第四章）：默认 lint 集合全开，警告视为缺陷
-all = "warn"
+# 全仓基线（DEV-002 第四章）：默认 lint 集合全开，警告视为缺陷；
+# unwrap/expect 禁令（生产路径零 panic 载体）——测试模块须显式豁免。
+all = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
 
 [profile.release]
 # 依据 DEV-002 第四章：panic 策略为 abort，禁止 unwinding 穿越内核边界

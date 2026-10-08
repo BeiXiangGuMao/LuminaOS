@@ -1,0 +1,27 @@
+[package]
+name = "lumina-kernel"
+description = "Lumina OS 内核映像 —— multiboot1 启动 → x86_64 长模式 → Bedrock 框架自检（SPEC 表 19-1 P0）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+# 宿主 CI（S1–S5）不构建本 crate（required-features 未满足时 bin 被跳过）；
+# 仅 S6 内核构建阶段以 --features boot + 自定义目标 x86_64-lumina 启用。
+boot = []
+
+[dependencies]
+ostd.workspace = true
+harbor.workspace = true
+bedrock.workspace = true
+vanguard.workspace = true
+
+[[bin]]
+name = "lumina-kernel"
+path = "src/main.rs"
+required-features = ["boot"]

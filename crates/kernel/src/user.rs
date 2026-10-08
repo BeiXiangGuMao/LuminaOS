@@ -1,0 +1,435 @@
+//! 用户态进程支持（M4）：用户页表构建、ring3 进入桩、首测试程序映像。
+//!
+//! 页表布局（用户根 = 全新四级表）：
+//! - PML4[0] → 新建 PDPT → 新建 PD：PD[i] 复刻启动恒等映射（2 MiB 大页，
+//!   P|W，supervisor）——**PD[2] 例外**：展开为 4 KiB PT，承载用户页；
+//! - PT[0] = 用户代码帧（virt 0x400000，P|U，只读——NX 未启用可执行）；
+//!   PT[2] = 用户栈帧（virt 0x402000，P|U|W）；
+//! - supervisor 页对 ring3 不可见（U=0），内核隔离成立。
+//!
+//! ring3 进入：`lumina_enter_user` 桩载入用户数据段选择子（DS/ES=0x23，
+//! FS/GS 置空）后以 iretq 压入 SS/RSP/RFLAGS(IF=1)/CS/RIP 五元组。
+//! 自此该任务的后续内核切入全部经 TSS.RSP0（其独立内核栈顶）。
+//!
+//! unsafe 面：进入桩（USER-01 白名单）与恒等映射物理内存直写
+//! （经 `ostd::hw::phys` 收口）。
+
+use core::arch::global_asm;
+
+use ostd::mm::frame::FRAME_SIZE;
+use ostd::mm::page::Entry;
+
+/// 用户代码段虚拟基址（PT[0]）。
+pub const USER_CODE_VIRT: u64 = 0x40_0000;
+/// 用户栈虚拟基址（PT[2]，单页）。
+pub const USER_STACK_VIRT: u64 = 0x40_2000;
+/// 用户栈顶（栈向低地址生长；首压即 0x403000-8）。
+pub const USER_STACK_TOP: u64 = USER_STACK_VIRT + FRAME_SIZE;
+
+/// 首测试程序：LOG("USER-OK") → YIELD×32 → EXIT(42)。
+///
+/// 手工汇编（位置固定 0x400000；寄存器约定 = bedrock abi v0：
+/// rax=编号，rdi/rsi/rdx/r10/r8 = 五参数，rcx/r11 被 SYSCALL 吞掉）：
+///
+/// ```text
+/// 0x400000  BF 2C 00 40 00   mov edi, 0x40002C       ; 字符串指针
+/// 0x400005  BE 07 00 00 00   mov esi, 7              ; 长度
+/// 0x40000A  31 C0            xor eax, eax            ; SYS_LOG
+/// 0x40000C  0F 05            syscall
+/// 0x40000E  BB 20 00 00 00   mov ebx, 32             ; 循环计数
+/// 0x400013  B8 02 00 00 00   mov eax, 2              ; SYS_YIELD（循环头）
+/// 0x400018  0F 05            syscall
+/// 0x40001A  FF CB            dec ebx
+/// 0x40001C  75 F5            jnz 0x400013
+/// 0x40001E  BF 2A 00 00 00   mov edi, 42             ; 退出码
+/// 0x400023  B8 01 00 00 00   mov eax, 1              ; SYS_EXIT
+/// 0x400028  0F 05            syscall
+/// 0x40002A  EB FE            jmp $                   ; EXIT 失效则原地停
+/// 0x40002C  "USER-OK"                                ; 7 字节
+/// ```
+pub const USER_PROGRAM: [u8; 51] = [
+    0xBF, 0x2C, 0x00, 0x40, 0x00, // mov edi, 0x40002C
+    0xBE, 0x07, 0x00, 0x00, 0x00, // mov esi, 7
+    0x31, 0xC0, // xor eax, eax
+    0x0F, 0x05, // syscall
+    0xBB, 0x20, 0x00, 0x00, 0x00, // mov ebx, 32
+    0xB8, 0x02, 0x00, 0x00, 0x00, // mov eax, 2
+    0x0F, 0x05, // syscall
+    0xFF, 0xCB, // dec ebx
+    0x75, 0xF5, // jnz loop
+    0xBF, 0x2A, 0x00, 0x00, 0x00, // mov edi, 42
+    0xB8, 0x01, 0x00, 0x00, 0x00, // mov eax, 1
+    0x0F, 0x05, // syscall
+    0xEB, 0xFE, // jmp $
+    b'U', b'S', b'E', b'R', b'-', b'O', b'K', // "USER-OK"
+];
+
+/// IPC 客户端常量：载荷缓冲（栈页内，P|U|W；程序字节码内嵌同值）。
+#[allow(dead_code)] // 文档锚点：字节码内嵌 0x402F00 的常量定义源
+pub const USER_IPC_PAYLOAD_VA: u64 = 0x40_2F00;
+/// IPC 客户端常量：接收缓冲。
+pub const USER_IPC_RECV_VA: u64 = 0x40_2E00;
+/// 回声验证字（"PING" 的小端双字）。
+pub const PING_WORD: u32 = 0x474E_4950;
+
+/// 首个 IPC 客户程序（自检 24；位置固定 0x400000，能力槽由 spawn 注入）：
+///
+/// ```text
+/// payload = "PING"（写 0x402F00）
+/// rax = SYS_IPC_SEND(ch=1, payload, 4, tag=0x21)
+///   → 能力门禁负探针：必须返回 ERR_CAP(1)，否则 EXIT(53)
+/// rax = SYS_IPC_SEND(ch=0, payload, 4, tag=0x21)
+///   → 必须返回 0，否则 EXIT(53)
+/// 重试环（≤64 次，间以 SYS_YIELD）：
+///   rax = SYS_IPC_RECV(ch=0, 0x402E00, 120)
+///   非零 = (tag<<32)|len → 校验 [0x402E00] == "PING" → EXIT(52)
+///   零 = ERR_EMPTY → 让出重试；超预算 → EXIT(53)
+/// ```
+///
+/// 字节码由两遍微型汇编器生成（rel32 跳转偏移已解析），手工校验见
+/// devlog S26。
+pub const USER_IPC_PROGRAM: [u8; 192] = [
+    0xB8, 0x50, 0x49, 0x4E, 0x47, 0xA3, 0x00, 0x2F, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0xBF, 0x01,
+    0x00, 0x00, 0x00, 0xBE, 0x04, 0x00, 0x00, 0x00, 0xBA, 0x00, 0x2F, 0x40, 0x00, 0x41, 0xBA, 0x21,
+    0x00, 0x00, 0x00, 0xB8, 0x03, 0x00, 0x00, 0x00, 0x0F, 0x05, 0x48, 0x83, 0xF8, 0x01, 0x0F, 0x85,
+    0x7E, 0x00, 0x00, 0x00, 0xBF, 0x00, 0x00, 0x00, 0x00, 0xBE, 0x04, 0x00, 0x00, 0x00, 0xBA, 0x00,
+    0x2F, 0x40, 0x00, 0x41, 0xBA, 0x21, 0x00, 0x00, 0x00, 0xB8, 0x03, 0x00, 0x00, 0x00, 0x0F, 0x05,
+    0x48, 0x85, 0xC0, 0x0F, 0x85, 0x59, 0x00, 0x00, 0x00, 0xBF, 0x00, 0x00, 0x00, 0x00, 0xBE, 0x78,
+    0x00, 0x00, 0x00, 0xBA, 0x00, 0x2E, 0x40, 0x00, 0xB8, 0x04, 0x00, 0x00, 0x00, 0x0F, 0x05, 0x48,
+    0x85, 0xC0, 0x0F, 0x85, 0x1A, 0x00, 0x00, 0x00, 0xFF, 0xC1, 0x81, 0xF9, 0x40, 0x00, 0x00, 0x00,
+    0x0F, 0x8D, 0x2C, 0x00, 0x00, 0x00, 0xB8, 0x02, 0x00, 0x00, 0x00, 0x0F, 0x05, 0xE9, 0xC7, 0xFF,
+    0xFF, 0xFF, 0xA1, 0x00, 0x2E, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3D, 0x50, 0x49, 0x4E, 0x47,
+    0x0F, 0x85, 0x0C, 0x00, 0x00, 0x00, 0xBF, 0x34, 0x00, 0x00, 0x00, 0xB8, 0x01, 0x00, 0x00, 0x00,
+    0x0F, 0x05, 0xBF, 0x35, 0x00, 0x00, 0x00, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x0F, 0x05, 0xEB, 0xFE,
+];
+
+// ring3 进入桩（USER-01 白名单，M7-A 扩展）：载用户数据段后 iretq 降权。
+//
+// M8-A 注意：**不触碰 GS 选择子**（FS 置空保留）——GS/FS 保留未来用户
+// TLS；内核不消费 GS（swapgs 纪律定版，见 syscall.rs 模块文档），
+// 长模式下向 FS/GS 装载选择子会重写隐藏基址，维持不触碰纪律。
+//
+// SAFETY（调用方义务）：
+// - CR3 已为该任务的用户根（调度器 `prepare_dispatch` 保证）；
+// - GDT 已装载完整布局（ucode=0x18/udata=0x20，ostd::hw::gdt::install）；
+// - 本函数运行于该任务的内核栈上，iretq 后内核栈视为「已清空」；
+// - 本核 per-CPU syscall 栈已由 prepare_dispatch 落位（syscall 入口
+//   桩 LAPIC 索引读数，M8-A 契约）。
+global_asm! {
+    ".text",
+    ".globl lumina_enter_user",
+    "lumina_enter_user:",
+    "    mov ax, 0x23",
+    "    mov ds, ax",
+    "    mov es, ax",
+    "    xor ax, ax",
+    "    mov fs, ax",
+    "    push 0x23",
+    "    push rsi",
+    "    push 0x202",
+    "    push 0x1B",
+    "    push rdi",
+    "    iretq",
+}
+
+unsafe extern "C" {
+    /// 见上方 global_asm 契约（rdi=入口 rip，rsi=用户栈顶）。
+    fn lumina_enter_user(entry: u64, stack_top: u64) -> !;
+}
+
+/// 用户入口桥：task.rs 的 `trampoline_user` 经此进入 ring3。
+pub extern "C" fn enter_user_bridge() -> ! {
+    let (entry, stack) = (USER_CODE_VIRT, USER_STACK_TOP);
+    // SAFETY: 桩契约（见 global_asm 文档）：CR3/GDT 由调度器与内核
+    //         初始化路径保证；本调用永不返回。
+    unsafe { lumina_enter_user(entry, stack) }
+}
+
+/// 用户地址空间构造结果。
+pub struct UserSpace {
+    /// 用户页表根物理地址。
+    pub root: u64,
+    /// 用户代码帧物理地址。
+    pub code_frame: u64,
+    /// 用户栈帧物理地址。
+    pub stack_frame: u64,
+}
+
+// ---------------------------------------------------------------------------
+// M8-B：swap 回收全链测试面（数据页分支 + ring3 读写程序）
+// ---------------------------------------------------------------------------
+
+/// 回收测试数据区虚拟基址（PML4[0]→PDPT[5] 全新分支——避开 PD[2]
+/// 恒等镜像区：内核映像/堆依赖镜像完整，不可拆位）。
+pub const SWAP_DATA_VA: u64 = 0x1_4000_0000;
+/// 回收测试数据页数（4 页 ring3 写入 + 4 页内核预写，共 8 页）。
+pub const SWAP_DATA_PAGES: usize = 8;
+/// ring3 写入魔数基（页 i 期望值 = 基 | i；字节码内嵌同值——文档锚点）。
+#[allow(dead_code)] // USER_SWAP_PROGRAM 字节码内嵌 0x5CA9000000A00000 的常量定义源
+pub const SWAP_MAGIC_USER: u64 = 0x5CA9_0000_00A0_0000;
+/// 内核预写魔数基（页 4..8；淘汰后经盘往返复原取证）。
+pub const SWAP_MAGIC_KERN: u64 = 0x5CA9_0000_00B0_0000;
+
+/// 为既有用户根挂载回收测试数据页：PML4[0]→PDPT[5]→PD→PT 四级全新
+/// 分支（中间层逐层补 U 位——权限逐层 AND，任一层缺 U 用户态即被拒）。
+/// 页帧清零后返回帧地址表；由调用方决定预写内容。表帧（PD/PT）留作
+/// 遗迹（与自检 9/14 惯例一致）。
+pub fn attach_data_pages<F>(root: u64, mut alloc_frame: F) -> Option<alloc::vec::Vec<u64>>
+where
+    F: FnMut() -> Option<u64>,
+{
+    let pml4e0 = ostd::hw::phys::read_u64(root);
+    if pml4e0 & 1 == 0 {
+        return None;
+    }
+    let pdpt = pml4e0 & !0xFFF;
+    let pdpt5_slot = pdpt + 5 * 8;
+    if ostd::hw::phys::read_u64(pdpt5_slot) & 1 != 0 {
+        return None; // 槽位已占用（非全新分支，防御拒绝）
+    }
+    let pd2 = alloc_frame()?;
+    let pt2 = alloc_frame()?;
+    ostd::hw::phys::write_zero(pd2, FRAME_SIZE);
+    ostd::hw::phys::write_zero(pt2, FRAME_SIZE);
+    let user_table = Entry::USER;
+    ostd::hw::phys::write_u64(pdpt5_slot, Entry::table(pd2).bits() | user_table);
+    ostd::hw::phys::write_u64(pd2, Entry::table(pt2).bits() | user_table);
+    let mut frames = alloc::vec::Vec::new();
+    for j in 0..SWAP_DATA_PAGES as u64 {
+        let f = alloc_frame()?;
+        ostd::hw::phys::write_zero(f, FRAME_SIZE);
+        ostd::hw::phys::write_u64(
+            pt2 + j * 8,
+            Entry::page(f, Entry::USER | Entry::WRITABLE).bits(),
+        );
+        frames.push(f);
+    }
+    Some(frames)
+}
+
+/// 回收全链测试程序（位置固定 0x400000，共 0x91 字节）：
+///
+/// ```text
+/// 阶段一：写页 0..3 = SWAP_MAGIC_USER|i（页 4..8 已由内核预写魔数）
+/// 阶段二：SYS_YIELD ×1（调度节拍；淘汰已在派生前内核侧完成）
+/// 阶段三：读 8 页并校验（0..3 用户魔数 / 4..8 内核魔数——被淘汰的
+///         4 页经 #PF → swap-in 重映射复原），失败 EXIT(45)
+/// 终态：EXIT(44)
+/// ```
+///
+/// 字节码手工汇编（寄存器约定 = bedrock abi v0；rel 偏移已逐条核算：
+/// jl@0x28→0x0C、jge@0x50→0x5C、jne@0x62→0x84、jl@0x74→0x3D，总长 0x92）。
+pub const USER_SWAP_PROGRAM: [u8; 0x92] = [
+    // 0x00: movabs r15, 0x140000000
+    0x49, 0xBF, 0x00, 0x00, 0x00, 0x40, 0x01, 0x00, 0x00, 0x00, // 0x0A: xor ebx, ebx
+    0x31, 0xDB, // 0x0C: movabs rax, 0x5CA9000000A00000（写环起点）
+    0x48, 0xB8, 0x00, 0x00, 0xA0, 0x00, 0x00, 0x00, 0xA9, 0x5C, // 0x16: or rax, rbx
+    0x48, 0x09, 0xD8, // 0x19: mov [r15], rax
+    0x49, 0x89, 0x07, // 0x1C: add r15, 4096
+    0x49, 0x81, 0xC7, 0x00, 0x10, 0x00, 0x00, // 0x23: inc ebx
+    0xFF, 0xC3, // 0x25: cmp ebx, 4
+    0x83, 0xFB, 0x04, // 0x28: jl 0x0C
+    0x7C, 0xE2, // 0x2A: mov eax, 2（SYS_YIELD）
+    0xB8, 0x02, 0x00, 0x00, 0x00, // 0x2F: syscall
+    0x0F, 0x05, // 0x31: movabs r15, 0x140000000（读环复位）
+    0x49, 0xBF, 0x00, 0x00, 0x00, 0x40, 0x01, 0x00, 0x00, 0x00, // 0x3B: xor ebx, ebx
+    0x31, 0xDB,
+    // 0x3D: mov rax, [r15]（淘汰页故障点：#PF → swap-in → 重执行）
+    0x49, 0x8B, 0x07, // 0x40: mov rcx, rbx
+    0x48, 0x89, 0xD9,
+    // 0x43: movabs rdx, 0x5CA9000000B00000（内核魔数基，默认期望）
+    0x48, 0xBA, 0x00, 0x00, 0xB0, 0x00, 0x00, 0x00, 0xA9, 0x5C, // 0x4D: cmp ebx, 4
+    0x83, 0xFB, 0x04, // 0x50: jge 0x5C（跳过用户魔数基装载）
+    0x7D, 0x0A, // 0x52: movabs rdx, 0x5CA9000000A00000（用户魔数基）
+    0x48, 0xBA, 0x00, 0x00, 0xA0, 0x00, 0x00, 0x00, 0xA9, 0x5C, // 0x5C: or rcx, rdx
+    0x48, 0x09, 0xD1, // 0x5F: cmp rax, rcx
+    0x48, 0x39, 0xC8, // 0x62: jne 0x84（校验失败 → EXIT 45）
+    0x0F, 0x85, 0x1C, 0x00, 0x00, 0x00, // 0x68: add r15, 4096
+    0x49, 0x81, 0xC7, 0x00, 0x10, 0x00, 0x00, // 0x6F: inc ebx
+    0xFF, 0xC3,
+    // 0x71: cmp ebx, 4（读环止于自有写入页——被淘汰页由内核态读回）
+    0x83, 0xFB, 0x04, // 0x74: jl 0x3D
+    0x7C, 0xC7, // 0x76: mov edi, 44（EXIT 成功码）
+    0xBF, 0x2C, 0x00, 0x00, 0x00, // 0x7B: mov eax, 1（SYS_EXIT）
+    0xB8, 0x01, 0x00, 0x00, 0x00, // 0x80: syscall
+    0x0F, 0x05, // 0x82: jmp $（EXIT 失效则原地停）
+    0xEB, 0xFE, // 0x84: mov edi, 45（失败码）
+    0xBF, 0x2D, 0x00, 0x00, 0x00, // 0x89: mov eax, 1
+    0xB8, 0x01, 0x00, 0x00, 0x00, // 0x8E: syscall
+    0x0F, 0x05, // 0x90: jmp $
+    0xEB, 0xFE,
+];
+
+/// 优先级调度面自检程序（位置固定 0x400000，共 0x3B 字节）：
+///
+/// ```text
+/// SYS_GET_PRIO → 期望 NORMAL(1)，否则 EXIT(50)
+/// SYS_SET_PRIO(0) → 期望生效级 0，否则 EXIT(50)
+/// EXIT(49)
+/// ```
+///
+/// 字节码手工汇编（jne@0x0B→0x2B、jne@0x1D→0x2B 逐条核算）。
+pub const USER_PRIO_PROGRAM: [u8; 0x3B] = [
+    // 0x00: mov eax, 8（SYS_GET_PRIO）
+    0xB8, 0x08, 0x00, 0x00, 0x00, // 0x05: syscall
+    0x0F, 0x05, // 0x07: cmp rax, 1（NORMAL）
+    0x48, 0x83, 0xF8, 0x01, // 0x0B: jne 0x2B
+    0x75, 0x1E, // 0x0D: mov edi, 0（HIGH）
+    0xBF, 0x00, 0x00, 0x00, 0x00, // 0x12: mov eax, 7（SYS_SET_PRIO）
+    0xB8, 0x07, 0x00, 0x00, 0x00, // 0x17: syscall
+    0x0F, 0x05, // 0x19: cmp rax, 0（生效级回读）
+    0x48, 0x83, 0xF8, 0x00, // 0x1D: jne 0x2B
+    0x75, 0x0C, // 0x1F: mov edi, 49（EXIT 成功码）
+    0xBF, 0x31, 0x00, 0x00, 0x00, // 0x24: mov eax, 1（SYS_EXIT）
+    0xB8, 0x01, 0x00, 0x00, 0x00, // 0x29: syscall
+    0x0F, 0x05, // 0x2B: jmp $（EXIT 失效则原地停）
+    0xEB, 0xFE, // 0x2D: mov edi, 50（失败码）
+    0xBF, 0x32, 0x00, 0x00, 0x00, // 0x32: mov eax, 1
+    0xB8, 0x01, 0x00, 0x00, 0x00, // 0x37: syscall
+    0x0F, 0x05, // 0x39: jmp $
+    0xEB, 0xFE,
+];
+
+// ---------------------------------------------------------------------------
+// M9-A：进程模型测试面（跨任务能力授予 + 句柄生命周期，ring3 双程序）
+// ---------------------------------------------------------------------------
+
+/// 授予方数据槽：子任务 pid 存放虚拟地址（栈页内偏移 0x100；内核在
+/// spawn 后写入，授予方轮询等待非零——无派发顺序假设，消除竞态窗口）。
+pub const GRANT_PID_VA: u64 = 0x40_2100;
+/// 授予测试对象 id（能力对象寻址；父能力 R|W 安装至授予方主身份句柄）。
+pub const GRANT_OBJECT: u64 = 0x7A59_0000_0000_0001;
+
+/// 能力授予方程序（父任务 A；位置固定 0x400000，共 0xA8 字节）：
+///
+/// ```text
+/// 等待 [0x402100]（子任务 pid）非零（内核写入）
+/// 探针 1：GRANT(子pid, handle=0, R) → 期望 ERR_HANDLE(5)，否则 EXIT(52)
+/// 探针 2：GRANT(pid=0, handle=1, R) → 期望 ERR_TARGET(6)，否则 EXIT(52)
+/// 探针 3：GRANT(子pid, handle=1, EXEC) → 期望 ERR_DERIVE(3)，否则 EXIT(52)
+/// 正路径：GRANT(子pid, handle=1, READ) → 期望 (1<<32)|h（>7），否则 EXIT(56)
+/// GET_PID → 期望 ≥ 1，否则 EXIT(52)
+/// EXIT(53)
+/// ```
+///
+/// 字节码由 scripts/asm_m9a.py 两遍微型汇编器生成（rel8 跳转已解析）。
+pub const USER_CAP_GRANT_PROGRAM: [u8; 0xA8] = [
+    0x4C, 0x8B, 0x3C, 0x25, 0x00, 0x21, 0x40, 0x00, 0x4D, 0x85, 0xFF, 0x74, 0xF3, 0x4C, 0x89, 0xFF,
+    0x31, 0xF6, 0xBA, 0x01, 0x00, 0x00, 0x00, 0xB8, 0x09, 0x00, 0x00, 0x00, 0x0F, 0x05, 0x48, 0x83,
+    0xF8, 0x05, 0x75, 0x68, 0x31, 0xFF, 0xBE, 0x01, 0x00, 0x00, 0x00, 0xBA, 0x01, 0x00, 0x00, 0x00,
+    0xB8, 0x09, 0x00, 0x00, 0x00, 0x0F, 0x05, 0x48, 0x83, 0xF8, 0x06, 0x75, 0x4F, 0x4C, 0x89, 0xFF,
+    0xBE, 0x01, 0x00, 0x00, 0x00, 0xBA, 0x04, 0x00, 0x00, 0x00, 0xB8, 0x09, 0x00, 0x00, 0x00, 0x0F,
+    0x05, 0x48, 0x83, 0xF8, 0x03, 0x75, 0x35, 0x4C, 0x89, 0xFF, 0xBE, 0x01, 0x00, 0x00, 0x00, 0xBA,
+    0x01, 0x00, 0x00, 0x00, 0xB8, 0x09, 0x00, 0x00, 0x00, 0x0F, 0x05, 0x48, 0x83, 0xF8, 0x07, 0x76,
+    0x29, 0xB8, 0x0B, 0x00, 0x00, 0x00, 0x0F, 0x05, 0x48, 0x83, 0xF8, 0x01, 0x72, 0x0E, 0xBF, 0x35,
+    0x00, 0x00, 0x00, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x0F, 0x05, 0xEB, 0xFE, 0xBF, 0x34, 0x00, 0x00,
+    0x00, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x0F, 0x05, 0xEB, 0xFE, 0xBF, 0x38, 0x00, 0x00, 0x00, 0xB8,
+    0x01, 0x00, 0x00, 0x00, 0x0F, 0x05, 0xEB, 0xFE,
+];
+
+/// 被授予方程序（子任务 B；cap_slot = 0，句柄表全空；位置固定 0x400000，
+/// 共 0x3E 字节）：
+///
+/// ```text
+/// 循环（≤10 万轮，间以 YIELD）：REVOKE(handle=1)
+///   返回 0 → 授予已到达且本任务真实持有句柄 → EXIT(54)
+///   返回非 0（ERR_HANDLE=5）→ 让出重试；超预算 → EXIT(55)
+/// ```
+///
+/// 预算取值依据：YIELD 在空就绪队列上是 no-op（保持 Running 原地继续），
+/// 纯迭代预算在微秒级烧完；A 需经 kick → idle 拾取 → 探针全链后才授予，
+/// 预算必须覆盖量子级调度时延（10 万轮 ≈ 数百 ms 上界；正常首轮 REVOKE
+/// 前授予已到达——A 钉扎 CPU1 无竞争，先于 B 首次派发完成全链）。
+pub const USER_CAP_RECV_PROGRAM: [u8; 0x3E] = [
+    0xBF, 0x01, 0x00, 0x00, 0x00, 0xB8, 0x0A, 0x00, 0x00, 0x00, 0x0F, 0x05, 0x48, 0x85, 0xC0, 0x74,
+    0x1F, 0xB8, 0x02, 0x00, 0x00, 0x00, 0x0F, 0x05, 0xFF, 0xC3, 0x81, 0xFB, 0xA0, 0x86, 0x01, 0x00,
+    0x7C, 0xDE, 0xBF, 0x37, 0x00, 0x00, 0x00, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x0F, 0x05, 0xEB, 0xFE,
+    0xBF, 0x36, 0x00, 0x00, 0x00, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x0F, 0x05, 0xEB, 0xFE,
+];
+
+/// 用户空间构造错误。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserSpaceError {
+    /// 中间表/页帧分配失败。
+    FramesExhausted,
+}
+
+/// 构建用户地址空间：4 张中间表 + 代码帧 + 栈帧；返回根与帧地址。
+///
+/// 全程经 `ostd::hw::phys`（HW-03）直写恒等映射；表结构纯函数化，
+/// 与 S4 宿主测试共享同一 Entry 位域语义。
+pub fn build_user_space<F>(alloc_frame: &mut F) -> Result<UserSpace, UserSpaceError>
+where
+    F: FnMut() -> Option<u64>,
+{
+    let Some(root) = alloc_frame() else {
+        return Err(UserSpaceError::FramesExhausted);
+    };
+    let Some(pdpt) = alloc_frame() else {
+        return Err(UserSpaceError::FramesExhausted);
+    };
+    let Some(pd) = alloc_frame() else {
+        return Err(UserSpaceError::FramesExhausted);
+    };
+    let Some(pt) = alloc_frame() else {
+        return Err(UserSpaceError::FramesExhausted);
+    };
+    let Some(code) = alloc_frame() else {
+        return Err(UserSpaceError::FramesExhausted);
+    };
+    let Some(stack) = alloc_frame() else {
+        return Err(UserSpaceError::FramesExhausted);
+    };
+    for f in [root, pdpt, pd, pt, code, stack] {
+        ostd::hw::phys::write_zero(f, FRAME_SIZE);
+    }
+    // PML4[0] → PDPT → PD：中间层补 U 位——页访问权限逐层 AND，
+    // 任一层缺 U，用户态叶页访问即被拒（e=5 保护违例，开发期实测）
+    let user_table = Entry::USER;
+    ostd::hw::phys::write_u64(root, Entry::table(pdpt).bits() | user_table);
+    ostd::hw::phys::write_u64(pdpt, Entry::table(pd).bits() | user_table);
+    // 克隆内核必需分支（恒等内核 + LAPIC MMIO，supervisor-only）：必须在
+    // PML4[0] 已链接新 PDPT 之后调用，否则 LAPIC 槽位拷贝落空（M6 实测）。
+    // 内核任务在本根上执行时 per-CPU 路径（my_cpu/LAPIC EOI）才可达。
+    ostd::mm::page::clone_kernel_branches(ostd::hw::control::read_cr3(), root);
+    // PD[0..512]：2 MiB 恒等大页（P|W，supervisor），PD[2] 展开为 PT
+    for i in 0..512u64 {
+        let slot = pd + i * 8;
+        if i == 2 {
+            ostd::hw::phys::write_u64(slot, Entry::table(pt).bits() | user_table);
+        } else {
+            ostd::hw::phys::write_u64(slot, Entry::huge(i * 0x20_0000, Entry::WRITABLE).bits());
+        }
+    }
+    // PT 全量镜像 PD[2] 覆盖的 2 MiB 恒等区（0x400000..0x600000）：
+    // 内核映像与堆跨越该边界，缺页即三重故障（M4 开发期实测）。
+    // 仅两页换 USER 属性：PT[0] = 用户代码（P|U 只读），PT[2] = 用户栈
+    // （P|U|W）；其余保持 supervisor（P|W）——ring3 不可见。
+    for j in 0..512u64 {
+        let phys = 0x40_0000 + j * FRAME_SIZE;
+        let bits = if j == 0 {
+            Entry::page(code, Entry::USER).bits()
+        } else if j == 2 {
+            Entry::page(stack, Entry::USER | Entry::WRITABLE).bits()
+        } else {
+            Entry::page(phys, Entry::WRITABLE).bits()
+        };
+        ostd::hw::phys::write_u64(pt + j * 8, bits);
+    }
+    // 装载用户程序映像
+    ostd::hw::phys::write_bytes(code, &USER_PROGRAM);
+    Ok(UserSpace {
+        root,
+        code_frame: code,
+        stack_frame: stack,
+    })
+}
+
+/// 程序级翻译（自检用）：经 IdentityAccess 走表验证映射生效。
+pub fn translate(root: u64, virt: u64) -> Option<u64> {
+    let w = ostd::mm::page::Walker {
+        mem: &mut ostd::mm::page::IdentityAccess,
+        alloc_table: || None,
+    };
+    w.translate(root, virt)
+}
