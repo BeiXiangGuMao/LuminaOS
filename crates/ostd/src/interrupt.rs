@@ -25,9 +25,19 @@
 //!   主体填写、同中断窗口内消费——天然 per-CPU（每核各用自己的栈），
 //!   消除 M4 全局静态槽在双核同时抢占时互相覆盖的竞态；
 //! - `isr_lapic_timer`（向量 0x41）：统一 per-CPU 抢占源（M6-A）；
-//!   PIT（向量 32）退化为纯墙钟打点，不再驱动抢占；
+//!   M10-A 前 PIT（向量 32）退化为纯墙钟打点，不驱动抢占；
 //! - `isr_resched`（向量 0x42）：跨核重调度提示 IPI（唤醒 idle 核重新
 //!   检查全局就绪队列；对忙核无副作用）。
+//!
+//! M10-A 扩展（per-CPU tick 账户，解除 ring3 时间面冻结）：
+//! - `isr_timer`（向量 32）升级为**全上下文时间源**：LAPIC 定时器在
+//!   ring3 驻留期间被 prepare_dispatch 屏蔽（TCG 双异常交付缺陷族规避，
+//!   S31 记档），时间面（计账/老化/抢占）随之冻结；PIT 实测交付不触发
+//!   缺陷族 → 桩尾部加装与 LAPIC 定时器同构的 PreemptPlan 交换路径，
+//!   主体经墙钟钩子承载 per-CPU 账户 + 老化 + 接收核抢占；
+//! - `isr_resched`（向量 0x42）加装同构交换路径：对侧核 ring3 驻留的
+//!   抢占经 PREEMPT_REQ 旗 + 本 IPI 送达（交付实测安全：M6-M9 门铃
+//!   持续交付于 ring3 驻留核）——三抢占源（LAPIC/PIT/RESCHED）全就位。
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -235,13 +245,20 @@ fn fault_exit(vector: u64, rip: u64, aux: u64) -> ! {
 pub mod stubs {
     core::arch::global_asm! {
         ".text",
-        // ---- 向量 32：IRQ0 定时器（无错误码；M6 起纯墙钟打点，不驱动抢占）----
+        // ---- 向量 32：IRQ0 定时器（M10-A 起：墙钟打点 + per-CPU tick 账户
+        // + 抢占源；与 LAPIC 定时器桩同构的 PreemptPlan 交换路径）----
+        // M6-M9 历史：纯墙钟打点，不驱动抢占（统一抢占源 = LAPIC 定时器）。
+        // M10-A 重构：LAPIC 定时器在 ring3 驻留期间被 prepare_dispatch 屏蔽
+        // （TCG 双异常交付缺陷族规避），时间面（计账/老化/抢占）随之冻结；
+        // PIT 实测交付不触发缺陷族 → 升级为全上下文时间源。桩尾部与
+        // isr_lapic_timer 同构：主体返回 eax=1 则从栈上 PreemptPlan 执行
+        // 抢占交换（ring3 抢占首次成立）。
         // 纪律：保存/恢复 caller-saved 全集（rax,rcx,rdx,rsi,rdi,r8-r11）
         // 与 rbp；锚点 rbp 落在 10 个 push 之后（锚点 = 最后压入的 r11 槽），
         // 恢复走对称 POP 而非「mov rsp, rbp 跳过」——否则被中断代码的
         // 寄存器现场全毁。
         //
-        // 抢占路径（M6 重构）：栈上 PreemptPlan——桩 `sub rsp,16` 预留，
+        // 抢占路径（M10-A 扩展）：栈上 PreemptPlan——桩 `sub rsp,16` 预留，
         // 主体（rdi = &plan）填写后返回 eax=1，桩从 [rsp]/[rsp+8] 取
         // 新旧上下文指针执行交换。计划生存期 = 单次中断窗口（栈上临时区），
         // 天然 per-CPU：双核同时抢占各自写各自的栈，零共享状态。
@@ -262,6 +279,45 @@ pub mod stubs {
         "    sub rsp, 16",
         "    mov rdi, rsp",
         "    call isr_timer_body",
+        "    test eax, eax",
+        "    jnz 8f",
+        "    mov rsp, rbp",
+        "    pop r11",
+        "    pop r10",
+        "    pop r9",
+        "    pop r8",
+        "    pop rdi",
+        "    pop rsi",
+        "    pop rdx",
+        "    pop rcx",
+        "    pop rax",
+        "    pop rbp",
+        "    iretq",
+        "8:",
+        // plan 位于 [rsp]/[rsp+8]（与 LAPIC 定时器桩 6/7 标签同构；
+        // 标签 8/9 与其它桩隔离——同一 global_asm 块内标签唯一）
+        "    lea rax, [rip + 9f]",
+        "    mov rdi, [rsp]",
+        "    mov rsi, [rsp + 8]",
+        "    mov [rdi + 0x00], rax",
+        "    mov [rdi + 0x08], rbx",
+        "    mov [rdi + 0x10], rbp",
+        "    mov [rdi + 0x18], r12",
+        "    mov [rdi + 0x20], r13",
+        "    mov [rdi + 0x28], r14",
+        "    mov [rdi + 0x30], r15",
+        "    mov [rdi + 0x38], rbp",
+        "    mov rbx, [rsi + 0x08]",
+        "    mov rbp, [rsi + 0x10]",
+        "    mov r12, [rsi + 0x18]",
+        "    mov r13, [rsi + 0x20]",
+        "    mov r14, [rsi + 0x28]",
+        "    mov r15, [rsi + 0x30]",
+        "    mov rsp, [rsi + 0x38]",
+        "    push QWORD PTR [rsi + 0x00]",
+        "    ret",
+        // 9: = .resume（被抢占任务的续点，语义同 LAPIC 定时器桩）
+        "9:",
         "    mov rsp, rbp",
         "    pop r11",
         "    pop r10",
@@ -345,9 +401,13 @@ pub mod stubs {
         "    pop rax",
         "    pop rbp",
         "    iretq",
-        // ---- 跨核重调度提示 IPI 桩（向量 0x42，M6-A）----
-        // 最小语义：唤醒 halt 中的 idle 核；主体 EOI + 置重调度标志。
-        // 对忙核无副作用（标志在下一调度点被消费或直接忽略）。
+        // ---- 跨核重调度提示 IPI 桩（向量 0x42，M6-A；M10-A 扩展）----
+        // 基础语义：唤醒 halt 中的 idle 核；主体 EOI + 置重调度标志。
+        // M10-A 扩展：与定时器桩同构的 PreemptPlan 交换路径——对侧核
+        // ring3 驻留期间 LAPIC 定时器被屏蔽（TCG 缺陷族），墙钟钩子判定
+        // 其需抢占时置 PREEMPT_REQ 并发本 IPI；主体消费旗标后按抢占规则
+        // 填写 plan（ring3 交付实测安全：M6-M9 spawn/分页门铃持续交付于
+        // ring3 驻留核），桩完成抢占交换。
         ".globl isr_resched",
         "isr_resched:",
         "    push rbp",
@@ -362,7 +422,45 @@ pub mod stubs {
         "    push r11",
         "    mov rbp, rsp",
         "    and rsp, -16",
+        "    sub rsp, 16",
+        "    mov rdi, rsp",
         "    call isr_resched_body",
+        "    test eax, eax",
+        "    jnz 10f",
+        "    mov rsp, rbp",
+        "    pop r11",
+        "    pop r10",
+        "    pop r9",
+        "    pop r8",
+        "    pop rdi",
+        "    pop rsi",
+        "    pop rdx",
+        "    pop rcx",
+        "    pop rax",
+        "    pop rbp",
+        "    iretq",
+        "10:",
+        "    lea rax, [rip + 11f]",
+        "    mov rdi, [rsp]",
+        "    mov rsi, [rsp + 8]",
+        "    mov [rdi + 0x00], rax",
+        "    mov [rdi + 0x08], rbx",
+        "    mov [rdi + 0x10], rbp",
+        "    mov [rdi + 0x18], r12",
+        "    mov [rdi + 0x20], r13",
+        "    mov [rdi + 0x28], r14",
+        "    mov [rdi + 0x30], r15",
+        "    mov [rdi + 0x38], rbp",
+        "    mov rbx, [rsi + 0x08]",
+        "    mov rbp, [rsi + 0x10]",
+        "    mov r12, [rsi + 0x18]",
+        "    mov r13, [rsi + 0x20]",
+        "    mov r14, [rsi + 0x28]",
+        "    mov r15, [rsi + 0x30]",
+        "    mov rsp, [rsi + 0x38]",
+        "    push QWORD PTR [rsi + 0x00]",
+        "    ret",
+        "11:",
         "    mov rsp, rbp",
         "    pop r11",
         "    pop r10",
@@ -523,6 +621,25 @@ pub mod stubs {
         TIMER_HOOK.store(hook as usize, core::sync::atomic::Ordering::Release);
     }
 
+    /// 墙钟钩子（M10-A）：IRQ0 主体消费——per-CPU tick 账户 + 老化扫描
+    /// + 本核（接收核）抢占判定。返回 true = 已填写 plan（桩执行交换）。
+    static WALL_HOOK: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+    /// 注册墙钟钩子（内核调度器初始化时调用；未注册时 PIT 退回纯墙钟）。
+    pub fn set_wall_hook(hook: fn(&mut super::PreemptPlan) -> bool) {
+        WALL_HOOK.store(hook as usize, core::sync::atomic::Ordering::Release);
+    }
+
+    /// RESCHED 抢占钩子（M10-A）：RESCHED IPI 主体在重调度提示钩子之后
+    /// 消费本核 PREEMPT_REQ 旗——置位则按抢占规则填写 plan。
+    static RESCHED_PREEMPT_HOOK: core::sync::atomic::AtomicUsize =
+        core::sync::atomic::AtomicUsize::new(0);
+
+    /// 注册 RESCHED 抢占钩子（内核调度器初始化时调用）。
+    pub fn set_resched_preempt_hook(hook: fn(&mut super::PreemptPlan) -> bool) {
+        RESCHED_PREEMPT_HOOK.store(hook as usize, core::sync::atomic::Ordering::Release);
+    }
+
     /// 重调度提示钩子（M6-A：RESCHED IPI 主体；置跨核唤醒标志）。
     static RESCHED_HOOK: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
@@ -531,14 +648,25 @@ pub mod stubs {
         RESCHED_HOOK.store(hook as usize, core::sync::atomic::Ordering::Release);
     }
 
-    /// IRQ0 主体：墙钟打点 + 主片 EOI（M6 起 PIT 不再驱动抢占）。
+    /// IRQ0 主体（向量 32）：墙钟打点 + 主片 EOI + 墙钟钩子（M10-A）。
     ///
-    /// plan 参数由桩汇编契约传入（rdi = &plan）；PIT 主体恒不抢占，
-    /// 统一抢占源为 LAPIC 定时器（`isr_lapic_timer_body`）。
+    /// plan 参数由桩汇编契约传入（rdi = &plan）；返回 1 = 已填写 plan
+    /// （桩执行抢占交换）。M6-M10 历史语义：M6 起纯墙钟不再驱动抢占；
+    /// M10-A 起 PIT 升级为全上下文时间源（账户/老化/接收核抢占）。
     #[no_mangle]
-    extern "C" fn isr_timer_body(_plan: &mut super::PreemptPlan) -> u32 {
+    extern "C" fn isr_timer_body(plan: &mut super::PreemptPlan) -> u32 {
         crate::time::tick();
         crate::hw::pic::eoi_master();
+        let hook = WALL_HOOK.load(core::sync::atomic::Ordering::Acquire);
+        if hook != 0 {
+            // SAFETY: 前置条件 —— 地址来自 set_wall_hook 存入的
+            //          fn(&mut PreemptPlan) -> bool。
+            // 不变式 —— Release/Acquire 配对；注册先于 PIT 抢占消费。
+            // 并发 —— IRQ0 仅交付接收核（PIC 路由 BSP）；plan 在本核栈上。
+            // 违反后果 —— 跳转伪造地址即任意代码执行（注册纪律封死）。
+            let f: fn(&mut super::PreemptPlan) -> bool = unsafe { core::mem::transmute(hook) };
+            return u32::from(f(plan));
+        }
         0
     }
 
@@ -561,9 +689,12 @@ pub mod stubs {
         0
     }
 
-    /// RESCHED IPI 主体（向量 0x42）：LAPIC EOI + 重调度提示钩子。
+    /// RESCHED IPI 主体（向量 0x42）：LAPIC EOI + 重调度提示钩子 +
+    /// 抢占钩子（M10-A：消费本核 PREEMPT_REQ，置位则填写 plan）。
+    ///
+    /// 返回 1 = 已填写 plan（桩执行抢占交换）；0 = 放行。
     #[no_mangle]
-    extern "C" fn isr_resched_body() {
+    extern "C" fn isr_resched_body(plan: &mut super::PreemptPlan) -> u32 {
         crate::hw::lapic::eoi();
         let hook = RESCHED_HOOK.load(core::sync::atomic::Ordering::Acquire);
         if hook != 0 {
@@ -574,6 +705,17 @@ pub mod stubs {
             let f: fn() = unsafe { core::mem::transmute(hook) };
             f();
         }
+        let preempt = RESCHED_PREEMPT_HOOK.load(core::sync::atomic::Ordering::Acquire);
+        if preempt != 0 {
+            // SAFETY: 前置条件 —— 地址来自 set_resched_preempt_hook 存入的
+            //          fn(&mut PreemptPlan) -> bool。
+            // 不变式 —— Release/Acquire 配对；注册先于任何抢占请求。
+            // 并发 —— 各核仅在自身 IPI 窗口内调用（plan 在本核栈上）。
+            // 违反后果 —— 跳转伪造地址即任意代码执行（注册纪律封死）。
+            let f: fn(&mut super::PreemptPlan) -> bool = unsafe { core::mem::transmute(preempt) };
+            return u32::from(f(plan));
+        }
+        0
     }
 
     /// 致命异常主体：转交流程（携带故障 RIP 与诊断帧；见 [`super::fault_exit`]）。

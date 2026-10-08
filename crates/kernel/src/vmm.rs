@@ -96,11 +96,17 @@ pub fn swap_stats() -> (u32, usize) {
 //    SWAP_LOCK 串行）——现网语义超集，零回归；
 // 4. **竞态协议**：swapd 对 (root, va) 依次「登记 in-flight（frame=None）
 //    → 读 SWAPPED 槽位/标志 → 分配帧 → swap_in → 移除 SWAPPED →
-//    frame=Some」；#PF 侧先查 PREFETCHED（in-flight 则有界自旋等待），
-//    未命中再查 SWAPPED 同步路径——任一交错均收敛到两条正确路径之一。
-//    派发时延约束（如实记档）：ISR 自旋等待依赖 swapd 在另一核运行
-//    （swapd 自由跨核 + 双核拓扑；真解 = 任务阻塞态 + 调度点切换，
-//    随 per-CPU tick 账户 M10 演进），超时返回 false 走致命路径。
+//    frame=Some」；#PF 侧先查 PREFETCHED，未命中再查 SWAPPED 同步路径——
+//    任一交错均收敛到两条正确路径之一。
+// 5. **阻塞化等待（M10-B）**：v0.9 的「in-flight 有界自旋」升级为任务
+//    阻塞（State::Blocked + block_current）——故障方登记 Swap 等待对象后
+//    切出，swapd 完成换入（成功或失败清理）时谓词唤醒；故障方恢复点
+//    修复 CR3 后重探（就绪 → 零 I/O 重映射；失败 → 同步回退兑底）。
+//    **单核/全核饱和场景补齐**（v0.9 已知约束解除：旧形态自旋依赖
+//    swapd 在对侧核运行；阻塞后故障方切出即让出 CPU，swapd 同核可拾取）。
+//    门控：仅当 swapd 在线（PAGER_ONLINE > 0）且当前为任务上下文才走
+//    阻塞路径；离线/idle 上下文 → M8-B 同步回退严格保留（ISR 内联 I/O，
+//    定时器 LVT 屏蔽纪律不变）。
 //
 // 坐标面记账：快路径消费暂存帧时同步归还 swap 槽位（页面已驻内存，
 // 重淘汰走坐标面新派发）——SWAPPED 关联解除后槽位不泄漏。
@@ -193,8 +199,8 @@ pub fn pager_shutdown() {
 }
 
 /// 分页任务主体（swapd）：取请求 → 执行 → 空则让出；队列空且停机旗标
-/// 置位后终结。经 spawn_prio 以 0 级派生（M8-C 优先级面服务 M9-B：
-/// 淘汰/预取延迟优先于普通负载；空队列让出路径零驻留）。
+/// 置位后终结（在线计数 -1）。经 [`spawn_pager`] 派生（0 级：M8-C 优先级
+/// 面服务 M9-B 分页延迟；空队列让出路径零驻留）。
 pub fn pager_body() {
     loop {
         let req = PAGER_QUEUE.lock().pop_front();
@@ -211,6 +217,7 @@ pub fn pager_body() {
             }
             None => {
                 if PAGER_SHUTDOWN.load(Ordering::Acquire) {
+                    PAGER_ONLINE.fetch_sub(1, Ordering::AcqRel);
                     return;
                 }
                 crate::task::yield_now();
@@ -219,12 +226,43 @@ pub fn pager_body() {
     }
 }
 
+/// swapd 在线实例计数（M10-B 阻塞路径门控：仅当存在分页任务时，#PF
+/// 换入才允许阻塞等待——离线时同步回退路径保持既有全链语义）。
+static PAGER_ONLINE: AtomicUsize = AtomicUsize::new(0);
+
+/// swapd 是否在线。
+pub fn pager_online() -> bool {
+    PAGER_ONLINE.load(Ordering::Acquire) > 0
+}
+
+/// 派生分页任务（统一入口）：0 级优先；`pinned` = 钉扎核位（None =
+/// 自由跨核）。上线计数 +1（任务终结路径自减——见 pager_body）。返回
+/// 任务槽位（usize::MAX = 派生失败，计数回滚）。
+pub fn spawn_pager(pinned: Option<usize>) -> usize {
+    PAGER_ONLINE.fetch_add(1, Ordering::AcqRel);
+    let id = match pinned {
+        Some(c) => crate::task::spawn_pinned_prio("swapd", pager_body, 0, c),
+        None => crate::task::spawn_prio("swapd", pager_body, 0),
+    };
+    if id == usize::MAX {
+        PAGER_ONLINE.fetch_sub(1, Ordering::AcqRel);
+    }
+    id
+}
+
+/// 重臂分页任务停机旗标（自检序列复用：t33 停机后 t35 重新上线前清零）。
+pub fn pager_arm() {
+    PAGER_SHUTDOWN.store(false, Ordering::Release);
+}
+
 /// 预取单页（swapd 上下文）：登记 in-flight → 取槽位/标志 → 分配帧 →
 /// 换入 → 移除 SWAPPED → 帧就位。任何一步失败：清理登记（帧回收）并
-/// 保持 SWAPPED 原状（同步回退路径仍合法）。
+/// 保持 SWAPPED 原状（同步回退路径仍合法）。**全路径终点唤醒**等待
+/// 该页的阻塞任务（M10-B：成功 → 就绪消费；失败 → 唤醒后重探落同步兑底）。
 fn do_prefetch(root: u64, va: u64) {
     let va = va & !0xFFF;
     let Some(frames) = *FRAMES.lock() else {
+        wake_swap_waiters(root, va);
         return;
     };
     // 取槽位/标志（SWAPPED 条目此阶段不移除：同步回退保持合法）
@@ -234,9 +272,10 @@ fn do_prefetch(root: u64, va: u64) {
         .find(|e| e.root == root && e.va == va)
         .map(|e| (e.slot, e.flags));
     let Some((slot, flags)) = entry else {
+        wake_swap_waiters(root, va);
         return;
     };
-    // 登记 in-flight（#PF 侧见到 None 帧即有界自旋等待）
+    // 登记 in-flight（#PF 侧见到 None 帧即阻塞等待）
     PREFETCHED.lock().push(PrefetchEntry {
         root,
         va,
@@ -248,6 +287,7 @@ fn do_prefetch(root: u64, va: u64) {
         PREFETCHED
             .lock()
             .retain(|e| !(e.root == root && e.va == va));
+        wake_swap_waiters(root, va);
         return;
     };
     if swap_in(slot, frame).is_err() {
@@ -255,6 +295,7 @@ fn do_prefetch(root: u64, va: u64) {
         PREFETCHED
             .lock()
             .retain(|e| !(e.root == root && e.va == va));
+        wake_swap_waiters(root, va);
         return;
     }
     // 换入完成：移除 SWAPPED（同步路径失靶）→ 帧就位（快路径放行）
@@ -263,39 +304,57 @@ fn do_prefetch(root: u64, va: u64) {
     if let Some(e) = table.iter_mut().find(|e| e.root == root && e.va == va) {
         e.frame = Some(frame);
     }
+    drop(table);
+    wake_swap_waiters(root, va);
+}
+
+/// 唤醒等待 (root, va) 换入完成的全部阻塞任务（M10-B；谓词语义由
+/// task::wake_tasks 载荷匹配承载）。
+fn wake_swap_waiters(root: u64, va: u64) {
+    crate::task::wake_tasks(
+        |w| matches!(w, crate::task::WaitWhat::Swap { root: r, va: v } if *r == root && *v == va),
+    );
+}
+
+/// 预取登记探测（M10-B 阻塞化拆分；无自旋——等待已由任务阻塞面承载）。
+enum PeekPrefetch {
+    /// 帧就绪（零 I/O 消费即可）。
+    Ready,
+    /// 换入 in-flight（swapd 处理中 → 阻塞等待）。
+    InFlight,
+    /// 未登记。
+    Miss,
+}
+
+/// 预取登记探测（三态；单锁窗口快照）。
+fn peek_prefetched(root: u64, va_page: u64) -> PeekPrefetch {
+    let ready = PREFETCHED
+        .lock()
+        .iter()
+        .find(|e| e.root == root && e.va == va_page)
+        .map(|e| e.frame.is_some());
+    match ready {
+        Some(true) => PeekPrefetch::Ready,
+        Some(false) => PeekPrefetch::InFlight,
+        None => PeekPrefetch::Miss,
+    }
 }
 
 /// 快路径消费：预取登记命中且帧就位 → 锁窗口内移除条目携出 (帧, 标志)
-/// 并归还 swap 槽位（页面回驻内存，重淘汰走坐标面新派发）；in-flight →
-/// 有界自旋；未命中 → None（回退同步路径）。自旋预算 1<<28 次让步提示
-/// （双核 TCG 下远超一次 ATA 换入时延；超时返回 None 走致命路径，如实
-/// 交付）。已知约束：同页双核同时缺页的纳秒级窗口未覆盖（真解 = 任务
-/// 阻塞态，M10 演进）；自检面单故障方无此交错。
+/// 并归还 swap 槽位（页面回驻内存，重淘汰走坐标面新派发）。
+/// M10-B：v0.9 的 1<<28 有界自旋已移除——in-flight/未命中交由
+/// peek/阻塞面处理；同页双核并发缺页的纳秒级窗口由「消费竞争返回
+/// None + 调用方叶项重探」闭合（v0.9 已知约束解除）。
 fn consume_prefetched(root: u64, va_page: u64) -> Option<(u64, u64)> {
-    for _ in 0..(1u64 << 28) {
-        let state = PREFETCHED
-            .lock()
-            .iter()
-            .find(|e| e.root == root && e.va == va_page)
-            .map(|e| e.frame);
-        match state {
-            Some(Some(_)) => {
-                // 就绪：取出（移除 + 槽位归还是同一锁窗口内原子完成）
-                let mut table = PREFETCHED.lock();
-                if let Some(i) = table.iter().position(|e| e.root == root && e.va == va_page) {
-                    let e = table.remove(i);
-                    if let Some(frame) = e.frame {
-                        release_swap_slot(e.slot);
-                        return Some((frame, e.flags));
-                    }
-                }
-                core::hint::spin_loop();
-            }
-            Some(None) => core::hint::spin_loop(), // in-flight：等 swapd 完成
-            None => return None,                   // 未命中 → 同步回退路径
-        }
-    }
-    None
+    let mut table = PREFETCHED.lock();
+    let i = table
+        .iter()
+        .position(|e| e.root == root && e.va == va_page)?;
+    let e = table.remove(i);
+    e.frame.map(|frame| {
+        release_swap_slot(e.slot);
+        (frame, e.flags)
+    })
 }
 
 /// 释放某根的全部预取登记（清理路径：帧回收 + 槽位归还坐标面）。
@@ -505,11 +564,11 @@ pub fn init(frames: &'static FrameAllocator) {
 }
 
 /// 恢复钩子（可恢复 #PF 主体）：定位 → 门禁 → 补映射；M8-B 扩：swap
-/// 回收链换入路径（延迟映射未命中后查 SWAPPED 表）。
+/// 回收链换入路径；M10-B 扩：换入等待阻塞化（故障方切出等 swapd）。
 fn pf_hook(cr2: u64, error_code: u64) -> bool {
     let va_page = cr2 & !0xFFF;
     let Some(e) = DEFERRED.lock().iter().find(|e| e.va == va_page).copied() else {
-        return swap_in_hook(va_page);
+        return swap_in_hook(va_page, error_code);
     };
     // 能力门禁：故障上下文能力必须覆盖登记项对象且满足故障类型权限
     // （错误码 bit1 = W/R：1 写 0 读）
@@ -545,41 +604,104 @@ fn pf_hook(cr2: u64, error_code: u64) -> bool {
     }
 }
 
-/// M8-B 换入路径：(当前根, 故障页) 命中 SWAPPED 表 → 分配帧 →
-/// swap_in（ISR 内同步 ATA I/O，SWAP_LOCK 串行化；双核下他核持锁
-/// 则有界自旋）→ 按淘汰时标志重映射 → 故障指令重执行。
-/// 未命中返回 false（致命语义与 M3/M4 严格一致）。
-fn swap_in_hook(va_page: u64) -> bool {
+/// 换入路径（M10-B 重构）：门控分流——
+/// ① 双核并发缺页闭合守卫：未呈现故障但他核已补映射（本故障与映射的
+///    交错窗口）→ 直接重执行；
+/// ② 阻塞路径（swapd 在线 + 任务上下文）：请求/探测 + 阻塞等待 + 重探；
+/// ③ 同步回退（M8-B 原样：ISR 内联 I/O，定时器 LVT 屏蔽纪律不变）。
+fn swap_in_hook(va_page: u64, error_code: u64) -> bool {
+    let root = ostd::hw::control::read_cr3() & !0xFFF;
+    // ① 未呈现故障且叶项已呈现 = 他核在故障交付前已补映射
+    if error_code & 1 == 0 && leaf_present_now(root, va_page) {
+        return true;
+    }
+    // ② 阻塞路径（无 I/O 于 ISR；无需 LVT 屏蔽）
+    if pager_online() && crate::task::on_task_context() && block_swap_in(root, va_page) {
+        return true;
+    }
+    // ③ 同步回退（M8-B 原路径；未预取页/swapd 离线语义零回归）。
     // TCG 边界隐患规避（v0.7.0 记档族，S31 实测复现）：长 ISR（ATA
     // 换页 I/O，ms 级）期间本核 LAPIC 定时器节拍必然在 IRR 积压，
-    // iretq→ring3 边缘交付即触发 Canonical SYSRET/IRETQ 家族 #GP
-    // （帧内 RFLAGS 出现 VM 位等不可能态）。I/O 窗口内屏蔽本核定时
-    // 器 LVT，积压节拍在解除屏蔽后经正常 IDT 路径交付。
+    // iretq→ring3 边缘交付即触发 Canonical SYSRET/IRETQ 家族 #GP。
+    // I/O 窗口内屏蔽本核定时器 LVT，积压节拍在解除屏蔽后经正常 IDT
+    // 路径交付。
     ostd::hw::lapic::timer_mask();
-    let handled = swap_in_hook_inner(va_page);
+    let handled = sync_swap_in(root, va_page);
     ostd::hw::lapic::timer_unmask();
     handled
 }
 
-fn swap_in_hook_inner(va_page: u64) -> bool {
-    let root = ostd::hw::control::read_cr3() & !0xFFF;
-    // M9-B 快路径：预取暂存命中 → 零 I/O 重映射（I/O 已由 swapd 在任务
-    // 上下文完成；故障方仅做页表写入）
-    if let Some((frame, flags)) = consume_prefetched(root, va_page) {
-        let Some(frames) = *FRAMES.lock() else {
-            return false;
-        };
-        let mut w = Walker {
-            mem: &mut IdentityAccess,
-            alloc_table: || frames.alloc(),
-        };
-        if w.map(root, va_page, frame, flags).is_ok() {
-            FAST_FAULTS.fetch_add(1, Ordering::AcqRel);
-            return true;
+/// 阻塞化换入（M10-B 核心）：探测/请求 → 阻塞（切出让核）→ 唤醒重探。
+/// 重探两轮预算：首轮探测或请求后阻塞；次轮仍未就绪（预取失败清理 /
+/// 他核已消费同页）→ 叶项重探（他核已映射即重执行）→ 否则 false 交
+/// 同步回退兑底。恢复点修复 CR3（内核任务派发面写引导根，故障现场根
+/// 可能为借用的用户根——内核态读回场景）。
+fn block_swap_in(root: u64, va_page: u64) -> bool {
+    for _attempt in 0..2 {
+        match peek_prefetched(root, va_page) {
+            PeekPrefetch::Ready => {
+                return consume_and_map(root, va_page);
+            }
+            PeekPrefetch::InFlight => {}
+            PeekPrefetch::Miss => {
+                if !swapped_hit(root, va_page) {
+                    return leaf_present_now(root, va_page);
+                }
+                request_prefetch(root, va_page);
+            }
         }
-        return false;
+        crate::task::block_current(crate::task::WaitWhat::Swap { root, va: va_page }, false);
+        if ostd::hw::control::read_cr3() & !0xFFF != root {
+            ostd::hw::control::write_cr3(root);
+        }
     }
-    // M8-B 同步回退路径（原样保留；未预取页语义零回归）
+    leaf_present_now(root, va_page)
+}
+
+/// 快路径消费 + 零 I/O 重映射（Ready 态；FAST_FAULTS 计数）。
+fn consume_and_map(root: u64, va_page: u64) -> bool {
+    let Some((frame, flags)) = consume_prefetched(root, va_page) else {
+        // 消费竞争（同页双核并发缺页的纳秒级交错）：对方已取走 →
+        // 叶项重探（对方映射完成后本方可重执行）
+        return leaf_present_now(root, va_page);
+    };
+    let Some(frames) = *FRAMES.lock() else {
+        return false;
+    };
+    let mut w = Walker {
+        mem: &mut IdentityAccess,
+        alloc_table: || frames.alloc(),
+    };
+    if w.map(root, va_page, frame, flags).is_ok() {
+        FAST_FAULTS.fetch_add(1, Ordering::AcqRel);
+        true
+    } else {
+        false
+    }
+}
+
+/// SWAPPED 登记查询（当前根 + 故障页）。
+fn swapped_hit(root: u64, va_page: u64) -> bool {
+    SWAPPED
+        .lock()
+        .iter()
+        .any(|e| e.root == root && e.va == va_page)
+}
+
+/// 叶项当下是否呈现（双核并发缺页闭合探针；零分配 Walker）。
+fn leaf_present_now(root: u64, va: u64) -> bool {
+    let w = Walker {
+        mem: &mut IdentityAccess,
+        alloc_table: || None,
+    };
+    w.leaf_entry(root, va).is_some_and(|e| e.is_present())
+}
+
+/// M8-B 同步回退路径（原样保留）：(当前根, 故障页) 命中 SWAPPED 表 →
+/// 分配帧 → swap_in（ISR 内同步 ATA I/O，SWAP_LOCK 串行化；双核下他核
+/// 持锁则有界自旋）→ 按淘汰时标志重映射 → 故障指令重执行。
+/// 未命中返回 false（致命语义与 M3/M4 严格一致）。
+fn sync_swap_in(root: u64, va_page: u64) -> bool {
     let entry = SWAPPED
         .lock()
         .iter()
@@ -687,6 +809,7 @@ pub fn demand_paging_check(log: &mut DualLog, frames: &FrameAllocator) -> bool {
     }
 
     let mut ok = true;
+    crate::task::set_current_kernel_cr3(root);
     ostd::hw::control::write_cr3(root);
     for (i, magic) in magics.iter().enumerate() {
         let va = DEMO_BASE_VA + (i as u64) * FRAME_SIZE;
@@ -698,6 +821,7 @@ pub fn demand_paging_check(log: &mut DualLog, frames: &FrameAllocator) -> bool {
         ok &= ostd::hw::phys::read_u64_virt(va) == *magic;
     }
     ostd::hw::control::write_cr3(boot_cr3);
+    crate::task::set_current_kernel_cr3(0);
 
     let faults = FAULTS_HANDLED.load(Ordering::Acquire);
     let _ = writeln!(log, "vmm: demand paging faults handled = {faults}");

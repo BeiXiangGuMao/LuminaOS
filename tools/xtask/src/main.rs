@@ -188,8 +188,8 @@ const KERNEL_ELF: &str =
 const KERNEL_BIN: &str =
     "/home/z/my-project/lumina-build/target/x86_64-unknown-none/release/lumina-kernel.bin";
 
-/// 自检标记总数（与内核 SELFTEST_TOTAL 同步；M8 完成态 = 30，M9 渐进 31→33）。
-const SELFTEST_EXPECTED: &str = "33/33";
+/// 自检标记总数（与内核 SELFTEST_TOTAL 同步；M9 完成态 = 33，M10 渐进 34→36）。
+const SELFTEST_EXPECTED: &str = "36/36";
 
 /// TLV 请求帧：tag 0x0007，value = b"lumina-m5"。
 const TLV_REQ: &[u8] = &[
@@ -261,12 +261,15 @@ fn smoke_inner() -> bool {
             return false;
         }
     };
-    // 看门狗：55 s 后强杀（步进睡眠，进程先退出则提前收工）
+    // 看门狗：150 s 后强杀（步进睡眠，进程先退出则提前收工）。
+    // M10 扩容依据：新增三自检（t34 双核 ring3 抢占窗口 + t35 八次盘 I/O
+    // 的阻塞化换入链 + t36 等待/收割），TCG 下全程实测 ~80 s（v0.9 =
+    // ~50 s @55s 门），余量取整 150 s。
     let pid = child.id();
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let wd = std::sync::Arc::clone(&done);
     let watchdog = std::thread::spawn(move || {
-        for _ in 0..55 {
+        for _ in 0..150 {
             if wd.load(std::sync::atomic::Ordering::Relaxed) {
                 return;
             }

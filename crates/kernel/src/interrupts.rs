@@ -71,11 +71,17 @@ pub fn init_and_enable(log: &mut DualLog) -> u32 {
     ostd::hw::pic::remap_timer_only();
     let _ = writeln!(log, "pic remapped (irq0 only), pit {actual_hz} Hz");
 
-    // 抢占钩子（M6-A）：LAPIC 定时器主体消费（向量 0x41）；PREEMPT_ENABLED
-    // = false 时不改变任何协作语义。PIT（向量 32）已退化为纯墙钟。
+    // 抢占钩子（M6-A）：LAPIC 定时器主体消费（向量 0x41）；M10-A 起本钩子
+    // 为纯抢占判定（内核上下文源；计账/老化已迁墙钟钩子）。
     ostd::interrupt::stubs::set_timer_hook(crate::task::timer_hook);
+    // 墙钟钩子（M10-A）：PIT 主体消费（向量 32）——per-CPU tick 账户 +
+    // 老化扫描唯一站点 + 接收核全上下文抢占（PIT 桩 PreemptPlan 交换路径）。
+    ostd::interrupt::stubs::set_wall_hook(crate::task::wall_hook);
     // 跨核重调度提示钩子（M6-A）：置 RESCHED 送达计数（自检 21 证据）
     ostd::interrupt::stubs::set_resched_hook(crate::task::resched_hook);
+    // RESCHED 抢占钩子（M10-A）：消费墙钟钩子的对侧核抢占请求
+    // （PREEMPT_REQ 旗 + 定向 IPI；对侧 ring3 驻留期间唯一可达抢占通道）。
+    ostd::interrupt::stubs::set_resched_preempt_hook(crate::task::resched_preempt_hook);
 
     // sti 之后 IRQ0 即开始打点
     ostd::hw::intr::enable();

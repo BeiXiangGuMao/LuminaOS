@@ -7,7 +7,9 @@
 + M7（per-CPU TSS 与用户任务跨核 / swap 换页 I/O 与驻留位图）
 + M8（swapgs 纪律定版与 per-CPU syscall 栈接线 / 页表级 swap 回收全链 /
   优先级调度面与定向门铃）+ M9（进程模型：跨任务能力授予与句柄生命周期 /
-  换页异步化：swapd 分页任务与零 I/O 快路径 / 优先级老化与饥饿防护）**：内核可在
+  换页异步化：swapd 分页任务与零 I/O 快路径 / 优先级老化与饥饿防护）
++ M10（per-CPU tick 账户：ring3 时间面冻结解除 / 任务阻塞态与调度点切换 /
+  waitpid 语义雏形）**：内核可在
 QEMU（`-smp 2`）上经 multiboot1 裸机启动至 x86_64 长模式，物理帧管理、四级页表
 （MMU 实机往返）、中断链、**抢占式调度**、**TSC 校准计时与基准**、**ring3 用户进程**、
 **SYSCALL/SYSRET 系统调用**、**TLV 宿主-客户机双向联测**、**双核 SMP
@@ -104,7 +106,7 @@ objcopy -O binary \
   /home/z/my-project/lumina-build/target/x86_64-unknown-none/release/lumina-kernel \
   /home/z/my-project/lumina-build/target/x86_64-unknown-none/release/lumina-kernel.bin
 
-# 裸机启动（串口落盘 + isa-debug-exit 自动退出，退出码 33 = 自检全过）
+# 裸机启动（串口落盘 + isa-debug-exit 自动退出，退出码 33 = 自检全过[36 项]）
 qemu-system-x86_64 -L <seabios> -L <qemu-data> \
   -kernel lumina-kernel.bin -m 256M -display none -no-reboot \
   -serial file:boot.log -device isa-debug-exit,iobase=0xf4,iosize=0x04
@@ -139,5 +141,13 @@ qemu-system-x86_64 -L <seabios> -L <qemu-data> \
   （A 位二次机会淘汰 + unmap/击落/坐标释放 + 内核态换入重映射，自检 29）；
   优先级调度面与定向门铃（四级就绪队列 + 高优先抢前 + SYS_SET_PRIO/GET_PRIO，
   自检 30）；宿主测试 86 → 87 用例。
-- **下一里程碑 M9（候选）**：进程模型（跨任务能力授予与句柄生命周期）、
-  换页异步化与多任务并发缺页、优先级老化与饥饿防护。
+- **M10（已完成，v0.10.0）**：per-CPU tick 账户（时间面迁 PIT 全上下文：
+  忙时账/量子/老化在 ring3 驻留期不再冻结；三抢占源分层——LAPIC 内核态 /
+  PIT 量子检测 / RESCHED-plan 执行，自检 34）；任务阻塞态与调度点切换
+  （State::Blocked + block_current/wake_tasks；#PF 换入阻塞化补齐单核/
+  饱和场景，自检 35；Task.kernel_cr3 借根窗口抢占安全）；waitpid 语义
+  雏形（SYS_WAIT_PID + Zombie 收割 + 槽位释放，自检 36）；宿主测试
+  88 → 89 用例；裸机自检 33 → 36 项。
+- **下一里程碑 M11（候选）**：句柄枚举与进程面补全（SYS_SPAWN 进程创建、
+  句柄查询）、IPC 阻塞接收阻塞化、调度切换握手（根除「锁释放 → 物理切换」
+  跨核拾取理论窗口）。

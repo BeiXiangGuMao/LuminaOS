@@ -254,6 +254,12 @@ extern "C" fn lumina_syscall_dispatch(frame: &mut SyscallFrame) -> u64 {
             task::count_syscall(2);
             crate::procs::current_pid()
         }
+        Syscall::WaitPid { pid } => {
+            task::count_syscall(2);
+            // M10-C 进程间等待面：阻塞等待直接子任务终结并收割退出码
+            // （无匹配子任务 → ERR_CHILD 立即返回，不阻塞）
+            crate::procs::sys_wait_pid(pid)
+        }
     }
 }
 

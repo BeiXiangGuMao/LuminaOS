@@ -3,6 +3,61 @@
 版本语义：工作区里程碑版（0.x.y，x=里程碑，y=里程碑内迭代）。
 本文档记录源码树的对外可见变更；指标与规格变更见《指标与规范手册》修订记录。
 
+## v0.10.0（2026-10-09）—— M10：per-CPU tick 账户 / 任务阻塞态 / waitpid 雏形
+
+### 新增
+- **per-CPU tick 账户：解除 ring3 时间面冻结（M10-A）**：时间面
+  （计账/老化/抢占）自 LAPIC 定时器（ring3 驻留期被 prepare_dispatch
+  屏蔽——TCG 双异常交付缺陷族规避）迁址 **PIT 墙钟钩子**（IRQ0 实测
+  ring3 交付安全）。**ISR 分层纪律**（开发期实测记档：长 ISR 进 ring3
+  边缘复现 S31 帧腐坏族）：墙钟钩子极短化（零锁原子：per-CPU 忙时账 +
+  `PERCPU_RUN_TICKS` 切片镜像 + 量子越限检测），抢占执行统一移交
+  RESCHED-plan 路径（ring3 唯一执行器，`PREEMPT_REQ` 旗 + 定向
+  RESCHED IPI）；老化主站回归 LAPIC 钩子、RESCHED 钩子按量子节拍
+  兜底（全核 ring3 饱和期不断供）。PIT 桩与 RESCHED 桩加装与 LAPIC
+  定时器桩同构的 PreemptPlan 交换路径。自检 34：双核 ring3 spinner
+  （无 syscall 纯自旋）+ 2 级 watcher——双核忙时账增长、watcher 真实
+  推进、抢占计数增长、哨兵退出 57/57。
+- **任务阻塞态与调度点切换（M10-B）**：`State::Blocked` +
+  `block_current(what, resume_if)`（WaitWhat 等待对象登记 → Blocked →
+  调度点切换；`resume_if` 区分 syscall/#PF 两族恢复点 IF 约定）+
+  `wake_tasks`（谓词批量唤醒；扫描含槽 0——主任务可阻塞/可等待）。
+  #PF 换入路径阻塞化：swapd 在线（`PAGER_ONLINE` 门控）且任务上下文
+  时，故障方「请求 → 阻塞 → 唤醒重探 → 零 I/O 消费」；离线/超限 →
+  M8-B 同步回退严格保留。`do_prefetch` 成功/失败全路径终点唤醒；
+  `Task.kernel_cr3` 借根窗口登记（派发面按任务恢复期望 CR3——修复
+  「借用户根窗口被抢占 → 恢复点落引导根 → 后继访存致命 #PF」）。
+  自检 35：swapd 与故障上下文同核（单核饱和构造，v0.9 必超时致命）——
+  四页阻塞化换入 wakes+=4、快路径 fast+=4、同步回退 0 次、帧账目不变式。
+- **waitpid 语义雏形（M10-C）**：ABI v0.4 追加 `SYS_WAIT_PID(12)`
+  （参数 0 = 任意直接子任务；成功返回 `(1<<32)|(pid<<16)|code`；错误码
+  扩至 8 = ERR_CHILD）。终结态 `State::Zombie`（留证待收割）+ EXIT
+  路径锁窗口内唤醒 Child 等待者（pid=0 语义校验 parent 归属）；
+  `wait_scan` 单 SCHED 锁窗口原子扫描+收割（退出码 + 槽位释放回收，
+  收割安全三条件：不在队列 / CURRENT 已更新 / 句柄已清算）。自检 36：
+  P 阻塞等待 C（EXIT 42）→ 拆位校验 + 二次等待 ERR_CHILD + 等自身
+  ERR_CHILD + 收割后 C 槽位释放（task_alive=false）。
+- **ABI v0.4**：追加 SYS_WAIT_PID(12)；abi 宿主测试补解析面。
+
+### 修复
+- **终结路径 idle 分支陈旧 CURRENT（v0.9 潜伏）**：切回 idle 前
+  CURRENT 未纠正为 IDLE——窗口期内抢占钩子可对已终结任务误判
+  eligible 并重入队；三抢占钩子（LAPIC/RESCHED）补 `State::Running`
+  态守卫，终结路径补 CURRENT 纠正。
+- **同页双核并发缺页闭合（v0.9 已知约束解除）**：入口「未呈现故障但
+  叶项已呈现」守卫 + 消费竞争叶项重探——纳秒级交错收敛正确路径。
+- **自-IPI 不交付（QEMU xAPIC 实测记档）**：ICR 自定向 RESCHED 不
+  交付——本核量子越限改由墙钟钩子本地执行（量子边界频次 ≈33 Hz）。
+
+### 取舍（如实记录）
+- 老化在全核 ring3 饱和期由 RESCHED 钩子按量子节拍兜底（≈33 Hz），
+  非逐 tick——饥饿防护语义降频但不断供；
+- waitpid v0 面仅直接子任务 + 逐个收割；收割有存活子任务的任务使其
+  孤儿化（授权/等待面 fail-closed），不递归收割；
+- 「锁释放 → 物理切换」间隙的跨核拾取理论窗口与 M6 以来 yield_now
+  同款（数指令宽度），M10 不扩大（block 无就绪者走 halt 重试），根治
+  = 切换握手协议留 M11。
+
 ## v0.9.0（2026-10-08）—— M9：进程模型 / 换页异步化 / 优先级老化
 
 ### 新增

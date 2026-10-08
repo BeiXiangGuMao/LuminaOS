@@ -34,9 +34,17 @@ pub const SYS_CAP_GRANT: u64 = 9;
 pub const SYS_CAP_REVOKE: u64 = 10;
 /// 读取调用者自身 pid（v0.9 追加）。
 pub const SYS_GET_PID: u64 = 11;
+/// 等待子任务终结并收割退出码（v0.10 追加，M10-C）。
+///
+/// 参数 = 目标 pid（0 = 任意直接子任务）。成功返回
+/// `(1 << 32) | (child_pid << 16) | (exit_code & 0xFFFF)`（pid 域
+/// 16 位、退出码域 16 位，与错误码域无交叠）；调用方无子任务或
+/// 目标非直接子任务 → `ERR_CHILD(8)` 立即返回（不阻塞）。目标子任务
+/// 尚未终结时调用方阻塞（M10-B 阻塞态），子任务 EXIT 时唤醒并收割。
+pub const SYS_WAIT_PID: u64 = 12;
 
-/// 系统调用 ABI 版本（追加 GRANT/REVOKE/GET_PID → 0.3）。
-pub const ABI_VERSION: (u16, u16) = (0, 3);
+/// 系统调用 ABI 版本（追加 WAIT_PID → 0.4）。
+pub const ABI_VERSION: (u16, u16) = (0, 4);
 
 /// 寄存器快照形式的系统调用请求。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +125,12 @@ pub enum Syscall {
     },
     /// 读取调用者自身 pid（任务槽位号；主任务 = 0）。
     GetPid,
+    /// 等待子任务终结并收割退出码（M10-C 雏形；成功编码见
+    /// [`SYS_WAIT_PID`] 文档）。阻塞语义由内核调度面承载。
+    WaitPid {
+        /// 目标子任务 pid（0 = 任意直接子任务）。
+        pid: u64,
+    },
 }
 
 /// 从寄存器快照解析调用意图。只做结构校验，不做内存访问（由慢路径完成）。
@@ -150,6 +164,7 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
         }),
         SYS_CAP_REVOKE => Ok(Syscall::CapRevoke { handle: a0 }),
         SYS_GET_PID => Ok(Syscall::GetPid),
+        SYS_WAIT_PID => Ok(Syscall::WaitPid { pid: a0 }),
         _ => Err(AbiError::UnknownSyscall),
     }
 }
@@ -159,7 +174,7 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
 mod tests {
     use super::{
         AbiError, Syscall, SyscallRegs, SYS_CAP_DERIVE, SYS_CAP_GRANT, SYS_CAP_REVOKE, SYS_EXIT,
-        SYS_GET_PID, SYS_GET_PRIO, SYS_IPC_SEND, SYS_LOG, SYS_SET_PRIO, SYS_YIELD,
+        SYS_GET_PID, SYS_GET_PRIO, SYS_IPC_SEND, SYS_LOG, SYS_SET_PRIO, SYS_WAIT_PID, SYS_YIELD,
     };
 
     #[test]
@@ -217,6 +232,20 @@ mod tests {
             Ok(Syscall::CapRevoke { handle: 2 })
         );
         assert_eq!(super::parse(r(SYS_GET_PID, [0; 5])), Ok(Syscall::GetPid));
+    }
+
+    #[test]
+    fn parses_waitpid_call() {
+        let r = |num: u64, args: [u64; 5]| SyscallRegs { num, args };
+        // 0 = 任意直接子任务；非 0 = 定向等待
+        assert_eq!(
+            super::parse(r(SYS_WAIT_PID, [0, 0, 0, 0, 0])),
+            Ok(Syscall::WaitPid { pid: 0 })
+        );
+        assert_eq!(
+            super::parse(r(SYS_WAIT_PID, [7, 0, 0, 0, 0])),
+            Ok(Syscall::WaitPid { pid: 7 })
+        );
     }
 
     #[test]

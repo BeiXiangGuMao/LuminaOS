@@ -22,12 +22,38 @@
 //!   SYS_SET_PRIO/SYS_GET_PRIO（abi v0 追加 7/8，自调节，无跨任务权能）。
 //!   无老化/饥饿防护（如实记档，随进程模型演进）。
 //! - **优先级老化防护（M9-C）**：`base_prio`（用户设定级）与 `prio`
-//!   （有效级）分离——就绪等待每 tick 计账（`waited`），跨 [`AGE_TICKS`
+//!   （有效级）分离——就绪等待每 tick 计账（`waited`），跨 [`AGE_TICKS`]
 //!   阈值且级 > 0 时逐级提升（3→2→1→0）并重置计账；**回队时衰减回
 //!   base**（每次重新入队都从用户设定级起步，避免提升永久化）。饥饿消除论证：
 //!   任意就绪任务至多 `3×AGE_TICKS` tick 后升至 0 级，与同级任务 FIFO
 //!   轮转竞争，量子到期路径必可达——每核饱和的高优先负载不再永久
 //!   压制低优先任务（M8-C 已知限制解除）。
+//! - **per-CPU tick 账户与全上下文抢占（M10-A）**：时间面（计账/老化/
+//!   抢占）自 LAPIC 定时器迁址 **PIT 墙钟钩子**（[`wall_hook`]）——
+//!   LAPIC 定时器在 ring3 驻留期间被 prepare_dispatch 屏蔽（TCG 双异常
+//!   交付缺陷族规避，S31 记档），旧形态下 ring3 驻留 = 计账/老化/抢占
+//!   全冻结（双核皆 ring3 时全系统时间面停摆）；PIT 实测交付不触发
+//!   缺陷族 → PIT 桩加装 PreemptPlan 交换路径（接收核抢占）+ 对侧核
+//!   经 PREEMPT_REQ 旗 + RESCHED-plan 送达（交付实测安全）——三抢占源
+//!   （LAPIC 内核态/PIT 全上下文/RESCHED 请求驱动）全就位，ring3 时间
+//!   面冻结窗口消除。**ISR 分层**：墙钟钩子极短化（零锁原子计账 +
+//!   量子检测 → PREEMPT_REQ + 定向 RESCHED），抢占执行统一移交
+//!   RESCHED 抢占钩子（ring3 唯一执行器，交付实测安全）；老化主站
+//!   = LAPIC 钩子（内核上下文），RESCHED 钩子兜底（全核 ring3 饱和
+//!   场景按 RESCHED 节拍推进）。
+//!   （M10 开发期实测：墙钟钩子初版含 SCHED 锁 + 老化扫描——长 ISR
+//!   交付 ring3 边缘复现 S31 缺陷族 #GP(0x28) VM 位入旗， isr_timer
+//!   内 iretq 处取证——故有极短化分层纪律。）
+//! - **任务阻塞态与调度点切换（M10-B）**：`State::Blocked` +
+//!   [`block_current`]（登记等待对象 → Blocked → 切换下一任务）+
+//!   [`wake_tasks`]（谓词匹配批量唤醒入队）——#PF 换入路径阻塞化
+//!   （vmm：swapd 在线时故障方阻塞等待异步换入完成，同步回退严格
+//!   保留），单核/全核饱和场景的换页时延补齐（M9-B 已知约束解除）。
+//!   终结态改为 `State::Zombie`（留证待收割；M10-C waitpid 消费）。
+//! - **waitpid 语义雏形（M10-C）**：SYS_WAIT_PID(12)——父任务阻塞等待
+//!   直接子任务终结并收割退出码（[`wait_scan`] 单锁窗口原子扫描+收割，
+//!   槽位释放回收）；EXIT 路径唤醒 Child 等待者。错误码扩至
+//!   8 = ERR_CHILD。
 //! - **GS/swapgs 纪律定版（M8-A）**：内核**不使用** swapgs/GS 承载 per-CPU
 //!   状态（M7 影子方案两处三重故障的根因是「CPU 全局配对态 vs 任务窗口
 //!   生命周期」的结构性错配，见 syscall.rs 模块文档）；per-CPU 寻址 =
@@ -40,7 +66,7 @@
 //! per-CPU 块的静态地址萃取；裸指针仅用于向桩传递稳定上下文地址。
 
 use core::mem::size_of;
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
@@ -63,7 +89,9 @@ pub const PRIO_NORMAL: u8 = 1;
 /// 太大拖慢饥饿防护收敛；5 拍下 M8 自检窗口（< 5 tick）不受影响。
 pub const AGE_TICKS: u32 = 5;
 /// 定容任务槽位数（地址永久稳定 → 上下文指针跨锁释放有效）。
-const MAX_TASKS: usize = 32;
+/// M10 重核算：阻塞面 + 僵尸留证（waitpid 收割前占槽）抬升并发上界，
+/// 32 → 48（静态占用 ≈ 10 KiB；Task 栈为堆分配，槽位表仅承载元数据）。
+const MAX_TASKS: usize = 48;
 /// 每任务句柄表容量（M9-A；句柄 0 = NULL 保留，1..HANDLE_MAX 可用）。
 pub const HANDLE_MAX: usize = 8;
 /// CURRENT 槽的 idle 哨兵（本核无任务在跑）。
@@ -85,8 +113,27 @@ enum State {
     Ready,
     /// 正在运行（每核至多一个）。
     Running,
-    /// 入口已返回，永不复用。
-    Finished,
+    /// 阻塞等待中（不在就绪队列；仅 [`wake_tasks`]/终结唤醒面可达）。
+    Blocked,
+    /// 已终结留证（退出码已登记，等待 waitpid 收割释放槽位）。
+    Zombie,
+}
+
+/// 阻塞等待对象（M10-B/C）：登记于 [`Task::wait`]，唤醒面按值匹配。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitWhat {
+    /// 换页：等待 (root, va) 的异步换入完成（swapd 唤醒，M10-B）。
+    Swap {
+        /// 页表根物理地址。
+        root: u64,
+        /// 页对齐虚拟地址。
+        va: u64,
+    },
+    /// 进程间等待：等待直接子任务终结（pid = 0 任意子任务，M10-C）。
+    Child {
+        /// 目标子任务 pid（0 = 任意）。
+        pid: usize,
+    },
 }
 
 /// 任务入口函数指针。
@@ -111,8 +158,6 @@ struct Task {
     ctx: TaskContext,
     /// 状态。
     state: State,
-    /// 当前时间片已用节拍数。
-    used_ticks: u64,
     /// 入口（trampoline 经 CURRENT 读取）。
     entry: Entry,
     /// 钉扎的 CPU 槽位（None = 自由跨核；M7-A 起用户任务默认自由）。
@@ -134,6 +179,15 @@ struct Task {
     base_prio: u8,
     /// 就绪队列等待计账（tick 数；M9-C 老化阈值判定）。
     waited: u32,
+    /// 阻塞等待对象（M10-B：Blocked 态非空；唤醒时清除）。
+    wait: Option<WaitWhat>,
+    /// 退出码（M10-C：Zombie 态有效；u64::MAX = 入口返回路径的无码终结）。
+    exit_code: u64,
+    /// 内核任务期望 CR3（M10-B：0 = 引导根；借用户根执行读回等窗口时
+    /// 由 [`set_current_kernel_cr3`] 登记——派发面按任务恢复期望根，
+    /// 修复「借根窗口被 PIT 抢占 → 恢复点落引导根 → 后继访存致命
+    /// #PF」的根因（M9 靠 timer_mask 屏蔽遮挡，M10 的 PIT 不可屏蔽）。
+    kernel_cr3: u64,
 }
 
 impl Task {
@@ -149,7 +203,6 @@ impl Task {
             kind: Kind::Kernel,
             ctx: TaskContext::boot_new(top, trampoline),
             state: State::Ready,
-            used_ticks: 0,
             entry,
             pinned: None,
             cap_slot: 0,
@@ -158,6 +211,9 @@ impl Task {
             prio: PRIO_NORMAL,
             base_prio: PRIO_NORMAL,
             waited: 0,
+            wait: None,
+            exit_code: u64::MAX,
+            kernel_cr3: 0,
         }
     }
 
@@ -205,7 +261,6 @@ impl Task {
             kind: Kind::Kernel,
             ctx: TaskContext::stopped(),
             state: State::Running,
-            used_ticks: 0,
             entry: main_entry_stub,
             pinned: Some(0),
             cap_slot: 0,
@@ -214,6 +269,9 @@ impl Task {
             prio: PRIO_NORMAL,
             base_prio: PRIO_NORMAL,
             waited: 0,
+            wait: None,
+            exit_code: u64::MAX,
+            kernel_cr3: 0,
         }
     }
 }
@@ -402,6 +460,41 @@ static AGING_BOOSTS: AtomicU64 = AtomicU64::new(0);
 /// 老化提升计数快照（自检 33 断言面）。
 pub fn aging_boosts() -> u64 {
     AGING_BOOSTS.load(Ordering::Acquire)
+}
+
+/// per-CPU 忙时账（M10-A 自检 34 断言面）：每核累计忙 tick（CURRENT ≠
+/// idle 即计，含 ring3 驻留期间——PIT 全上下文交付，解除旧形态的时间面
+/// 冻结）。无门控：账户面无副作用，抢占/老化判定另受 PREEMPT_ENABLED
+/// 门控。
+static PERCPU_TICKS: [AtomicU64; MAX_CPUS] = [AtomicU64::new(0), AtomicU64::new(0)];
+
+/// per-CPU 当前切片长度（M10-A）：本核当前任务本量子已消耗的 PIT tick 数
+/// ——原子镜像（墙钟 ISR 锁自由递增；S31 缺陷族规避：PIT 进 ring3 的
+/// ISR 必须极短，不得取 SCHED 锁/触碰任务表）。派发点（execute_switch/
+/// yield/block/finish/idle_pick，均在 SCHED 锁窗口内）store(0) 归零。
+/// 量子判定面：墙钟钩子（锁自由检测 → PREEMPT_REQ + RESCHED）与
+/// RESCHED 抢占钩子（锁内最终判定 → 抢占交换）共享。
+static PERCPU_RUN_TICKS: [AtomicU32; MAX_CPUS] = [AtomicU32::new(0), AtomicU32::new(0)];
+
+/// per-CPU 忙时账快照（自检 34 断言面）。
+pub fn percpu_ticks() -> (u64, u64) {
+    (
+        PERCPU_TICKS[0].load(Ordering::Acquire),
+        PERCPU_TICKS[1].load(Ordering::Acquire),
+    )
+}
+
+/// 对侧核抢占请求旗（M10-A）：墙钟钩子判定对侧核当前任务需切换时置位
+/// 并发 RESCHED IPI；RESCHED 抢占钩子消费（test-and-clear）。
+static PREEMPT_REQ: [AtomicBool; MAX_CPUS] = [AtomicBool::new(false), AtomicBool::new(false)];
+
+/// 阻塞唤醒计数（M10-B 自检 35/36 断言面）：累计唤醒次数（含换页与
+/// 进程间等待两族）。
+static BLOCK_WAKES: AtomicU64 = AtomicU64::new(0);
+
+/// 阻塞唤醒计数快照。
+pub fn block_wakes() -> u64 {
+    BLOCK_WAKES.load(Ordering::Acquire)
 }
 
 /// 老化扫描（M9-C）：对全部就绪队列逐级做等待计账，跨 [`AGE_TICKS`]
@@ -661,9 +754,17 @@ fn prepare_dispatch(t: &Task, boot_cr3: u64, cpu: usize) {
         Kind::Kernel => {
             // 内核任务派发即恢复节拍（与 User 分支构成屏蔽不变式咽喉点）
             ostd::hw::lapic::timer_unmask();
-            if ostd::hw::control::read_cr3() & !0xFFF != boot_cr3 {
-                // 引导根由启动汇编构建并验证（长模式即运行其上）。
-                ostd::hw::control::write_cr3(boot_cr3);
+            // M10-B：按任务期望根恢复（kernel_cr3 ≠ 0 = 借用户根窗口，
+            // 如 swap 读回；被抢占后经派发面恢复现场根，后继访存可达）
+            let want = if t.kernel_cr3 == 0 {
+                boot_cr3
+            } else {
+                t.kernel_cr3
+            };
+            if ostd::hw::control::read_cr3() & !0xFFF != want {
+                // 引导根由启动汇编构建并验证（长模式即运行其上）；借根
+                // 由登记窗口保证其页表存活（任务存续期）。
+                ostd::hw::control::write_cr3(want);
             }
         }
     }
@@ -713,13 +814,12 @@ pub fn yield_now() {
         if let Some(t) = sc.tasks[cur].as_mut() {
             t.prio = cur_prio;
             t.state = State::Ready;
-            t.used_ticks = 0;
             t.waited = 0;
         }
         if let Some(t) = sc.tasks[target].as_mut() {
             t.state = State::Running;
-            t.used_ticks = 0;
         }
+        PERCPU_RUN_TICKS[cpu].store(0, Ordering::Relaxed);
         CURRENT[cpu].store(target, Ordering::Relaxed);
         sc.cooperative_switches += 1;
         let boot = sc.boot_cr3;
@@ -744,8 +844,8 @@ fn idle_pick(cpu: usize) -> Option<SwitchPair> {
     remove_value(&mut sc.ready, target);
     if let Some(t) = sc.tasks[target].as_mut() {
         t.state = State::Running;
-        t.used_ticks = 0;
     }
+    PERCPU_RUN_TICKS[cpu].store(0, Ordering::Relaxed);
     CURRENT[cpu].store(target, Ordering::Relaxed);
     let boot = sc.boot_cr3;
     if let Some(t) = sc.tasks[target].as_ref() {
@@ -791,14 +891,15 @@ pub fn run_idle(cpu: usize) -> ! {
     }
 }
 
-/// 除主任务外是否全部终结（主循环的等待谓词）。
+/// 除主任务外是否全部终结（主循环的等待谓词；Blocked = 存活继续等待，
+/// Zombie = 终结留证——waitpid 收割与否不影响本谓词，M10-C）。
 pub fn all_workers_finished() -> bool {
     let _w = IntWindow::new();
     let s = SCHED.lock();
     s.tasks
         .iter()
         .enumerate()
-        .all(|(id, slot)| id == 0 || slot.as_ref().is_none_or(|t| t.state == State::Finished))
+        .all(|(id, slot)| id == 0 || slot.as_ref().is_none_or(|t| t.state == State::Zombie))
 }
 
 /// 用户任务退出码（EXIT 系统调用写入；自检 14 断言）。
@@ -909,6 +1010,28 @@ pub fn current_task_id() -> usize {
     CURRENT[cpu].load(Ordering::Relaxed)
 }
 
+/// 本核是否运行在任务上下文（非 idle；M10-B 阻塞面调用前置检查——
+/// idle 无 Task 上下文与内核栈续点，不可阻塞）。
+pub fn on_task_context() -> bool {
+    current_task_id() != IDLE
+}
+
+/// 登记当前内核任务的期望 CR3（M10-B：借用户根窗口的抢占安全面）。
+/// `cr3 = 0` 回归引导根。窗口模式：进入借根窗口前登记目标根，退出时
+/// 登记 0；窗口内的抢占/阻塞经派发面按任务恢复现场根。
+pub fn set_current_kernel_cr3(cr3: u64) {
+    let _w = IntWindow::new();
+    let cpu = my_cpu();
+    let cur = CURRENT[cpu].load(Ordering::Relaxed);
+    if cur == IDLE {
+        return;
+    }
+    let mut s = SCHED.lock();
+    if let Some(t) = s.tasks.get_mut(cur).and_then(|slot| slot.as_mut()) {
+        t.kernel_cr3 = cr3 & !0xFFF;
+    }
+}
+
 /// 目标任务的父任务槽位（M9-A 授权门禁；不存在或无父 = None）。
 pub fn task_parent(id: usize) -> Option<usize> {
     let _w = IntWindow::new();
@@ -1001,19 +1124,24 @@ pub fn log_cpu_mask() -> usize {
     LOG_CPU_MASK.load(Ordering::Acquire)
 }
 
-/// 终结当前任务（系统调用 EXIT 路径）：记录退出码 → 标记终结 →
-/// 切换到下一就绪任务或 idle（永不返回）；两者皆无则停机等待唤醒。
+/// 终结当前任务（系统调用 EXIT 路径）：记录退出码 → 僵尸留证 →
+/// 唤醒等待本任务的父任务 → 切换到下一就绪任务或 idle（永不返回）；
+/// 两者皆无则停机等待唤醒。
 pub fn exit_current(code: u64) -> ! {
     USER_EXIT_CODE.store(code, Ordering::Relaxed);
     // 每核槽位（M8-A 自检 28）：终结发生在终结者所在核，钉扎派发下
     // 槽位即任务身份；自由派发时取「最后终结者所在核」语义（取证面）。
     let cpu = my_cpu();
     USER_EXIT_CODES[cpu].store(code, Ordering::Release);
-    finish_and_switch_away()
+    finish_and_switch_away(code)
 }
 
-/// 终结切出（任务入口返回路径与 EXIT 共用）：不回队，直接切换。
-fn finish_and_switch_away() -> ! {
+/// 终结切出（任务入口返回路径与 EXIT 共用；code = u64::MAX 表示入口
+/// 返回的无码终结）：不回队，直接切换。M10-C：终结态 = Zombie（留证
+/// 待 waitpid 收割；遗留 v0.9 Finished 语义等价——无人收割的僵尸同样
+/// 永不复用），并在此锁窗口内唤醒 Child 等待者（匹配谓词：定向 pid
+/// 或任意子任务且退出任务确为其直接子任务）。
+fn finish_and_switch_away(code: u64) -> ! {
     let mut w = IntWindow::new();
     loop {
         let cpu = my_cpu();
@@ -1024,20 +1152,50 @@ fn finish_and_switch_away() -> ! {
             if cur == IDLE {
                 None
             } else {
-                // M9-A 句柄生命周期收口：终结前全表清算（全局槽逐个撤销
-                // 归还能力表）。锁序契约：SCHED → CAPS 单向嵌套（反向
-                // 嵌套在全内核不存在，见 proc.rs 模块文档）。
+                // M9-A 句柄生命周期收口 + M10-C 僵尸留证：终结前全表清算
+                // （全局槽逐个撤销归还能力表），退出码/状态登记。
+                let parent = sc.tasks[cur].as_ref().and_then(|t| t.parent);
                 if let Some(t) = sc.tasks[cur].as_mut() {
                     t.revoke_all_handles();
-                    t.state = State::Finished;
+                    t.exit_code = code;
+                    t.state = State::Zombie;
+                }
+                // M10-C：唤醒等待本任务的 Child 等待者（同锁窗口原子完成；
+                // pid=0 语义 = 任意直接子任务 → 必须校验 parent 归属；
+                // 扫描含槽位 0——主任务可作等待者）
+                let mut woken = 0usize;
+                for id in 0..MAX_TASKS {
+                    let Some(waiter) = sc.tasks[id].as_mut() else {
+                        continue;
+                    };
+                    if waiter.state != State::Blocked {
+                        continue;
+                    }
+                    let matched = match waiter.wait {
+                        Some(WaitWhat::Child { pid }) => {
+                            pid == cur || (pid == 0 && parent == Some(id))
+                        }
+                        _ => false,
+                    };
+                    if matched {
+                        waiter.wait = None;
+                        waiter.state = State::Ready;
+                        waiter.waited = 0;
+                        let p = waiter.base_prio;
+                        enqueue(&mut sc.ready, id, p);
+                        woken += 1;
+                    }
+                }
+                if woken != 0 {
+                    BLOCK_WAKES.fetch_add(woken as u64, Ordering::AcqRel);
                 }
                 match pick_best(&mut sc.ready, &sc.tasks, cpu, IDLE, None) {
                     Some(id) => {
                         remove_value(&mut sc.ready, id);
                         if let Some(t) = sc.tasks[id].as_mut() {
                             t.state = State::Running;
-                            t.used_ticks = 0;
                         }
+                        PERCPU_RUN_TICKS[cpu].store(0, Ordering::Relaxed);
                         CURRENT[cpu].store(id, Ordering::Relaxed);
                         let boot = sc.boot_cr3;
                         if let Some(t) = sc.tasks[id].as_ref() {
@@ -1054,24 +1212,27 @@ fn finish_and_switch_away() -> ! {
             None => {
                 // 无就绪者：本核 idle 可用则切回 idle（终结路径一次性切换，
                 // 此后本任务永不被拾取）；否则短暂开中断等节拍后重试。
+                // M10 缺陷修复：切回 idle 前 CURRENT 纠正为 IDLE——v0.9
+                // 遗留陈旧指针（窗口期内抢占钩子可对已终结任务误判）。
                 let idle_ok = IDLE_VALID[cpu].load(Ordering::Acquire);
                 if idle_ok {
                     // SAFETY: 前置条件 —— IDLE_VALID[cpu] 已置位（idle 循环
                     //          已进入，idle 栈存活）；cur 槽位占用且已终结。
                     // 不变式 —— idle 上下文本核独占；切换后本代码不再续跑。
-                    // 并发 —— 本核串行；任务槽已从队列剔除（Finished 不可拾取）。
+                    // 并发 —— 本核串行；任务槽已从队列剔除（Zombie 不可拾取）。
                     // 违反后果 —— 指针失效即写穿任意内存（槽位纪律封死）。
                     unsafe {
                         let idle = &mut *core::ptr::addr_of_mut!(IDLE_CTX[cpu]);
                         let mut s = SCHED.lock();
                         let cur = CURRENT[cpu].load(Ordering::Relaxed);
+                        CURRENT[cpu].store(IDLE, Ordering::Relaxed);
                         if let Some(t) = s.tasks[cur].as_mut() {
                             let pair = SwitchPair::from(&mut t.ctx, idle);
                             drop(s);
                             switch_deferred(pair);
                         }
                     }
-                    // 切回 idle 后本行不可达（Finished 永不恢复）
+                    // 切回 idle 后本行不可达（Zombie 永不恢复）
                     loop {
                         ostd::hw::intr::halt();
                     }
@@ -1096,7 +1257,7 @@ extern "C" fn trampoline() -> ! {
         s.tasks[cur].as_ref().map_or(main_entry_stub, |t| t.entry)
     };
     entry();
-    finish_and_switch_away()
+    finish_and_switch_away(u64::MAX) // 入口返回 = 无码终结（防御路径）
 }
 
 /// 用户任务跳板：读桥函数 → 进 ring3（永不返回；终结经 EXIT 系统调用）。
@@ -1113,7 +1274,7 @@ extern "C" fn trampoline_user() -> ! {
     let bridge = USER_ENTRY_BRIDGE.load(Ordering::Acquire);
     debug_assert_ne!(bridge, 0, "user entry bridge must be registered");
     if bridge == 0 {
-        finish_and_switch_away();
+        finish_and_switch_away(u64::MAX);
     }
     // SAFETY: 前置条件 —— 地址来自 set_user_entry_bridge 存入的
     //          extern "C" fn() -> !；注册先于任何用户任务派发。
@@ -1136,22 +1297,62 @@ pub fn preempt_stats() -> (u64, u64) {
     (s.preempt_switches, s.cooperative_switches)
 }
 
-/// LAPIC 定时器钩子（注册进 ostd::interrupt::stubs；本核 IRQ 0x41 窗口内调用）。
-///
-/// 返回 true = 已填写 plan（桩随即从栈上计划完成抢占交换）。
-/// 放行条件：抢占未使能 / 本核 idle / 队列无可运行者 / 时间片未满。
-pub fn timer_hook(plan: &mut PreemptPlan) -> bool {
-    if !PREEMPT_ENABLED.load(Ordering::Acquire) {
-        return false;
+/// 抢占切换执行器（M10-A 三抢占源共享；ISR 窗口内调用，调用方持锁）。
+/// 执行被抢占者回队（M9-C 衰减回 base）→ 目标记 Running → CURRENT 更新
+/// → prepare_dispatch → plan 填写。返回 true = 已填写 plan（桩执行交换）。
+fn execute_switch(
+    sc: &mut Scheduler,
+    cpu: usize,
+    cur: usize,
+    next: usize,
+    plan: &mut PreemptPlan,
+) -> bool {
+    remove_value(&mut sc.ready, next);
+    // 被抢占者按基准级回队（遗漏即任务从队列蒸发——开发期实测挂死；
+    // M9-C：衰减回 base_prio 并清等待计账，老化提升不跨运行期保留）
+    let cur_prio = sc.tasks[cur].as_ref().map_or(PRIO_NORMAL, |t| t.base_prio);
+    enqueue(&mut sc.ready, cur, cur_prio);
+    if let Some(t) = sc.tasks[cur].as_mut() {
+        t.prio = cur_prio;
+        t.state = State::Ready;
+        t.waited = 0;
     }
-    // 本钩子在 LAPIC 定时器 IRQ 窗口内执行（IF=0）；切换窗口已被 cli
-    // 物理遮蔽，无需守卫检查。锁临界区对持锁者不可见（其已被本核中断打断）。
-    let cpu = my_cpu();
-    let mut s = SCHED.lock();
-    let sc = &mut *s;
-    // M9-C：老化扫描先行（每 tick 对全部就绪任务计账/提升，与抢占判定解耦：
-    // idle 核与不可派发窗口同样推进——等待时间与谁在运行无关）
-    aging_pass(&mut sc.ready, &mut sc.tasks);
+    if let Some(t) = sc.tasks[next].as_mut() {
+        t.state = State::Running;
+    }
+    PERCPU_RUN_TICKS[cpu].store(0, Ordering::Relaxed);
+    CURRENT[cpu].store(next, Ordering::Relaxed);
+    sc.preempt_switches += 1;
+    let boot = sc.boot_cr3;
+    if let Some(t) = sc.tasks[next].as_ref() {
+        prepare_dispatch(t, boot, cpu);
+    }
+    // 稳定指针萃取（定容槽位表 + 中断窗口内无并发分配）
+    let (lo, hi) = if cur < next { (cur, next) } else { (next, cur) };
+    let (l, r) = sc.tasks.split_at_mut(hi);
+    let (old_slot, new_slot) = if cur < next {
+        (&mut l[lo], &mut r[0])
+    } else {
+        (&mut r[0], &mut l[lo])
+    };
+    match (old_slot.as_mut(), new_slot.as_mut()) {
+        (Some(o), Some(n)) => {
+            plan.old = &mut o.ctx;
+            plan.new = &mut n.ctx;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// 抢占判定（M10-A 三抢占源共享；ISR 窗口内调用，调用方持锁）。
+/// 规则（M8-C 定版）：① 高优先就绪者抢前（严格高于当前，无视量子）；
+/// ② 量子到期同级（及以下）轮转。当前任务必须处于 Running 态——
+/// 阻塞/终结切换窗口期的陈旧 CURRENT 指针防御（M10 缺陷修复：v0.9
+/// 终结路径 idle 分支不更新 CURRENT，窗口期内 LAPIC 钩子可对已终结
+/// 任务误判 eligible 并重入队）。
+/// 返回 true = 已填写 plan（桩执行抢占交换）。
+fn try_preempt_switch(sc: &mut Scheduler, cpu: usize, plan: &mut PreemptPlan) -> bool {
     let cur = CURRENT[cpu].load(Ordering::Relaxed);
     if cur == IDLE || !eligible(&sc.tasks, cur, cpu) {
         return false;
@@ -1159,92 +1360,311 @@ pub fn timer_hook(plan: &mut PreemptPlan) -> bool {
     let Some(t) = sc.tasks[cur].as_mut() else {
         return false;
     };
-    // M8-C 抢占规则：① 高优先就绪者抢前（严格高于当前，无视量子）；
-    // ② 量子到期同级（及以下）轮转。
+    if t.state != State::Running {
+        return false;
+    }
     let cur_prio = t.prio;
-    if t.used_ticks < QUANTUM_TICKS {
-        t.used_ticks += 1;
-        // 抢前判定：自 0 级扫至 cur_prio-1（严格更高）
-        let Some(next) = pick_best(&mut sc.ready, &sc.tasks, cpu, cur, Some(cur_prio)) else {
-            return false;
-        };
-        remove_value(&mut sc.ready, next);
-        // 被抢占者按基准级回队（遗漏即任务从队列蒸发——开发期实测挂死；
-        // M9-C：衰减回 base_prio 并清等待计账，老化提升不跨运行期保留）
-        let cur_prio = sc.tasks[cur].as_ref().map_or(PRIO_NORMAL, |t| t.base_prio);
-        enqueue(&mut sc.ready, cur, cur_prio);
-        if let Some(t) = sc.tasks[cur].as_mut() {
-            t.prio = cur_prio;
-            t.state = State::Ready;
-            t.used_ticks = 0;
-            t.waited = 0;
-        }
-        if let Some(t) = sc.tasks[next].as_mut() {
-            t.state = State::Running;
-            t.used_ticks = 0;
-        }
-        CURRENT[cpu].store(next, Ordering::Relaxed);
-        sc.preempt_switches += 1;
-        let boot = sc.boot_cr3;
-        if let Some(t) = sc.tasks[next].as_ref() {
-            prepare_dispatch(t, boot, cpu);
-        }
-        let (lo, hi) = if cur < next { (cur, next) } else { (next, cur) };
-        let (l, r) = sc.tasks.split_at_mut(hi);
-        let (old_slot, new_slot) = if cur < next {
-            (&mut l[lo], &mut r[0])
-        } else {
-            (&mut r[0], &mut l[lo])
-        };
-        match (old_slot.as_mut(), new_slot.as_mut()) {
-            (Some(o), Some(n)) => {
-                plan.old = &mut o.ctx;
-                plan.new = &mut n.ctx;
-                true
-            }
-            _ => false,
-        }
-    } else {
-        t.used_ticks = 0;
-        // 时间片到：轮转拾取目标（不移除；找不到则放行——保持队列完整）
-        let Some(next) = pick_best(&mut sc.ready, &sc.tasks, cpu, cur, None) else {
-            return false;
-        };
-        remove_value(&mut sc.ready, next);
-        // 量子到期路径同样衰减回 base（M9-C 老化语义一致性）
-        let cur_prio = sc.tasks[cur].as_ref().map_or(PRIO_NORMAL, |t| t.base_prio);
-        enqueue(&mut sc.ready, cur, cur_prio);
-        if let Some(t) = sc.tasks[cur].as_mut() {
-            t.prio = cur_prio;
-            t.state = State::Ready;
-            t.used_ticks = 0;
-            t.waited = 0;
-        }
-        if let Some(t) = sc.tasks[next].as_mut() {
-            t.state = State::Running;
-            t.used_ticks = 0;
-        }
-        CURRENT[cpu].store(next, Ordering::Relaxed);
-        sc.preempt_switches += 1;
-        let boot = sc.boot_cr3;
-        if let Some(t) = sc.tasks[next].as_ref() {
-            prepare_dispatch(t, boot, cpu);
-        }
-        // 稳定指针萃取（定容槽位表 + 中断窗口内无并发分配）
-        let (lo, hi) = if cur < next { (cur, next) } else { (next, cur) };
-        let (l, r) = sc.tasks.split_at_mut(hi);
-        let (old_slot, new_slot) = if cur < next {
-            (&mut l[lo], &mut r[0])
-        } else {
-            (&mut r[0], &mut l[lo])
-        };
-        match (old_slot.as_mut(), new_slot.as_mut()) {
-            (Some(o), Some(n)) => {
-                plan.old = &mut o.ctx;
-                plan.new = &mut n.ctx;
-                true
-            }
-            _ => false,
+    let quantum_hit = PERCPU_RUN_TICKS[cpu].load(Ordering::Relaxed) >= QUANTUM_TICKS as u32;
+    // ① 高优先抢前（自 0 级扫至 cur_prio-1，严格更高）
+    if let Some(next) = pick_best(&mut sc.ready, &sc.tasks, cpu, cur, Some(cur_prio)) {
+        return execute_switch(sc, cpu, cur, next, plan);
+    }
+    // ② 量子到期轮转（不移除；找不到则放行——保持队列完整，计账不清
+    // 以便下拍重试，M9 原语义的「先清后败」窗口在此收敛）
+    if quantum_hit {
+        if let Some(next) = pick_best(&mut sc.ready, &sc.tasks, cpu, cur, None) {
+            return execute_switch(sc, cpu, cur, next, plan);
         }
     }
+    false
+}
+
+/// LAPIC 定时器钩子（注册进 ostd::interrupt::stubs；本核 IRQ 0x41 窗口内调用）。
+///
+/// 返回 true = 已填写 plan（桩随即从栈上计划完成抢占交换）。
+/// 放行条件：抢占未使能 / 本核 idle / 队列无可运行者 / 时间片未满。
+/// M10-A：量子判定数据源改为 per-CPU 切片镜像（PERCPU_RUN_TICKS，
+/// 墙钟 ISR 锁自由计账，ring3 驻留期不再冻结）；本钩子保持 M9 形态
+/// （老化 + 本核抢占判定，内核上下文抢占源；ring3 驻留期间本核 LVT
+/// 被屏蔽，该场景的抢占经 RESCHED-plan 送达）。
+pub fn timer_hook(plan: &mut PreemptPlan) -> bool {
+    if !PREEMPT_ENABLED.load(Ordering::Acquire) {
+        return false;
+    }
+    // 本钩子在 LAPIC 定时器 IRQ 窗口内执行（IF=0）；切换窗口已被 cli
+    // 物理遮蔽，无需守卫检查。锁临界区对持锁者不可见（其已被本核中断打断）。
+    // M10-A：老化扫描回归本钩子（ring3 驻留期间本核 LVT 被屏蔽 = 老化
+    // 随之暂停；该窗口的饥饿防护由 RESCHED 抢占钩子按 RESCHED 节拍兜底
+    // ——量子轮转语义下双核 ring3 饱和仍无永久饥饿，见 t34/t31）。
+    let cpu = my_cpu();
+    let mut s = SCHED.lock();
+    let sc = &mut *s;
+    aging_pass(&mut sc.ready, &mut sc.tasks);
+    try_preempt_switch(sc, cpu, plan)
+}
+
+/// RESCHED 抢占判定体（wall_hook 本核路径与 RESCHED 钩子共享）：锁内
+/// 老化扫描（全核 ring3 饱和期的饥饿防护供血）+ 本核抢占判定与 plan
+/// 填写。调用方保证处于中断窗口（IF=0）。
+fn resched_preempt_body(cpu: usize, plan: &mut PreemptPlan) -> bool {
+    let mut s = SCHED.lock();
+    let sc = &mut *s;
+    aging_pass(&mut sc.ready, &mut sc.tasks);
+    try_preempt_switch(sc, cpu, plan)
+}
+
+/// 墙钟钩子（M10-A 核心；注册进 ostd::interrupt::stubs::set_wall_hook，
+/// PIT IRQ0 窗口内调用——实测 ring3 交付安全，全上下文时间源）。
+///
+/// **极短 ISR 纪律（S31 缺陷族规避，M10 开发期实测记档）**：PIT 在
+/// ring3 驻留期间不再被屏蔽（正是 M10-A 的时间源本意），而「长 ISR +
+/// iretq 进 ring3 边缘」= TCG 帧腐坏触发面（VM 位入旗 #GP(0x28)，S31
+/// 同族；初版墙钟钩子每 tick 取 SCHED 锁 + 老化扫描即复现）。故本钩子
+/// 快路径**零锁、零任务表触碰**，全部原子操作：
+/// 1. per-CPU 忙时账（CURRENT ≠ idle 即计，含 ring3 驻留——冻结面解除
+///    的直接证据）；
+/// 2. per-CPU 切片镜像 +1（量子判定数据源）；
+/// 3. 量子越限检测（锁自由，`QUANTUM_TICKS` 边界才进入慢路径）：
+///    - **本核**：直接以 [`resched_preempt_body`] 本地执行（量子边界
+///      频次 ≈ 33 Hz，与 RESCHED 钩子在对侧的实测安全剖面一致；不经
+///      自-IPI——QEMU xAPIC 自定向 ICR 实测不交付，M10 开发期记档）；
+///    - **对侧核**：PREEMPT_REQ 旗 test-and-set + 定向 RESCHED IPI
+///      （对侧 RESCHED 钩子消费执行，交付实测安全）。
+///
+/// 本核量子路径返回 try_preempt_switch 结果（可能填写 plan 桩执行交换）。
+pub fn wall_hook(plan: &mut PreemptPlan) -> bool {
+    for (c, slot) in CURRENT.iter().enumerate() {
+        if slot.load(Ordering::Relaxed) != IDLE {
+            PERCPU_TICKS[c].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    for slot in PERCPU_RUN_TICKS.iter() {
+        slot.fetch_add(1, Ordering::Relaxed);
+    }
+    if !PREEMPT_ENABLED.load(Ordering::Acquire) {
+        return false;
+    }
+    let cpu = my_cpu();
+    let mut local_done = false;
+    for c in 0..MAX_CPUS {
+        let cur = CURRENT[c].load(Ordering::Relaxed);
+        if cur == IDLE {
+            continue;
+        }
+        if PERCPU_RUN_TICKS[c].load(Ordering::Relaxed) < QUANTUM_TICKS as u32 {
+            continue;
+        }
+        if c == cpu {
+            // 本核量子越限：本地执行（仅量子边界进入，快路径不受影响）
+            let r = resched_preempt_body(cpu, plan);
+            local_done = true;
+            if r {
+                return true;
+            }
+        } else if !PREEMPT_REQ[c].swap(true, Ordering::AcqRel) {
+            // 对侧核：置请求旗 + 定向 RESCHED（旗未决时不重复发送）
+            let kick = RESCHED_KICK.load(Ordering::Acquire);
+            if kick != 0 {
+                // SAFETY: 前置条件 —— 地址来自 set_resched_kick 存入的
+                //          fn(usize)。
+                // 不变式 —— Release/Acquire 配对；注册先于任何跨核派生。
+                // 并发 —— IPI 发送侧天然多发布者安全（ICR 交付状态轮询）。
+                // 违反后果 —— 跳转伪造地址即任意代码执行（注册纪律封死）。
+                let f: fn(usize) = unsafe { core::mem::transmute(kick) };
+                f(c);
+            }
+        }
+    }
+    let _ = local_done;
+    false
+}
+
+/// RESCHED 抢占钩子（M10-A；注册进 set_resched_preempt_hook，向量 0x42
+/// 窗口内调用）：消费本核 PREEMPT_REQ 旗（墙钟钩子量子检测置位——本核
+/// 自-IPI 或对侧定向 IPI）→ 老化扫描兜底 → 抢占判定与 plan 交换。
+///
+/// 本钩子是 **ring3 抢占的唯一执行器**（LAPIC 钩子在 ring3 驻留期间被
+/// prepare_dispatch 屏蔽，墙钟钩子极短化不填 plan）：交付实测安全
+/// （t34 起全程冒烟无边缘缺陷）。旗未置（普通门铃：spawn/kick_pager）
+/// → 立即放行，既有 RESCHED 语义零回归。
+/// 老化兜底：双核皆 ring3 驻留时 LAPIC 钩子停摆，老化经本钩子按
+/// RESCHED 节拍推进（饱和场景 ~量子级频次），饥饿防护不断供。
+pub fn resched_preempt_hook(plan: &mut PreemptPlan) -> bool {
+    let cpu = my_cpu();
+    if !PREEMPT_REQ[cpu].swap(false, Ordering::AcqRel) {
+        return false;
+    }
+    if !PREEMPT_ENABLED.load(Ordering::Acquire) {
+        return false;
+    }
+    resched_preempt_body(cpu, plan)
+}
+
+// ---------------------------------------------------------------------------
+// 任务阻塞态与调度点切换（M10-B）/ waitpid 收割面（M10-C）
+// ---------------------------------------------------------------------------
+// 语义：
+// - **block_current**：登记等待对象 → Blocked（脱离就绪队列）→ 切换下一
+//   就绪任务（无则开中断等节拍重试——唤醒方入队 + RESCHED/节拍必达）。
+//   `resume_if` 区分恢复点中断约定：syscall 上下文传 true（yield_now
+//   同款，内核任务 IF 约定恒 1）；#PF 桩窗口传 false（iretq 前不得开窗
+//   ——S31 缺陷族规避，恢复点保持 IF=0 直至桩尾重执行）。
+// - **wake_tasks**：谓词匹配批量唤醒（wait 清除 → Ready → 按 base 级
+//   入队 → RESCHED 跨核提示）。谓词由调用方定义（vmm 换页 / procs 进程
+//   间等待各自语义，调度器不硬编码）。
+// - **wait_scan**：WAIT_PID 扫描 + 收割原子面（单锁窗口）：遍历直接
+//   子任务，首个 Zombie 即取退出码并释放槽位（Zombie 不在任何队列、
+//   CURRENT 已随终结切换面更新、句柄表已清算——三条件收割安全）。
+//   收割任务若有存活子任务则成为孤儿（其 parent 指向已释放槽位 →
+//   授权/等待面 fail-closed，v0 不递归收割）。
+//
+// 竞态窗口记档：block/yield/finish 的「锁释放 → 物理切换」间隙内，另
+// 一核理论上可拾取本核刚回队的任务（ctx 尚未保存）——与 M6 以来
+// yield_now 同款既有窗口（数指令宽度，M6–M9 三十余项裸机自检未观测）；
+// M10 不扩大该窗口（block 无就绪者时走 halt 重试而非 idle 二段锁），
+// 根治 = 切换握手协议，随 M11 调度面演进。
+
+/// 阻塞当前任务（M10-B）：登记等待对象 → Blocked → 切换到下一就绪任务；
+/// 唤醒后从调用点之后继续（恢复点 IF 约定见 `resume_if`）。
+///
+/// 无就绪任务时：开中断 halt 等待节拍/RESCHED 后重试拾取（唤醒方入队
+/// 后必经 kick_other 或节拍驱动重派发）。阻塞态登记在重试循环外幂等。
+///
+/// # PANIC（防御）
+/// 本核 CURRENT = idle 时阻塞即调度不变式破坏（idle 无任务上下文），
+/// 直接终止调用方（调用面契约：仅任务上下文可调用）。
+pub fn block_current(what: WaitWhat, resume_if: bool) {
+    let mut w = IntWindow::new();
+    loop {
+        let cpu = my_cpu();
+        let pair = {
+            let mut s = SCHED.lock();
+            let sc = &mut *s;
+            let cur = CURRENT[cpu].load(Ordering::Relaxed);
+            if cur == IDLE {
+                panic!("block_current: no task context (idle)");
+            }
+            if let Some(t) = sc.tasks[cur].as_mut() {
+                t.wait = Some(what);
+                t.state = State::Blocked;
+                t.waited = 0;
+            }
+            match pick_best(&mut sc.ready, &sc.tasks, cpu, IDLE, None) {
+                Some(id) => {
+                    remove_value(&mut sc.ready, id);
+                    if let Some(t) = sc.tasks[id].as_mut() {
+                        t.state = State::Running;
+                    }
+                    PERCPU_RUN_TICKS[cpu].store(0, Ordering::Relaxed);
+                    CURRENT[cpu].store(id, Ordering::Relaxed);
+                    sc.cooperative_switches += 1; // 自愿让出（阻塞）计入协作面
+                    let boot = sc.boot_cr3;
+                    if let Some(t) = sc.tasks[id].as_ref() {
+                        prepare_dispatch(t, boot, cpu);
+                    }
+                    Some(slots_pair(sc, cur, id))
+                }
+                None => None,
+            }
+        };
+        match pair {
+            Some(p) => {
+                switch_deferred(p); // 唤醒重派发后从此继续
+                break;
+            }
+            None => {
+                // 无就绪任务：开中断等节拍/RESCHED（唤醒方入队必伴随后者）
+                drop(w);
+                ostd::hw::intr::enable();
+                ostd::hw::intr::halt();
+                w = IntWindow::new();
+            }
+        }
+    }
+    if resume_if {
+        // 恢复点无条件开中断（syscall 上下文内核任务 IF 约定；#PF 路径
+        // 传 resume_if=false 保持 IF=0 直至桩尾 iretq）
+        ostd::hw::intr::enable();
+    }
+    drop(w);
+}
+
+/// 谓词匹配批量唤醒（M10-B 通用唤醒面；ISR 外任务上下文调用）：
+/// 匹配者 wait 清除 → Ready → 按 base 级入队 → 跨核提示。返回唤醒数。
+/// 扫描含槽位 0（主任务可阻塞——t35 的故障上下文即主任务）。
+pub fn wake_tasks(matcher: impl Fn(&WaitWhat) -> bool) -> usize {
+    let _w = IntWindow::new();
+    let mut s = SCHED.lock();
+    let sc = &mut *s;
+    let mut woken = 0usize;
+    for id in 0..MAX_TASKS {
+        let Some(t) = sc.tasks[id].as_mut() else {
+            continue;
+        };
+        if t.state != State::Blocked {
+            continue;
+        }
+        let matched = t.wait.is_some_and(|w| matcher(&w));
+        if matched {
+            t.wait = None;
+            t.state = State::Ready;
+            t.waited = 0;
+            let p = t.base_prio;
+            enqueue(&mut sc.ready, id, p);
+            woken += 1;
+        }
+    }
+    drop(s);
+    if woken != 0 {
+        BLOCK_WAKES.fetch_add(woken as u64, Ordering::AcqRel);
+        kick_other();
+    }
+    woken
+}
+
+/// WAIT_PID 扫描结果（单锁窗口内原子完成扫描 + 收割）。
+pub struct ChildScan {
+    /// 存在匹配条件的直接子任务（无论是否已终结）。
+    pub has_child: bool,
+    /// 收割到的首个已终结子任务 (pid, exit_code)；槽位已释放。
+    pub reaped: Option<(usize, u64)>,
+}
+
+/// WAIT_PID 扫描 + 收割（M10-C）：在单 SCHED 锁窗口内遍历 `parent` 的
+/// 直接子任务（`want` = 0 任意 / 非 0 定向），收割首个 Zombie（取退出码
+/// 并释放槽位）。收割安全性：Zombie 不在任何队列、CURRENT 已随终结
+/// 切换面更新、句柄表已清算、退出码已登记。
+pub fn wait_scan(parent: usize, want: u64) -> ChildScan {
+    let _w = IntWindow::new();
+    let mut s = SCHED.lock();
+    let sc = &mut *s;
+    let mut scan = ChildScan {
+        has_child: false,
+        reaped: None,
+    };
+    for id in 1..MAX_TASKS {
+        let Some(t) = sc.tasks[id].as_ref() else {
+            continue;
+        };
+        if t.parent != Some(parent) {
+            continue;
+        }
+        if want != 0 && id != want as usize {
+            continue;
+        }
+        scan.has_child = true;
+        if t.state == State::Zombie && scan.reaped.is_none() {
+            let code = t.exit_code;
+            scan.reaped = Some((id, code));
+            sc.tasks[id] = None; // 收割：槽位释放回收（alloc_slot 可复用）
+        }
+    }
+    scan
+}
+
+/// 目标任务槽位是否存活（M10-C 自检 36 收割断言面；None = 未占用/已收割）。
+pub fn task_alive(id: usize) -> bool {
+    let _w = IntWindow::new();
+    let s = SCHED.lock();
+    s.tasks.get(id).is_some_and(|slot| slot.is_some())
 }

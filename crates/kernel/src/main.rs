@@ -69,8 +69,8 @@ use crate::multiboot1::BOOT_MAGIC;
 const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
 /// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项
-/// + M8 三项）。
-const SELFTEST_TOTAL: usize = 33;
+/// + M8 三项 + M9 三项 + M10 三项）。
+const SELFTEST_TOTAL: usize = 36;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐，链接进 .bss（NOLOAD）。
 #[repr(align(4096))]
@@ -883,6 +883,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                     ok &= exit == 44; // 写 0..3 + 校验 + EXIT（无缺页路径）
                                       // 内核态逐页读回被淘汰页：每次读 → #PF → swap-in → 重映射
                                       // → 指令重执行 → 魔数（内核预写）经盘往返复原
+                    task::set_current_kernel_cr3(us.root);
                     ostd::hw::control::write_cr3(us.root & !0xFFF);
                     let mut kern_seen = true;
                     for i in 4..8u64 {
@@ -890,6 +891,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                         kern_seen &= ostd::hw::phys::read_u64_virt(va) == user::SWAP_MAGIC_KERN | i;
                     }
                     ostd::hw::control::write_cr3(boot_cr3);
+                    task::set_current_kernel_cr3(0);
                     ostd::hw::lapic::timer_unmask();
                     ok &= kern_seen;
                     let (outs2, ins2, res2) = swap::stats();
@@ -1197,8 +1199,9 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                     let want: Vec<u64> =
                         (4..8u64).map(|i| user::SWAP_DATA_VA + i * 0x1000).collect();
                     ok &= victims == want;
-                    // swapd 上线（0 级：M8-C 优先级面服务 M9-B 分页延迟）
-                    let _ = task::spawn_prio("swapd", vmm::pager_body, 0);
+                    // swapd 上线（0 级：M8-C 优先级面服务 M9-B 分页延迟；
+                    // M10-B 统一派生入口：上线计数供阻塞路径门控）
+                    let _ = vmm::spawn_pager(None);
                     let (next0, free0) = vmm::swap_stats();
                     let (outs0, ins0, _) = swap::stats();
                     // 异步淘汰 ×4（I/O 在 swapd 任务上下文执行）
@@ -1224,6 +1227,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                     // 守卫：仅当全部暂存就绪才读回（部分就绪时未暂存页的缺页
                     // 走致命路径——跳过读回，让 FAIL 落在本自检而非内核级联）
                     if vmm::prefetched_len() == 4 {
+                        task::set_current_kernel_cr3(us.root);
                         ostd::hw::control::write_cr3(us.root & !0xFFF);
                         let mut kern_seen = true;
                         for i in 4..8u64 {
@@ -1232,6 +1236,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                                 ostd::hw::phys::read_u64_virt(va) == user::SWAP_MAGIC_KERN | i;
                         }
                         ostd::hw::control::write_cr3(boot_cr3);
+                        task::set_current_kernel_cr3(0);
                         ok &= kern_seen;
                         ok &= vmm::fast_faults() == 4; // 四页全部走零 I/O 快路径
                     } else {
@@ -1281,6 +1286,229 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t33, "async-paging-fastpath");
+
+    // 34) per-CPU tick 账户 + ring3 抢占（M10-A：时间面迁 PIT 全上下文）。
+    //     构造：双核各钉一枚 ring3 spinner（USER_SPIN_PROGRAM——无任何
+    //     syscall 的纯自旋，旧形态下 LAPIC 定时器被 prepare_dispatch 屏蔽，
+    //     计账/老化/抢占全冻结：spinner 永不被抢占，低优先 watcher 永不
+    //     运行）+ 每核一枚 2 级 watcher。取证链：双 watcher 推进 > 0（ring3
+    //     抢占真实发生：BSP 经 PIT-plan / AP 经 RESCHED-plan）+ per-CPU
+    //     tick 账户双核增长（ring3 驻留计账，冻结面解除的直接证据）+
+    //     抢占切换计数增长 + 哨兵释放后双 spinner 退出码 57（全链完好）。
+    let t34 = {
+        static WATCH_SEEN_0: AtomicU64 = AtomicU64::new(0);
+        static WATCH_SEEN_1: AtomicU64 = AtomicU64::new(0);
+        fn tick_watch_body_0() {
+            WATCH_SEEN_0.fetch_add(1, Ordering::AcqRel);
+        }
+        fn tick_watch_body_1() {
+            WATCH_SEEN_1.fetch_add(1, Ordering::AcqRel);
+        }
+        let mut ok = true;
+        task::set_preempt_enabled(true);
+        task::reset_user_evidence();
+        let ticks0 = task::percpu_ticks();
+        let preempt0 = task::preempt_stats().0;
+        match (
+            user::build_user_space(&mut || frames.alloc()),
+            user::build_user_space(&mut || frames.alloc()),
+        ) {
+            (Ok(usa), Ok(usb)) => {
+                ostd::hw::phys::write_bytes(usa.code_frame, &user::USER_SPIN_PROGRAM);
+                ostd::hw::phys::write_bytes(usb.code_frame, &user::USER_SPIN_PROGRAM);
+                // 双核 spinner + 双核 watcher（2 级：老化/轮转可达）
+                let _ = task::spawn_user_pinned("spin-a", user_noop, usa.root, 0, 0);
+                let _ = task::spawn_user_pinned("spin-b", user_noop, usb.root, 0, 1);
+                let _ = task::spawn_pinned_prio("tick-watch-0", tick_watch_body_0, 2, 0);
+                let _ = task::spawn_pinned_prio("tick-watch-1", tick_watch_body_1, 2, 1);
+                // ring3 抢占收敛窗口（预算 600 tick；PIT 量子 3 拍必现）
+                let deadline = ostd::time::now() + 600;
+                while ostd::time::now() < deadline
+                    && (WATCH_SEEN_0.load(Ordering::Acquire) == 0
+                        || WATCH_SEEN_1.load(Ordering::Acquire) == 0)
+                {
+                    task::yield_now();
+                }
+                let w0 = WATCH_SEEN_0.load(Ordering::Acquire);
+                let w1 = WATCH_SEEN_1.load(Ordering::Acquire);
+                ok &= w0 > 0 && w1 > 0; // 双核 watcher 均真实运行
+                                        // 哨兵释放：双 spinner 退出（取证窗口闭合）
+                let spin_off = user::SPIN_SENTINEL_VA - user::USER_STACK_VIRT;
+                ostd::hw::phys::write_u64(usa.stack_frame + spin_off, 1);
+                ostd::hw::phys::write_u64(usb.stack_frame + spin_off, 1);
+                let deadline = ostd::time::now() + 400;
+                while ostd::time::now() < deadline && !task::all_workers_finished() {
+                    task::yield_now();
+                }
+                ok &= task::all_workers_finished();
+                let (e0, e1) = task::user_exit_codes();
+                let ticks1 = task::percpu_ticks();
+                let preempt1 = task::preempt_stats().0;
+                let _ = writeln!(
+                    log,
+                    "tick-account: watch=({w0},{w1}) exit=({e0},{e1}) ticks=({},{})→({},{}) preempt+={}",
+                    ticks0.0, ticks0.1, ticks1.0, ticks1.1, preempt1 - preempt0
+                );
+                ok &= e0 == 57 && e1 == 57; // 双 spinner 哨兵退出（全链完好）
+                ok &= ticks1.0 > ticks0.0 && ticks1.1 > ticks0.1; // 双核账户增长（ring3 计账）
+                ok &= preempt1 > preempt0; // 抢占切换真实发生
+            }
+            _ => {
+                let _ = writeln!(log, "tick-account: user space build failed");
+                ok = false;
+            }
+        }
+        ok
+    };
+    report(&mut log, t34, "tick-account-ring3-unfreeze");
+
+    // 35) 换页阻塞化（M10-B：任务阻塞态 + 调度点切换）。
+    //     单核饱和构造：swapd 与故障上下文同核（均钉 CPU0）——v0.9 的
+    //     ISR 自旋等待依赖 swapd 在对侧核运行，本场景必然超时致命；
+    //     M10-B 阻塞路径下故障方切出让核 → swapd 同核拾取 → 换入完成
+    //     → 谓词唤醒 → 恢复点修复 CR3 → 重探消费。取证链：四页魔数经
+    //     盘往返复原 + FAST_FAULTS == 4（全部零 I/O 快路径）+ ins 增量
+    //     全来自 swapd（同步回退 0 次）+ 阻塞唤醒计数 ≥ 4 + 帧账目。
+    let t35 = {
+        let mut ok = true;
+        vmm::pager_arm(); // t33 已停机：重新上线前清停机旗标
+        let boot_cr3 = ostd::hw::control::read_cr3() & !0xFFF;
+        match user::build_user_space(&mut || frames.alloc()) {
+            Ok(us) => {
+                if let Some(data) = user::attach_data_pages(us.root, &mut || frames.alloc()) {
+                    for (i, f) in data.iter().enumerate() {
+                        ostd::hw::phys::write_u64(*f, user::SWAP_MAGIC_KERN | i as u64);
+                    }
+                    // 淘汰确定性：手工置页 0..4 A 位 → 扫描必选 4..8
+                    for i in 0..4u64 {
+                        let va = user::SWAP_DATA_VA + i * 0x1000;
+                        let mut w = Walker {
+                            mem: &mut IdentityAccess,
+                            alloc_table: no_alloc_table,
+                        };
+                        ok &= w.set_leaf_bits(us.root, va, Entry::ACCESSED, 0).is_ok();
+                    }
+                    let victims =
+                        vmm::reclaim_scan(us.root, user::SWAP_DATA_VA, user::SWAP_DATA_PAGES, 4);
+                    let want: Vec<u64> =
+                        (4..8u64).map(|i| user::SWAP_DATA_VA + i * 0x1000).collect();
+                    ok &= victims == want;
+                    // 单核饱和：swapd 钉 CPU0（与 main/故障上下文同核）
+                    let pager = vmm::spawn_pager(Some(0));
+                    ok &= pager != usize::MAX;
+                    let (outs0, ins0, _) = swap::stats();
+                    // 同步淘汰 ×4（异步淘汰链 t33 已覆盖；本自检聚焦换入阻塞）
+                    for va in &victims {
+                        ok &= vmm::evict_one(us.root, *va, frames).is_ok();
+                    }
+                    ok &= vmm::swapped_len() == 4;
+                    // 内核态读回（main 在 CPU0 触发 #PF → 阻塞 → swapd 同核
+                    // 换入 → 唤醒 → 重探消费 → 重执行）：四页魔数复原
+                    let wakes0 = task::block_wakes();
+                    let fast0 = vmm::fast_faults();
+                    task::set_current_kernel_cr3(us.root);
+                    ostd::hw::control::write_cr3(us.root & !0xFFF);
+                    let mut kern_seen = true;
+                    for i in 4..8u64 {
+                        let va = user::SWAP_DATA_VA + i * 0x1000;
+                        kern_seen &= ostd::hw::phys::read_u64_virt(va) == user::SWAP_MAGIC_KERN | i;
+                    }
+                    ostd::hw::control::write_cr3(boot_cr3);
+                    task::set_current_kernel_cr3(0);
+                    ok &= kern_seen;
+                    let wakes1 = task::block_wakes();
+                    let fast1 = vmm::fast_faults();
+                    let (outs1, ins1, res1) = swap::stats();
+                    let _ = writeln!(
+                        log,
+                        "swap-block: seen={kern_seen} wakes+={} fast+={} outs+={} ins+={} res={res1}",
+                        wakes1 - wakes0,
+                        fast1 - fast0,
+                        outs1 - outs0,
+                        ins1 - ins0
+                    );
+                    ok &= fast1 - fast0 == 4; // 四页全部零 I/O 快路径（增量，t33 已累计）
+                    ok &= wakes1 - wakes0 >= 4; // 阻塞唤醒真实发生（每页 ≥1）
+                    ok &= outs1 - outs0 == 4 && ins1 - ins0 == 4 && res1 == 0;
+                    // 收尾：坐标归还 + swapd 停机终结 + 帧账目不变式
+                    vmm::release_swapped(us.root);
+                    ok &= vmm::swapped_len() == 0;
+                    vmm::pager_shutdown();
+                    let deadline = ostd::time::now() + 400;
+                    while ostd::time::now() < deadline && !task::all_workers_finished() {
+                        task::yield_now();
+                    }
+                    ok &= task::all_workers_finished();
+                    ok &= vmm::pager_served() >= 4;
+                    let s = frames.stats();
+                    ok &= s.allocs - s.deallocs == s.held;
+                    for f in &data[..4] {
+                        frames.dealloc(*f);
+                    }
+                } else {
+                    let _ = writeln!(log, "swap-block: attach data pages failed");
+                    ok = false;
+                }
+            }
+            Err(e) => {
+                let _ = writeln!(log, "swap-block: user space build failed: {e:?}");
+                ok = false;
+            }
+        }
+        ok
+    };
+    report(&mut log, t35, "swap-block-singlecore");
+
+    // 36) waitpid 语义雏形（M10-C：SYS_WAIT_PID + Zombie 收割 + 槽位释放）。
+    //     家族构造（父链内核登记，M9-A 同款）：P（父，钉 CPU0）+ C（子，
+    //     钉 CPU1）——P 阻塞等待（WAIT_PID(0)），C 经 YIELD×32 后 EXIT(42)
+    //     → exit 路径唤醒 P → 重扫收割（退出码 + 槽位释放）。取证链：
+    //     P 拆位校验通过（成功位/cpid/码）+ 二次等待 ERR_CHILD(8) +
+    //     等待自身 ERR_CHILD(8) + 收割后 C 槽位释放（task_alive == false）
+    //     + 双退出码 59/42 各自落位。
+    let t36 = {
+        let mut ok = true;
+        procs::reset_waitpid_evidence();
+        task::reset_user_evidence();
+        match (
+            user::build_user_space(&mut || frames.alloc()),
+            user::build_user_space(&mut || frames.alloc()),
+        ) {
+            (Ok(usa), Ok(usb)) => {
+                ostd::hw::phys::write_bytes(usa.code_frame, &user::USER_WAITPID_PROGRAM);
+                // C 用原版 USER_PROGRAM（YIELD×32 + EXIT(42)——原样复用）
+                let p_id = task::spawn_user_pinned("wait-parent", user_noop, usa.root, 0, 0);
+                let c_id =
+                    task::spawn_user_child_pinned("wait-child", user_noop, usb.root, 0, 1, p_id);
+                // 子 pid 哨兵（spawn 后写入；P 侧轮询等待，无顺序假设）
+                let cpid_off = user::WAITPID_CPID_VA - user::USER_STACK_VIRT;
+                ostd::hw::phys::write_u64(usa.stack_frame + cpid_off, c_id as u64);
+                let deadline = ostd::time::now() + 600;
+                while ostd::time::now() < deadline && !task::all_workers_finished() {
+                    task::yield_now();
+                }
+                ok &= task::all_workers_finished();
+                let (e0, e1) = task::user_exit_codes();
+                let (res, rpid, rcode) = procs::waitpid_stamps();
+                let _ = writeln!(
+                    log,
+                    "waitpid: exit=({e0},{e1}) res={res:#x} pid={rpid} code={rcode} c-slot-alive={}",
+                    task::task_alive(c_id)
+                );
+                ok &= e0 == 59 && e1 == 42; // P 全链成功 / C 原版退出码
+                ok &= res == 0; // WAIT_PID(0) 成功
+                ok &= rpid == c_id as u64 && rcode == 42; // 收割对象与退出码
+                ok &= !task::task_alive(c_id); // 收割后 C 槽位释放
+                ok &= task::task_alive(p_id); // P 自身槽位不受影响
+            }
+            _ => {
+                let _ = writeln!(log, "waitpid: user space build failed");
+                ok = false;
+            }
+        }
+        ok
+    };
+    report(&mut log, t36, "waitpid-zombie-reap");
 
     let _ = writeln!(log, "----");
     interrupts::disable();

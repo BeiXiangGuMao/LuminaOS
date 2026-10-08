@@ -12,11 +12,15 @@
 //! 一律拒绝（ERR_TARGET），杜绝能力枚举与提权面。
 //!
 //! ABI v0.3 追加：SYS_CAP_GRANT(9)/SYS_CAP_REVOKE(10)/SYS_GET_PID(11)。
+//! ABI v0.4 追加：SYS_WAIT_PID(12)（M10-C）。
 //! 返回码契约（v0 全表）：0 = 成功；1 = ERR_CAP；2 = ERR_EMPTY；
 //! 3 = ERR_DERIVE（提权/空槽）；4 = ERR_FULL；**5 = ERR_HANDLE（句柄无效
 //! /未持有/主身份不可撤销）；6 = ERR_TARGET（目标不存在或非子任务）；
-//! 7 = ERR_TABLE（目标句柄表满）**。GRANT 成功返回 `(1 << 32) | new_handle`
-//! （句柄域 1..HANDLE_MAX-1 与错误码域无交叠）。
+//! 7 = ERR_TABLE（目标句柄表满）；8 = ERR_CHILD（无匹配子任务：无直接
+//! 子任务 / 目标非直接子任务，不阻塞直接返回）**。GRANT 成功返回
+//! `(1 << 32) | new_handle`；WAIT_PID 成功返回
+//! `(1 << 32) | (child_pid << 16) | (exit_code & 0xFFFF)`（成功位与
+//! 句柄/pid/码域隔离，错误码域无交叠）。
 //!
 //! 锁序契约（全内核单向）：SCHED → CAPS。本模块的授予/撤销路径按
 //! 「取 SCHED 释放 → 取 CAPS 释放」顺序访问（不嵌套）；终结清算路径
@@ -37,12 +41,22 @@ pub const ERR_HANDLE: u64 = 5;
 pub const ERR_TARGET: u64 = 6;
 /// 错误码：目标句柄表已满。
 pub const ERR_TABLE: u64 = 7;
+/// 错误码：无匹配子任务（无直接子任务 / 目标非直接子任务）。
+pub const ERR_CHILD: u64 = 8;
+
+/// WAIT_PID 成功标记位：返回值 `(1 << 32) | (pid << 16) | (code & 0xFFFF)`。
+const WAITPID_OK_BIT: u64 = 1 << 32;
 
 /// SYS_CAP_GRANT 取证（自检 32 断言面）：最近一次返回码 + 成功时的新句柄。
 static GRANT_RESULT: AtomicU64 = AtomicU64::new(u64::MAX);
 static GRANT_HANDLE: AtomicU64 = AtomicU64::new(u64::MAX);
 /// SYS_CAP_REVOKE 取证：最近一次返回码。
 static REVOKE_RESULT: AtomicU64 = AtomicU64::new(u64::MAX);
+/// SYS_WAIT_PID 取证（自检 36 断言面）：最近一次返回码 + 收割的子 pid
+/// + 收割的退出码（仅成功时有效）。
+static WAITPID_RESULT: AtomicU64 = AtomicU64::new(u64::MAX);
+static WAITPID_PID: AtomicU64 = AtomicU64::new(u64::MAX);
+static WAITPID_CODE: AtomicU64 = AtomicU64::new(u64::MAX);
 
 /// 取证快照：(GRANT 返回码, GRANT 新句柄, REVOKE 返回码)。
 pub fn stamps() -> (u64, u64, u64) {
@@ -50,6 +64,22 @@ pub fn stamps() -> (u64, u64, u64) {
         GRANT_RESULT.load(Ordering::Acquire),
         GRANT_HANDLE.load(Ordering::Acquire),
         REVOKE_RESULT.load(Ordering::Acquire),
+    )
+}
+
+/// SYS_WAIT_PID 取证面复位（跨自检隔离）。
+pub fn reset_waitpid_evidence() {
+    WAITPID_RESULT.store(u64::MAX, Ordering::Release);
+    WAITPID_PID.store(u64::MAX, Ordering::Release);
+    WAITPID_CODE.store(u64::MAX, Ordering::Release);
+}
+
+/// SYS_WAIT_PID 取证快照：(返回码, 收割子 pid, 收割退出码)。
+pub fn waitpid_stamps() -> (u64, u64, u64) {
+    (
+        WAITPID_RESULT.load(Ordering::Acquire),
+        WAITPID_PID.load(Ordering::Acquire),
+        WAITPID_CODE.load(Ordering::Acquire),
     )
 }
 
@@ -149,4 +179,31 @@ pub fn sys_revoke(handle: u64) -> u64 {
     };
     REVOKE_RESULT.store(result, Ordering::Release);
     result
+}
+
+/// SYS_WAIT_PID 主体（M10-C）：父进程面等待——扫描直接子任务，Zombie
+/// 即收割（单锁窗口原子：[`task::wait_scan`]）；无匹配子任务 →
+/// ERR_CHILD 立即返回（不阻塞）；有子未终结 → 阻塞（Child 等待对象）
+/// 直至任一匹配子任务 EXIT（exit 路径唤醒）→ 重扫收割。唤醒后重扫
+/// 天然覆盖虚假唤醒/多子竞争（谁先到谁收割，其余重入等待域）。
+pub fn sys_wait_pid(pid: u64) -> u64 {
+    let caller = task::current_task_id();
+    loop {
+        let scan = task::wait_scan(caller, pid);
+        if let Some((child, code)) = scan.reaped {
+            // 戳面仅成功落证（负探针的 ERR_CHILD 由 ring3 侧退出码举证，
+            // 避免后继负探针覆盖成功戳）
+            WAITPID_RESULT.store(0, Ordering::Release);
+            WAITPID_PID.store(child as u64, Ordering::Release);
+            WAITPID_CODE.store(code, Ordering::Release);
+            return WAITPID_OK_BIT | ((child as u64) << 16) | (code & 0xFFFF);
+        }
+        if !scan.has_child {
+            return ERR_CHILD;
+        }
+        // 有子未终结：阻塞等待（resume_if = true：syscall 上下文恢复点
+        // 开中断，yield_now 同款内核任务 IF 约定）
+        task::block_current(task::WaitWhat::Child { pid: pid as usize }, true);
+        // 唤醒后重扫（子任务可能被并行收割者抢收 → 循环再判定）
+    }
 }
