@@ -42,9 +42,32 @@ pub const SYS_GET_PID: u64 = 11;
 /// 目标非直接子任务 → `ERR_CHILD(8)` 立即返回（不阻塞）。目标子任务
 /// 尚未终结时调用方阻塞（M10-B 阻塞态），子任务 EXIT 时唤醒并收割。
 pub const SYS_WAIT_PID: u64 = 12;
+/// 创建子进程（v0.11 追加，M11-A：ring3 自主派生）。
+///
+/// 参数 = 保留位（v0 必须为 0，非零 → `BadArgs`）。成功返回
+/// `(1 << 32) | child_pid`（pid 域低 32 位，与错误码域无交叠）。
+/// v0 语义：子进程地址空间全新构建（父代码帧逐字节克隆、栈帧清零、
+/// 子栈 SPAWN 遗传细胞 = 父 pid；数据分支不克隆——无 COW，如实记档）；
+/// 父链内核登记（父不可伪造，WAIT_PID/GRANT 门禁同源）；子任务
+/// `cap_slot = 0`（纯被授予型，父经 SYS_CAP_GRANT 授予）。帧/槽耗尽
+/// → `ERR_NOMEM(9)`。
+pub const SYS_SPAWN: u64 = 13;
+/// 查询调用者自身句柄（v0.11 追加，M11-B 句柄枚举与查询面）。
+///
+/// 参数 = 句柄号（0 = NULL 保留，≥ HANDLE_MAX 越界）。成功返回
+/// `(1 << 32) | (rights << 16) | global_slot`（rights 域 32 位
+/// 位于 16..47，槽号域 16 位；与错误码域无交叠）；未持有/越界 →
+/// `ERR_HANDLE(5)`。
+pub const SYS_HANDLE_QUERY: u64 = 14;
+/// 枚举调用者自身句柄表（v0.11 追加，M11-B）。
+///
+/// 参数 = 游标（从该句柄号之后继续枚举；0 = 从头）。返回首个占用
+/// 句柄：`(1 << 32) | (handle << 16) | rights`；无更多占用 → `0`
+/// （枚举尽）。调用协议：`cursor = 上次返回的 handle` 循环直至 0。
+pub const SYS_HANDLE_ENUM: u64 = 15;
 
-/// 系统调用 ABI 版本（追加 WAIT_PID → 0.4）。
-pub const ABI_VERSION: (u16, u16) = (0, 4);
+/// 系统调用 ABI 版本（追加 SPAWN/HANDLE_QUERY/HANDLE_ENUM → 0.5）。
+pub const ABI_VERSION: (u16, u16) = (0, 5);
 
 /// 寄存器快照形式的系统调用请求。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +154,21 @@ pub enum Syscall {
         /// 目标子任务 pid（0 = 任意直接子任务）。
         pid: u64,
     },
+    /// 创建子进程（M11-A；成功编码见 [`SYS_SPAWN`] 文档）。
+    Spawn {
+        /// 保留参数（v0 必须为 0）。
+        reserved: u64,
+    },
+    /// 查询自身句柄（M11-B；编码见 [`SYS_HANDLE_QUERY`] 文档）。
+    HandleQuery {
+        /// 待查询句柄号。
+        handle: u64,
+    },
+    /// 枚举自身句柄表（M11-B；协议见 [`SYS_HANDLE_ENUM`] 文档）。
+    HandleEnum {
+        /// 枚举游标（返回该句柄号之后的首个占用项）。
+        cursor: u64,
+    },
 }
 
 /// 从寄存器快照解析调用意图。只做结构校验，不做内存访问（由慢路径完成）。
@@ -165,6 +203,10 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
         SYS_CAP_REVOKE => Ok(Syscall::CapRevoke { handle: a0 }),
         SYS_GET_PID => Ok(Syscall::GetPid),
         SYS_WAIT_PID => Ok(Syscall::WaitPid { pid: a0 }),
+        SYS_SPAWN if a0 == 0 => Ok(Syscall::Spawn { reserved: a0 }),
+        SYS_SPAWN => Err(AbiError::BadArgs),
+        SYS_HANDLE_QUERY => Ok(Syscall::HandleQuery { handle: a0 }),
+        SYS_HANDLE_ENUM => Ok(Syscall::HandleEnum { cursor: a0 }),
         _ => Err(AbiError::UnknownSyscall),
     }
 }
@@ -174,7 +216,8 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
 mod tests {
     use super::{
         AbiError, Syscall, SyscallRegs, SYS_CAP_DERIVE, SYS_CAP_GRANT, SYS_CAP_REVOKE, SYS_EXIT,
-        SYS_GET_PID, SYS_GET_PRIO, SYS_IPC_SEND, SYS_LOG, SYS_SET_PRIO, SYS_WAIT_PID, SYS_YIELD,
+        SYS_GET_PID, SYS_GET_PRIO, SYS_IPC_SEND, SYS_LOG, SYS_SET_PRIO, SYS_SPAWN, SYS_WAIT_PID,
+        SYS_YIELD,
     };
 
     #[test]
@@ -245,6 +288,20 @@ mod tests {
         assert_eq!(
             super::parse(r(SYS_WAIT_PID, [7, 0, 0, 0, 0])),
             Ok(Syscall::WaitPid { pid: 7 })
+        );
+    }
+
+    #[test]
+    fn parses_spawn_call() {
+        let r = |num: u64, args: [u64; 5]| SyscallRegs { num, args };
+        // v0 保留参数必须为 0
+        assert_eq!(
+            super::parse(r(SYS_SPAWN, [0, 0, 0, 0, 0])),
+            Ok(Syscall::Spawn { reserved: 0 })
+        );
+        assert_eq!(
+            super::parse(r(SYS_SPAWN, [1, 0, 0, 0, 0])),
+            Err(AbiError::BadArgs)
         );
     }
 

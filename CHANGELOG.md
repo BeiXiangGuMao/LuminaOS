@@ -3,6 +3,38 @@
 版本语义：工作区里程碑版（0.x.y，x=里程碑，y=里程碑内迭代）。
 本文档记录源码树的对外可见变更；指标与规格变更见《指标与规范手册》修订记录。
 
+## v0.11.0（2026-10-09）—— M11：进程面补全与运行时化
+
+### 新增
+- **SYS_SPAWN(13) 进程创建（M11-A）**：ring3 自主派生——内核全新构建
+  子地址空间（父代码帧逐字节克隆、栈帧清零 + 遗传细胞 = 父 pid）、
+  父链内核登记、cap_slot = 0 纯被授予型；返回 `(1<<32)|child_pid`；
+  错误码追加 ERR_NOMEM(9)。遗传细胞使同源程序自证身份（根父细胞恒 0），
+  fork 炸弹族结构性排除。
+- **句柄枚举与查询面（M11-B）**：SYS_HANDLE_QUERY(14)（rights + 全局
+  槽号）/ SYS_HANDLE_ENUM(15)（游标后首个占用项，循环协议终点 0）。
+- **IPC 阻塞接收阻塞化（M11-C）**：SYS_IPC_RECV 环空接入 Blocked 态
+  （block_current_unless 条件阻塞：探针在 SCHED 锁窗口内重探，登记与
+  探针原子性 = 丢失唤醒免疫）；sys_send 推送成功后定向 wake_tasks；
+  等待对象族追加 WaitWhat::IpcRecv。
+- **调度切换握手协议（M11-D）**：根除「锁释放 → 物理切换」跨核拾取
+  理论窗口——旗生命周期 = 重排队 → 现场保存完成；置位唯一
+  （yield/preempt 两族），清除者 = 切换机器自身（协作上下文切换 asm
+  与抢占桩同契约单 Store）；拾取面（eligible）对置位槽拒绝。
+  裸机 t37 自由跨核 spawn 实证旧窗口真实发病（上下文腐坏/挂死）。
+- **waitpid 丢失唤醒补钉**：wait_scan→block 双窗口（子任务 EXIT 恰
+  落窗 → 永久睡眠）由 block_current_waitpid 的锁窗口 Zombie 重探根治
+  （Zombie 粘滞态保证判定与收割间无新窗口）。
+- **任务槽位卫生**：task::reap_zombies 僵尸清扫面（34 席占满实证后
+  新增；自检序列门前置调用）。
+- 自检 36 → **40**（M11 四项：spawn-ring3-derive /
+  handle-query-enum / ipc-recv-blocking / sched-switch-handshake）；
+  宿主测试 89 → 92。
+
+### 验收
+- `cargo run -p xtask --release -- ci`：九阶段门禁连续 2 次 CI-OK；
+  裸机 40/40 + QEMU 退出码 33 + 串口 LUMINA-BOOT-OK。
+
 ## v0.10.1（2026-10-09）—— M10 维护版：SYSRET 边缘竞态根治（iretq 返回）
 
 ### 修复

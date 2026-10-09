@@ -11,7 +11,7 @@
 //! unsafe 面：零。自旋锁 + 纯类型能力令牌。
 
 use ostd::sync::SpinLock;
-use vanguard::CapabilityTable;
+use vanguard::{Capability, CapabilityTable};
 
 /// 全局能力表（静态存储期；槽位容量 = vanguard::CAPACITY）。
 static CAPS: SpinLock<CapabilityTable> = SpinLock::new(CapabilityTable::new());
@@ -19,4 +19,16 @@ static CAPS: SpinLock<CapabilityTable> = SpinLock::new(CapabilityTable::new());
 /// 能力表全局访问句柄。
 pub fn table() -> &'static SpinLock<CapabilityTable> {
     &CAPS
+}
+
+/// 分配首个空闲全局槽位并装载能力（M11 测试面；语义与 spawn 主身份
+/// 安装一致：槽位单属主不变式由互斥锁窗口保证）。满表返回 None。
+pub fn alloc_slot(cap: Capability) -> Option<usize> {
+    let mut t = table().lock();
+    for s in 0..vanguard::CAPACITY {
+        if t.get(s).is_err() {
+            return t.install(s, cap).ok().map(|_| s);
+        }
+    }
+    None
 }

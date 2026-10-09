@@ -278,6 +278,22 @@ extern "C" fn lumina_syscall_dispatch(frame: &mut SyscallFrame) -> u64 {
             // （无匹配子任务 → ERR_CHILD 立即返回，不阻塞）
             crate::procs::sys_wait_pid(pid)
         }
+        Syscall::Spawn { reserved } => {
+            task::count_syscall(2);
+            // M11-A 进程创建面：ring3 自主派生（克隆子空间 + 遗传细胞 +
+            // 父链内核登记；帧/槽耗尽 → ERR_NOMEM）
+            crate::procs::sys_spawn(reserved)
+        }
+        Syscall::HandleQuery { handle } => {
+            task::count_syscall(2);
+            // M11-B 句柄查询面：rights + 全局槽号（纯读，不改变句柄表）
+            crate::procs::sys_handle_query(handle)
+        }
+        Syscall::HandleEnum { cursor } => {
+            task::count_syscall(2);
+            // M11-B 句柄枚举面：游标后首个占用项（循环协议终点 = 0）
+            crate::procs::sys_handle_enum(cursor)
+        }
     }
 }
 

@@ -134,17 +134,28 @@ impl Default for Idt {
     }
 }
 
-/// 抢占交换计划（repr(C)：与桩汇编偏移严格对应——old 在 +0、new 在 +8）。
+/// 抢占交换计划（repr(C)：与桩汇编偏移严格对应——old 在 +0、new 在 +8、
+/// handoff 在 +16，M11-D 调度切换握手扩展）。
 ///
-/// 生存期：位于中断桩的栈上临时区（`sub rsp,16` 预留），仅在单次中断
+/// 生存期：位于中断桩的栈上临时区（`sub rsp,32` 预留），仅在单次中断
 /// 窗口内有效——主体填写后立即由桩消费，无跨核、跨窗口引用。
 /// 这使抢占目标选择天然 per-CPU：每核写的是自己的栈。
+///
+/// **handoff（M11-D）**：被抢占任务的切换握手旗地址（`SWITCHING[old]`，
+/// u64 槽）。桩在旧上下文全部保存完成后一次性写 0（asm 单 Store）——
+/// 从该指令起被抢占者才可被任意核安全拾取（现场已完整，拾取方恢复的
+/// 是刚保存的连续帧）；旗置位期间拾取面（eligible）拒绝该槽位，
+/// 根治「锁释放 → 物理切换」窗口内对侧核拾取陈旧上下文副本的竞态
+/// （t37 裸机实证：自由跨核 spawn 子任务交叉命中，寄存器面腐坏）。
+/// 桩在主体调用前将本槽清零，主体仅在真实切换时填写——防野指针。
 #[repr(C)]
 pub struct PreemptPlan {
     /// 被抢占任务的上下文（桩将全部现场存入）。
     pub old: *mut crate::task::TaskContext,
     /// 即将切入任务的上下文（桩从中加载现场）。
     pub new: *mut crate::task::TaskContext,
+    /// 切换握手旗地址（M11-D；0 = 无旗可清——防御桩读垃圾指针）。
+    pub handoff: *mut u64,
 }
 
 /// 受支持的中断桩。
@@ -276,7 +287,8 @@ pub mod stubs {
         "    push r11",
         "    mov rbp, rsp",
         "    and rsp, -16",
-        "    sub rsp, 16",
+        "    sub rsp, 32",
+        "    mov qword ptr [rsp + 16], 0",
         "    mov rdi, rsp",
         "    call isr_timer_body",
         "    test eax, eax",
@@ -294,8 +306,9 @@ pub mod stubs {
         "    pop rbp",
         "    iretq",
         "8:",
-        // plan 位于 [rsp]/[rsp+8]（与 LAPIC 定时器桩 6/7 标签同构；
-        // 标签 8/9 与其它桩隔离——同一 global_asm 块内标签唯一）
+        // plan 位于 [rsp]/[rsp+8]/[rsp+16]（handoff = M11-D 握手旗）；
+        // 旧上下文七槽保存完成后一次性清旗（asm 单 Store）——从本指令起
+        // 被抢占者可被任意核安全拾取（M11-D 握手，根治锁释放→物理切换窗口）
         "    lea rax, [rip + 9f]",
         "    mov rdi, [rsp]",
         "    mov rsi, [rsp + 8]",
@@ -307,6 +320,11 @@ pub mod stubs {
         "    mov [rdi + 0x28], r14",
         "    mov [rdi + 0x30], r15",
         "    mov [rdi + 0x38], rbp",
+        "    mov rcx, [rsp + 16]",
+        "    test rcx, rcx",
+        "    jz 12f",
+        "    mov qword ptr [rcx], 0",
+        "12:",
         "    mov rbx, [rsi + 0x08]",
         "    mov rbp, [rsi + 0x10]",
         "    mov r12, [rsi + 0x18]",
@@ -348,7 +366,8 @@ pub mod stubs {
         "    push r11",
         "    mov rbp, rsp",
         "    and rsp, -16",
-        "    sub rsp, 16",
+        "    sub rsp, 32",
+        "    mov qword ptr [rsp + 16], 0",
         "    mov rdi, rsp",
         "    call isr_lapic_timer_body",
         "    test eax, eax",
@@ -366,7 +385,8 @@ pub mod stubs {
         "    pop rbp",
         "    iretq",
         "6:",
-        // plan 位于 [rsp]/[rsp+8]（call 返回后 rsp 回到 sub rsp,16 处）
+        // plan 位于 [rsp]/[rsp+8]/[rsp+16]（handoff 同 M11-D 握手契约，
+        // 与定时器桩 12 标签隔离——同一 global_asm 块内标签唯一）
         "    lea rax, [rip + 7f]",
         "    mov rdi, [rsp]",
         "    mov rsi, [rsp + 8]",
@@ -378,6 +398,11 @@ pub mod stubs {
         "    mov [rdi + 0x28], r14",
         "    mov [rdi + 0x30], r15",
         "    mov [rdi + 0x38], rbp",
+        "    mov rcx, [rsp + 16]",
+        "    test rcx, rcx",
+        "    jz 13f",
+        "    mov qword ptr [rcx], 0",
+        "13:",
         "    mov rbx, [rsi + 0x08]",
         "    mov rbp, [rsi + 0x10]",
         "    mov r12, [rsi + 0x18]",
@@ -422,7 +447,8 @@ pub mod stubs {
         "    push r11",
         "    mov rbp, rsp",
         "    and rsp, -16",
-        "    sub rsp, 16",
+        "    sub rsp, 32",
+        "    mov qword ptr [rsp + 16], 0",
         "    mov rdi, rsp",
         "    call isr_resched_body",
         "    test eax, eax",
@@ -451,6 +477,11 @@ pub mod stubs {
         "    mov [rdi + 0x28], r14",
         "    mov [rdi + 0x30], r15",
         "    mov [rdi + 0x38], rbp",
+        "    mov rcx, [rsp + 16]",
+        "    test rcx, rcx",
+        "    jz 14f",
+        "    mov qword ptr [rcx], 0",
+        "14:",
         "    mov rbx, [rsi + 0x08]",
         "    mov rbp, [rsi + 0x10]",
         "    mov r12, [rsi + 0x18]",

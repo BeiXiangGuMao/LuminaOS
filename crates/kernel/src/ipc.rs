@@ -32,6 +32,8 @@ const MAX_CHANNELS: usize = 4;
 pub const ECHO_OBJECT: u64 = 0xC0DE_0000_0000_0001;
 /// 无授权对象 id（通道 1：负路径探针——能力不覆盖即拒绝）。
 pub const LOCKED_OBJECT: u64 = 0xC0DE_0000_0000_0002;
+/// 阻塞接收测试对象 id（通道 2；M11-C t39 对端）。
+pub const BLOCK_OBJECT: u64 = 0xC0DE_0000_0000_0003;
 /// 回声服务标签（应答 = 请求 tag | 0x80）。
 pub const ECHO_TAG: u32 = 0x21;
 
@@ -41,7 +43,8 @@ struct Channel {
     object: u64,
 }
 
-/// 通道注册表（ipc::init 后冻结：槽位 0 = 回声服务，槽位 1 = 无授权探针）。
+/// 通道注册表（ipc::init 后冻结：槽位 0 = 回声服务，槽位 1 = 无授权探针，
+/// 槽位 2 = 阻塞接收测试）。
 static CHANNELS: SpinLock<[Option<Channel>; MAX_CHANNELS]> =
     SpinLock::new([None, None, None, None]);
 
@@ -50,10 +53,16 @@ static ECHO_SERVED: AtomicU64 = AtomicU64::new(0);
 /// 回声 worker 退出旗标（服务配额满足后置位；防御泄漏任务）。
 static ECHO_STOP: AtomicBool = AtomicBool::new(false);
 
+/// SYS_IPC_RECV 阻塞取证（t39 断言面）：累计真实阻塞次数（探针命中
+/// 回滚的不计入）与累计阻塞唤醒次数。
+static RECV_BLOCKS: AtomicU64 = AtomicU64::new(0);
+static RECV_WAKES: AtomicU64 = AtomicU64::new(0);
+
 /// IPC 子系统初始化：泄漏全局通道环并登记（先于任何 IPC 系统调用）。
 pub fn init() {
     let echo: &'static FastPath = Box::leak(Box::new(FastPath::new()));
     let locked: &'static FastPath = Box::leak(Box::new(FastPath::new()));
+    let block: &'static FastPath = Box::leak(Box::new(FastPath::new()));
     let mut chans = CHANNELS.lock();
     chans[0] = Some(Channel {
         fast: echo,
@@ -63,6 +72,24 @@ pub fn init() {
         fast: locked,
         object: LOCKED_OBJECT,
     });
+    chans[2] = Some(Channel {
+        fast: block,
+        object: BLOCK_OBJECT,
+    });
+}
+
+/// 阻塞接收取证复位（跨自检隔离）。
+pub fn reset_recv_evidence() {
+    RECV_BLOCKS.store(0, Ordering::Release);
+    RECV_WAKES.store(0, Ordering::Release);
+}
+
+/// 阻塞接收取证快照：(真实阻塞次数, 阻塞唤醒次数)。
+pub fn recv_stamps() -> (u64, u64) {
+    (
+        RECV_BLOCKS.load(Ordering::Acquire),
+        RECV_WAKES.load(Ordering::Acquire),
+    )
 }
 
 /// 按通道 id 查找（容量外/未登记 → None）。
@@ -105,13 +132,29 @@ pub fn sys_send(endpoint: u64, payload_ptr: u64, len: u64, tag: u64) -> u64 {
         return 1; // 坏参数与无授权同面：v0 不区分（错误码 u64::MAX 系保留）
     };
     match fast.send_frame(tag as u32, payload) {
-        Ok(()) => 0,
+        Ok(()) => {
+            // M11-C：推送成功后唤醒该通道上的阻塞接收者。唤醒与接收方
+            // 的锁内探针以 SCHED 锁串行化（探针命中则接收方不阻塞直接
+            // 消费；探针未命中则本唤醒必然观察到 Blocked 登记）——
+            // 丢失唤醒免疫成对闭环。
+            task::wake_tasks(
+                |w| matches!(w, task::WaitWhat::IpcRecv { endpoint: e } if *e == endpoint as usize),
+            );
+            0
+        }
         Err(_) => 4, // ERR_FULL
     }
 }
 
 /// SYS_IPC_RECV 主体：能力门禁 → 接收环弹出 → 载荷复制回用户缓冲。
-/// 成功返回 `(tag << 32) | len`；环空返回 2（ERR_EMPTY，非阻塞语义）。
+/// 成功返回 `(tag << 32) | len`。
+///
+/// M11-C 阻塞化：环空时以 [`task::block_current_unless`] 条件阻塞
+/// （探针 = `pending()` 非消费读数，登记与探针同一 SCHED 锁窗口——
+/// 丢失唤醒免疫）；唤醒后重过门禁 + 重探消费（环为 SPSC 单消费者，
+/// 虚假唤醒/多接收者竞争由重探循环自然收敛）。非阻塞负路径
+/// （ERR_EMPTY）保留给能力门禁与坏参数探针（v0 语义收窄记档：
+/// 环空不再直接返回 ERR_EMPTY——阻塞语义取代轮询）。
 pub fn sys_recv(endpoint: u64, buf_ptr: u64, buf_len: u64) -> u64 {
     let Some(fast) = channel(endpoint) else {
         return 1;
@@ -130,18 +173,29 @@ pub fn sys_recv(endpoint: u64, buf_ptr: u64, buf_len: u64) -> u64 {
     if buf_len == 0 || buf_len as usize > FastPath::PAYLOAD {
         return 1;
     }
-    let mut frame = [0u8; FastPath::PAYLOAD];
-    let Some((tag, n)) = fast.recv_frame(&mut frame) else {
-        return 2; // ERR_EMPTY
-    };
-    {
-        // 可写校验：复用 LOG 路径的区间纪律（限低 1 GiB 恒等区、限长）
-        let Some(dst) = super::syscall::validate_user_slice_mut(buf_ptr, n as u64) else {
-            return 1;
-        };
-        dst.copy_from_slice(&frame[..n]);
+    loop {
+        let mut frame = [0u8; FastPath::PAYLOAD];
+        if let Some((tag, n)) = fast.recv_frame(&mut frame) {
+            // 可写校验：复用 LOG 路径的区间纪律（限低 1 GiB 恒等区、限长）
+            let Some(dst) = super::syscall::validate_user_slice_mut(buf_ptr, n as u64) else {
+                return 1;
+            };
+            dst.copy_from_slice(&frame[..n]);
+            return u64::from(tag) << 32 | n as u64;
+        }
+        // 环空：进入阻塞点即落证（t39 门面在发送方派发前等待此计数——
+        // 「登记前计数」语义；探针命中回滚亦计入尝试面，唤醒另计）
+        RECV_BLOCKS.fetch_add(1, Ordering::AcqRel);
+        if task::block_current_unless(
+            task::WaitWhat::IpcRecv {
+                endpoint: endpoint as usize,
+            },
+            true,
+            || fast.pending() == 0, // 环仍空 = 仍需阻塞（探针语义：true = 继续等）
+        ) {
+            RECV_WAKES.fetch_add(1, Ordering::AcqRel);
+        }
     }
-    u64::from(tag) << 32 | n as u64
 }
 
 /// SYS_CAP_DERIVE 主体（v0 语义）：仅允许从调用方自有槽位派生（句柄

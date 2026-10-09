@@ -563,6 +563,11 @@ pub fn init(frames: &'static FrameAllocator) {
     ostd::interrupt::stubs::set_pf_rec_hook(pf_hook);
 }
 
+/// 全局帧服务快照（M11-A：SYS_SPAWN 慢路径分配子空间；None = 未初始化）。
+pub fn global_frames() -> Option<&'static FrameAllocator> {
+    *FRAMES.lock()
+}
+
 /// 恢复钩子（可恢复 #PF 主体）：定位 → 门禁 → 补映射；M8-B 扩：swap
 /// 回收链换入路径；M10-B 扩：换入等待阻塞化（故障方切出等 swapd）。
 fn pf_hook(cr2: u64, error_code: u64) -> bool {

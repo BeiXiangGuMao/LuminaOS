@@ -134,6 +134,12 @@ pub enum WaitWhat {
         /// 目标子任务 pid（0 = 任意）。
         pid: usize,
     },
+    /// IPC 阻塞接收（M11-C）：等待目标通道推送帧（发送方 wake_tasks
+    /// 唤醒；endpoint = 通道 id，与 CHANNELS 槽位同域）。
+    IpcRecv {
+        /// 目标通道 id。
+        endpoint: usize,
+    },
 }
 
 /// 任务入口函数指针。
@@ -389,12 +395,15 @@ impl Drop for IntWindow {
 
 /// 钉扎过滤：槽位 `id` 的任务可否在本核 `cpu` 运行。
 ///
-/// 双约束：`pinned`（静态钉扎）与 `bound`（系统调用期间的动态绑定）。
+/// 三约束：`pinned`（静态钉扎）、`bound`（系统调用期间的动态绑定）与
+/// `SWITCHING`（M11-D 握手旗——现场保存未完成者不可拾取，跨核拾取
+/// 窗口根治的拾取侧门禁）。
 fn eligible(tasks: &[Option<Task>; MAX_TASKS], id: usize, cpu: usize) -> bool {
     tasks
         .get(id)
         .and_then(|t| t.as_ref())
         .is_some_and(|t| t.pinned.is_none_or(|c| c == cpu))
+        && SWITCHING[id].load(Ordering::Acquire) == 0
 }
 
 /// 轮转式拾取（单级）：从队首弹起、不匹配则回插队尾（保持队列顺序，
@@ -487,6 +496,26 @@ pub fn percpu_ticks() -> (u64, u64) {
 /// 对侧核抢占请求旗（M10-A）：墙钟钩子判定对侧核当前任务需切换时置位
 /// 并发 RESCHED IPI；RESCHED 抢占钩子消费（test-and-clear）。
 static PREEMPT_REQ: [AtomicBool; MAX_CPUS] = [AtomicBool::new(false), AtomicBool::new(false)];
+
+/// 调度切换握手旗（M11-D）：`SWITCHING[id] = 1` = 该槽位现场保存尚未
+/// 完成（重排队已生效但物理切换未落定），拾取面（[`eligible`]）拒绝；
+/// 清除点唯一性：
+/// - **抢占族**（wall/LAPIC/RESCHED 三源共享 [`execute_switch`] 填
+///   plan → 桩执行交换）：桩 asm 在旧上下文七槽保存完成后一次性
+///   清旗（`PreemptPlan.handoff` 单 Store）——保存与清旗同窗口完成，
+///   从清旗指令起该槽位可被任意核安全拾取；
+/// - **协作族**（yield/block/finish/idle 四路统一 [`switch_funnel`]）：
+///   后继任务的恢复点漏斗读 `LAST_OUT[cpu]` 清除前任旗（前任现场
+///   保存先于控制权移交，后继恢复时保存必然已落定）。
+///
+/// 置位点唯一性：仅在「任务仍可拾取且即将物理切离」的两族路径置位
+/// （yield 重排队 / preempt 重排队）；block（Blocked）与 finish（Zombie）
+/// 本不可拾取，不置旗（漏斗仍统一清旗，幂等无副作用）。
+static SWITCHING: [AtomicU64; MAX_TASKS] = {
+    #[allow(clippy::declare_interior_mutable_const)]
+    const ZERO: AtomicU64 = AtomicU64::new(0);
+    [ZERO; MAX_TASKS]
+};
 
 /// 阻塞唤醒计数（M10-B 自检 35/36 断言面）：累计唤醒次数（含换页与
 /// 进程间等待两族）。
@@ -653,6 +682,49 @@ pub fn spawn_user_child_pinned(
     id
 }
 
+/// 派生自由跨核子任务（M11-A：SYS_SPAWN 慢路径；M7-A 起用户任务
+/// 默认自由跨核，本变体与 [`spawn_user_child_pinned`] 的差异仅在
+/// 不钉扎）。父链内核登记同 M9-A；槽位耗尽返回 [`IDLE`]。
+pub fn spawn_user_child(
+    name: &'static str,
+    entry: Entry,
+    user_root: u64,
+    cap_slot: usize,
+    parent: usize,
+) -> usize {
+    let _w = IntWindow::new();
+    let mut s = SCHED.lock();
+    let Some(id) = alloc_slot(
+        &mut s,
+        Task::new_user(
+            name,
+            entry,
+            user_root,
+            cap_slot,
+            Some(parent),
+            trampoline_user,
+        ),
+    ) else {
+        return IDLE;
+    };
+    let prio = s.tasks[id].as_ref().map_or(PRIO_NORMAL, |t| t.prio);
+    enqueue(&mut s.ready, id, prio);
+    kick_other();
+    id
+}
+
+/// 当前任务的独立页表根（M11-A：SYS_SPAWN 克隆源；内核任务恒 0）。
+pub fn current_user_root() -> u64 {
+    let _w = IntWindow::new();
+    let cpu = my_cpu();
+    let s = SCHED.lock();
+    let cur = CURRENT[cpu].load(Ordering::Relaxed);
+    s.tasks
+        .get(cur)
+        .and_then(|t| t.as_ref())
+        .map_or(0, |t| t.user_root)
+}
+
 /// 派生钉扎用户任务：仅在 `cpu` 槽位可拾取（自检 26 的跨核确定性协议）。
 pub fn spawn_user_pinned(
     name: &'static str,
@@ -796,10 +868,10 @@ fn slots_pair(s: &mut Scheduler, a: usize, b: usize) -> SwitchPair {
 pub fn yield_now() {
     let w = IntWindow::new();
     let cpu = my_cpu();
+    let cur = CURRENT[cpu].load(Ordering::Relaxed);
     let pair = {
         let mut s = SCHED.lock();
         let sc = &mut *s;
-        let cur = CURRENT[cpu].load(Ordering::Relaxed);
         if cur == IDLE {
             return;
         }
@@ -816,6 +888,10 @@ pub fn yield_now() {
             t.state = State::Ready;
             t.waited = 0;
         }
+        // M11-D 握手：cur 已重排队（可拾取态）但现场保存未完成——置旗
+        // 拒绝拾取；旗由切换机器（lumina_context_switch）在旧现场保存
+        // 完成后单 Store 清除（锁释放→物理切换窗口封死，无后继配合项）
+        SWITCHING[cur].store(1, Ordering::Release);
         if let Some(t) = sc.tasks[target].as_mut() {
             t.state = State::Running;
         }
@@ -826,9 +902,9 @@ pub fn yield_now() {
         if let Some(t) = sc.tasks[target].as_ref() {
             prepare_dispatch(t, boot, cpu);
         }
-        slots_pair(sc, cur, target)
+        slots_pair(sc, cur, target).with_handoff(SWITCHING[cur].as_ptr()) // M11-D：旗随切换机器清除
     };
-    switch_deferred(pair); // 恢复后从此处继续（IF=0）
+    switch_deferred(pair); // 恢复后从此处继续（IF=0；旗已在保存完成后清除）
     ostd::hw::intr::enable(); // 恢复即开中断（内核任务 IF 约定）
     drop(w);
 }
@@ -1145,10 +1221,10 @@ fn finish_and_switch_away(code: u64) -> ! {
     let mut w = IntWindow::new();
     loop {
         let cpu = my_cpu();
+        let cur = CURRENT[cpu].load(Ordering::Relaxed);
         let pair = {
             let mut s = SCHED.lock();
             let sc = &mut *s;
-            let cur = CURRENT[cpu].load(Ordering::Relaxed);
             if cur == IDLE {
                 None
             } else {
@@ -1300,6 +1376,10 @@ pub fn preempt_stats() -> (u64, u64) {
 /// 抢占切换执行器（M10-A 三抢占源共享；ISR 窗口内调用，调用方持锁）。
 /// 执行被抢占者回队（M9-C 衰减回 base）→ 目标记 Running → CURRENT 更新
 /// → prepare_dispatch → plan 填写。返回 true = 已填写 plan（桩执行交换）。
+///
+/// M11-D 握手：cur 重排队（可拾取态）同时置 SWITCHING[cur] = 1，并把
+/// 旗地址写入 `plan.handoff`——桩在旧现场保存完成后清旗（asm 单
+/// Store），锁释放 → 桩保存完成之间的跨核拾取窗口被拾取侧门禁封死。
 fn execute_switch(
     sc: &mut Scheduler,
     cpu: usize,
@@ -1339,6 +1419,9 @@ fn execute_switch(
         (Some(o), Some(n)) => {
             plan.old = &mut o.ctx;
             plan.new = &mut n.ctx;
+            // M11-D：握手旗置位（锁内，拾取面立即生效）+ 桩清除面登记
+            SWITCHING[cur].store(1, Ordering::Release);
+            plan.handoff = SWITCHING[cur].as_ptr();
             true
         }
         _ => false,
@@ -1534,20 +1617,120 @@ pub fn resched_preempt_hook(plan: &mut PreemptPlan) -> bool {
 /// 本核 CURRENT = idle 时阻塞即调度不变式破坏（idle 无任务上下文），
 /// 直接终止调用方（调用面契约：仅任务上下文可调用）。
 pub fn block_current(what: WaitWhat, resume_if: bool) {
+    block_current_impl(what, resume_if, Probe::None);
+}
+
+/// 条件阻塞（M11-C）：登记等待对象前在**同一 SCHED 锁窗口**内执行
+/// `still_pending` 重探。返回 `false` = 探针命中（条件已就绪）：登记
+/// 已回滚、任务保持 Running 原地继续，调用方应直接重试消费；返回
+/// `true` = 已真实阻塞且已被唤醒（恢复点在本调用返回之后）。
+///
+/// 丢失唤醒免疫论证：探针与发送方的 `wake_tasks` 同以 SCHED 锁串行化
+/// ——若推送先于探针，探针命中（不阻塞，直接消费）；若推送晚于探针，
+/// 发送方随后的 `wake_tasks` 在锁窗口内必然观察到 Blocked 登记并唤醒。
+/// 二者必有其一观察到对方，无中间窗口。探针必须**非消费**（如
+/// `FastPath::pending` 哨兵读数），消费性操作由调用方在阻塞返回后
+/// 的重试路径完成。
+///
+/// # PANIC（防御）
+/// 本核 CURRENT = idle 时阻塞即调度不变式破坏，直接终止调用方。
+pub fn block_current_unless(
+    what: WaitWhat,
+    resume_if: bool,
+    mut still_pending: impl FnMut() -> bool,
+) -> bool {
+    block_current_impl(what, resume_if, Probe::Raw(&mut still_pending))
+}
+
+/// WAIT_PID 专用条件阻塞（丢失唤醒窗口补钉）：登记 Child 等待后于
+/// **同一 SCHED 锁窗口**内重扫直接子任务——匹配者已是 Zombie（粘滞
+/// 终态）则回滚登记返回 `false`（调用方重扫即收割，判定与收割之间
+/// 无新窗口）；否则照常阻塞，返回 `true` = 已真实阻塞且被唤醒。
+/// 子任务 EXIT 的唤醒（finish 锁窗口内）与本探针同锁串行化——
+/// 「先收割后阻塞」或「先登记后唤醒」二者必有其一成立。
+pub fn block_current_waitpid(parent: usize, want: u64, resume_if: bool) -> bool {
+    block_current_impl(
+        WaitWhat::Child { pid: want as usize },
+        resume_if,
+        Probe::WaitScan { parent, want },
+    )
+}
+
+/// 锁窗口探针（M11-C/M11 补钉）：登记 Blocked 后在同一 SCHED 锁窗口
+/// 内执行——命中（返回 true = 条件已就绪）则回滚登记不阻塞。探针在
+/// 锁窗口内运行是与唤醒方（wake_tasks 同锁串行化）互见的全部根据，
+/// 丢失唤醒免疫由此成立。Zombie/SWAPPED 等粘滞态使命中判定与后续
+/// 消费之间无新窗口。
+enum Probe<'a> {
+    /// 无条件阻塞（M10-B 原语义）。
+    None,
+    /// 调用方闭包（IPC pending 哨兵等非消费读数）。
+    Raw(&'a mut dyn FnMut() -> bool),
+    /// WAIT_PID 专用：锁内重扫直接子任务，匹配者已 Zombie 即命中
+    /// （want = 0 任意 / 非 0 定向）。
+    WaitScan { parent: usize, want: u64 },
+}
+fn block_current_impl(what: WaitWhat, resume_if: bool, mut probe: Probe) -> bool {
     let mut w = IntWindow::new();
     loop {
         let cpu = my_cpu();
+        let cur = CURRENT[cpu].load(Ordering::Relaxed);
         let pair = {
             let mut s = SCHED.lock();
             let sc = &mut *s;
-            let cur = CURRENT[cpu].load(Ordering::Relaxed);
             if cur == IDLE {
                 panic!("block_current: no task context (idle)");
+            }
+            // 唤醒检测（halt 重试环专用）：wait 已被 wake 清除且状态 Ready
+            // = 本任务停机等待期间已被唤醒入队——**不得重登记**（重登记吞掉
+            // 唤醒并令 pick_best 自拾取队列中的自己 → slots_pair 自切换越界，
+            // t37 压测实录）。处置：出队 + 回 Running + 返回「已唤醒」，
+            // 调用方按语义重扫（收割/消费）。首入不含此态（调用方 Running，
+            // wait 本为 None 但状态非 Ready）。
+            let woken = sc.tasks[cur]
+                .as_ref()
+                .is_some_and(|t| t.wait.is_none() && t.state == State::Ready);
+            if woken {
+                remove_value(&mut sc.ready, cur);
+                if let Some(t) = sc.tasks[cur].as_mut() {
+                    t.state = State::Running;
+                    t.waited = 0;
+                }
+                drop(s);
+                if resume_if {
+                    ostd::hw::intr::enable();
+                }
+                drop(w);
+                return true; // 已唤醒：调用方重扫（探针/扫描语义）
             }
             if let Some(t) = sc.tasks[cur].as_mut() {
                 t.wait = Some(what);
                 t.state = State::Blocked;
                 t.waited = 0;
+            }
+            // 条件探针（同一 SCHED 锁窗口）：命中即回滚登记——登记与探针
+            // 的原子性是丢失唤醒免疫的全部根据
+            let probe_hit = match &mut probe {
+                Probe::None => false,
+                Probe::Raw(f) => !f(),
+                Probe::WaitScan { parent, want } => {
+                    sc.tasks.iter().enumerate().any(|(id, slot)| {
+                        slot.as_ref().is_some_and(|t| {
+                            t.parent == Some(*parent)
+                                && t.state == State::Zombie
+                                && (*want == 0 || id == *want as usize)
+                        })
+                    })
+                }
+            };
+            if probe_hit {
+                if let Some(t) = sc.tasks[cur].as_mut() {
+                    t.wait = None;
+                    t.state = State::Running;
+                }
+                drop(s);
+                drop(w);
+                return false; // 探针命中：未阻塞，调用方直接重试消费
             }
             match pick_best(&mut sc.ready, &sc.tasks, cpu, IDLE, None) {
                 Some(id) => {
@@ -1582,15 +1765,11 @@ pub fn block_current(what: WaitWhat, resume_if: bool) {
         }
     }
     if resume_if {
-        // 恢复点无条件开中断（syscall 上下文内核任务 IF 约定；#PF 路径
-        // 传 resume_if=false 保持 IF=0 直至桩尾 iretq）
         ostd::hw::intr::enable();
     }
     drop(w);
+    true
 }
-
-/// 谓词匹配批量唤醒（M10-B 通用唤醒面；ISR 外任务上下文调用）：
-/// 匹配者 wait 清除 → Ready → 按 base 级入队 → 跨核提示。返回唤醒数。
 /// 扫描含槽位 0（主任务可阻塞——t35 的故障上下文即主任务）。
 pub fn wake_tasks(matcher: impl Fn(&WaitWhat) -> bool) -> usize {
     let _w = IntWindow::new();
@@ -1667,4 +1846,31 @@ pub fn task_alive(id: usize) -> bool {
     let _w = IntWindow::new();
     let s = SCHED.lock();
     s.tasks.get(id).is_some_and(|slot| slot.is_some())
+}
+
+/// 僵尸清扫（M11 槽位卫生面）：收割全部 Zombie 槽位（句柄已随终结
+/// 清算、退出码已留证——与 wait_scan 收割同款三条件安全）。返回清扫数。
+/// 自检序列的槽位回收面：t12 起的哑元任务/哑终点不再永久占位。
+pub fn reap_zombies() -> usize {
+    let _w = IntWindow::new();
+    let mut s = SCHED.lock();
+    let sc = &mut *s;
+    let mut n = 0usize;
+    for id in 1..MAX_TASKS {
+        if sc.tasks[id]
+            .as_ref()
+            .is_some_and(|t| t.state == State::Zombie)
+        {
+            sc.tasks[id] = None;
+            n += 1;
+        }
+    }
+    n
+}
+
+/// 握手旗全清快照（t40 断言面：系统静默期全部槽位应为 0——旗置位
+/// 仅存在于切换窗口内数指令宽度，任何非切换时刻观测到置位即失约）。
+pub fn handshake_flags_clear() -> bool {
+    let _w = IntWindow::new();
+    SWITCHING.iter().all(|f| f.load(Ordering::Acquire) == 0)
 }

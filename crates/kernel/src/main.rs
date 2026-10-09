@@ -51,7 +51,7 @@ mod vmm;
 
 use core::fmt::Write as _;
 use core::panic::PanicInfo;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -69,8 +69,8 @@ use crate::multiboot1::BOOT_MAGIC;
 const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
 /// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项
-/// + M8 三项 + M9 三项 + M10 三项）。
-const SELFTEST_TOTAL: usize = 36;
+/// + M8 三项 + M9 三项 + M10 三项 + M11 四项）。
+const SELFTEST_TOTAL: usize = 40;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐，链接进 .bss（NOLOAD）。
 #[repr(align(4096))]
@@ -1509,6 +1509,257 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t36, "waitpid-zombie-reap");
+
+    // 37) SYS_SPAWN 进程创建（M11-A：ring3 自主派生 + 克隆子空间 +
+    //     遗传细胞 + 父链内核登记）。构造：父任务（钉 CPU0）运行
+    //     USER_SPAWN_PROGRAM——读遗传细胞自证身份（根父 = 0）→ SPAWN(0)
+    //     （内核克隆父代码帧 + 子栈细胞写父 pid + 父链登记）→
+    //     WAIT_PID(cpid) 拆位校验。子任务 = 父代码克隆（自由跨核），凭
+    //     非零细胞走子分支（YIELD×8 → EXIT(42)），fork 炸弹族结构性排除。
+    //     取证链：父退出码 61 + SPAWN 戳（res=0/pid=子/细胞=父 pid）+
+    //     WAITPID 戳（收割对象 = 派生子、码 42）+ 子槽位释放 + 父槽位存续。
+    let t37 = {
+        let mut ok = true;
+        procs::reset_waitpid_evidence();
+        task::reset_user_evidence();
+        match user::build_user_space(&mut || frames.alloc()) {
+            Ok(us) => {
+                ostd::hw::phys::write_bytes(us.code_frame, &user::USER_SPAWN_PROGRAM);
+                let p_id = task::spawn_user_pinned("spawn-parent", user_noop, us.root, 0, 0);
+                let deadline = ostd::time::now() + 600;
+                while ostd::time::now() < deadline && !task::all_workers_finished() {
+                    task::yield_now();
+                }
+                ok &= task::all_workers_finished();
+                let (res, spid, cell) = procs::spawn_stamps();
+                let (wres, wpid, wcode) = procs::waitpid_stamps();
+                let (e0, _) = task::user_exit_codes();
+                let _ = writeln!(
+                    log,
+                    "spawn: exit0={e0} res={res:#x} pid={spid} cell={cell} \
+                     wres={wres:#x} wpid={wpid} wcode={wcode} c-alive={}",
+                    task::task_alive(spid as usize)
+                );
+                ok &= e0 == 61; // 父全链成功（克隆/细胞/收割拆位全过）
+                ok &= res == 0; // SPAWN 返回成功
+                ok &= cell == p_id as u64; // 子栈遗传细胞 = 父 pid（内核登记自证）
+                ok &= wres == 0; // WAIT_PID 成功
+                ok &= wpid == spid && spid != u64::MAX; // 收割对象 = 派生子
+                ok &= wcode == 42; // 子退出码（子分支 YIELD×8 后 EXIT(42)）
+                ok &= !task::task_alive(spid as usize); // 子槽位已释放回收
+                ok &= task::task_alive(p_id); // 父槽位存续
+            }
+            Err(e) => {
+                let _ = writeln!(log, "spawn: user space build failed: {e:?}");
+                ok = false;
+            }
+        }
+        ok
+    };
+    report(&mut log, t37, "spawn-ring3-derive");
+
+    // 38) 句柄查询与枚举面（M11-B：SYS_HANDLE_QUERY/ENUM）。
+    //     构造：探针任务持 R|W 主身份（句柄 1）+ 内核预装派生 READ-only
+    //     句柄 2——QUERY(1) 拆位（rights==R|W）、QUERY(0)/QUERY(9) 负探针
+    //     （ERR_HANDLE）、ENUM(0)→1 / ENUM(1)→2 / ENUM(2)→0（枚举尽）、
+    //     QUERY(2)→rights==READ。取证：退出码 68 + HQ 戳（末次命中 =
+    //     QUERY(2)：rights==READ、槽号 == 派生槽）。
+    let t38 = {
+        let mut ok = true;
+        procs::reset_handle_evidence();
+        task::reset_user_evidence();
+        let hq_object: u64 = 0x7A59_0000_0000_00A1;
+        let primary = crate::caps::alloc_slot(vanguard::Capability::new(
+            hq_object,
+            vanguard::Right::READ.bits() | vanguard::Right::WRITE.bits(),
+        ));
+        match (primary, user::build_user_space(&mut || frames.alloc())) {
+            (Some(pslot), Ok(us)) => {
+                ostd::hw::phys::write_bytes(us.code_frame, &user::USER_HQ_PROGRAM);
+                let tid = task::spawn_user_pinned("hq-probe", user_noop, us.root, pslot, 0);
+                // 预装句柄 2 = 派生 READ-only（单属主不变式：新全局槽）
+                let derived = crate::caps::table()
+                    .lock()
+                    .derive(pslot, vanguard::Right::READ.bits());
+                ok &= task::with_task_handles(tid, |h| h[2] = derived.ok()).is_some();
+                // 武装哨兵：句柄 2 就位后才放行探针（消除预装竞态）
+                ostd::hw::phys::write_u64(us.stack_frame + user::HQ_ARM_OFF, 1);
+                let deadline = ostd::time::now() + 600;
+                while ostd::time::now() < deadline && !task::all_workers_finished() {
+                    task::yield_now();
+                }
+                ok &= task::all_workers_finished();
+                let (e0, _) = task::user_exit_codes();
+                let (res, rights, slot) = procs::handle_stamps();
+                let _ = writeln!(
+                    log,
+                    "hq: exit0={e0} res={res:#x} rights={rights:#x} slot={slot} primary={pslot}"
+                );
+                ok &= e0 == 68; // 程序全链通过
+                ok &= res == 0; // 末次 HQ 调用 = QUERY(2) 成功
+                ok &= rights == u64::from(vanguard::Right::READ.bits()); // 派生 rights
+                ok &= slot == derived.unwrap_or(usize::MAX) as u64; // 全局槽号对证
+            }
+            _ => {
+                let _ = writeln!(log, "hq: setup failed");
+                ok = false;
+            }
+        }
+        ok
+    };
+    report(&mut log, t38, "handle-query-enum");
+
+    // 槽位卫生：t12 起哑元任务的僵尸槽位清扫（MAX_TASKS 48 已逼近满员，
+    // t37 实录：alloc_slot 失败 → 门面等待永假 → 冒烟挂死）
+    let _ = writeln!(log, "zombie-reap: {} slots freed", task::reap_zombies());
+
+    // 39) IPC 阻塞接收阻塞化（M11-C：SYS_IPC_RECV 接入 Blocked 态）。
+    //     构造：R（钉 CPU0，RECV 能力）先跑——负探针 RECV(LOCKED)→ERR_CAP
+    //     （非阻塞门禁拒绝）→ RECV(BLOCK) 环空阻塞；取证到真实阻塞登记后
+    //     才派 S（钉 CPU1，SEND 能力）——YIELD×4 → 推送 "WAKE"（tag 0x55）
+    //     → sys_send 唤醒 → R 重探消费 → 双方按码退出。取证链：R 65 /
+    //     S 67 + 真实阻塞 ≥1 + 阻塞唤醒 ≥1（探针-唤醒锁窗口成对）。
+    let t39 = {
+        let mut ok = true;
+        ipc::reset_recv_evidence();
+        task::reset_user_evidence();
+        let rslot = crate::caps::alloc_slot(vanguard::Capability::new(
+            ipc::BLOCK_OBJECT,
+            vanguard::Right::IPC_RECV.bits(),
+        ));
+        let sslot = crate::caps::alloc_slot(vanguard::Capability::new(
+            ipc::BLOCK_OBJECT,
+            vanguard::Right::IPC_SEND.bits(),
+        ));
+        match (
+            rslot,
+            sslot,
+            user::build_user_space(&mut || frames.alloc()),
+            user::build_user_space(&mut || frames.alloc()),
+        ) {
+            (Some(rs), Some(ss), Ok(usr), Ok(uss)) => {
+                ostd::hw::phys::write_bytes(usr.code_frame, &user::USER_BLOCKRECV_PROGRAM);
+                ostd::hw::phys::write_bytes(uss.code_frame, &user::USER_BLOCKSEND_PROGRAM);
+                let _r = task::spawn_user_pinned("block-recv", user_noop, usr.root, rs, 0);
+                // 确定性：等 R 真实进入阻塞点（登记前计数）后才派发送方
+                let deadline = ostd::time::now() + 600;
+                while ostd::time::now() < deadline && ipc::recv_stamps().0 == 0 {
+                    task::yield_now();
+                }
+                ok &= ipc::recv_stamps().0 > 0;
+                let _s = task::spawn_user_pinned("block-send", user_noop, uss.root, ss, 1);
+                let deadline = ostd::time::now() + 600;
+                while ostd::time::now() < deadline && !task::all_workers_finished() {
+                    task::yield_now();
+                }
+                ok &= task::all_workers_finished();
+                let (e0, e1) = task::user_exit_codes();
+                let (blocks, wakes) = ipc::recv_stamps();
+                let _ = writeln!(
+                    log,
+                    "block-recv: exit=({e0},{e1}) blocks={blocks} wakes={wakes}"
+                );
+                ok &= e0 == 65 && e1 == 67; // R 载荷校验过 / S 推送成功
+                ok &= blocks >= 1 && wakes >= 1; // 真实阻塞 + 唤醒配对
+            }
+            _ => {
+                let _ = writeln!(log, "block-recv: setup failed");
+                ok = false;
+            }
+        }
+        ok
+    };
+    report(&mut log, t39, "ipc-recv-blocking");
+
+    // 40) 调度切换握手压测（M11-D：跨核拾取窗口根治）。
+    //     构造：双核 ring3 spinner（抢占压力：preempt-plan 路径高频置旗/
+    //     桩内清旗）+ 双核钉扎 yield 风暴内核任务（协作路径漏斗高频）+
+    //     双枚自由跨核 yield 任务（跨核拾取压力：重排队窗口被对侧核
+    //     命中）。预算窗口后全量退出；取证：风暴/自由任务全部落证 +
+    //     spinner 哨兵退出 57/57 + 静默期全旗清零 + 协作/抢占计数双增。
+    let t40 = {
+        static STORM_DONE: AtomicUsize = AtomicUsize::new(0);
+        fn storm_body_0() {
+            for _ in 0..4000 {
+                task::yield_now();
+            }
+            STORM_DONE.fetch_or(1, Ordering::AcqRel);
+        }
+        fn storm_body_1() {
+            for _ in 0..4000 {
+                task::yield_now();
+            }
+            STORM_DONE.fetch_or(2, Ordering::AcqRel);
+        }
+        fn free_body_a() {
+            for _ in 0..2000 {
+                task::yield_now();
+            }
+            STORM_DONE.fetch_or(4, Ordering::AcqRel);
+        }
+        fn free_body_b() {
+            for _ in 0..2000 {
+                task::yield_now();
+            }
+            STORM_DONE.fetch_or(8, Ordering::AcqRel);
+        }
+        let mut ok = true;
+        task::set_preempt_enabled(true);
+        task::reset_user_evidence();
+        STORM_DONE.store(0, Ordering::Release);
+        match (
+            user::build_user_space(&mut || frames.alloc()),
+            user::build_user_space(&mut || frames.alloc()),
+        ) {
+            (Ok(usa), Ok(usb)) => {
+                ostd::hw::phys::write_bytes(usa.code_frame, &user::USER_SPIN_PROGRAM);
+                ostd::hw::phys::write_bytes(usb.code_frame, &user::USER_SPIN_PROGRAM);
+                let _ = task::spawn_user_pinned("hs-spin-a", user_noop, usa.root, 0, 0);
+                let _ = task::spawn_user_pinned("hs-spin-b", user_noop, usb.root, 0, 1);
+                let _ = task::spawn_pinned_prio("hs-storm-0", storm_body_0, 2, 0);
+                let _ = task::spawn_pinned_prio("hs-storm-1", storm_body_1, 2, 1);
+                let _ = task::spawn("hs-free-a", free_body_a);
+                let _ = task::spawn("hs-free-b", free_body_b);
+                let (coop0, pre0) = task::preempt_stats();
+                // 风暴窗口：钉扎 + 自由任务全部落证（spinner 继续驻留）
+                let deadline = ostd::time::now() + 1200;
+                while ostd::time::now() < deadline && STORM_DONE.load(Ordering::Acquire) != 0xF {
+                    task::yield_now();
+                }
+                // 哨兵释放：双 spinner 退出（取证窗口闭合）
+                let spin_off = user::SPIN_SENTINEL_VA - user::USER_STACK_VIRT;
+                ostd::hw::phys::write_u64(usa.stack_frame + spin_off, 1);
+                ostd::hw::phys::write_u64(usb.stack_frame + spin_off, 1);
+                let deadline = ostd::time::now() + 800;
+                while ostd::time::now() < deadline && !task::all_workers_finished() {
+                    task::yield_now();
+                }
+                // done 断言置于全员终结后（风暴环可能压线截止，done 位由
+                // 哨兵等待期的泵进补齐——过早断言即误判，t40 首跑实录）
+                ok &= STORM_DONE.load(Ordering::Acquire) == 0xF;
+                ok &= task::all_workers_finished();
+                let (e0, e1) = task::user_exit_codes();
+                let (coop1, pre1) = task::preempt_stats();
+                let fc = task::handshake_flags_clear();
+                let _ = writeln!(
+                    log,
+                    "handshake: exit=({e0},{e1}) done={:x} coop+={} preempt+={} flags={fc}",
+                    STORM_DONE.load(Ordering::Acquire),
+                    coop1 - coop0,
+                    pre1 - pre0,
+                );
+                ok &= e0 == 57 && e1 == 57; // spinner 哨兵退出（寄存器面完好）
+                ok &= fc; // 静默期全旗清零
+                ok &= coop1 > coop0 && pre1 > pre0; // 两族路径都真实发生
+            }
+            _ => {
+                let _ = writeln!(log, "handshake: user space build failed");
+                ok = false;
+            }
+        }
+        ok
+    };
+    report(&mut log, t40, "sched-switch-handshake");
 
     let _ = writeln!(log, "----");
     interrupts::disable();
