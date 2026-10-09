@@ -6,7 +6,8 @@
 //!
 //! - [`abi`]：系统调用号与寄存器布局（v0 ABI）；
 //! - [`tlv`]：内核测试与 IPC 载荷的 TLV 编帧（QEMU 宿主-客户机协议约定）；
-//! - [`ipc`]：端点信箱（快速路径的数据结构面）。
+//! - [`ipc`]：端点信箱（快速路径的数据结构面）；
+//! - [`vfs`]：虚拟文件系统骨架——文件面与多段映像的公共基座（v0.13.0，M13-①）。
 //!
 //! 非目标：页表、调度器与中断控制属 bedrock-boot/ostd 后续里程碑（SPEC 表 19-1 P0）。
 #![no_std]
@@ -15,6 +16,7 @@ extern crate alloc;
 pub mod abi;
 pub mod ipc;
 pub mod tlv;
+pub mod vfs;
 
 #[cfg(test)]
 extern crate std;

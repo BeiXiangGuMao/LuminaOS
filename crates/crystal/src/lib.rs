@@ -6,7 +6,11 @@
 //! ABA 问题——这正是「双代际根槽」在内存元数据面的镜像实现。
 //!
 //! 用途：Mirror 的 Surface 表、Aurora 的应用实例表、Pulse 的连接表等一切
-//! 「长生命周期、句柄外泄」场景。
+//! 「长生命周期、句柄外泄」场景；v0.13.0 起 Bedrock 的文件描述符表亦以本容器为基座。
+#![no_std]
+extern crate alloc;
+
+use alloc::vec::Vec;
 
 /// 代际槽表中的句柄。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -133,6 +137,8 @@ impl<T> Default for GenerationalSlab<T> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    extern crate std;
+
     use super::{GenerationalSlab, SlotError};
 
     #[test]

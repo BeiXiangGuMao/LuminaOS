@@ -10,6 +10,8 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+# v0.13.0（M13-①）：fd 表以 Crystal 代际槽为基座（crystal 为通用数据结构层，方向仍低 → 高）
+crystal = { workspace = true }
 ostd = { workspace = true }
 vanguard = { workspace = true }
 
