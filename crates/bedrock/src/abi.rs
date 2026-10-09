@@ -65,9 +65,26 @@ pub const SYS_HANDLE_QUERY: u64 = 14;
 /// 句柄：`(1 << 32) | (handle << 16) | rights`；无更多占用 → `0`
 /// （枚举尽）。调用协议：`cursor = 上次返回的 handle` 循环直至 0。
 pub const SYS_HANDLE_ENUM: u64 = 15;
+/// 创建运行时 IPC 通道（v0.12 追加，M12-A 通道注册表运行时化）。
+///
+/// 参数 = 保留位（v0 必须为 0，非零 → `BadArgs`）。成功返回
+/// `(1 << 32) | handle`（句柄域与错误码域无交叠）：内核铸造新
+/// 通道对象 id + 泄漏快速路径环对 + [`Capability`](能力 SEND|RECV)
+/// 装入调用方句柄表首空闲位。注册表满 / 分配失败 → `ERR_NOMEM(9)`；
+/// 调用方句柄表满 → `ERR_TABLE(7)`。通道的跨任务分发复用
+/// [`SYS_CAP_GRANT`]（M9 父进程面——通道即能力对象，零新授权面）。
+pub const SYS_IPC_BIND: u64 = 16;
+/// 以内核内嵌映像重建调用方地址空间（v0.12 追加，M12-B 执行映像面）。
+///
+/// 参数 = 映像号（[`EXEC_IMAGES`] 表索引，越界 → `ERR_IMAGE(10)`）。
+/// 成功**不返回**（新映像自用户入口执行；RIP/RSP/参数寄存器由内核
+/// 全量构造；r12–r15 callee-saved 语义自然往返——r14 遗传细胞保持，
+/// exec 不改父子链）；旧空间帧按 v0 存续期语义不回收（如实记档）。
+/// 无独立用户空间 → `ERR_CAP`；帧耗尽 → `ERR_NOMEM(9)`。
+pub const SYS_EXEC: u64 = 17;
 
-/// 系统调用 ABI 版本（追加 SPAWN/HANDLE_QUERY/HANDLE_ENUM → 0.5）。
-pub const ABI_VERSION: (u16, u16) = (0, 5);
+/// 系统调用 ABI 版本（追加 IPC_BIND/EXEC → 0.6；通道运行时化与执行映像面）。
+pub const ABI_VERSION: (u16, u16) = (0, 6);
 
 /// 寄存器快照形式的系统调用请求。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,16 +119,20 @@ pub enum Syscall {
     },
     /// 让出 CPU。
     Yield,
-    /// 发送：目标端点 id 与载荷指针/长度。
+    /// 发送：目标端点与载荷指针/长度。
+    ///
+    /// v0.12 语义演进（M12-A）：端点 = **调用方句柄**（任务本地名）。
+    /// 内核解析 句柄 → 全局能力槽 → 对象 id → 通道注册表按对象反查。
+    /// 无效句柄与通道不存在对外同面（ERR_CAP，不泄露拓扑）。
     IpcSend {
-        /// 目标端点 id。
+        /// 调用方持有的通道能力句柄。
         endpoint: u64,
         /// 载荷长度（字节，上限 4096）。
         len: u64,
     },
-    /// 接收：目标端点 id 与接收缓冲指针/长度。
+    /// 接收：目标端点与接收缓冲指针/长度（语义演进同 [`Syscall::IpcSend`]）。
     IpcRecv {
-        /// 目标端点 id。
+        /// 调用方持有的通道能力句柄。
         endpoint: u64,
         /// 缓冲长度（字节）。
         buf_len: u64,
@@ -169,6 +190,16 @@ pub enum Syscall {
         /// 枚举游标（返回该句柄号之后的首个占用项）。
         cursor: u64,
     },
+    /// 创建运行时 IPC 通道（M12-A；成功编码见 [`SYS_IPC_BIND`] 文档）。
+    IpcBind {
+        /// 保留参数（v0 必须为 0）。
+        reserved: u64,
+    },
+    /// 执行映像重建（M12-B；语义见 [`SYS_EXEC`] 文档）。
+    Exec {
+        /// 内嵌映像表索引。
+        image: u64,
+    },
 }
 
 /// 从寄存器快照解析调用意图。只做结构校验，不做内存访问（由慢路径完成）。
@@ -207,6 +238,9 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
         SYS_SPAWN => Err(AbiError::BadArgs),
         SYS_HANDLE_QUERY => Ok(Syscall::HandleQuery { handle: a0 }),
         SYS_HANDLE_ENUM => Ok(Syscall::HandleEnum { cursor: a0 }),
+        SYS_IPC_BIND if a0 == 0 => Ok(Syscall::IpcBind { reserved: a0 }),
+        SYS_IPC_BIND => Err(AbiError::BadArgs),
+        SYS_EXEC => Ok(Syscall::Exec { image: a0 }),
         _ => Err(AbiError::UnknownSyscall),
     }
 }
@@ -302,6 +336,34 @@ mod tests {
         assert_eq!(
             super::parse(r(SYS_SPAWN, [1, 0, 0, 0, 0])),
             Err(AbiError::BadArgs)
+        );
+    }
+
+    #[test]
+    fn parses_ipc_bind_call() {
+        let r = |num: u64, args: [u64; 5]| SyscallRegs { num, args };
+        // v0 保留参数必须为 0
+        assert_eq!(
+            super::parse(r(super::SYS_IPC_BIND, [0, 0, 0, 0, 0])),
+            Ok(Syscall::IpcBind { reserved: 0 })
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_IPC_BIND, [1, 0, 0, 0, 0])),
+            Err(AbiError::BadArgs)
+        );
+    }
+
+    #[test]
+    fn parses_exec_call() {
+        let r = |num: u64, args: [u64; 5]| SyscallRegs { num, args };
+        // 映像号透传（越界由内核映像表面验 → ERR_IMAGE）
+        assert_eq!(
+            super::parse(r(super::SYS_EXEC, [0, 0, 0, 0, 0])),
+            Ok(Syscall::Exec { image: 0 })
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_EXEC, [7, 0, 0, 0, 0])),
+            Ok(Syscall::Exec { image: 7 })
         );
     }
 

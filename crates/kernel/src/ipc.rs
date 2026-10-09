@@ -2,8 +2,14 @@
 //!
 //! 架构：内核持有通道注册表（`FastPath` 环对 + 能力对象 id）；用户任务
 //! 经 `SYS_IPC_SEND` / `SYS_IPC_RECV` 访问通道，**每次调用都过 Vanguard
-//! 能力门禁**（调用方 `Task::cap_slot` 的能力必须覆盖通道对象且持有
-//! `IPC_SEND`/`IPC_RECV` 权限位）——快速路径的无锁性能不牺牲授权纪律。
+//! 能力门禁**——v0.12（M12-A）起端点参数 = **调用方句柄**：内核解析
+//! 句柄 → 全局能力槽 → 对象 id → 注册表按对象反查通道；无效句柄与通道
+//! 不存在对外同面（ERR_CAP，不泄露拓扑）。
+//!
+//! 通道注册表**运行时化**（M12-A）：预设面收缩为槽 0（回声服务，自检
+//! 24 的内核侧对端）与槽 1（阻塞接收测试通道，t39 对端），其余槽位由
+//! ring3 经 `SYS_IPC_BIND` 运行时创建（铸对象 id + 泄漏环对 + 能力装入
+//! 调用方句柄表）；跨任务分发复用 `SYS_CAP_GRANT`（M9 父进程面）。
 //!
 //! 服务面：内核回声 worker（`echo_worker_body`，统一调度器里的普通内核
 //! 任务）循环「收请求 → tag|0x80 原值回传」，为自检 24 提供确定性对端。
@@ -14,8 +20,12 @@
 //!
 //! unsafe 面：零。用户缓冲区经 `validate_user_slice` 校验（限低 1 GiB
 //! 恒等区、限长），通道环为 safe 包装的 SPSC。
+//!
+//! 锁序契约：SCHED → CHANNELS（唤醒路径 wake_tasks 在前先取 SCHED，
+//! 本模块的 send/recv/bind 单取 CHANNELS 或 CAPS，不嵌套持有多锁）。
 
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::fmt::Write as _;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -26,16 +36,16 @@ use vanguard::{Capability, Right};
 use crate::console::DualLog;
 use crate::task;
 
-/// 通道注册表容量。
-const MAX_CHANNELS: usize = 4;
+/// 通道注册表容量（含预设面；运行时 BIND 与预设共享定容空间）。
+const MAX_CHANNELS: usize = 16;
 /// 回声服务对象 id（能力对象寻址；通道 0）。
 pub const ECHO_OBJECT: u64 = 0xC0DE_0000_0000_0001;
-/// 无授权对象 id（通道 1：负路径探针——能力不覆盖即拒绝）。
-pub const LOCKED_OBJECT: u64 = 0xC0DE_0000_0000_0002;
-/// 阻塞接收测试对象 id（通道 2；M11-C t39 对端）。
+/// 阻塞接收测试对象 id（通道 1；t39 对端）。
 pub const BLOCK_OBJECT: u64 = 0xC0DE_0000_0000_0003;
 /// 回声服务标签（应答 = 请求 tag | 0x80）。
 pub const ECHO_TAG: u32 = 0x21;
+/// 运行时对象 id 铸造基（与预设 0xC0DE_0000_0000_000X 段隔离）。
+const RUNTIME_OBJECT_BASE: u64 = 0xC0DE_0000_0001_0000;
 
 /// 一个通道：快速路径环对 + 授权对象。
 struct Channel {
@@ -43,10 +53,17 @@ struct Channel {
     object: u64,
 }
 
-/// 通道注册表（ipc::init 后冻结：槽位 0 = 回声服务，槽位 1 = 无授权探针，
-/// 槽位 2 = 阻塞接收测试）。
-static CHANNELS: SpinLock<[Option<Channel>; MAX_CHANNELS]> =
-    SpinLock::new([None, None, None, None]);
+/// 通道注册表（运行时化，M12-A）：槽 0 = 回声服务、槽 1 = 阻塞接收
+/// 测试（内核预设面），槽 2.. 供 SYS_IPC_BIND 动态分配；None = 空闲。
+static CHANNELS: SpinLock<Vec<Option<Channel>>> = SpinLock::new(alloc::vec::Vec::new());
+
+/// 运行时对象 id 计数器（BIND 铸造；fetch_add 单调）。
+static NEXT_OBJECT: AtomicU64 = AtomicU64::new(RUNTIME_OBJECT_BASE);
+/// SYS_IPC_BIND 取证（t41 断言面）：最近一次返回码 + 成功时的句柄。
+static BIND_RESULT: AtomicU64 = AtomicU64::new(u64::MAX);
+static BIND_HANDLE: AtomicU64 = AtomicU64::new(u64::MAX);
+/// 运行时通道创建总数（取证面）。
+static BIND_CREATED: AtomicU64 = AtomicU64::new(0);
 
 /// 回声服务已应答帧数（自检 24 断言）。
 static ECHO_SERVED: AtomicU64 = AtomicU64::new(0);
@@ -58,21 +75,21 @@ static ECHO_STOP: AtomicBool = AtomicBool::new(false);
 static RECV_BLOCKS: AtomicU64 = AtomicU64::new(0);
 static RECV_WAKES: AtomicU64 = AtomicU64::new(0);
 
-/// IPC 子系统初始化：泄漏全局通道环并登记（先于任何 IPC 系统调用）。
+/// IPC 子系统初始化：预设面就位（槽 0 = 回声、槽 1 = 阻塞接收测试），
+/// 注册表扩至定容（其余槽位空闲，等待运行时 BIND）。
 pub fn init() {
     let echo: &'static FastPath = Box::leak(Box::new(FastPath::new()));
-    let locked: &'static FastPath = Box::leak(Box::new(FastPath::new()));
     let block: &'static FastPath = Box::leak(Box::new(FastPath::new()));
     let mut chans = CHANNELS.lock();
+    chans.clear();
+    for _ in 0..MAX_CHANNELS {
+        chans.push(None);
+    }
     chans[0] = Some(Channel {
         fast: echo,
         object: ECHO_OBJECT,
     });
     chans[1] = Some(Channel {
-        fast: locked,
-        object: LOCKED_OBJECT,
-    });
-    chans[2] = Some(Channel {
         fast: block,
         object: BLOCK_OBJECT,
     });
@@ -92,53 +109,150 @@ pub fn recv_stamps() -> (u64, u64) {
     )
 }
 
-/// 按通道 id 查找（容量外/未登记 → None）。
-fn channel(id: u64) -> Option<&'static FastPath> {
+/// SYS_IPC_BIND 取证复位（跨自检隔离）。
+pub fn reset_bind_evidence() {
+    BIND_RESULT.store(u64::MAX, Ordering::Release);
+    BIND_HANDLE.store(u64::MAX, Ordering::Release);
+    BIND_CREATED.store(0, Ordering::Release);
+}
+
+/// SYS_IPC_BIND 取证快照：(返回码, 句柄, 运行时创建总数)。
+pub fn bind_stamps() -> (u64, u64, u64) {
+    (
+        BIND_RESULT.load(Ordering::Acquire),
+        BIND_HANDLE.load(Ordering::Acquire),
+        BIND_CREATED.load(Ordering::Acquire),
+    )
+}
+
+/// 按通道槽位查找（内核服务面专用：回声 worker；容量外/未登记 → None）。
+fn channel_by_id(id: usize) -> Option<&'static FastPath> {
     let chans = CHANNELS.lock();
-    chans
-        .get(id as usize)
-        .and_then(|c| c.as_ref())
-        .map(|c| c.fast)
+    chans.get(id).and_then(|c| c.as_ref()).map(|c| c.fast)
 }
 
-/// 能力门禁：调用方能力必须覆盖 `object` 且含 `need` 权限。
-fn gate(object: u64, need: Right) -> bool {
-    let cap = crate::caps::table().lock().get(task::current_cap_slot());
-    cap.is_ok_and(|c| c.object() == object && c.has(need))
+/// 句柄解析共用切片（M12-A 寻址面）：调用方句柄 → (全局槽, 能力)。
+/// NULL/越界/未持有/全局槽失效 → None（对外同面 ERR_CAP）。
+fn resolve_cap(handle: u64) -> Option<(usize, Capability)> {
+    let caller = task::current_task_id();
+    let h = handle as usize;
+    if h == 0 || h >= task::HANDLE_MAX {
+        return None;
+    }
+    let slot = task::with_task_handles(caller, |t| t[h]).and_then(|s| s)?;
+    let cap = crate::caps::table().lock().get(slot).ok()?;
+    Some((slot, cap))
 }
 
-/// SYS_IPC_SEND 主体：能力门禁 → 用户载荷校验 → 快速路径投递。
+/// 通道反查（M12-A）：对象 id → (通道槽位, 环对)。任一时刻至多一个
+/// 通道持有同一对象 id（铸造面单调 + 槽位互斥保证）。
+fn channel_by_object(object: u64) -> Option<(usize, &'static FastPath)> {
+    let chans = CHANNELS.lock();
+    chans.iter().enumerate().find_map(|(id, c)| {
+        c.as_ref()
+            .filter(|c| c.object == object)
+            .map(|c| (id, c.fast))
+    })
+}
+
+/// SYS_IPC_BIND 主体（M12-A）：运行时通道创建。
 ///
-/// 参数取自系统调用帧：endpoint = rdi，len = rsi，载荷指针 = rdx，
-/// tag = r10（abi v0 的 IpcSend 结构校验 endpoint/len；指针与 tag 由
-/// 慢路径从寄存器面直读——与本帧布局严格对应）。
+/// 全链（调用方任务上下文，串行）：
+/// 1. 预检：调用方句柄表存在空闲位（满 → ERR_TABLE，先验免泄漏）；
+/// 2. 注册表槽位 + 对象 id 铸造 + 环对泄漏（注册表满 → ERR_NOMEM）；
+/// 3. 能力铸造（SEND|RECV）装入全局能力表（满 → 回滚注册表槽 →
+///    ERR_NOMEM）+ 安装到调用方句柄表首空闲位。
+///
+/// 成功返回 `(1 << 32) | handle`。取证面：BIND_RESULT/BIND_HANDLE/
+/// BIND_CREATED（t41 断言）。通道生命周期 v0 = 注册表存续期（撤销仅
+/// 移除句柄，通道对象不回收——定容槽位上限 16，如实记档）。
+pub fn sys_bind(reserved: u64) -> u64 {
+    let _ = reserved; // v0 恒 0（parse 面已校验）
+    let caller = task::current_task_id();
+    // 1) 调用方句柄表空闲位预检（首空闲 ≥ 1）
+    let free_handle = task::with_task_handles(caller, |t| {
+        t.iter()
+            .enumerate()
+            .skip(1)
+            .find_map(|(h, s)| s.is_none().then_some(h))
+    });
+    let Some(Some(free_handle)) = free_handle else {
+        BIND_RESULT.store(7, Ordering::Release); // ERR_TABLE
+        return 7;
+    };
+    // 2) 注册表槽位 + 对象 id + 环对
+    let object = NEXT_OBJECT.fetch_add(1, Ordering::AcqRel);
+    let fast: &'static FastPath = Box::leak(Box::new(FastPath::new()));
+    let mut chan_id = None;
+    {
+        let mut chans = CHANNELS.lock();
+        if let Some(id) = chans
+            .iter_mut()
+            .enumerate()
+            .skip(2)
+            .find_map(|(id, c)| c.is_none().then_some(id))
+        {
+            chans[id] = Some(Channel { fast, object });
+            chan_id = Some(id);
+        }
+    }
+    let Some(chan_id) = chan_id else {
+        BIND_RESULT.store(9, Ordering::Release); // ERR_NOMEM（注册表满）
+        return 9;
+    };
+    // 3) 能力铸造 + 句柄安装（失败路径回滚注册表槽，环对随通道存续）
+    let cap = Capability::new(object, Right::IPC_SEND.bits() | Right::IPC_RECV.bits());
+    let gslot = crate::caps::alloc_slot(cap);
+    let ok = match gslot {
+        Some(g) => task::with_task_handles(caller, |t| t[free_handle] = Some(g)).is_some(),
+        None => false,
+    };
+    if !ok {
+        CHANNELS.lock()[chan_id] = None;
+        if let Some(g) = gslot {
+            let _ = crate::caps::table().lock().revoke(g);
+        }
+        BIND_RESULT.store(9, Ordering::Release); // ERR_NOMEM（能力表满）
+        return 9;
+    }
+    BIND_RESULT.store(0, Ordering::Release);
+    BIND_HANDLE.store(free_handle as u64, Ordering::Release);
+    BIND_CREATED.fetch_add(1, Ordering::AcqRel);
+    (1 << 32) | free_handle as u64
+}
+
+/// 能力门禁（M12-A）：通道已按句柄对应能力的对象反查——门禁即权限位
+/// 校验（对象同一性由反查保证）。
+fn gate(cap: &Capability, need: Right) -> bool {
+    cap.has(need)
+}
+
+/// SYS_IPC_SEND 主体：句柄解析 → 能力门禁 → 用户载荷校验 → 快速路径投递。
+///
+/// 参数取自系统调用帧：endpoint = rdi（**调用方句柄**，M12-A），len =
+/// rsi，载荷指针 = rdx，tag = r10。
 pub fn sys_send(endpoint: u64, payload_ptr: u64, len: u64, tag: u64) -> u64 {
-    let Some(fast) = channel(endpoint) else {
-        return 1; // ERR_CAP：通道不存在与无授权对外同面（不泄露拓扑）
+    // 解析 + 门禁：句柄 → 全局能力槽 → 能力（对象 id 随行）
+    let Some((_, cap)) = resolve_cap(endpoint) else {
+        return 1; // ERR_CAP：无效句柄与无授权对外同面
     };
-    // 门禁读取登记表内对象 id（与 fast 同槽位）；先取对象再校验权限
-    let object = {
-        let chans = CHANNELS.lock();
-        chans
-            .get(endpoint as usize)
-            .and_then(|c| c.as_ref())
-            .map(|c| c.object)
-            .unwrap_or(0)
-    };
-    if !gate(object, Right::IPC_SEND) {
+    if !gate(&cap, Right::IPC_SEND) {
         return 1; // ERR_CAP
     }
+    // 通道反查（按能力对象 id）
+    let Some((chan_id, fast)) = channel_by_object(cap.object()) else {
+        return 1; // ERR_CAP
+    };
     let Some(payload) = super::syscall::validate_user_slice(payload_ptr, len) else {
         return 1; // 坏参数与无授权同面：v0 不区分（错误码 u64::MAX 系保留）
     };
     match fast.send_frame(tag as u32, payload) {
         Ok(()) => {
-            // M11-C：推送成功后唤醒该通道上的阻塞接收者。唤醒与接收方
-            // 的锁内探针以 SCHED 锁串行化（探针命中则接收方不阻塞直接
-            // 消费；探针未命中则本唤醒必然观察到 Blocked 登记）——
-            // 丢失唤醒免疫成对闭环。
+            // M11-C：推送成功后唤醒该通道上的阻塞接收者（按通道槽位定向；
+            // 唤醒与接收方的锁内探针以 SCHED 锁串行化——丢失唤醒免疫成对
+            // 闭环，M12-A 起等待对象记通道槽位 = 内核内部 id）。
             task::wake_tasks(
-                |w| matches!(w, task::WaitWhat::IpcRecv { endpoint: e } if *e == endpoint as usize),
+                |w| matches!(w, task::WaitWhat::IpcRecv { endpoint: e } if *e == chan_id),
             );
             0
         }
@@ -146,30 +260,23 @@ pub fn sys_send(endpoint: u64, payload_ptr: u64, len: u64, tag: u64) -> u64 {
     }
 }
 
-/// SYS_IPC_RECV 主体：能力门禁 → 接收环弹出 → 载荷复制回用户缓冲。
-/// 成功返回 `(tag << 32) | len`。
+/// SYS_IPC_RECV 主体：句柄解析 → 能力门禁 → 接收环弹出 → 载荷复制回
+/// 用户缓冲。成功返回 `(tag << 32) | len`。
 ///
-/// M11-C 阻塞化：环空时以 [`task::block_current_unless`] 条件阻塞
-/// （探针 = `pending()` 非消费读数，登记与探针同一 SCHED 锁窗口——
-/// 丢失唤醒免疫）；唤醒后重过门禁 + 重探消费（环为 SPSC 单消费者，
-/// 虚假唤醒/多接收者竞争由重探循环自然收敛）。非阻塞负路径
-/// （ERR_EMPTY）保留给能力门禁与坏参数探针（v0 语义收窄记档：
-/// 环空不再直接返回 ERR_EMPTY——阻塞语义取代轮询）。
+/// M11-C 阻塞化（M12-A 寻址面适配）：环空时以 [`task::block_current_unless`]
+/// 条件阻塞（探针 = `pending()` 非消费读数，登记与探针同一 SCHED 锁窗口
+/// ——丢失唤醒免疫）；唤醒后重过门禁 + 重探消费（环为 SPSC 单消费者，
+/// 虚假唤醒/多接收者竞争由重探循环自然收敛）。
 pub fn sys_recv(endpoint: u64, buf_ptr: u64, buf_len: u64) -> u64 {
-    let Some(fast) = channel(endpoint) else {
+    let Some((_, cap)) = resolve_cap(endpoint) else {
         return 1;
     };
-    let object = {
-        let chans = CHANNELS.lock();
-        chans
-            .get(endpoint as usize)
-            .and_then(|c| c.as_ref())
-            .map(|c| c.object)
-            .unwrap_or(0)
-    };
-    if !gate(object, Right::IPC_RECV) {
+    if !gate(&cap, Right::IPC_RECV) {
         return 1;
     }
+    let Some((chan_id, fast)) = channel_by_object(cap.object()) else {
+        return 1;
+    };
     if buf_len == 0 || buf_len as usize > FastPath::PAYLOAD {
         return 1;
     }
@@ -187,9 +294,7 @@ pub fn sys_recv(endpoint: u64, buf_ptr: u64, buf_len: u64) -> u64 {
         // 「登记前计数」语义；探针命中回滚亦计入尝试面，唤醒另计）
         RECV_BLOCKS.fetch_add(1, Ordering::AcqRel);
         if task::block_current_unless(
-            task::WaitWhat::IpcRecv {
-                endpoint: endpoint as usize,
-            },
+            task::WaitWhat::IpcRecv { endpoint: chan_id },
             true,
             || fast.pending() == 0, // 环仍空 = 仍需阻塞（探针语义：true = 继续等）
         ) {
@@ -233,7 +338,7 @@ const ECHO_QUOTA: u64 = 1;
 const ECHO_MAX_POLLS: u64 = 20_000;
 
 pub fn echo_worker_body() {
-    let Some(fast) = channel(0) else {
+    let Some(fast) = channel_by_id(0) else {
         return;
     };
     let mut buf = [0u8; FastPath::PAYLOAD];

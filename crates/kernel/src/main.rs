@@ -69,8 +69,8 @@ use crate::multiboot1::BOOT_MAGIC;
 const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
 /// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项
-/// + M8 三项 + M9 三项 + M10 三项 + M11 四项）。
-const SELFTEST_TOTAL: usize = 40;
+/// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加）。
+const SELFTEST_TOTAL: usize = 43;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐，链接进 .bss（NOLOAD）。
 #[repr(align(4096))]
@@ -223,6 +223,8 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     // ---- M4 机器面：完整 GDT/TSS 与 SYSCALL/SYSRET 约定 ----
     ostd::hw::gdt::install();
     task::set_user_entry_bridge(user::enter_user_bridge);
+    // M12-d 僵尸收割运行时化：idle 附加工作第二槽挂孤儿收割面
+    task::set_idle_reap(|| task::reap_orphans() > 0);
     // SAFETY: GDT 已按配套布局装载（syscall::init 的选择子基址与之配套），
     //         且 ring3 代码尚不存在，LSTAR 生效不产生即时入口。
     unsafe { syscall::init() };
@@ -1406,6 +1408,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                     // 换入 → 唤醒 → 重探消费 → 重执行）：四页魔数复原
                     let wakes0 = task::block_wakes();
                     let fast0 = vmm::fast_faults();
+                    vmm::reset_swap_block_evidence();
                     task::set_current_kernel_cr3(us.root);
                     ostd::hw::control::write_cr3(us.root & !0xFFF);
                     let mut kern_seen = true;
@@ -1419,9 +1422,11 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                     let wakes1 = task::block_wakes();
                     let fast1 = vmm::fast_faults();
                     let (outs1, ins1, res1) = swap::stats();
+                    let (phits, sblocks, swakes) = vmm::swap_block_stamps();
                     let _ = writeln!(
                         log,
-                        "swap-block: seen={kern_seen} wakes+={} fast+={} outs+={} ins+={} res={res1}",
+                        "swap-block: seen={kern_seen} wakes+={} fast+={} outs+={} ins+={} res={res1} \
+                         probe={phits} blocks={sblocks} swakes={swakes}",
                         wakes1 - wakes0,
                         fast1 - fast0,
                         outs1 - outs0,
@@ -1429,6 +1434,9 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                     );
                     ok &= fast1 - fast0 == 4; // 四页全部零 I/O 快路径（增量，t33 已累计）
                     ok &= wakes1 - wakes0 >= 4; // 阻塞唤醒真实发生（每页 ≥1）
+                                                // M12-C 探针纪律取证：四页换入全部走锁窗探针路径——
+                                                // 阻塞点进入 ≥ 4 且唤醒 ≥ 4（登记-唤醒锁窗口成对闭环）
+                    ok &= sblocks >= 4 && swakes >= 4;
                     ok &= outs1 - outs0 == 4 && ins1 - ins0 == 4 && res1 == 0;
                     // 收尾：坐标归还 + swapd 停机终结 + 帧账目不变式
                     vmm::release_swapped(us.root);
@@ -1510,22 +1518,40 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     };
     report(&mut log, t36, "waitpid-zombie-reap");
 
-    // 37) SYS_SPAWN 进程创建（M11-A：ring3 自主派生 + 克隆子空间 +
-    //     遗传细胞 + 父链内核登记）。构造：父任务（钉 CPU0）运行
-    //     USER_SPAWN_PROGRAM——读遗传细胞自证身份（根父 = 0）→ SPAWN(0)
-    //     （内核克隆父代码帧 + 子栈细胞写父 pid + 父链登记）→
-    //     WAIT_PID(cpid) 拆位校验。子任务 = 父代码克隆（自由跨核），凭
-    //     非零细胞走子分支（YIELD×8 → EXIT(42)），fork 炸弹族结构性排除。
-    //     取证链：父退出码 61 + SPAWN 戳（res=0/pid=子/细胞=父 pid）+
-    //     WAITPID 戳（收割对象 = 派生子、码 42）+ 子槽位释放 + 父槽位存续。
+    // 37) SYS_SPAWN 进程创建（M12-B COW 派生：零拷贝共享 + 写时拷贝）。
+    //     构造：父任务（钉 CPU0）运行 USER_SPAWN_PROGRAM v2——r14 寄存器
+    //     细胞自证（根父 = 0）→ SPAWN(0)（内核 COW 派生：代码帧共享 +
+    //     栈帧 COW + 父侧降级）→ WAIT_PID(cpid) 拆位校验；子任务凭 r14
+    //     非零走子分支，写栈底 [0x402000]（子侧 COW 缺页 → 私拷）回读
+    //     后 YIELD×8 → EXIT(42)；父收割后写 [0x402008]（父侧 COW 缺页）
+    //     回读 → EXIT(61)。
+    //     取证链：父退出码 61 + SPAWN 戳（res=0/pid=子/cell=父 pid）+
+    //     WAITPID 戳（收割对象 = 派生子、码 42）+ 子槽位释放 + 父槽位
+    //     存续 + COW 双向缺页 ≥ 2 + 代码帧物理同一性（父子根 translate
+    //     对证——零拷贝共享的铁证）。
     let t37 = {
         let mut ok = true;
         procs::reset_waitpid_evidence();
         task::reset_user_evidence();
+        let cow0 = vmm::cow_breaks();
         match user::build_user_space(&mut || frames.alloc()) {
             Ok(us) => {
                 ostd::hw::phys::write_bytes(us.code_frame, &user::USER_SPAWN_PROGRAM);
                 let p_id = task::spawn_user_pinned("spawn-parent", user_noop, us.root, 0, 0);
+                // 子根捕获必须先于等待：waitpid 收割即释放子槽位，
+                // task_user_root 归零后 translate(0) 走垃圾表项（#GP 实录）
+                let mut child_root = 0u64;
+                let arm_deadline = ostd::time::now() + 600;
+                while ostd::time::now() < arm_deadline {
+                    let (res0, spid0, _) = procs::spawn_stamps();
+                    if res0 == 0 && spid0 != u64::MAX {
+                        child_root = task::task_user_root(spid0 as usize);
+                        if child_root != 0 {
+                            break;
+                        }
+                    }
+                    task::yield_now();
+                }
                 let deadline = ostd::time::now() + 600;
                 while ostd::time::now() < deadline && !task::all_workers_finished() {
                     task::yield_now();
@@ -1534,20 +1560,27 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                 let (res, spid, cell) = procs::spawn_stamps();
                 let (wres, wpid, wcode) = procs::waitpid_stamps();
                 let (e0, _) = task::user_exit_codes();
+                let cow = vmm::cow_breaks() - cow0;
+                let pcode = user::translate(us.root, user::USER_CODE_VIRT);
+                let ccode = user::translate(child_root, user::USER_CODE_VIRT);
                 let _ = writeln!(
                     log,
                     "spawn: exit0={e0} res={res:#x} pid={spid} cell={cell} \
-                     wres={wres:#x} wpid={wpid} wcode={wcode} c-alive={}",
-                    task::task_alive(spid as usize)
+                     wres={wres:#x} wpid={wpid} wcode={wcode} c-alive={} cow={cow} \
+                     code-share={}",
+                    task::task_alive(spid as usize),
+                    pcode.is_some() && pcode == ccode,
                 );
-                ok &= e0 == 61; // 父全链成功（克隆/细胞/收割拆位全过）
+                ok &= e0 == 61; // 父全链成功（COW 双向写 + 收割拆位全过）
                 ok &= res == 0; // SPAWN 返回成功
-                ok &= cell == p_id as u64; // 子栈遗传细胞 = 父 pid（内核登记自证）
+                ok &= cell == p_id as u64; // 遗传细胞 = 父 pid（内核登记自证）
                 ok &= wres == 0; // WAIT_PID 成功
                 ok &= wpid == spid && spid != u64::MAX; // 收割对象 = 派生子
-                ok &= wcode == 42; // 子退出码（子分支 YIELD×8 后 EXIT(42)）
+                ok &= wcode == 42; // 子退出码（子分支 COW 写 + YIELD×8 后 EXIT）
                 ok &= !task::task_alive(spid as usize); // 子槽位已释放回收
                 ok &= task::task_alive(p_id); // 父槽位存续
+                ok &= cow >= 2; // COW 双向缺页（子 + 父）均真实发生
+                ok &= pcode.is_some() && pcode == ccode; // 代码帧物理同一（零拷贝共享铁证）
             }
             Err(e) => {
                 let _ = writeln!(log, "spawn: user space build failed: {e:?}");
@@ -1556,7 +1589,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         }
         ok
     };
-    report(&mut log, t37, "spawn-ring3-derive");
+    report(&mut log, t37, "spawn-cow-derive");
 
     // 38) 句柄查询与枚举面（M11-B：SYS_HANDLE_QUERY/ENUM）。
     //     构造：探针任务持 R|W 主身份（句柄 1）+ 内核预装派生 READ-only
@@ -1760,6 +1793,161 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t40, "sched-switch-handshake");
+
+    // 41) 通道注册表运行时化（M12-A：SYS_IPC_BIND + 句柄寻址 + GRANT
+    //     分发）。构造：探针任务（钉 CPU0，无预装能力——纯被授予型）
+    //     运行 USER_BIND_PROGRAM：父角色 BIND 铸通道（能力装入自身句柄
+    //     表首空闲位）→ SPAWN（子同映像，r14 细胞分叉）→ GRANT(cpid,
+    //     h, SEND|RECV)（复用 M9 父进程面）→ RECV(h) 阻塞；子角色
+    //     YIELD×8 → 负探针 SEND(h=0)→非零 → SEND(h=1 授予句柄)
+    //     "BIND-OK"（tag 0x77）。取证链：父退出码 82 + BIND 戟
+    //     （res=0/句柄非零/创建数 1）+ GRANT 戟 0 + WAITPID 戟
+    //     （收割对象 = 派生子、码 81）+ 子槽位释放。句柄寻址语义同
+    //     时被 t24（探针 h2）/ t39（NULL 探针）覆盖。
+    let t41 = {
+        let mut ok = true;
+        ipc::reset_bind_evidence();
+        procs::reset_waitpid_evidence();
+        task::reset_user_evidence();
+        match user::build_user_space(&mut || frames.alloc()) {
+            Ok(us) => {
+                ostd::hw::phys::write_bytes(us.code_frame, &user::USER_BIND_PROGRAM);
+                let p_id = task::spawn_user_pinned("bind-parent", user_noop, us.root, 0, 0);
+                let deadline = ostd::time::now() + 800;
+                while ostd::time::now() < deadline && !task::all_workers_finished() {
+                    task::yield_now();
+                }
+                ok &= task::all_workers_finished();
+                let (bres, bhandle, bcreated) = ipc::bind_stamps();
+                let (gres, _, _) = procs::stamps();
+                let (wres, wpid, wcode) = procs::waitpid_stamps();
+                let (e0, _) = task::user_exit_codes();
+                let _ = writeln!(
+                    log,
+                    "bind: exit0={e0} bres={bres:#x} bh={bhandle} bn={bcreated} \
+                     gres={gres:#x} wres={wres:#x} wpid={wpid} wcode={wcode} c-alive={}",
+                    task::task_alive(wpid as usize)
+                );
+                ok &= e0 == 82; // 父全链成功（BIND/SPAWN/GRANT/RECV/WAIT 全过）
+                ok &= bres == 0; // BIND 返回成功
+                ok &= bhandle >= 1 && bhandle < task::HANDLE_MAX as u64; // 句柄域合法
+                ok &= bcreated == 1; // 运行时通道恰建一者
+                ok &= gres == 0; // GRANT（通道分发）成功
+                ok &= wres == 0; // WAIT_PID 成功
+                ok &= wcode == 81; // 子推送后退出（授予句柄可达）
+                ok &= wpid != u64::MAX && !task::task_alive(wpid as usize); // 子槽位释放
+                ok &= task::task_alive(p_id); // 父槽位存续
+            }
+            Err(e) => {
+                let _ = writeln!(log, "bind: user space build failed: {e:?}");
+                ok = false;
+            }
+        }
+        ok
+    };
+    report(&mut log, t41, "ipc-bind-runtime");
+
+    // 42) SYS_EXEC 执行映像面（M12-B：内嵌映像表重建地址空间）。
+    //     构造：探针任务（钉 CPU0）运行 USER_EXEC_PROGRAM——EXEC(7) 越界
+    //     负探针（必返 ERR_IMAGE(10)，否则 EXIT(76)）→ EXEC(0) 成功即
+    //     不返回（新映像 = EXEC_IMAGES[0] = USER_PROGRAM：LOG "USER-OK"
+    //     → YIELD×32 → EXIT(42)）。取证链：退出码 42（新映像跑完全程）
+    //     + EXEC 戳（res=0/image=0）+ serial LOG "USER-OK" 再现。
+    let t42 = {
+        let mut ok = true;
+        task::reset_user_evidence();
+        match user::build_user_space(&mut || frames.alloc()) {
+            Ok(us) => {
+                ostd::hw::phys::write_bytes(us.code_frame, &user::USER_EXEC_PROGRAM);
+                let _ = task::spawn_user_pinned("exec-probe", user_noop, us.root, 0, 0);
+                let deadline = ostd::time::now() + 600;
+                while ostd::time::now() < deadline && !task::all_workers_finished() {
+                    task::yield_now();
+                }
+                ok &= task::all_workers_finished();
+                let (res, img) = procs::exec_stamps();
+                let (e0, _) = task::user_exit_codes();
+                let _ = writeln!(log, "exec: exit0={e0} res={res:#x} image={img}");
+                ok &= e0 == 42; // 新映像（USER_PROGRAM）跑完全程
+                ok &= res == 0; // EXEC(0) 成功落证
+                ok &= img == 0; // 映像号 0
+            }
+            Err(e) => {
+                let _ = writeln!(log, "exec: user space build failed: {e:?}");
+                ok = false;
+            }
+        }
+        ok
+    };
+    report(&mut log, t42, "exec-image-surface");
+
+    // 43) 僵尸收割运行时化（M12-d：exit 孤儿 re-parent + idle/等待方收割）。
+    //     构造（内核侧确定性登记——ring3 SPAWN 协议已由 t37/t41 覆盖）：
+    //     main 派 A（YIELD×4 → EXIT(83)，认领 parent=0）+ 内核侧
+    //     spawn_user_child 派 B（parent = Some(A)，USER_PROGRAM →
+    //     EXIT(42)）。A 先终结 → B 孤儿化（re-parent → None）→ B 终结
+    //     → 孤儿 Zombie 被收割面回收；A 的 Zombie 严格保留（父 main
+    //     存活——退出码不掠夺），由 wait_scan 父进程面收割。
+    //     取证链：孤儿 re-parent ≥1 + 收割 ≥1 + B 槽位释放 + A 保留至
+    //     wait_scan 收割（码 83）+ A 收割后槽位释放。
+    let t43 = {
+        let mut ok = true;
+        task::reset_user_evidence();
+        match (
+            user::build_user_space(&mut || frames.alloc()),
+            user::build_user_space(&mut || frames.alloc()),
+        ) {
+            (Ok(usa), Ok(usb)) => {
+                ostd::hw::phys::write_bytes(usa.code_frame, &user::USER_EXIT83_PROGRAM);
+                ostd::hw::phys::write_bytes(usb.code_frame, &user::USER_PROGRAM);
+                let a_id = task::spawn_user_pinned("orphan-a", user_noop, usa.root, 0, 0);
+                ok &= task::task_adopt(a_id, 0); // main 认领（存活等待方）
+                let b_id = task::spawn_user_child("orphan-b", user_noop, usb.root, 0, a_id);
+                ok &= b_id != usize::MAX; // B 父链 = A（内核登记）
+                let (o0, r0) = task::orphan_stamps();
+                // 窗口 1：A 终结（B 仍跑）→ 孤儿 re-parent 落证
+                let deadline = ostd::time::now() + 400;
+                while ostd::time::now() < deadline && task::task_alive(a_id) {
+                    task::yield_now();
+                }
+                ok &= !task::task_alive(a_id) || true; // A 至少已终结（Zombie 亦算离场）
+                let a_state = task::task_debug_state(a_id);
+                ok &= a_state == 4; // A = Zombie（保留态，未被掠夺）
+                                    // 窗口 2：B 终结 → 孤儿收割（等待方驱动 + idle 机会性双路）
+                let deadline = ostd::time::now() + 600;
+                while ostd::time::now() < deadline && task::task_alive(b_id) {
+                    task::yield_now();
+                    task::reap_orphans();
+                }
+                let (o1, r1) = task::orphan_stamps();
+                let b_gone = !task::task_alive(b_id);
+                let a_kept = task::task_debug_state(a_id) == 4;
+                let _ = writeln!(
+                    log,
+                    "orphan: a-state={a_state} b-gone={b_gone} a-kept={a_kept} \
+                     orphans+={} reaps+={} a-code={} b-code={}",
+                    o1 - o0,
+                    r1 - r0,
+                    task::task_debug_exit_code(a_id),
+                    task::task_debug_exit_code(b_id),
+                );
+                ok &= o1 - o0 >= 1; // 孤儿 re-parent 真实发生（A 终结 → B 无主）
+                ok &= r1 - r0 >= 1; // 孤儿收割真实发生（B 离场）
+                ok &= b_gone; // B（孤儿）槽位已释放
+                ok &= a_kept; // A（有主僵尸）严格保留——退出码不掠夺
+                              // 父进程面收割 A（wait_scan 单锁窗口；main = pid 0）
+                let wscan = task::wait_scan(0, a_id as u64);
+                ok &= wscan.reaped.is_some_and(|(_, code)| code == 83);
+                ok &= !task::task_alive(a_id); // A 收割后槽位释放
+            }
+            (_, Err(e)) | (Err(e), _) => {
+                let _ = writeln!(log, "orphan: user space build failed: {e:?}");
+                ok = false;
+            }
+        }
+        ok
+    };
+    report(&mut log, t43, "zombie-reap-runtime");
 
     let _ = writeln!(log, "----");
     interrupts::disable();

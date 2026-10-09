@@ -3,6 +3,44 @@
 版本语义：工作区里程碑版（0.x.y，x=里程碑，y=里程碑内迭代）。
 本文档记录源码树的对外可见变更；指标与规格变更见《指标与规范手册》修订记录。
 
+## v0.12.0（2026-10-09）—— M12：能力服务化与等待面纪律收口
+
+### 新增
+- **通道注册表运行时化（M12-A）**：SYS_IPC_BIND(16)——ring3 自建通道
+  （对象 id 铸造 + 快速路径环对 + 能力 SEND|RECV 装入句柄表），跨任务
+  分发复用 SYS_CAP_GRANT（M9 父进程面，零新授权面）；注册表定容 16
+  （预设面收缩为回声/阻塞接收两通道）；**IPC 寻址语义演进**：SEND/RECV
+  端点参数 = 调用方句柄（内核解析 句柄 → 能力 → 对象 → 通道反查；
+  无效句柄与无授权对外同面 ERR_CAP，不泄露拓扑）。
+- **COW 派生（M12-B）**：SYS_SPAWN 克隆成本 O(1) 化——代码帧共享
+  （父 PT[0] 物理直映，本就只读零降级）、栈帧共享 RO + COW 标记位
+  （PTE avail bit9）+ 父侧同步降级 + invlpg；#PF 钩子追加 COW 分支
+  （present + write + COW 位 → 私拷回写 + invlpg）；失败路径
+  rollback_cow_demote 父侧零残留。**遗传细胞升级寄存器协议**：
+  lumina_enter_user 三参数（rdx = 父 pid → r14），内存细胞随共享栈退役。
+- **SYS_EXEC(17) 执行映像面（M12-B）**：EXEC_IMAGES 内嵌映像表驱动的
+  地址空间整体重建（CR3 切换 + 系统调用帧全量改写 RIP/RSP/参数清零，
+  成功不返回）；错误码追加 ERR_IMAGE(10)；r12–r15 callee-saved 语义
+  自然往返（r14 遗传细胞保持——exec 不改父子链）。
+- **swap 等待族探针补钉（M12-C）**：block_swap_in 接入
+  block_current_unless——四域非消费探针（已映射/预取就绪/in-flight/
+  请求在队）在 SCHED 锁窗口内重探，丢失唤醒窗口封死（M11-C 同款纪律）；
+  单核饱和场景补齐（请求后探针阻塞让核 swapd）；**阻塞面全族探针化
+  收口**：block_current + Probe::None 删除（无条件阻塞面清零）。
+- **僵尸收割运行时化（M12-D）**：exit 路径孤儿 re-parent（子任务
+  parent → None）；reap_orphans 无主收割（有主 Zombie 严格保留——
+  退出码不掠夺）；IDLE_REAP 第二槽（idle 附加工作自动收割）；
+  task_adopt 认领原语（init/守护收养语义内核侧基础）。
+
+### 变更
+- 自检 40 → **43**（M12 三项：ipc-bind-runtime / spawn-cow-derive
+  （升级） / exec-image-surface / zombie-reap-runtime）；裸机取证链
+  追加：COW 双向缺页 ≥2 + 代码帧物理同一性对证 + BIND 句柄/创建数戳 +
+  swap blocks/wakes 配对 + 孤儿 re-parent/收割计数。
+- 宿主测试 92 → **95 用例**（abi v0.6：IPC_BIND/EXEC 解析面）。
+- t37 升级为 spawn-cow-derive（r14 细胞协议 + COW 双向写探针 + 代码帧
+  同一性对证）；t35 断言面扩展（swap 等待族 blocks/swakes ≥4）。
+
 ## v0.11.0（2026-10-09）—— M11：进程面补全与运行时化
 
 ### 新增

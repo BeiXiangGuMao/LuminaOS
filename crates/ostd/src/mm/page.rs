@@ -32,8 +32,8 @@ impl Entry {
     #[allow(dead_code)]
     pub const DIRTY: u64 = 1 << 6;
 
-    /// 物理地址掩码：位 12..52（页表帧/页基址）。
-    const ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
+    /// 物理地址掩码：位 12..52（页表帧/页基址；M12-B COW 走表公开）。
+    pub const ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 
     /// 由原始位域构造。
     pub const fn from_bits(bits: u64) -> Self {

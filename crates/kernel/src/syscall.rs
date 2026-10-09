@@ -294,6 +294,18 @@ extern "C" fn lumina_syscall_dispatch(frame: &mut SyscallFrame) -> u64 {
             // M11-B 句柄枚举面：游标后首个占用项（循环协议终点 = 0）
             crate::procs::sys_handle_enum(cursor)
         }
+        Syscall::IpcBind { reserved } => {
+            task::count_syscall(2);
+            // M12-A 通道注册表运行时化：ring3 自建通道（铸对象 id +
+            // 泄漏环对 + 能力装入句柄表；跨任务分发复用 SYS_CAP_GRANT）
+            crate::ipc::sys_bind(reserved)
+        }
+        Syscall::Exec { image } => {
+            task::count_syscall(2);
+            // M12-B 执行映像面：地址空间以内核内嵌映像重建（成功不返回
+            // —— 帧面 RIP/RSP/参数寄存器全量改写，返回即入新映像）
+            crate::procs::sys_exec(image, frame)
+        }
     }
 }
 

@@ -556,6 +556,66 @@ pub fn release_swapped(root: u64) {
     });
 }
 
+/// COW 缺页计数（M12-B t37 v2 断言面：父子双侧私拷均落证）。
+static COW_FAULTS: AtomicU64 = AtomicU64::new(0);
+
+/// COW 缺页计数快照。
+pub fn cow_breaks() -> u64 {
+    COW_FAULTS.load(Ordering::Acquire)
+}
+
+/// COW 写时拷贝（M12-B）：当前 CR3 下 va_page 叶项带 COW 标记
+/// （avail bit9）时分配新帧、复制原帧内容、回写 PTE（保 P|U|W、清
+/// COW 位）并 invlpg。非 COW 页返回 false（交后续路径）。
+fn cow_break(va_page: u64) -> bool {
+    let Some(frames) = *FRAMES.lock() else {
+        return false;
+    };
+    let root = ostd::hw::control::read_cr3() & !0xFFF;
+    // 手工四级走表（用户区 4 KiB 叶；与 build_space_tables 同款恒等
+    // 读写纪律）。任一级缺失/大页 → 非 COW 页 → false。
+    let idx = |shift: u32| ((va_page >> shift) & 0x1FF) as usize;
+    let pml4e = ostd::hw::phys::read_u64(root + (idx(39) * 8) as u64);
+    if pml4e & 1 == 0 {
+        return false;
+    }
+    let pdpte = ostd::hw::phys::read_u64((pml4e & 0x000F_FFFF_FFFF_F000) + (idx(30) * 8) as u64);
+    if pdpte & 1 == 0 {
+        return false;
+    }
+    let pde = ostd::hw::phys::read_u64((pdpte & 0x000F_FFFF_FFFF_F000) + (idx(21) * 8) as u64);
+    if pde & 1 == 0 || pde & Entry::HUGE != 0 {
+        return false;
+    }
+    let pte_addr = (pde & 0x000F_FFFF_FFFF_F000) + (idx(12) * 8) as u64;
+    let pte = ostd::hw::phys::read_u64(pte_addr);
+    const COW_BIT: u64 = 1 << 9;
+    if pte & 1 == 0 || pte & COW_BIT == 0 {
+        return false;
+    }
+    let Some(new_frame) = frames.alloc() else {
+        return false; // 帧耗尽：故障重递，上层按致命路径处置
+    };
+    // 帧内容复制（512 × u64 恒等读写；旧帧保底不被回收——v0 帧
+    // 存续期语义与 t37 断言面一致）
+    let old_frame = pte & 0x000F_FFFF_FFFF_F000;
+    for i in 0..(4096 / 8) {
+        let v = ostd::hw::phys::read_u64(old_frame + (i * 8) as u64);
+        ostd::hw::phys::write_u64(new_frame + (i * 8) as u64, v);
+    }
+    // 回写：清 COW 位 + 换新帧基址 + 置 W（其余位 P|U 等保持）；
+    // 同核故障现场 invlpg 即可
+    ostd::hw::phys::write_u64(
+        pte_addr,
+        (pte & !(COW_BIT | 0x000F_FFFF_FFFF_F000))
+            | Entry::WRITABLE
+            | (new_frame & 0x000F_FFFF_FFFF_F000),
+    );
+    ostd::hw::control::invlpg(va_page);
+    COW_FAULTS.fetch_add(1, Ordering::AcqRel);
+    true
+}
+
 /// VMM 初始化：注入帧服务 + 注册可恢复 #PF 钩子（此后任何未登记地址的
 /// #PF 仍走致命路径——与既有语义一致）。
 pub fn init(frames: &'static FrameAllocator) {
@@ -569,9 +629,16 @@ pub fn global_frames() -> Option<&'static FrameAllocator> {
 }
 
 /// 恢复钩子（可恢复 #PF 主体）：定位 → 门禁 → 补映射；M8-B 扩：swap
-/// 回收链换入路径；M10-B 扩：换入等待阻塞化（故障方切出等 swapd）。
+/// 回收链换入路径；M10-B 扩：换入等待阻塞化；M12-B 扩：COW 写时拷贝
+/// 分支（present + write + avail bit9 → 私拷回写）。
 fn pf_hook(cr2: u64, error_code: u64) -> bool {
     let va_page = cr2 & !0xFFF;
+    // COW 分支（M12-B）：present + write 故障 + 叶项 COW 位（avail
+    // bit9）→ 写时拷贝（先于 DEFERRED/swap 路径——COW 页 present，
+    // swap 语义不适用）。
+    if error_code & 0x1 != 0 && error_code & 0x2 != 0 && cow_break(va_page) {
+        return true;
+    }
     let Some(e) = DEFERRED.lock().iter().find(|e| e.va == va_page).copied() else {
         return swap_in_hook(va_page, error_code);
     };
@@ -636,31 +703,140 @@ fn swap_in_hook(va_page: u64, error_code: u64) -> bool {
     handled
 }
 
-/// 阻塞化换入（M10-B 核心）：探测/请求 → 阻塞（切出让核）→ 唤醒重探。
-/// 重探两轮预算：首轮探测或请求后阻塞；次轮仍未就绪（预取失败清理 /
-/// 他核已消费同页）→ 叶项重探（他核已映射即重执行）→ 否则 false 交
-/// 同步回退兑底。恢复点修复 CR3（内核任务派发面写引导根，故障现场根
-/// 可能为借用的用户根——内核态读回场景）。
+/// 阻塞化换入（M12-C 探针补钉）：探测/请求 → 条件阻塞（M11-C 纪律：
+/// 探针在 SCHED 锁窗口内重探）→ 唤醒重探。重探四轮预算：预取就绪 →
+/// 零 I/O 消费；in-flight 确认 → 锁内探针阻塞（就绪/已映射/in-flight
+/// 消失均回滚）；请求后不阻塞（swapd 处理后下一轮 peek 必见
+/// Ready/InFlight，失败清理后重请求——预算封顶同步兑底）。恢复点
+/// 修复 CR3（内核任务派发面写引导根，故障现场根可能为借用的用户根
+/// ——内核态读回场景）。
+///
+/// 丢失唤醒免疫论证（与 M11-C/M11 waitpid 补钉同族）：swapd 完成路径
+/// （暂存帧就位 / 失败清理）终点必调 wake_swap_waiters；本侧登记与
+/// 探针同一 SCHED 锁窗口——若 swapd 完成先于探针，探针命中（暂存
+/// 就绪 = 粘滞态，直接消费；in-flight 已清理 = 回滚重试，不阻塞）；
+/// 若完成晚于登记，唤醒在锁窗口内必然观察到 Blocked。无中间窗口。
 fn block_swap_in(root: u64, va_page: u64) -> bool {
-    for _attempt in 0..2 {
+    for _attempt in 0..4 {
         match peek_prefetched(root, va_page) {
             PeekPrefetch::Ready => {
                 return consume_and_map(root, va_page);
             }
-            PeekPrefetch::InFlight => {}
+            PeekPrefetch::InFlight => {
+                // 进入阻塞点即落证（与 ipc 同款「登记前计数」语义：
+                // 探针命中回滚亦计入尝试面，唤醒另计）
+                SWAP_BLOCKS.fetch_add(1, Ordering::AcqRel);
+                if crate::task::block_current_unless(
+                    crate::task::WaitWhat::Swap { root, va: va_page },
+                    false,
+                    || swap_still_pending(root, va_page),
+                ) {
+                    SWAP_WAKES.fetch_add(1, Ordering::AcqRel);
+                } else {
+                    SWAP_PROBE_HITS.fetch_add(1, Ordering::AcqRel);
+                }
+            }
             PeekPrefetch::Miss => {
                 if !swapped_hit(root, va_page) {
                     return leaf_present_now(root, va_page);
                 }
                 request_prefetch(root, va_page);
+                // 请求已入队：锁窗探针阻塞。单核饱和场景（t35：swapd
+                // 钉同核）必须切出让 swapd 得以运行——探针四域任一可见
+                // 即回滚（就绪/已映射/in-flight/队列仍在）；swapd
+                // 「出队-登记」纳秒间隙的探针命中由重试环再请求收敛
+                // （重复请求无害：do_prefetch 失败路径终点必唤醒）。
+                SWAP_BLOCKS.fetch_add(1, Ordering::AcqRel);
+                if crate::task::block_current_unless(
+                    crate::task::WaitWhat::Swap { root, va: va_page },
+                    false,
+                    || swap_still_pending(root, va_page),
+                ) {
+                    SWAP_WAKES.fetch_add(1, Ordering::AcqRel);
+                } else {
+                    SWAP_PROBE_HITS.fetch_add(1, Ordering::AcqRel);
+                }
             }
         }
-        crate::task::block_current(crate::task::WaitWhat::Swap { root, va: va_page }, false);
         if ostd::hw::control::read_cr3() & !0xFFF != root {
             ostd::hw::control::write_cr3(root);
         }
     }
     leaf_present_now(root, va_page)
+}
+
+/// swap 等待探针（M12-C；非消费四域）：已映射 / 预取就绪 / in-flight /
+/// 请求在队——任一成立 = 条件已就绪或已有后续保证，探针命中（回滚
+/// 不阻塞）。全部不成立才继续等待。在 SCHED 锁窗口内运行：
+/// leaf_present_now 走表零锁；PREFETCHED/PAGER_QUEUE 锁仅在 SCHED 内
+/// 嵌套取用（SCHED → PREFETCHED / SCHED → PAGER_QUEUE 单向；swapd
+/// 持 PREFETCHED 不取 SCHED，入队侧持 PAGER_QUEUE 不取 SCHED——无 ABBA）。
+fn swap_still_pending(root: u64, va_page: u64) -> bool {
+    let mapped = leaf_present_now(root, va_page);
+    if mapped {
+        return false;
+    }
+    let ready = prefetch_ready(root, va_page);
+    if ready {
+        return false;
+    }
+    let inflight = prefetch_inflight(root, va_page);
+    if inflight {
+        return true; // 换入处理中：swapd 终点必唤醒
+    }
+    let queued = prefetch_queued(root, va_page);
+    if queued {
+        return true; // 请求在队：swapd 出队后必经 in-flight → 终点唤醒
+    }
+    false // 无在途工作：回滚重试（重请求 / 预算封顶同步兑底）
+}
+
+/// swap 等待族取证（M12-C t35 断言面）：锁内探针命中回滚数 / 阻塞点
+/// 进入数 / 阻塞唤醒数（探针命中不计入阻塞，唤醒另计——与 ipc 同款
+/// 「登记前计数」语义）。
+static SWAP_PROBE_HITS: AtomicU64 = AtomicU64::new(0);
+static SWAP_BLOCKS: AtomicU64 = AtomicU64::new(0);
+static SWAP_WAKES: AtomicU64 = AtomicU64::new(0);
+
+/// swap 等待族取证复位（跨自检隔离）。
+pub fn reset_swap_block_evidence() {
+    SWAP_PROBE_HITS.store(0, Ordering::Release);
+    SWAP_BLOCKS.store(0, Ordering::Release);
+    SWAP_WAKES.store(0, Ordering::Release);
+}
+
+/// swap 等待族取证快照：(探针命中, 阻塞点进入, 阻塞唤醒)。
+pub fn swap_block_stamps() -> (u64, u64, u64) {
+    (
+        SWAP_PROBE_HITS.load(Ordering::Acquire),
+        SWAP_BLOCKS.load(Ordering::Acquire),
+        SWAP_WAKES.load(Ordering::Acquire),
+    )
+}
+
+/// 预取就绪探测（非消费；PREFETCHED 锁内读 frame 域）。锁序：仅在
+/// SCHED 锁窗口内嵌套取用（SCHED → PREFETCHED 单向）——swapd 侧
+/// 持 PREFETCHED 不取 SCHED（暂存与唤醒分锁），无 ABBA。
+fn prefetch_ready(root: u64, va_page: u64) -> bool {
+    PREFETCHED
+        .lock()
+        .iter()
+        .any(|e| e.root == root && e.va == va_page && e.frame.is_some())
+}
+
+/// 预取 in-flight 探测（非消费；frame = None 即换入处理中）。
+fn prefetch_inflight(root: u64, va_page: u64) -> bool {
+    PREFETCHED
+        .lock()
+        .iter()
+        .any(|e| e.root == root && e.va == va_page && e.frame.is_none())
+}
+
+/// 预取请求在队探测（非消费；PAGER_QUEUE 锁内读）。
+fn prefetch_queued(root: u64, va_page: u64) -> bool {
+    PAGER_QUEUE.lock().iter().any(
+        |r| matches!(r, PagerRequest::Prefetch { root: r, va: v } if *r == root && *v == va_page),
+    )
 }
 
 /// 快路径消费 + 零 I/O 重映射（Ready 态；FAST_FAULTS 计数）。

@@ -45,7 +45,8 @@
 //!   交付 ring3 边缘复现 S31 缺陷族 #GP(0x28) VM 位入旗， isr_timer
 //!   内 iretq 处取证——故有极短化分层纪律。）
 //! - **任务阻塞态与调度点切换（M10-B）**：`State::Blocked` +
-//!   [`block_current`]（登记等待对象 → Blocked → 切换下一任务）+
+//!   [`block_current_unless`]/[`block_current_waitpid`]（登记等待对象 →
+//!   Blocked → 锁窗探针 → 切换下一任务，M12-C 起全族探针化）+
 //!   [`wake_tasks`]（谓词匹配批量唤醒入队）——#PF 换入路径阻塞化
 //!   （vmm：swapd 在线时故障方阻塞等待异步换入完成，同步回退严格
 //!   保留），单核/全核饱和场景的换页时延补齐（M9-B 已知约束解除）。
@@ -333,6 +334,13 @@ static RESCHED_HITS: AtomicU64 = AtomicU64::new(0);
 static RESCHED_KICK: AtomicUsize = AtomicUsize::new(0);
 /// idle 附加工作桥（smp 注册：工作池/IPC 服务；返回是否有产出）。
 static IDLE_WORK: AtomicUsize = AtomicUsize::new(0);
+/// idle 收割工作桥（M12-d 注册：孤儿僵尸自动收割；返回是否有产出）。
+static IDLE_REAP: AtomicUsize = AtomicUsize::new(0);
+
+/// 注册 idle 收割工作（M12-d 僵尸收割运行时化；仅 main 初始化调用）。
+pub fn set_idle_reap(f: fn() -> bool) {
+    IDLE_REAP.store(f as usize, Ordering::Release);
+}
 
 /// 本核任务内核栈顶槽（syscall 入口桩的唯一栈源；M8-A 接线生效）。
 ///
@@ -725,6 +733,41 @@ pub fn current_user_root() -> u64 {
         .map_or(0, |t| t.user_root)
 }
 
+/// 目标任务的独立页表根（M12-B：COW 代码帧同一性对证；不存在 → 0）。
+pub fn task_user_root(id: usize) -> u64 {
+    let _w = IntWindow::new();
+    let s = SCHED.lock();
+    s.tasks
+        .get(id)
+        .and_then(|t| t.as_ref())
+        .map_or(0, |t| t.user_root)
+}
+
+/// 任务认领（M12-d t43 取证面）：内核侧把目标任务父链登记为指定
+/// 父任务——内核直接派生任务（parent = None）经此挂靠存活的等待方
+/// （未来 init/守护进程收养语义的内核侧原语）。
+pub fn task_adopt(id: usize, parent: usize) -> bool {
+    let _w = IntWindow::new();
+    let mut s = SCHED.lock();
+    match s.tasks.get_mut(id).and_then(|t| t.as_mut()) {
+        Some(t) if t.parent.is_none() && parent < MAX_TASKS => {
+            t.parent = Some(parent);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// 登记目标任务的新页表根（M12-B SYS_EXEC：地址空间整体重建后由
+/// 慢路径写入；仅调用方自身任务上下文，单核串行）。
+pub fn set_user_root(id: usize, root: u64) {
+    let _w = IntWindow::new();
+    let mut s = SCHED.lock();
+    if let Some(t) = s.tasks.get_mut(id).and_then(|t| t.as_mut()) {
+        t.user_root = root;
+    }
+}
+
 /// 派生钉扎用户任务：仅在 `cpu` 槽位可拾取（自检 26 的跨核确定性协议）。
 pub fn spawn_user_pinned(
     name: &'static str,
@@ -963,6 +1006,14 @@ pub fn run_idle(cpu: usize) -> ! {
                 continue;
             }
         }
+        let reap = IDLE_REAP.load(Ordering::Acquire);
+        if reap != 0 {
+            // SAFETY: 同上——地址来自 set_idle_reap 存入的 fn() -> bool。
+            let f: fn() -> bool = unsafe { core::mem::transmute(reap) };
+            if f() {
+                continue;
+            }
+        }
         ostd::hw::intr::halt();
     }
 }
@@ -1084,6 +1135,20 @@ pub fn current_task_id() -> usize {
     let _w = IntWindow::new();
     let cpu = my_cpu();
     CURRENT[cpu].load(Ordering::Relaxed)
+}
+
+/// 当前用户任务的父 pid（M12 遗传细胞寄存器协议：进入环前置 r14 =
+/// 父 pid；根父 / 内核任务恒 0。仅用户任务首派发窗口调用）。
+pub fn current_parent_pid() -> u64 {
+    let _w = IntWindow::new();
+    let cpu = my_cpu();
+    let s = SCHED.lock();
+    let cur = CURRENT[cpu].load(Ordering::Relaxed);
+    s.tasks
+        .get(cur)
+        .and_then(|t| t.as_ref())
+        .and_then(|t| t.parent)
+        .map_or(0, |p| p as u64)
 }
 
 /// 本核是否运行在任务上下文（非 idle；M10-B 阻塞面调用前置检查——
@@ -1235,6 +1300,22 @@ fn finish_and_switch_away(code: u64) -> ! {
                     t.revoke_all_handles();
                     t.exit_code = code;
                     t.state = State::Zombie;
+                }
+                // M12-d 孤儿链 re-parent：退出任务的全部子任务改挂无主
+                // （parent = None）——Unix 孤儿语义的内核侧等价；孤儿
+                // Zombie 由 idle 附加工作自动收割（见 reap_orphans），
+                // 不再依赖原父存活的 waitpid 面。
+                let mut orphans = 0usize;
+                for id in 0..MAX_TASKS {
+                    if let Some(t) = sc.tasks[id].as_mut() {
+                        if t.parent == Some(cur) {
+                            t.parent = None;
+                            orphans += 1;
+                        }
+                    }
+                }
+                if orphans != 0 {
+                    ORPHANS_REPARENTED.fetch_add(orphans as u64, Ordering::AcqRel);
                 }
                 // M10-C：唤醒等待本任务的 Child 等待者（同锁窗口原子完成；
                 // pid=0 语义 = 任意直接子任务 → 必须校验 parent 归属；
@@ -1587,7 +1668,8 @@ pub fn resched_preempt_hook(plan: &mut PreemptPlan) -> bool {
 // 任务阻塞态与调度点切换（M10-B）/ waitpid 收割面（M10-C）
 // ---------------------------------------------------------------------------
 // 语义：
-// - **block_current**：登记等待对象 → Blocked（脱离就绪队列）→ 切换下一
+// - **block_current_unless/waitpid**：登记等待对象 → Blocked（脱离就绪
+//   队列）→ 锁窗探针（命中回滚）→ 切换下一
 //   就绪任务（无则开中断等节拍重试——唤醒方入队 + RESCHED/节拍必达）。
 //   `resume_if` 区分恢复点中断约定：syscall 上下文传 true（yield_now
 //   同款，内核任务 IF 约定恒 1）；#PF 桩窗口传 false（iretq 前不得开窗
@@ -1616,10 +1698,6 @@ pub fn resched_preempt_hook(plan: &mut PreemptPlan) -> bool {
 /// # PANIC（防御）
 /// 本核 CURRENT = idle 时阻塞即调度不变式破坏（idle 无任务上下文），
 /// 直接终止调用方（调用面契约：仅任务上下文可调用）。
-pub fn block_current(what: WaitWhat, resume_if: bool) {
-    block_current_impl(what, resume_if, Probe::None);
-}
-
 /// 条件阻塞（M11-C）：登记等待对象前在**同一 SCHED 锁窗口**内执行
 /// `still_pending` 重探。返回 `false` = 探针命中（条件已就绪）：登记
 /// 已回滚、任务保持 Running 原地继续，调用方应直接重试消费；返回
@@ -1662,8 +1740,6 @@ pub fn block_current_waitpid(parent: usize, want: u64, resume_if: bool) -> bool 
 /// 丢失唤醒免疫由此成立。Zombie/SWAPPED 等粘滞态使命中判定与后续
 /// 消费之间无新窗口。
 enum Probe<'a> {
-    /// 无条件阻塞（M10-B 原语义）。
-    None,
     /// 调用方闭包（IPC pending 哨兵等非消费读数）。
     Raw(&'a mut dyn FnMut() -> bool),
     /// WAIT_PID 专用：锁内重扫直接子任务，匹配者已 Zombie 即命中
@@ -1711,7 +1787,6 @@ fn block_current_impl(what: WaitWhat, resume_if: bool, mut probe: Probe) -> bool
             // 条件探针（同一 SCHED 锁窗口）：命中即回滚登记——登记与探针
             // 的原子性是丢失唤醒免疫的全部根据
             let probe_hit = match &mut probe {
-                Probe::None => false,
                 Probe::Raw(f) => !f(),
                 Probe::WaitScan { parent, want } => {
                     sc.tasks.iter().enumerate().any(|(id, slot)| {
@@ -1846,6 +1921,69 @@ pub fn task_alive(id: usize) -> bool {
     let _w = IntWindow::new();
     let s = SCHED.lock();
     s.tasks.get(id).is_some_and(|slot| slot.is_some())
+}
+
+/// 孤儿链取证（M12-d t43 断言面）：累计 re-parent 孤儿数 / idle 自动
+/// 收割孤儿僵尸数。
+static ORPHANS_REPARENTED: AtomicU64 = AtomicU64::new(0);
+static ORPHAN_REAPS: AtomicU64 = AtomicU64::new(0);
+
+/// 任务退出码诊断（M12-d t43 排障临时面）。
+pub fn task_debug_exit_code(id: usize) -> u64 {
+    let _w = IntWindow::new();
+    let s = SCHED.lock();
+    s.tasks
+        .get(id)
+        .and_then(|t| t.as_ref())
+        .map_or(u64::MAX, |t| t.exit_code)
+}
+
+/// 任务状态诊断戳（M12-d t43 排障临时面；0 无 1 Ready 2 Running
+/// 3 Blocked 4 Zombie）。
+pub fn task_debug_state(id: usize) -> u8 {
+    let _w = IntWindow::new();
+    let s = SCHED.lock();
+    match s.tasks.get(id).and_then(|t| t.as_ref()) {
+        None => 0,
+        Some(t) => match t.state {
+            State::Ready => 1,
+            State::Running => 2,
+            State::Blocked => 3,
+            State::Zombie => 4,
+        },
+    }
+}
+
+/// 孤儿链取证快照：(re-parent 孤儿数, idle 自动收割数)。
+pub fn orphan_stamps() -> (u64, u64) {
+    (
+        ORPHANS_REPARENTED.load(Ordering::Acquire),
+        ORPHAN_REAPS.load(Ordering::Acquire),
+    )
+}
+
+/// 孤儿僵尸收割（M12-d 运行时化面）：仅收割 **parent = None** 的
+/// Zombie（无主 = 原父已终结 or 内核直接派生的哑元）；有主 Zombie
+/// 严格保留给其父的 WAIT_PID（退出码不掠夺——否则等待方语义破环）。
+/// 返回清扫数。idle 附加工作调用（见 IDLE_REAP 桥）。
+pub fn reap_orphans() -> usize {
+    let _w = IntWindow::new();
+    let mut s = SCHED.lock();
+    let sc = &mut *s;
+    let mut n = 0usize;
+    for id in 1..MAX_TASKS {
+        if sc.tasks[id]
+            .as_ref()
+            .is_some_and(|t| t.state == State::Zombie && t.parent.is_none())
+        {
+            sc.tasks[id] = None;
+            n += 1;
+        }
+    }
+    if n != 0 {
+        ORPHAN_REAPS.fetch_add(n as u64, Ordering::AcqRel);
+    }
+    n
 }
 
 /// 僵尸清扫（M11 槽位卫生面）：收割全部 Zombie 槽位（句柄已随终结

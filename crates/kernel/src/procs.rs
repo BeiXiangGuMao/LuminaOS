@@ -72,6 +72,9 @@ static WAITPID_CODE: AtomicU64 = AtomicU64::new(u64::MAX);
 static SPAWN_RESULT: AtomicU64 = AtomicU64::new(u64::MAX);
 static SPAWN_PID: AtomicU64 = AtomicU64::new(u64::MAX);
 static SPAWN_CELL: AtomicU64 = AtomicU64::new(u64::MAX);
+/// SPAWN 调用单调序号（M12-d t43 排障面：区分「本窗口真有 ring3
+/// SPAWN」与「戳为陈值」）。
+pub static SPAWN_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// 取证快照：(GRANT 返回码, GRANT 新句柄, REVOKE 返回码)。
 pub fn stamps() -> (u64, u64, u64) {
@@ -234,22 +237,24 @@ pub fn sys_wait_pid(pid: u64) -> u64 {
     }
 }
 
-/// SYS_SPAWN 主体（M11-A）：ring3 自主派生子进程。
+/// SYS_SPAWN 主体（M12-B COW 派生）：ring3 自主派生子进程。
 ///
 /// 全链（调用方任务上下文，串行）：
 /// 1. 门禁：调用方必须持有独立用户空间（`user_root != 0`；内核任务/
 ///    主任务 v0 不可派生 → ERR_CAP）；
-/// 2. 子空间克隆：全新 6 帧页表骨架 + 父代码帧逐字节拷贝
-///    （[`crate::user::clone_user_space_from`]；帧耗尽 → ERR_NOMEM，
-///    失败路径全量归还零泄漏）；
-/// 3. 遗传细胞：子栈 [`crate::user::SPAWN_CELL_VA`] ← 父 pid（物理直写，
-///    帧所有权尚未移交；子任务凭非零细胞自证身份，根父同址恒 0）；
-/// 4. 父链登记：[`task::spawn_user_child`]（`parent = caller`，内核登记
-///    不可伪造；cap_slot = 0 纯被授予型；槽位耗尽 → 全帧归还 →
-///    ERR_NOMEM）。
+/// 2. 子空间 COW 派生（[`crate::user::clone_user_space_cow`]）：零拷贝
+///    ——子代码帧共享父帧（本就只读），子栈帧共享 + COW 标记，父侧
+///    栈同步降级 + invlpg；帧耗尽 → ERR_NOMEM；
+/// 3. 遗传细胞：寄存器协议（子任务首派发时 trampoline 写 r14 = 父
+///    pid）——共享栈帧不可物理直写，v0.11 内存细胞已退役；
+/// 4. 父链登记：[`task::spawn_user_child`]（`parent = caller`，内核
+///    登记
+///    不可伪造；cap_slot = 0 纯被授予型；槽位耗尽 → 子表回滚 +
+///    父侧降级回滚 → ERR_NOMEM）。
 ///
 /// 成功返回 `(1 << 32) | child_pid`。取证面：SPAWN_RESULT/SPAWN_PID/
-/// SPAWN_CELL（t37 断言）。
+/// SPAWN_CELL（cell = 内核侧父子链自证 = caller pid；ring3 侧以
+/// 退出码协议自证，t37 v2）。
 pub fn sys_spawn(reserved: u64) -> u64 {
     let caller = task::current_task_id();
     let _ = reserved; // v0 恒 0（parse 面已校验，此处仅透传取证）
@@ -259,14 +264,14 @@ pub fn sys_spawn(reserved: u64) -> u64 {
         SPAWN_RESULT.store(ERR_CAP, Ordering::Release);
         return ERR_CAP;
     }
-    // 2) 子空间克隆（帧耗尽 → ERR_NOMEM；失败路径无帧泄漏）
+    // 2) 子空间 COW 派生（帧耗尽 → ERR_NOMEM；失败路径仅归还新建表帧）
     let Some(frames) = crate::vmm::global_frames() else {
         SPAWN_RESULT.store(ERR_NOMEM, Ordering::Release);
         return ERR_NOMEM;
     };
     let cs = {
         let mut alloc = || frames.alloc();
-        match crate::user::clone_user_space_from(parent_root, &mut alloc) {
+        match crate::user::clone_user_space_cow(parent_root, &mut alloc) {
             Ok(cs) => cs,
             Err(_) => {
                 SPAWN_RESULT.store(ERR_NOMEM, Ordering::Release);
@@ -274,31 +279,95 @@ pub fn sys_spawn(reserved: u64) -> u64 {
             }
         }
     };
-    // 3) 遗传细胞：子栈细胞 ← 父 pid（帧尚未移交，物理直写安全）
-    ostd::hw::phys::write_u64(cs.stack_frame + crate::user::SPAWN_CELL_OFF, caller as u64);
-    // 4) 父链登记派生（槽位耗尽 → 全帧归还 → ERR_NOMEM）
+    // 3) 父链登记派生（槽位耗尽 → 子表归还 + 父侧降级回滚 → ERR_NOMEM）
     let id = task::spawn_user_child("spawned", crate::user_noop, cs.root, 0, caller);
     if id == usize::MAX {
-        for f in [
-            cs.root,
-            cs.pdpt,
-            cs.pd,
-            cs.pt,
-            cs.code_frame,
-            cs.stack_frame,
-        ] {
+        for f in [cs.root, cs.pdpt, cs.pd, cs.pt] {
             frames.dealloc(f);
         }
+        crate::user::rollback_cow_demote(parent_root);
         SPAWN_RESULT.store(ERR_NOMEM, Ordering::Release);
         return ERR_NOMEM;
     }
+    SPAWN_SEQ.fetch_add(1, Ordering::AcqRel);
     SPAWN_RESULT.store(0, Ordering::Release);
     SPAWN_PID.store(id as u64, Ordering::Release);
-    SPAWN_CELL.store(
-        ostd::hw::phys::read_u64(cs.stack_frame + crate::user::SPAWN_CELL_OFF),
-        Ordering::Release,
-    );
+    // 遗传细胞自证（内核侧）：父子链由 spawn_user_child 登记，caller
+    // 即子任务父链；ring3 侧凭 r14 协议回证（t37 v2 退出码链）
+    SPAWN_CELL.store(caller as u64, Ordering::Release);
     SPAWN_OK_BIT | id as u64
+}
+
+/// SYS_EXEC 错误码：映像号越界（M12-B）。
+pub const ERR_IMAGE: u64 = 10;
+
+/// EXEC 成功标记位：返回值 `(1 << 32) | image`（成功位与映像号域隔离）。
+const EXEC_OK_BIT: u64 = 1 << 32;
+
+/// SYS_EXEC 取证（t42 断言面）：最近一次返回码 + 成功时的映像号。
+static EXEC_RESULT: AtomicU64 = AtomicU64::new(u64::MAX);
+static EXEC_IMAGE: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// SYS_EXEC 取证快照：(返回码, 映像号)。
+pub fn exec_stamps() -> (u64, u64) {
+    (
+        EXEC_RESULT.load(Ordering::Acquire),
+        EXEC_IMAGE.load(Ordering::Acquire),
+    )
+}
+
+/// SYS_EXEC 主体（M12-B）：调用方地址空间以内核内嵌映像重建（
+/// [`crate::user::EXEC_IMAGES`] 表驱动）。
+///
+/// 全链（调用方任务上下文，串行）：
+/// 1. 门禁：调用方必须持有独立用户空间（否则 ERR_CAP）；映像号越界
+///    → ERR_IMAGE(10)；
+/// 2. 新空间构建：4 表 + 私有代码/栈帧 + 映像装载（帧耗尽 →
+///    ERR_NOMEM；旧空间帧按 v0 存续期语义不回收，如实记档）；
+/// 3. 切换：CR3 写新根 + 任务面 user_root 登记 + 系统调用帧改写
+///    （RIP = 用户入口、RSP = 新栈顶、参数寄存器清零——现场全量
+///    内核构造）；r12–r15 经派发器 callee-saved 语义自然往返
+///    （r14 遗传细胞 = 父 pid 保持——exec 不改父子链）。
+///
+/// 成功不返回（新映像自入口执行）；失败返回错误码。
+pub fn sys_exec(image: u64, frame: &mut crate::syscall::SyscallFrame) -> u64 {
+    let caller = task::current_task_id();
+    if task::current_user_root() == 0 {
+        EXEC_RESULT.store(ERR_CAP, Ordering::Release);
+        return ERR_CAP;
+    }
+    let Some(img) = crate::user::EXEC_IMAGES.get(image as usize) else {
+        EXEC_RESULT.store(ERR_IMAGE, Ordering::Release);
+        return ERR_IMAGE;
+    };
+    let Some(frames) = crate::vmm::global_frames() else {
+        EXEC_RESULT.store(ERR_NOMEM, Ordering::Release);
+        return ERR_NOMEM;
+    };
+    let us = {
+        let mut alloc = || frames.alloc();
+        match crate::user::build_user_space_with(img, &mut alloc) {
+            Ok(us) => us,
+            Err(_) => {
+                EXEC_RESULT.store(ERR_NOMEM, Ordering::Release);
+                return ERR_NOMEM;
+            }
+        }
+    };
+    // 切换：先登记任务面（后续派发/清算面读到新根），再写 CR3，
+    // 最后改写系统调用帧（返回即入新映像）
+    task::set_user_root(caller, us.root);
+    ostd::hw::control::write_cr3(us.root);
+    frame.rip = crate::user::USER_CODE_VIRT;
+    frame.user_rsp = crate::user::USER_STACK_TOP;
+    frame.rdi = 0;
+    frame.rsi = 0;
+    frame.rdx = 0;
+    frame.r10 = 0;
+    frame.r8 = 0;
+    EXEC_RESULT.store(0, Ordering::Release);
+    EXEC_IMAGE.store(image, Ordering::Release);
+    EXEC_OK_BIT | image
 }
 
 /// HANDLE_QUERY/ENUM 成功标记位：`(1 << 32) | ...`（与错误码域隔离）。
