@@ -80,10 +80,37 @@ pub enum FsError {
     NotSupported,
 }
 
+impl FsError {
+    /// 映射为 Linux 5.15 errno（**Conduit 口径**——与 conduit crate 的
+    /// `errno_name` 快照无依赖同表，交叉核对见本模块测试钉值）。
+    ///
+    /// 文件面 syscall 错误域专用（进程/能力面错误域 1–10 与本域分立，
+    /// 各 syscall 文档各自声明）；内核内部一律继续使用本类型，
+    /// errno 语义只在 ABI 边界（本函数）一次性折叠。
+    pub const fn errno(self) -> u64 {
+        match self {
+            // 路径词法非法 → 参数无效
+            FsError::InvalidPath => 22, // EINVAL
+            // 目标不存在
+            FsError::NotFound => 2, // ENOENT
+            // 路径组件不是目录
+            FsError::NotADirectory => 20, // ENOTDIR
+            // 对目录做文件语义操作（如 read）
+            FsError::IsDirectory => 21, // EISDIR
+            // 同名节点已存在
+            FsError::AlreadyExists => 17, // EEXIST
+            // 目录非空拒绝删除
+            FsError::DirectoryNotEmpty => 39, // ENOTEMPTY
+            // 文件系统不支持该操作/节点类型
+            FsError::NotSupported => 95, // EOPNOTSUPP
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::{NodeKind, VnodeId};
+    use super::{FsError, NodeKind, VnodeId};
 
     #[test]
     fn vnode_id_is_comparable_and_copyable() {
@@ -102,5 +129,18 @@ mod tests {
         assert!(!NodeKind::CharDev { major: 4, minor: 0 }.is_dir());
         assert!(!NodeKind::Pipe.is_dir());
         assert!(!NodeKind::Symlink.is_dir());
+    }
+
+    #[test]
+    fn errno_mapping_matches_conduit_snapshot() {
+        // Conduit 口径交叉核对：数值与 conduit::errno_name 快照一一对应
+        // （本 crate 不依赖 conduit，此处逐值钉死防漂移）
+        assert_eq!(FsError::InvalidPath.errno(), 22); // EINVAL
+        assert_eq!(FsError::NotFound.errno(), 2); // ENOENT
+        assert_eq!(FsError::NotADirectory.errno(), 20); // ENOTDIR
+        assert_eq!(FsError::IsDirectory.errno(), 21); // EISDIR
+        assert_eq!(FsError::AlreadyExists.errno(), 17); // EEXIST
+        assert_eq!(FsError::DirectoryNotEmpty.errno(), 39); // ENOTEMPTY
+        assert_eq!(FsError::NotSupported.errno(), 95); // EOPNOTSUPP
     }
 }

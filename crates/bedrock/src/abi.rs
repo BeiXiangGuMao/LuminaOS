@@ -74,6 +74,59 @@ pub const SYS_HANDLE_ENUM: u64 = 15;
 /// 调用方句柄表满 → `ERR_TABLE(7)`。通道的跨任务分发复用
 /// [`SYS_CAP_GRANT`]（M9 父进程面——通道即能力对象，零新授权面）。
 pub const SYS_IPC_BIND: u64 = 16;
+/// 打开文件，返回统一句柄面句柄（v0.14 追加，M13-② 文件面）。
+///
+/// 参数布局：路径指针 = rdi（调用方只读内存，UTF-8 绝对路径）、
+/// 路径长 = rsi（字节，上限 512，结构校验）、打开模式 = rdx
+/// （bit0 = 读、bit1 = 写，必须非零且 ≤ 0b11，结构校验）。
+/// 成功返回 `(1 << 32) | handle`：内核解析路径（挂载命名空间）→
+/// 铸文件对象 id + [`OpenFileDescription`] 语义入注册表 →
+/// [`Capability`](READ|WRITE 按模式子集) 装入调用方句柄表首空闲位。
+/// **fd ≡ 句柄**（统一句柄面）：文件与通道共享同一句柄命名空间，
+/// 靠对象 id 段位（0xF11E…）与权限位（READ/WRITE）区分；句柄表满 →
+/// `EMFILE(24)`，内核文件表满 → `ENFILE(23)`（Linux 语义正分）。
+/// 错误域 = Linux 5.15 errno（Conduit 口径，见 [`crate::vfs::FsError::errno`]）。
+pub const SYS_OPEN: u64 = 18;
+/// 从文件句柄读取（v0.14 追加，M13-② 文件面）。
+///
+/// 参数布局：句柄 = rdi、缓冲指针 = rsi（调用方可写内存）、
+/// 长度 = rdx（字节，上限 512，结构校验）。成功返回
+/// `(1 << 32) | count`（0 = EOF）；句柄无效/未以读方式打开 →
+/// `EBADF(9)`；缓冲不可写 → `EFAULT(14)`；偏移自 OFD 私有位推进。
+pub const SYS_READ: u64 = 19;
+/// 向文件句柄写入（v0.14 追加，M13-② 文件面）。
+///
+/// 参数布局：句柄 = rdi、数据指针 = rsi（调用方只读内存）、
+/// 长度 = rdx（字节，上限 512，结构校验）。成功返回
+/// `(1 << 32) | count`；句柄无效/未以写方式打开 → `EBADF(9)`。
+pub const SYS_WRITE: u64 = 20;
+/// 关闭文件句柄（v0.14 追加，M13-② 文件面）。
+///
+/// 参数 = 句柄。成功返回 0；句柄回收（全局槽 + 文件对象槽）后同号
+/// fd 复用为 Linux 同款语义（close 后旧句柄失效，v0 不做代际槽）。
+pub const SYS_CLOSE: u64 = 21;
+/// 读取文件句柄元数据快照（v0.14 追加，M13-② 文件面）。
+///
+/// 参数 = 句柄。成功返回 `(1 << 32) | (size << 16) | kind`（kind：
+/// 0 = 常规文件、1 = 目录；size 域 31 位上限，超出按 `EOVERFLOW`
+/// 处理属后续块——v0 ramfs 节点尺寸远低于此界，如实记档）；
+/// 不影响 OFD 偏移。
+pub const SYS_STAT: u64 = 22;
+/// 重定位文件句柄偏移（v0.14 追加，M13-② 文件面）。
+///
+/// 参数布局：句柄 = rdi、基准 = rsi（0 = SET / 1 = CUR / 2 = END，
+/// 结构校验）、偏移 = rdx（i64 位型）。成功返回
+/// `(1 << 32) | new_offset`；结果为负 → `EINVAL(22)`。
+pub const SYS_SEEK: u64 = 23;
+/// 以全局节拍为粒度睡眠当前任务（v0.14 追加，M13-② timer 阻塞源）。
+///
+/// 参数 = 时长（全局节拍数，[`ostd::time::now`] 同源计数；0 = 立即
+/// 返回）。任务以 [`WaitWhat::Timer`] 等待对象阻塞（swap/waitpid/ipc
+/// 之外的第三类阻塞源，探针化同款：deadline 已过即探针命中回滚）。
+/// 成功（睡眠期满或已期满）返回 0。v0 语义 = tick 粒度睡眠
+/// （非真纳秒；TSC 纳秒面留待后续块，如实记档）。
+pub const SYS_NANOSLEEP: u64 = 24;
+
 /// 以内核内嵌映像重建调用方地址空间（v0.12 追加，M12-B 执行映像面）。
 ///
 /// 参数 = 映像号（[`EXEC_IMAGES`] 表索引，越界 → `ERR_IMAGE(10)`）。
@@ -83,8 +136,9 @@ pub const SYS_IPC_BIND: u64 = 16;
 /// 无独立用户空间 → `ERR_CAP`；帧耗尽 → `ERR_NOMEM(9)`。
 pub const SYS_EXEC: u64 = 17;
 
-/// 系统调用 ABI 版本（追加 IPC_BIND/EXEC → 0.6；通道运行时化与执行映像面）。
-pub const ABI_VERSION: (u16, u16) = (0, 6);
+/// 系统调用 ABI 版本（追加文件面六落点 + NANOSLEEP → 0.7；统一句柄面
+/// 文件对象与第三类阻塞源；错误码分域：文件面 = Conduit 口径 errno）。
+pub const ABI_VERSION: (u16, u16) = (0, 7);
 
 /// 寄存器快照形式的系统调用请求。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,6 +254,51 @@ pub enum Syscall {
         /// 内嵌映像表索引。
         image: u64,
     },
+    /// 打开文件（M13-②；指针 = rdi 慢路径语义，结构面见 [`SYS_OPEN`]）。
+    Open {
+        /// 路径长（字节，≤ 512）。
+        len: u64,
+        /// 打开模式（bit0 读 / bit1 写，非零 ≤ 0b11）。
+        mode: u8,
+    },
+    /// 读文件（M13-②；缓冲 = rsi 慢路径语义，见 [`SYS_READ`]）。
+    Read {
+        /// 文件句柄。
+        handle: u64,
+        /// 请求长度（字节，≤ 512）。
+        len: u64,
+    },
+    /// 写文件（M13-②；缓冲 = rsi 慢路径语义，见 [`SYS_WRITE`]）。
+    Write {
+        /// 文件句柄。
+        handle: u64,
+        /// 数据长度（字节，≤ 512）。
+        len: u64,
+    },
+    /// 关闭文件句柄（M13-②；见 [`SYS_CLOSE`]）。
+    Close {
+        /// 文件句柄。
+        handle: u64,
+    },
+    /// 句柄元数据快照（M13-②；见 [`SYS_STAT`]）。
+    Stat {
+        /// 文件句柄。
+        handle: u64,
+    },
+    /// 重定位偏移（M13-②；见 [`SYS_SEEK`]）。
+    Seek {
+        /// 文件句柄。
+        handle: u64,
+        /// 基准（0 = SET / 1 = CUR / 2 = END）。
+        whence: u8,
+        /// 偏移（i64 位型透传）。
+        offset: u64,
+    },
+    /// 节拍粒度睡眠（M13-②；见 [`SYS_NANOSLEEP`]）。
+    NanoSleep {
+        /// 时长（全局节拍数，0 = 立即返回）。
+        ticks: u64,
+    },
 }
 
 /// 从寄存器快照解析调用意图。只做结构校验，不做内存访问（由慢路径完成）。
@@ -241,6 +340,30 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
         SYS_IPC_BIND if a0 == 0 => Ok(Syscall::IpcBind { reserved: a0 }),
         SYS_IPC_BIND => Err(AbiError::BadArgs),
         SYS_EXEC => Ok(Syscall::Exec { image: a0 }),
+        SYS_OPEN if a1 <= 512 && (1..=0b11).contains(&a2) => Ok(Syscall::Open {
+            len: a1,
+            mode: a2 as u8,
+        }),
+        SYS_OPEN => Err(AbiError::BadArgs),
+        SYS_READ if a2 <= 512 => Ok(Syscall::Read {
+            handle: a0,
+            len: a2,
+        }),
+        SYS_READ => Err(AbiError::BadArgs),
+        SYS_WRITE if a2 <= 512 => Ok(Syscall::Write {
+            handle: a0,
+            len: a2,
+        }),
+        SYS_WRITE => Err(AbiError::BadArgs),
+        SYS_CLOSE => Ok(Syscall::Close { handle: a0 }),
+        SYS_STAT => Ok(Syscall::Stat { handle: a0 }),
+        SYS_SEEK if a1 <= 2 => Ok(Syscall::Seek {
+            handle: a0,
+            whence: a1 as u8,
+            offset: a2,
+        }),
+        SYS_SEEK => Err(AbiError::BadArgs),
+        SYS_NANOSLEEP => Ok(Syscall::NanoSleep { ticks: a0 }),
         _ => Err(AbiError::UnknownSyscall),
     }
 }
@@ -365,6 +488,101 @@ mod tests {
             super::parse(r(super::SYS_EXEC, [7, 0, 0, 0, 0])),
             Ok(Syscall::Exec { image: 7 })
         );
+    }
+
+    #[test]
+    fn parses_file_face_calls() {
+        let r = |num: u64, args: [u64; 5]| SyscallRegs { num, args };
+        // OPEN：len ≤ 512 且 mode ∈ 1..=0b11（0 模式拒收 → BadArgs）
+        assert_eq!(
+            super::parse(r(super::SYS_OPEN, [0x2000, 11, 0b11, 0, 0])),
+            Ok(Syscall::Open {
+                len: 11,
+                mode: 0b11
+            })
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_OPEN, [0x2000, 513, 1, 0, 0])),
+            Err(AbiError::BadArgs),
+            "len 越界"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_OPEN, [0x2000, 11, 0b100, 0, 0])),
+            Err(AbiError::BadArgs),
+            "mode 保留位拒收"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_OPEN, [0x2000, 11, 0, 0, 0])),
+            Err(AbiError::BadArgs),
+            "零模式拒收（结构面）"
+        );
+        // READ/WRITE：len ≤ 512 结构校验；句柄透传
+        assert_eq!(
+            super::parse(r(super::SYS_READ, [3, 0x402E00, 64, 0, 0])),
+            Ok(Syscall::Read { handle: 3, len: 64 })
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_WRITE, [3, 0x402E00, 8, 0, 0])),
+            Ok(Syscall::Write { handle: 3, len: 8 })
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_READ, [3, 0x402E00, 513, 0, 0])),
+            Err(AbiError::BadArgs)
+        );
+        // CLOSE/STAT：句柄透传
+        assert_eq!(
+            super::parse(r(super::SYS_CLOSE, [3, 0, 0, 0, 0])),
+            Ok(Syscall::Close { handle: 3 })
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_STAT, [3, 0, 0, 0, 0])),
+            Ok(Syscall::Stat { handle: 3 })
+        );
+        // SEEK：whence ∈ 0..=2 结构校验；offset i64 位型透传
+        assert_eq!(
+            super::parse(r(super::SYS_SEEK, [3, 1, 8, 0, 0])),
+            Ok(Syscall::Seek {
+                handle: 3,
+                whence: 1,
+                offset: 8
+            })
+        );
+        // 负偏移（i64 位型）
+        assert_eq!(
+            super::parse(r(super::SYS_SEEK, [3, 1, u64::MAX, 0, 0])),
+            Ok(Syscall::Seek {
+                handle: 3,
+                whence: 1,
+                offset: u64::MAX
+            })
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_SEEK, [3, 3, 0, 0, 0])),
+            Err(AbiError::BadArgs),
+            "whence 越界"
+        );
+        // NANOSLEEP：ticks 透传（0 合法 = 探针命中即时返回语义）
+        assert_eq!(
+            super::parse(r(super::SYS_NANOSLEEP, [0, 0, 0, 0, 0])),
+            Ok(Syscall::NanoSleep { ticks: 0 })
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_NANOSLEEP, [5, 0, 0, 0, 0])),
+            Ok(Syscall::NanoSleep { ticks: 5 })
+        );
+    }
+
+    #[test]
+    fn file_face_numbers_are_appended_in_order() {
+        // 追加纪律：v0 编号不得复用或改序——18..=24 顺序落位自证
+        assert_eq!(super::SYS_OPEN, 18);
+        assert_eq!(super::SYS_READ, 19);
+        assert_eq!(super::SYS_WRITE, 20);
+        assert_eq!(super::SYS_CLOSE, 21);
+        assert_eq!(super::SYS_STAT, 22);
+        assert_eq!(super::SYS_SEEK, 23);
+        assert_eq!(super::SYS_NANOSLEEP, 24);
+        assert_eq!(super::ABI_VERSION, (0, 7));
     }
 
     #[test]

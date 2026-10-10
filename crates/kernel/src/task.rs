@@ -141,6 +141,13 @@ pub enum WaitWhat {
         /// 目标通道 id。
         endpoint: usize,
     },
+    /// timer 阻塞源（M13-②）：等待全局节拍到达 deadline（ostd::time
+    /// 同源计数；wall_hook 头部到期扫描 + wake_tasks 唤醒——swap/waitpid/
+    /// ipc 之外的第三类阻塞源，探针化同族）。
+    Timer {
+        /// 到期 deadline（全局节拍数）。
+        deadline: u64,
+    },
 }
 
 /// 任务入口函数指针。
@@ -1560,6 +1567,8 @@ pub fn timer_hook(plan: &mut PreemptPlan) -> bool {
     // M10-A：老化扫描回归本钩子（ring3 驻留期间本核 LVT 被屏蔽 = 老化
     // 随之暂停；该窗口的饥饿防护由 RESCHED 抢占钩子按 RESCHED 节拍兜底
     // ——量子轮转语义下双核 ring3 饱和仍无永久饥饿，见 t34/t31）。
+    // M13-② 注记：timer 到期旗消费在 tickd 任务上下文（中断语境零
+    // SCHED 触碰），本钩子保持 M9 形态。
     let cpu = my_cpu();
     let mut s = SCHED.lock();
     let sc = &mut *s;
@@ -1604,6 +1613,21 @@ pub fn wall_hook(plan: &mut PreemptPlan) -> bool {
     }
     for slot in PERCPU_RUN_TICKS.iter() {
         slot.fetch_add(1, Ordering::Relaxed);
+    }
+    // timer 阻塞源到期检测（M13-②）：PIT ISR 零锁纪律（S31 极短 ISR）
+    // ——只碰原子量：置到期旗 + 跨核提示；唤醒工作由 RESCHED IPI /
+    // LAPIC tick 消费者承载（本函数绝不取 SCHED / 触任务表）。
+    if crate::timer::expire_pending_isr() {
+        let kick = RESCHED_KICK.load(Ordering::Acquire);
+        if kick != 0 {
+            // SAFETY: 前置条件 —— 地址来自 set_resched_kick 存入的
+            //          fn(usize)（与下方量子路径同一注册面）。
+            // 不变式 —— Release/Acquire 配对；注册先于任何跨核派生。
+            // 并发 —— IPI 发送侧天然多发布者安全（ICR 交付状态轮询）。
+            // 违反后果 —— 跳转伪造地址即任意代码执行（注册纪律封死）。
+            let f: fn(usize) = unsafe { core::mem::transmute(kick) };
+            f(1 - my_cpu());
+        }
     }
     if !PREEMPT_ENABLED.load(Ordering::Acquire) {
         return false;
@@ -1655,6 +1679,9 @@ pub fn wall_hook(plan: &mut PreemptPlan) -> bool {
 /// RESCHED 节拍推进（饱和场景 ~量子级频次），饥饿防护不断供。
 pub fn resched_preempt_hook(plan: &mut PreemptPlan) -> bool {
     let cpu = my_cpu();
+    // M13-② 注记：timer 到期旗的消费在 tickd 任务上下文（timer::tickd_body
+    // ，swapd 同款房屋范式）——中断语境零 SCHED 触碰（S31 纪律扩展到
+    // RESCHED IPI 实测记档），本钩子保持 M10-A 原形态。
     if !PREEMPT_REQ[cpu].swap(false, Ordering::AcqRel) {
         return false;
     }

@@ -39,6 +39,17 @@ impl OpenFlags {
     pub fn is_any(self) -> bool {
         self.0 & 0b11 != 0
     }
+
+    /// 以位型构造（bit0 = 读、bit1 = 写；零/保留位拒收 → None）。
+    /// 文件面 ABI 边界（M13-②）与宿主面共用的唯一构造入口。
+    pub const fn from_bits(bits: u8) -> Option<Self> {
+        match bits {
+            0b01 => Some(Self::READ),
+            0b10 => Some(Self::WRITE),
+            0b11 => Some(Self::READ_WRITE),
+            _ => None,
+        }
+    }
 }
 
 /// 打开文件描述：落点节点 + 私有偏移。
@@ -340,5 +351,23 @@ mod tests {
         assert_eq!(table.read(ghost, &mut [0u8; 1]), Err(FdError::StaleFd));
         assert!(matches!(table.close(ghost), Err(FdError::StaleFd)));
         assert_eq!(table.seek(ghost, Whence::Set, 0), Err(FdError::StaleFd));
+    }
+
+    #[test]
+    fn open_flags_from_bits_roundtrip() {
+        use super::OpenFlags;
+        assert_eq!(OpenFlags::from_bits(0b01), Some(OpenFlags::READ));
+        assert_eq!(OpenFlags::from_bits(0b10), Some(OpenFlags::WRITE));
+        assert_eq!(OpenFlags::from_bits(0b11), Some(OpenFlags::READ_WRITE));
+        assert_eq!(OpenFlags::from_bits(0), None, "零模式拒收");
+        assert_eq!(OpenFlags::from_bits(0b100), None, "保留位拒收");
+        assert_eq!(OpenFlags::from_bits(0xFF), None);
+        // 往返：位型 → 构造 → 谓词一致
+        for bits in [0b01u8, 0b10, 0b11] {
+            let f = OpenFlags::from_bits(bits).expect("valid");
+            assert_eq!(f.readable(), bits & 0b01 != 0);
+            assert_eq!(f.writable(), bits & 0b10 != 0);
+            assert!(f.is_any());
+        }
     }
 }

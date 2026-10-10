@@ -188,8 +188,8 @@ const KERNEL_ELF: &str =
 const KERNEL_BIN: &str =
     "/home/z/my-project/lumina-build/target/x86_64-unknown-none/release/lumina-kernel.bin";
 
-/// 自检标记总数（与内核 SELFTEST_TOTAL 同步；M12-a 完成态 = 41，M12-b 起 42→…）。
-const SELFTEST_EXPECTED: &str = "43/43";
+/// 自检标记总数（与内核 SELFTEST_TOTAL 同步；M12 完成态 = 43，M13-② 起 46）。
+const SELFTEST_EXPECTED: &str = "46/46";
 
 /// TLV 请求帧：tag 0x0007，value = b"lumina-m5"。
 const TLV_REQ: &[u8] = &[

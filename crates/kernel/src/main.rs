@@ -46,7 +46,9 @@ mod smp;
 mod swap;
 mod syscall;
 mod task;
+mod timer;
 mod user;
+mod vfs;
 mod vmm;
 
 use core::fmt::Write as _;
@@ -70,7 +72,7 @@ const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
 /// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项
 /// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加）。
-const SELFTEST_TOTAL: usize = 43;
+const SELFTEST_TOTAL: usize = 46;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐，链接进 .bss（NOLOAD）。
 #[repr(align(4096))]
@@ -1949,6 +1951,174 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     };
     report(&mut log, t43, "zombie-reap-runtime");
 
+    // 44) 文件面统一句柄面（M13-②）：内核侧全矩阵——open/read/seek/
+    //     write/stat/close + HANDLE_QUERY 权限位融合实证 + Conduit 口径
+    //     errno 负探针（EBADF/EISDIR/ENOENT/EINVAL/EFAULT/EMFILE）+
+    //     句柄表占用基线还原
+    let t44 = {
+        // M13-②：timer 守护任务（tickd）0 级派生——与 swapd 同款
+        // yield-poll 房屋范式，到期旗消费恒在任务上下文
+        let _tickd = task::spawn_prio("tickd", crate::timer::tickd_body, 0);
+        vfs::init();
+        vfs::reset_evidence();
+        let mut ok = true;
+        let used0 = task::with_task_handles(0, |t| t.iter().filter(|h| h.is_some()).count());
+        static P_HELLO: [u8; 12] = *b"/files/hello";
+        static P_DIR: [u8; 10] = *b"/files/dir";
+        static P_NOPE: [u8; 5] = *b"/nope";
+        static BANG: [u8; 1] = *b"!";
+        let mut rbuf = [0u8; 16];
+        let mut diag = |tag: &str, r: u64| {
+            let _ = writeln!(log, "  file44 {tag}={r:#x}");
+        };
+        // OPEN 只读 + 统一句柄面实证：HANDLE_QUERY 透出文件句柄（READ 位）
+        let r = vfs::sys_open(P_HELLO.as_ptr() as u64, 12, 1);
+        diag("open0", r);
+        ok &= r >> 32 == 1;
+        let h = r & 0xFFFF_FFFF;
+        let q = procs::sys_handle_query(h);
+        diag("hq", q);
+        ok &= q >> 32 == 1 && ((q >> 16) & 0xFFFF) == 1; // Right::READ
+                                                         // READ 全量（种子 "lumina-fs" = 9 字节，EOF 语义）
+        let r = vfs::sys_read(h, rbuf.as_mut_ptr() as u64, 9);
+        diag("read0", r);
+        ok &= r == (1u64 << 32) | 9;
+        let content_ok = rbuf[..9] == *b"lumina-fs";
+        diag("content", u64::from(content_ok));
+        ok &= content_ok;
+        // SEEK End → 偏移 9；只读句柄写 → EBADF
+        let r = vfs::sys_seek(h, 2, 0);
+        diag("seek0", r);
+        ok &= r == (1u64 << 32) | 9;
+        let r = vfs::sys_write(h, BANG.as_ptr() as u64, 1);
+        diag("wo", r);
+        ok &= r == 9;
+        // CLOSE → 关后旧句柄读 = EBADF（Linux fd 复用语义负探针；
+        // 此后至还原基线前不再 OPEN，避免同号复用干扰判定）
+        ok &= vfs::sys_close(h) == 0;
+        let r = vfs::sys_read(h, rbuf.as_mut_ptr() as u64, 4);
+        diag("stale-read", r);
+        ok &= r == 9;
+        // 读写打开 → 尾部追加 → STAT（size 10，kind 0 = File）
+        let r = vfs::sys_open(P_HELLO.as_ptr() as u64, 12, 3);
+        diag("open1", r);
+        ok &= r >> 32 == 1;
+        let h2 = r & 0xFFFF_FFFF;
+        let r = vfs::sys_seek(h2, 2, 0);
+        diag("seek1", r);
+        ok &= r == (1u64 << 32) | 9;
+        let r = vfs::sys_write(h2, BANG.as_ptr() as u64, 1);
+        diag("write1", r);
+        ok &= r == (1u64 << 32) | 1;
+        let r = vfs::sys_stat(h2);
+        diag("stat", r);
+        ok &= r == (1u64 << 32) | (10 << 16);
+        // EISDIR：目录可开不可读（M13-① fd 表同款语义）
+        let r = vfs::sys_open(P_DIR.as_ptr() as u64, 10, 1);
+        ok &= r >> 32 == 1;
+        let hd = r & 0xFFFF_FFFF;
+        ok &= vfs::sys_read(hd, rbuf.as_mut_ptr() as u64, 4) == 21;
+        ok &= vfs::sys_close(hd) == 0;
+        // ENOENT / EINVAL（零模式）/ EFAULT（空指针缓冲）
+        ok &= vfs::sys_open(P_NOPE.as_ptr() as u64, 5, 1) == 2;
+        ok &= vfs::sys_open(P_HELLO.as_ptr() as u64, 12, 0) == 22;
+        ok &= vfs::sys_read(h2, core::ptr::null_mut::<u8>() as u64, 4) == 14;
+        ok &= vfs::sys_close(h2) == 0;
+        // EMFILE：填满调用方句柄表（先验免泄漏），再全关还原基线
+        let mut hs = [0u64; task::HANDLE_MAX];
+        let mut n = 0usize;
+        for _ in 0..task::HANDLE_MAX as u64 {
+            let r = vfs::sys_open(P_HELLO.as_ptr() as u64, 12, 1);
+            if r >> 32 == 1 {
+                hs[n] = r & 0xFFFF_FFFF;
+                n += 1;
+            } else {
+                ok &= r == 24; // EMFILE
+                break;
+            }
+        }
+        ok &= n >= 1;
+        for fd in hs.iter().take(n) {
+            ok &= vfs::sys_close(*fd) == 0;
+        }
+        let used1 = task::with_task_handles(0, |t| t.iter().filter(|h| h.is_some()).count());
+        ok &= used1 == used0;
+        let _ = writeln!(log, "  file44 used0={used0:?} used1={used1:?} opens={n}");
+        // 取证面落证自洽（最后一次 OPEN = EMFILE 语义）
+        let (o_r, _o_h, r_r, w_r, c_r, s_r, k_r) = vfs::stamps();
+        let _ = writeln!(
+            log,
+            "  file44 stamps o={o_r:#x} r={r_r:#x} w={w_r:#x} c={c_r:#x} s={s_r:#x} k={k_r:#x}"
+        );
+        ok &= o_r == 24;
+        ok &= r_r == 14; // 最后一次 READ = 空指针 EFAULT 探针（stale-read 在其前）
+        ok &= w_r == (1u64 << 32) | 1;
+        ok &= c_r == 0;
+        ok &= s_r == (1u64 << 32) | (10 << 16);
+        ok &= k_r == (1u64 << 32) | 9;
+        ok
+    };
+    report(&mut log, t44, "file-face-unified-handle");
+
+    // 45) 文件面 ring3 端到端（M13-②）：USER_FILE_PROGRAM——open→write→
+    //     seek→read 回读比对→nanosleep(1)→close→关后读 EBADF→负探针
+    //     ENOENT→EXIT(90)；分级失败码 92-99
+    let t45 = {
+        let mut ok = true;
+        vfs::reset_evidence();
+        match user::build_user_space_with(&user::USER_FILE_PROGRAM, &mut || frames.alloc()) {
+            Ok(us) => {
+                let cid = task::spawn_user("file-client", user_noop, us.root, 0);
+                let deadline = ostd::time::now() + 1000;
+                // 有界等待客户端终结（tickd 常驻使 all_workers_finished
+                // 恒假——改按本检查的目标任务 Zombie 态轮询）
+                while task::task_debug_state(cid) != 4 && ostd::time::now() < deadline {
+                    task::yield_now();
+                }
+                let code = task::user_exit_code();
+                let st = task::task_debug_state(cid);
+                let _ = writeln!(
+                    log,
+                    "  file45 cid={cid} state={st} exit={code} stamps={:?}",
+                    vfs::stamps()
+                );
+                ok &= code == 90 && st == 4;
+            }
+            Err(e) => {
+                let _ = writeln!(log, "file client space build failed: {e:?}");
+                ok = false;
+            }
+        }
+        ok
+    };
+    report(&mut log, t45, "file-face-ring3");
+
+    // 46) timer 阻塞源（M13-② 第三类阻塞源）：内核 sleeper 真阻塞 5 tick
+    //     （WaitWhat::Timer + wall_hook 到期扫描唤醒）+ nanosleep(0) 探针
+    //     命中即时返回 + swap 族同款三计数取证
+    let t46 = {
+        let mut ok = true;
+        timer::reset_evidence();
+        let _id = task::spawn("timer-sleeper", sleeper_body);
+        let wait_deadline = ostd::time::now() + 2000;
+        while SLEEPER_DONE.load(Ordering::Acquire) == 0 && ostd::time::now() < wait_deadline {
+            task::yield_now();
+        }
+        ok &= SLEEPER_DONE.load(Ordering::Acquire) == 1;
+        ok &= SLEEPER_ELAPSED.load(Ordering::Acquire) >= 5;
+        let (blocks, wakes, hits) = timer::stamps();
+        ok &= blocks >= 1 && wakes >= 1;
+        // 探针命中路径：nanosleep(0)（deadline 即当前节拍，时间单调保证
+        // 已期满 → SCHED 锁窗探针命中回滚，不阻塞）
+        ok &= timer::sys_nanosleep(0) == 0;
+        let (_, _, hits1) = timer::stamps();
+        ok &= hits1 == hits + 1;
+        ok
+    };
+    report(&mut log, t46, "timer-block-nanosleep");
+    // tickd 退役（echo worker 同款退出协议；套件收尾防泄漏任务）
+    timer::shutdown();
+
     let _ = writeln!(log, "----");
     interrupts::disable();
     if pass == SELFTEST_TOTAL {
@@ -1963,6 +2133,24 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
 
 /// 用户任务占位入口（真实进入经 trampoline_user → 桥函数）。
 fn user_noop() {}
+
+/// t46 sleeper 完成旗标（1 = nanosleep 返回后落证）。
+static SLEEPER_DONE: AtomicU64 = AtomicU64::new(0);
+/// t46 sleeper 实际耗时（全局节拍差；≥ 5 断言真阻塞）。
+static SLEEPER_ELAPSED: AtomicU64 = AtomicU64::new(0);
+
+/// t46 sleeper 任务体（内核 worker）：nanosleep(5) 真阻塞 → 耗时落证 →
+/// 驻车让出（kernel worker 不计入 all_workers_finished，不碍后续检查）。
+fn sleeper_body() {
+    let t0 = ostd::time::now();
+    crate::timer::sys_nanosleep(5);
+    let elapsed = ostd::time::now().saturating_sub(t0);
+    SLEEPER_ELAPSED.store(elapsed, Ordering::Release);
+    SLEEPER_DONE.store(1, Ordering::Release);
+    loop {
+        task::yield_now();
+    }
+}
 
 /// 基准路径禁用分配（翻译不应再分配中间表）。
 fn no_alloc_table() -> Option<u64> {

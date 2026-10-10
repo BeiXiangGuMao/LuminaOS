@@ -3,6 +3,63 @@
 版本语义：工作区里程碑版（0.x.y，x=里程碑，y=里程碑内迭代）。
 本文档记录源码树的对外可见变更；指标与规格变更见《指标与规范手册》修订记录。
 
+## v0.14.0（2026-10-10）—— M13-②：文件面统一句柄面 + timer 第三类阻塞源
+
+### 新增
+- **文件面六落点（abi v0.7）**：SYS_OPEN(18)/READ(19)/WRITE(20)/
+  CLOSE(21)/STAT(22)/SEEK(23)——**fd ≡ 句柄统一句柄面**：文件与通道
+  共享任务句柄命名空间，靠对象 id 段位（0xF11E… vs 0xC0DE…）+ 权限位
+  （READ/WRITE 通用对象位 vs IPC_SEND/RECV）正交区分；HANDLE_QUERY/
+  ENUM 对文件句柄零改动天然透出，SYS_CAP_GRANT 子集派生自动可用。
+  内核 FileObject 复刻 M13-① OFD 语义（私有偏移推进/访问位强制/seek
+  三基准负偏移拒绝）；close 后 fd 复用 = Linux 同款语义（v0 不做代际
+  槽，与通道面一致，记档）。
+- **错误域分立（Conduit 口径）**：文件面错误 = Linux 5.15 errno——
+  FsError::errno() 落 bedrock::vfs::node（EINVAL/ENOENT/ENOTDIR/EISDIR/
+  EEXIST/ENOTEMPTY/EOPNOTSUPP 逐值钉死测试交叉核对 conduit 快照）；
+  句柄表满 = EMFILE(24)、内核文件表满 = ENFILE(23)（Linux 语义正分）；
+  进程/能力面错误域 1–10 不变。
+- **SYS_NANOSLEEP(24) timer 阻塞源（第三类阻塞源探针化）**：
+  WaitWhat::Timer{deadline}（全局节拍）+ block_current_unless 探针
+  （deadline 已过即探针命中回滚——nanosleep(0) 即时返回语义与 Linux
+  对齐）；tickd 守护任务消费到期旗（swapd 同款 0 级 yield-poll 房屋
+  范式）；wall_hook 零锁置旗 + 门铃 IPI（S31 极短 ISR 纪律延伸）。
+- **tickd 守护任务**：TIMER_NEXT 哨兵（fetch_min 登记/store(MAX) 清扫）
+  + TIMER_PENDING 到期旗 + nanosleep 探针同锁窗再武装（闭登记/消费
+  erase 竞态）；TIMER_BLOCKS/WAKES/PROBE_HITS 三计数取证（swap 族
+  同款）；自检套件尾 shutdown 退役（echo worker 同款退出协议）。
+
+### 自检
+- 裸机自检 43 → **46**：t44 file-face-unified-handle（内核侧全矩阵 +
+  HANDLE_QUERY 权限位融合实证 + 六类 errno 负探针 + 句柄表基线还原）、
+  t45 file-face-ring3（ring3 机器码端到端：open→write→seek→read 回读
+  比对→nanosleep→close→关后读 EBADF→负探针 ENOENT，分级失败码 92–99）、
+  t46 timer-block-nanosleep（内核 sleeper 真阻塞 5 tick + nanosleep(0)
+  探针命中）。
+- 宿主用例：abi parse 面追加（OPEN/READ/WRITE/SEEK/NANOSLEEP 结构校验
+  + 18..=24 追加纪律自证）、vfs errno 映射钉值、OpenFlags::from_bits
+  往返。
+
+### 内部
+- **S31 极短 ISR 纪律正式延伸**：PIT/LAPIC/RESCHED 全部中断语境零
+  SCHED 触碰（本轮实测两次 #GP/帧腐坏记档：PIT ISR 内 wake_tasks 与
+  RESCHED IPI 内自定义强制切换均触发；tickd 任务上下文消费为定版正解）。
+- wall_hook 头部到期检测 = 两次原子读快路径（无 sleeper 零开销）。
+
+## v0.13.0（2026-10-10，补记）—— M13-①：VFS 骨架
+
+### 新增
+- **bedrock::vfs 六模块（1516 行含测试）**：path（绝对路径词法规范化）/
+  node（VNode 静态面 + FsError 统一错误集）/ fs（FileSystem 契约，
+  全方法 &self + OSTD SpinLock）/ ramfs（内存文件系统参照实现，
+  BTreeMap 节点表、pwrite 零填充、字典序 readdir、节点号单调不复用）/
+  mount（最长前缀解析、挂载点先建后挂、根挂载不可卸载）/ fd（Crystal
+  GenerationalSlab 承载 OFD——fd 号即槽位号、close 复用即升代、外泄
+  旧 fd 恒 StaleFd）。
+- **crystal no_std+alloc 化**（GenerationalSlab 进内核可用面）。
+- 骨架级简化（文件面块复核项）：dup 共享偏移、symlink/CharDev/Pipe
+  创建拒绝、逐段解析与跨挂载 `..`、卸载占用检查、readdir 一次性全量。
+
 ## v0.12.0（2026-10-09）—— M12：能力服务化与等待面纪律收口
 
 ### 新增

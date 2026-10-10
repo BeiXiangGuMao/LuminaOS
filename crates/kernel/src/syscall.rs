@@ -306,6 +306,42 @@ extern "C" fn lumina_syscall_dispatch(frame: &mut SyscallFrame) -> u64 {
             // —— 帧面 RIP/RSP/参数寄存器全量改写，返回即入新映像）
             crate::procs::sys_exec(image, frame)
         }
+        Syscall::Open { len, mode } => {
+            task::count_syscall(2);
+            // M13-② 文件面：路径指针 = rdi 慢路径语义（abi v0.7 统一句柄面）
+            crate::vfs::sys_open(frame.rdi, len, u64::from(mode))
+        }
+        Syscall::Read { handle, len } => {
+            task::count_syscall(2);
+            // M13-② 文件面：缓冲指针 = rsi 慢路径语义
+            crate::vfs::sys_read(handle, frame.rsi, len)
+        }
+        Syscall::Write { handle, len } => {
+            task::count_syscall(2);
+            // M13-② 文件面：缓冲指针 = rsi 慢路径语义
+            crate::vfs::sys_write(handle, frame.rsi, len)
+        }
+        Syscall::Close { handle } => {
+            task::count_syscall(2);
+            crate::vfs::sys_close(handle)
+        }
+        Syscall::Stat { handle } => {
+            task::count_syscall(2);
+            crate::vfs::sys_stat(handle)
+        }
+        Syscall::Seek {
+            handle,
+            whence,
+            offset,
+        } => {
+            task::count_syscall(2);
+            crate::vfs::sys_seek(handle, u64::from(whence), offset)
+        }
+        Syscall::NanoSleep { ticks } => {
+            task::count_syscall(2);
+            // M13-② timer 阻塞源：第三类等待对象（探针化同族）
+            crate::timer::sys_nanosleep(ticks)
+        }
     }
 }
 
