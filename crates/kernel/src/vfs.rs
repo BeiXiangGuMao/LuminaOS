@@ -41,8 +41,9 @@ use vanguard::{Capability, Right};
 use crate::syscall::{validate_user_slice, validate_user_slice_mut};
 use crate::task;
 
-/// 内核文件注册表容量（与通道注册表同数量级；配额治理 = M13-④）。
-const MAX_FILES: usize = 16;
+/// 内核文件注册表容量（M14-② 首审：16 → 32；与 MAX_CHANNELS=32 同档，
+/// 统一句柄面叠加后同量级工作集首次过线）。
+const MAX_FILES: usize = 32;
 /// 文件对象 id 铸造基（与通道 0xC0DE_… 段隔离；高 32 位即段判定位）。
 const FILE_OBJECT_BASE: u64 = 0xF11E_0000_0000_0000;
 
@@ -122,7 +123,11 @@ pub fn stamps() -> (u64, u64, u64, u64, u64, u64, u64) {
 /// 播种面（自检与 ring3 程序的确定性基座）：
 /// - `/files/hello` = "lumina-fs"（t44 读面种子）；
 /// - `/files/echo` = 空（t45 环三写读回种子）；
-/// - `/files/dir` = 目录（t44 EISDIR 负探针）。
+/// - `/files/dir` = 目录（t44 EISDIR 负探针）；
+/// - `/files/selftest.lxe` = [`crate::user::USER_PROGRAM`] 的 LXE1
+///   运行时包装（t42 exec(0) 经 VFS 装载——行为等价、来源换 VFS）；
+/// - `/files/prog.lxe` = 双段映像（t47）；
+/// - `/files/grow.lxe` = 增长栈映像（t48）。
 pub fn init() {
     let fs = Arc::new(RamFs::new());
     // 播种失败即初始化失败（确定性种子，容错无意义）：防御式跳过而非 panic。
@@ -133,6 +138,28 @@ pub fn init() {
         });
         let _ = fs.create(dir, "echo", NodeKind::File);
         let _ = fs.create(dir, "dir", NodeKind::Dir);
+        // LXE1 映像播种（M14-①）：selftest 运行时包装 + 双段/增长栈生成产物
+        let selftest = bedrock::exec::encode(
+            crate::user::USER_CODE_VIRT,
+            0,
+            &[bedrock::exec::SegSpec {
+                vaddr: crate::user::USER_CODE_VIRT,
+                flags: bedrock::exec::FLAG_X,
+                data: &crate::user::USER_PROGRAM,
+                mem_len: 0x1000,
+            }],
+        );
+        if let Ok(blob) = selftest {
+            let _ = fs.create(dir, "selftest.lxe", NodeKind::File).map(|h| {
+                let _ = fs.write_at(h, 0, &blob);
+            });
+        }
+        let _ = fs.create(dir, "prog.lxe", NodeKind::File).map(|h| {
+            let _ = fs.write_at(h, 0, &crate::user::PROG_LXE);
+        });
+        let _ = fs.create(dir, "grow.lxe", NodeKind::File).map(|h| {
+            let _ = fs.write_at(h, 0, &crate::user::GROW_LXE);
+        });
     });
     let mut ns = NAMESPACE.lock();
     *ns = Some(Namespace::new(fs));
@@ -141,6 +168,42 @@ pub fn init() {
     for _ in 0..MAX_FILES {
         tab.push(None);
     }
+}
+
+/// 内核侧映像整读（M14-① EXEC 装载器专用，**VFS 第二消费者**）：
+/// 不走句柄面（零能力铸造、零注册表占用），路径 → 命名空间解析 →
+/// `read_at` 循环至 EOF；超出 [`crate::user::EXEC_IMAGE_MAX`] 预算
+/// 拒绝（None）。锁序：NAMESPACE → FileSystem 内部锁（既有单向嵌套）。
+pub fn read_image(path: &str) -> Option<alloc::vec::Vec<u8>> {
+    let path = PathBuf::normalize(path).ok()?;
+    let resolved = {
+        let ns = NAMESPACE.lock();
+        let ns = ns.as_ref()?;
+        ns.resolve(&path).ok()?
+    };
+    let mut out = alloc::vec::Vec::new();
+    let mut chunk = [0u8; 256];
+    loop {
+        let n = resolved
+            .fs
+            .read_at(resolved.vnode, out.len() as u64, &mut chunk)
+            .ok()?;
+        if n == 0 {
+            break;
+        }
+        out.extend_from_slice(&chunk[..n]);
+        if out.len() > crate::user::EXEC_IMAGE_MAX {
+            return None;
+        }
+    }
+    Some(out)
+}
+
+/// 文件注册表用量快照（M14-② SYS_QUOTA kind 1 断言面）：(used, MAX_FILES)。
+pub fn files_usage() -> (usize, usize) {
+    let files = FILES.lock();
+    let used = files.iter().filter(|f| f.is_some()).count();
+    (used, MAX_FILES)
 }
 
 /// 节点类型编码（SYS_STAT kind 域）。

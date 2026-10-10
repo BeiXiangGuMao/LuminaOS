@@ -304,9 +304,14 @@ pub const ERR_IMAGE: u64 = 10;
 /// EXEC 成功标记位：返回值 `(1 << 32) | image`（成功位与映像号域隔离）。
 const EXEC_OK_BIT: u64 = 1 << 32;
 
-/// SYS_EXEC 取证（t42 断言面）：最近一次返回码 + 成功时的映像号。
+/// SYS_EXEC 取证（t42/t47/t48 断言面）：最近一次返回码 + 成功时的映像号。
 static EXEC_RESULT: AtomicU64 = AtomicU64::new(u64::MAX);
 static EXEC_IMAGE: AtomicU64 = AtomicU64::new(u64::MAX);
+/// M14-① 装载器取证：VFS 整读字节数（0 = 未达 VFS）/ 有效段数 /
+/// 首 W 段首帧（哨兵轮询取证；无 W 段 = 0）。
+static EXEC_VFS_BYTES: AtomicU64 = AtomicU64::new(u64::MAX);
+static EXEC_SEGS: AtomicU64 = AtomicU64::new(u64::MAX);
+static EXEC_DATA_FRAME: AtomicU64 = AtomicU64::new(0);
 
 /// SYS_EXEC 取证快照：(返回码, 映像号)。
 pub fn exec_stamps() -> (u64, u64) {
@@ -316,18 +321,32 @@ pub fn exec_stamps() -> (u64, u64) {
     )
 }
 
-/// SYS_EXEC 主体（M12-B）：调用方地址空间以内核内嵌映像重建（
-/// [`crate::user::EXEC_IMAGES`] 表驱动）。
+/// M14-① 装载器取证快照：(VFS 字节数, 段数, 首 W 段帧)。
+pub fn exec_loader_stamps() -> (u64, u64, u64) {
+    (
+        EXEC_VFS_BYTES.load(Ordering::Acquire),
+        EXEC_SEGS.load(Ordering::Acquire),
+        EXEC_DATA_FRAME.load(Ordering::Acquire),
+    )
+}
+
+/// SYS_EXEC 主体（M12-B 立，M14-① 重构）：调用方地址空间以 **VFS 取段
+/// 的 LXE1 多段映像**重建（[`crate::user::EXEC_IMAGES`] 路径表 →
+/// [`crate::vfs::read_image`] 整读 → [`crate::user::build_user_space_lxe`]
+/// 装载）。
 ///
 /// 全链（调用方任务上下文，串行）：
 /// 1. 门禁：调用方必须持有独立用户空间（否则 ERR_CAP）；映像号越界
 ///    → ERR_IMAGE(10)；
-/// 2. 新空间构建：4 表 + 私有代码/栈帧 + 映像装载（帧耗尽 →
-///    ERR_NOMEM；旧空间帧按 v0 存续期语义不回收，如实记档）；
-/// 3. 切换：CR3 写新根 + 任务面 user_root 登记 + 系统调用帧改写
-///    （RIP = 用户入口、RSP = 新栈顶、参数寄存器清零——现场全量
-///    内核构造）；r12–r15 经派发器 callee-saved 语义自然往返
-///    （r14 遗传细胞 = 父 pid 保持——exec 不改父子链）。
+/// 2. VFS 取段：路径解析 + 整读（缺失/超预算 → ERR_IMAGE，VFS 字节
+///    戳落 0/实际值区分）；
+/// 3. 新空间构建：LXE1 parse + 放置策略 + PDPT[6] 分支映射
+///    （BadImage → ERR_IMAGE；帧耗尽 → ERR_NOMEM；旧空间帧按 v0
+///    存续期语义不回收，如实记档）；
+/// 4. 切换：CR3 写新根 + 任务面 user_root 登记 + 系统调用帧改写
+///    （RIP = LXE 头 entry、RSP = 头 stack_top 对应栈顶、参数寄存器
+///    清零——现场全量内核构造）；r12–r15 经派发器 callee-saved 语义
+///    自然往返（r14 遗传细胞 = 父 pid 保持——exec 不改父子链）。
 ///
 /// 成功不返回（新映像自入口执行）；失败返回错误码。
 pub fn sys_exec(image: u64, frame: &mut crate::syscall::SyscallFrame) -> u64 {
@@ -336,30 +355,44 @@ pub fn sys_exec(image: u64, frame: &mut crate::syscall::SyscallFrame) -> u64 {
         EXEC_RESULT.store(ERR_CAP, Ordering::Release);
         return ERR_CAP;
     }
-    let Some(img) = crate::user::EXEC_IMAGES.get(image as usize) else {
+    EXEC_VFS_BYTES.store(0, Ordering::Release);
+    EXEC_SEGS.store(0, Ordering::Release);
+    EXEC_DATA_FRAME.store(0, Ordering::Release);
+    let Some(path) = crate::user::EXEC_IMAGES.get(image as usize) else {
         EXEC_RESULT.store(ERR_IMAGE, Ordering::Release);
         return ERR_IMAGE;
     };
+    let Some(blob) = crate::vfs::read_image(path) else {
+        EXEC_RESULT.store(ERR_IMAGE, Ordering::Release);
+        return ERR_IMAGE;
+    };
+    EXEC_VFS_BYTES.store(blob.len() as u64, Ordering::Release);
     let Some(frames) = crate::vmm::global_frames() else {
         EXEC_RESULT.store(ERR_NOMEM, Ordering::Release);
         return ERR_NOMEM;
     };
-    let us = {
+    let es = {
         let mut alloc = || frames.alloc();
-        match crate::user::build_user_space_with(img, &mut alloc) {
-            Ok(us) => us,
+        match crate::user::build_user_space_lxe(&blob, &mut alloc) {
+            Ok(es) => es,
+            Err(crate::user::UserSpaceError::BadImage) => {
+                EXEC_RESULT.store(ERR_IMAGE, Ordering::Release);
+                return ERR_IMAGE;
+            }
             Err(_) => {
                 EXEC_RESULT.store(ERR_NOMEM, Ordering::Release);
                 return ERR_NOMEM;
             }
         }
     };
+    EXEC_SEGS.store(es.seg_frames.len() as u64, Ordering::Release);
+    EXEC_DATA_FRAME.store(es.data_frame, Ordering::Release);
     // 切换：先登记任务面（后续派发/清算面读到新根），再写 CR3，
     // 最后改写系统调用帧（返回即入新映像）
-    task::set_user_root(caller, us.root);
-    ostd::hw::control::write_cr3(us.root);
-    frame.rip = crate::user::USER_CODE_VIRT;
-    frame.user_rsp = crate::user::USER_STACK_TOP;
+    task::set_user_root(caller, es.root);
+    ostd::hw::control::write_cr3(es.root);
+    frame.rip = es.entry;
+    frame.user_rsp = es.stack_top;
     frame.rdi = 0;
     frame.rsi = 0;
     frame.rdx = 0;
@@ -372,6 +405,47 @@ pub fn sys_exec(image: u64, frame: &mut crate::syscall::SyscallFrame) -> u64 {
 
 /// HANDLE_QUERY/ENUM 成功标记位：`(1 << 32) | ...`（与错误码域隔离）。
 const HQ_OK_BIT: u64 = 1 << 32;
+
+/// SYS_QUOTA 取证（t49 断言面）：最近一次返回码。
+static QUOTA_RESULT: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// SYS_QUOTA 取证快照。
+pub fn quota_stamp() -> u64 {
+    QUOTA_RESULT.load(Ordering::Acquire)
+}
+
+/// 用量/容量打包：`(1 << 32) | (used << 16) | cap`（各 16 位域）。
+fn quota_pack(used: usize, cap: usize) -> u64 {
+    (1u64 << 32) | ((used as u64 & 0xFFFF) << 16) | (cap as u64 & 0xFFFF)
+}
+
+/// SYS_QUOTA 主体（M14-② 配额治理统计面）：调用方/注册表用量查询。
+///
+/// kind（结构校验在 abi parse 已限定 0..=2，此处防御性兜底）：
+/// 0 = 调用方句柄表（[`crate::task::handle_usage`]）、1 = 内核文件
+/// 注册表（[`crate::vfs::files_usage`]）、2 = 通道注册表
+/// （[`crate::ipc::channels_usage`]）。成功 = [`quota_pack`] 编码；
+/// kind 越界（直调防御面）→ ERR_CAP(1)。
+pub fn sys_quota(kind: u64) -> u64 {
+    let caller = task::current_task_id();
+    let r = match kind {
+        0 => {
+            let (used, cap) = task::handle_usage(caller);
+            quota_pack(used, cap)
+        }
+        1 => {
+            let (used, cap) = crate::vfs::files_usage();
+            quota_pack(used, cap)
+        }
+        2 => {
+            let (used, cap) = crate::ipc::channels_usage();
+            quota_pack(used, cap)
+        }
+        _ => ERR_CAP,
+    };
+    QUOTA_RESULT.store(r, Ordering::Release);
+    r
+}
 
 /// SYS_HANDLE_QUERY 取证（t38 断言面）：最近一次返回码 + 命中时的
 /// rights 位 + 全局槽号。

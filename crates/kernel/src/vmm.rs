@@ -28,6 +28,74 @@ use vanguard::{Capability, Right};
 use crate::console::DualLog;
 use crate::swap::{swap_in, swap_out};
 
+/// 栈增长扩栈计数（M14-① t48 断言面：#PF 驱动补帧次数）。
+static STACK_GROWS: AtomicU64 = AtomicU64::new(0);
+/// 最近一次扩栈新帧（哨兵取证；0 = 尚无）。
+static LAST_GROW_FRAME: AtomicU64 = AtomicU64::new(0);
+
+/// 栈增长取证快照：(扩栈次数, 最近新帧)。
+pub fn stack_growth_stamps() -> (u64, u64) {
+    (
+        STACK_GROWS.load(Ordering::Acquire),
+        LAST_GROW_FRAME.load(Ordering::Acquire),
+    )
+}
+
+/// 缺页驱动的 ring3 栈扩面（M14-①）：故障页落增长栈窗口且叶未映射
+/// → 分配新帧、清零、写 P|U|W、invlpg。
+///
+/// 窗口 = [STACK_TOP_GROW - 窗口页, STACK_TOP_GROW - 初始帧)（初始帧
+/// 预映射不参与；窗口上限 = 增长配额，与 M14-② 呼应）。仅 LXE
+/// stack_top≠0 的空间具备 PDPT[6] 分支——走表缺失/大页/已映射一律
+/// false（交后续路径，无分支空间自然致命，自保护）。
+fn stack_grow(va_page: u64) -> bool {
+    let top = crate::user::STACK_TOP_GROW;
+    let init_base = top - FRAME_SIZE;
+    let floor =
+        init_base - (u64::try_from(crate::user::STACK_GROW_WINDOW).unwrap_or(0)) * FRAME_SIZE;
+    if va_page < floor || va_page >= init_base {
+        return false;
+    }
+    let Some(frames) = *FRAMES.lock() else {
+        return false;
+    };
+    let root = ostd::hw::control::read_cr3() & !0xFFF;
+    // 手工四级走表（cow_break 同款纪律：全序索引自 va_page 推导——
+    // 增长窗口全部位于 PDPT[6]/PD6[1] 分支；若用 STACK_TOP_GROW 推
+    // PD 索引会落到边界外槽 pd6[2]，M14 首轮冒烟实测教训）
+    let pml4e = ostd::hw::phys::read_u64(root + ((va_page >> 39) & 0x1FF) * 8);
+    if pml4e & 1 == 0 {
+        return false;
+    }
+    let pdpte =
+        ostd::hw::phys::read_u64((pml4e & 0x000F_FFFF_FFFF_F000) + ((va_page >> 30) & 0x1FF) * 8);
+    if pdpte & 1 == 0 {
+        return false;
+    }
+    let pde =
+        ostd::hw::phys::read_u64((pdpte & 0x000F_FFFF_FFFF_F000) + ((va_page >> 21) & 0x1FF) * 8);
+    if pde & 1 == 0 || pde & Entry::HUGE != 0 {
+        return false;
+    }
+    let pte_addr = (pde & 0x000F_FFFF_FFFF_F000) + (((va_page >> 12) & 0x1FF) * 8);
+    let pte = ostd::hw::phys::read_u64(pte_addr);
+    if pte & 1 != 0 {
+        return false; // 已映射：非增长语义（防御，交后续/致命）
+    }
+    let Some(new_frame) = frames.alloc() else {
+        return false; // 帧耗尽：故障重递，上层按致命路径处置
+    };
+    ostd::hw::phys::write_zero(new_frame, FRAME_SIZE);
+    ostd::hw::phys::write_u64(
+        pte_addr,
+        Entry::page(new_frame, Entry::USER | Entry::WRITABLE).bits(),
+    );
+    ostd::hw::control::invlpg(va_page);
+    STACK_GROWS.fetch_add(1, Ordering::AcqRel);
+    LAST_GROW_FRAME.store(new_frame, Ordering::Release);
+    true
+}
+
 /// 演示区间对象 id（能力对象寻址；非零即可）。
 const DEMO_OBJECT: u64 = 0x5151_0000_0000_0001;
 /// 演示区间虚拟基址（4 GiB..8 GiB 段，PML4[0]→PDPT[1] 全新分支）。
@@ -637,6 +705,12 @@ fn pf_hook(cr2: u64, error_code: u64) -> bool {
     // bit9）→ 写时拷贝（先于 DEFERRED/swap 路径——COW 页 present，
     // swap 语义不适用）。
     if error_code & 0x1 != 0 && error_code & 0x2 != 0 && cow_break(va_page) {
+        return true;
+    }
+    // 栈增长分支（M14-①）：ring3 源（error_code bit2）+ 增长窗口内
+    // 叶未映射 → 补帧扩栈（COW 后/DEFERRED 前；窗口页永不 COW/swap，
+    // 分支次序无碰撞面）。
+    if error_code & 0x4 != 0 && stack_grow(va_page) {
         return true;
     }
     let Some(e) = DEFERRED.lock().iter().find(|e| e.va == va_page).copied() else {

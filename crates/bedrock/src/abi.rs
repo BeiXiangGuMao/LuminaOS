@@ -118,6 +118,14 @@ pub const SYS_STAT: u64 = 22;
 /// 结构校验）、偏移 = rdx（i64 位型）。成功返回
 /// `(1 << 32) | new_offset`；结果为负 → `EINVAL(22)`。
 pub const SYS_SEEK: u64 = 23;
+/// 配额治理统计面（v0.15 追加，M14-②）：查询调用方/注册表用量。
+///
+/// 参数 = 类别（rdi，结构校验 0..=2）：0 = 调用方句柄表、
+/// 1 = 内核文件注册表、2 = 通道注册表。成功返回
+/// `(1 << 32) | (used << 16) | cap`（used/cap 各 16 位域）。
+/// 本面属进程面错误域（不属文件面 errno 域）。
+pub const SYS_QUOTA: u64 = 25;
+
 /// 以全局节拍为粒度睡眠当前任务（v0.14 追加，M13-② timer 阻塞源）。
 ///
 /// 参数 = 时长（全局节拍数，[`ostd::time::now`] 同源计数；0 = 立即
@@ -136,9 +144,9 @@ pub const SYS_NANOSLEEP: u64 = 24;
 /// 无独立用户空间 → `ERR_CAP`；帧耗尽 → `ERR_NOMEM(9)`。
 pub const SYS_EXEC: u64 = 17;
 
-/// 系统调用 ABI 版本（追加文件面六落点 + NANOSLEEP → 0.7；统一句柄面
-/// 文件对象与第三类阻塞源；错误码分域：文件面 = Conduit 口径 errno）。
-pub const ABI_VERSION: (u16, u16) = (0, 7);
+/// 系统调用 ABI 版本（追加 SYS_QUOTA → 0.8；M14-② 配额治理统计面。
+/// v0.7 = 文件面六落点 + NANOSLEEP + 统一句柄面 + 错误码分域）。
+pub const ABI_VERSION: (u16, u16) = (0, 8);
 
 /// 寄存器快照形式的系统调用请求。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -299,6 +307,11 @@ pub enum Syscall {
         /// 时长（全局节拍数，0 = 立即返回）。
         ticks: u64,
     },
+    /// 配额用量查询（M14-②；见 [`SYS_QUOTA`]）。
+    Quota {
+        /// 类别（0 = 句柄表 / 1 = 文件注册表 / 2 = 通道注册表）。
+        kind: u64,
+    },
 }
 
 /// 从寄存器快照解析调用意图。只做结构校验，不做内存访问（由慢路径完成）。
@@ -364,6 +377,8 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
         }),
         SYS_SEEK => Err(AbiError::BadArgs),
         SYS_NANOSLEEP => Ok(Syscall::NanoSleep { ticks: a0 }),
+        SYS_QUOTA if a0 <= 2 => Ok(Syscall::Quota { kind: a0 }),
+        SYS_QUOTA => Err(AbiError::BadArgs),
         _ => Err(AbiError::UnknownSyscall),
     }
 }
@@ -574,7 +589,7 @@ mod tests {
 
     #[test]
     fn file_face_numbers_are_appended_in_order() {
-        // 追加纪律：v0 编号不得复用或改序——18..=24 顺序落位自证
+        // 追加纪律：v0 编号不得复用或改序——18..=25 顺序落位自证
         assert_eq!(super::SYS_OPEN, 18);
         assert_eq!(super::SYS_READ, 19);
         assert_eq!(super::SYS_WRITE, 20);
@@ -582,7 +597,28 @@ mod tests {
         assert_eq!(super::SYS_STAT, 22);
         assert_eq!(super::SYS_SEEK, 23);
         assert_eq!(super::SYS_NANOSLEEP, 24);
-        assert_eq!(super::ABI_VERSION, (0, 7));
+        assert_eq!(super::SYS_QUOTA, 25);
+        assert_eq!(super::ABI_VERSION, (0, 8));
+    }
+
+    #[test]
+    fn quota_parse_validates_kind_domain() {
+        let r = |num: u64, args: [u64; 5]| SyscallRegs { num, args };
+        for kind in 0u64..=2 {
+            assert_eq!(
+                super::parse(r(super::SYS_QUOTA, [kind, 0, 0, 0, 0])),
+                Ok(Syscall::Quota { kind })
+            );
+        }
+        // kind 越界（3+）= BadArgs（SEEK whence 先例同款结构校验）
+        assert_eq!(
+            super::parse(r(super::SYS_QUOTA, [3, 0, 0, 0, 0])),
+            Err(AbiError::BadArgs)
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_QUOTA, [u64::MAX, 0, 0, 0, 0])),
+            Err(AbiError::BadArgs)
+        );
     }
 
     #[test]

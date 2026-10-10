@@ -72,7 +72,7 @@ const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
 /// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项
 /// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加）。
-const SELFTEST_TOTAL: usize = 46;
+const SELFTEST_TOTAL: usize = 49;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐，链接进 .bss（NOLOAD）。
 #[repr(align(4096))]
@@ -631,6 +631,9 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
 
     // 20) 按需分页 + 能力化映射（#PF 恢复钩子 + Vanguard 门禁）
     vmm::init(frames);
+    // M14-①：文件面/命名空间启动期初始化（原 t44 内惰性 init 迁出——
+    // EXEC 装载器经 VFS 取段后，t42 及全部映像面依赖必须先于自检就位）
+    vfs::init();
     let t20 = vmm::demand_paging_check(&mut log, frames);
     report(&mut log, t20, "demand-paging-caps");
 
@@ -1868,8 +1871,12 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                 }
                 ok &= task::all_workers_finished();
                 let (res, img) = procs::exec_stamps();
+                let (vfs_bytes, segs, _df) = procs::exec_loader_stamps();
                 let (e0, _) = task::user_exit_codes();
-                let _ = writeln!(log, "exec: exit0={e0} res={res:#x} image={img}");
+                let _ = writeln!(
+                    log,
+                    "exec: exit0={e0} res={res:#x} image={img} vfs={vfs_bytes} segs={segs}"
+                );
                 ok &= e0 == 42; // 新映像（USER_PROGRAM）跑完全程
                 ok &= res == 0; // EXEC(0) 成功落证
                 ok &= img == 0; // 映像号 0
@@ -1959,7 +1966,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         // M13-②：timer 守护任务（tickd）0 级派生——与 swapd 同款
         // yield-poll 房屋范式，到期旗消费恒在任务上下文
         let _tickd = task::spawn_prio("tickd", crate::timer::tickd_body, 0);
-        vfs::init();
+        // vfs::init 已迁启动区（M14-①：EXEC 依赖前置）——此处仅复位取证
         vfs::reset_evidence();
         let mut ok = true;
         let used0 = task::with_task_handles(0, |t| t.iter().filter(|h| h.is_some()).count());
@@ -2118,6 +2125,144 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     report(&mut log, t46, "timer-block-nanosleep");
     // tickd 退役（echo worker 同款退出协议；套件收尾防泄漏任务）
     timer::shutdown();
+
+    // 47) 多段映像 VFS 装载（M14-① EXEC 经 VFS 取段——VFS 第二消费者）：
+    //     探针任务（钉 CPU0）运行 EXEC1_PROGRAM——EXEC(9) 越界负探针
+    //     （必返 ERR_IMAGE(10)）→ EXEC(1) 成功即不返回（新映像 =
+    //     /files/prog.lxe 双段 LXE1：代码 RX @FRESH_BASE + 数据 RW
+    //     @PROG_DATA_VA）。取证链：退出码 91（读种子→校验→写哨兵→
+    //     EXIT）+ EXEC 戳（res=0/image=1）+ 装载器戳（vfs_bytes>0/
+    //     segs=2）+ 数据帧哨兵 phys 轮询 == PROG_RESULT_MAGIC。
+    let t47 = {
+        let mut ok = true;
+        task::reset_user_evidence();
+        match user::build_user_space(&mut || frames.alloc()) {
+            Ok(us) => {
+                ostd::hw::phys::write_bytes(us.code_frame, &user::EXEC1_PROGRAM);
+                let _ = task::spawn_user_pinned("exec-m14-probe", user_noop, us.root, 0, 0);
+                // 退出码驱动轮询（t46 sleeper 常驻 —— all_workers_finished
+                // 在 t46 后恒 false，不可用作完成信号）
+                let deadline = ostd::time::now() + 600;
+                let (mut e0, _) = task::user_exit_codes();
+                while ostd::time::now() < deadline && e0 == u64::MAX {
+                    task::yield_now();
+                    let (e, _) = task::user_exit_codes();
+                    e0 = e;
+                }
+                let (res, img) = procs::exec_stamps();
+                let (vfs_bytes, segs, data_frame) = procs::exec_loader_stamps();
+                let _ = writeln!(
+                    log,
+                    "  exec-m14: exit0={e0} res={res:#x} image={img} vfs={vfs_bytes} segs={segs} df={data_frame:#x}"
+                );
+                ok &= e0 == 91; // 新映像跑完全程（prog.lxe EXIT 码）
+                ok &= res == 0 && img == 1; // EXEC(1) 成功落证
+                ok &= vfs_bytes > 0 && segs == 2; // VFS 取段 + 双段装载实证
+                ok &= data_frame != 0;
+                // 数据段哨兵：RESULT magic 落帧（帧首 = PROG_DATA_VA 页基，
+                // 程序写 [r15+8]，内核 phys 直读 + 8）
+                let sentinel = ostd::hw::phys::read_u64(data_frame + 8);
+                ok &= sentinel == user::PROG_RESULT_MAGIC;
+            }
+            Err(e) => {
+                let _ = writeln!(log, "exec-m14: user space build failed: {e:?}");
+                ok = false;
+            }
+        }
+        ok
+    };
+    report(&mut log, t47, "exec-multiseg-vfs");
+
+    // 48) 缺页驱动栈增长（M14-①）：探针任务运行 EXEC2_PROGRAM →
+    //     /files/grow.lxe（单段 + stack_top=STACK_TOP_GROW：增长栈
+    //     PD6[1]→pt_stack 顶帧预映射）。ring3 sub rsp 0x1800 越出初始
+    //     帧 → #PF（ring3 + 窗口内 + 叶未映射）→ stack_grow 补帧 →
+    //     写读回校验 → EXIT(92)。取证链：退出码 92 + STACK_GROWS ≥ 1
+    //     + LAST_GROW_FRAME ≠ 0 + EXEC 戳（res=0/image=2）。
+    let t48 = {
+        let mut ok = true;
+        task::reset_user_evidence();
+        match user::build_user_space(&mut || frames.alloc()) {
+            Ok(us) => {
+                ostd::hw::phys::write_bytes(us.code_frame, &user::EXEC2_PROGRAM);
+                let _ = task::spawn_user_pinned("grow-probe", user_noop, us.root, 0, 0);
+                // 退出码驱动轮询（同 t47：t46 sleeper 常驻）
+                let deadline = ostd::time::now() + 600;
+                let (mut e0, _) = task::user_exit_codes();
+                while ostd::time::now() < deadline && e0 == u64::MAX {
+                    task::yield_now();
+                    let (e, _) = task::user_exit_codes();
+                    e0 = e;
+                }
+                let (res, img) = procs::exec_stamps();
+                let (grows, frame) = vmm::stack_growth_stamps();
+                let _ = writeln!(
+                    log,
+                    "  grow: exit0={e0} res={res:#x} image={img} grows={grows} frame={frame:#x}"
+                );
+                ok &= e0 == 92; // 增长栈程序写读回成功
+                ok &= res == 0 && img == 2; // EXEC(2) 成功落证
+                ok &= grows >= 1; // #PF 驱动扩栈取证
+                ok &= frame != 0;
+            }
+            Err(e) => {
+                let _ = writeln!(log, "grow: user space build failed: {e:?}");
+                ok = false;
+            }
+        }
+        ok
+    };
+    report(&mut log, t48, "stack-growth-pagefault");
+
+    // 49) 配额治理（M14-②）：SYS_QUOTA 三 kind 用量快照 + 容量首审
+    //     实证（HANDLE_MAX=16/MAX_FILES=32/MAX_CHANNELS=32）+ 关闭
+    //     还原 + kind 越界防御面。
+    let t49 = {
+        let mut ok = true;
+        // kind 0 基线（main 自身句柄表）
+        let used0 = task::handle_usage(0).0;
+        let q0 = procs::sys_quota(0);
+        ok &= q0 == (1u64 << 32) | ((used0 as u64) << 16) | task::HANDLE_MAX as u64;
+        // 开 3 个文件 → kind 0/1 各 +3（数组定容 3，防多开漂移）
+        let p = b"/files/hello";
+        let mut hs = [0u64; 3];
+        for h in hs.iter_mut() {
+            let r = vfs::sys_open(p.as_ptr() as u64, p.len() as u64, 1);
+            ok &= r >> 32 == 1;
+            *h = r & 0xFFFF_FFFF; // 句柄号（OK 位剥离——t44 同款）
+        }
+        let q0b = procs::sys_quota(0);
+        ok &= (q0b >> 16) & 0xFFFF == (used0 + 3) as u64;
+        let q1 = procs::sys_quota(1);
+        let (f_used, f_cap) = vfs::files_usage();
+        ok &= q1 == (1u64 << 32) | ((f_used as u64) << 16) | f_cap as u64;
+        ok &= f_cap == 32 && f_used >= 3;
+        // bind 1 通道 → kind 2 与注册表自洽
+        let br = ipc::sys_bind(0);
+        let (c_used, c_cap) = ipc::channels_usage();
+        let q2 = procs::sys_quota(2);
+        ok &= q2 == (1u64 << 32) | ((c_used as u64) << 16) | c_cap as u64;
+        ok &= c_cap == 32 && c_used >= 1;
+        let _ = writeln!(
+            log,
+            "  quota: bind={br:#x} files={f_used}/{f_cap} chans={c_used}/{c_cap} h0={}",
+            (q0b >> 16) & 0xFFFF
+        );
+        // 全关还原（文件面；通道句柄 v0 无关闭落点——bind 通道存续，
+        // 与 t41 同款边界，如实记档）
+        for h in hs.iter() {
+            ok &= vfs::sys_close(*h) == 0;
+        }
+        let (f_used1, _) = vfs::files_usage();
+        let (c_used1, _) = ipc::channels_usage();
+        ok &= f_used1 == f_used - 3;
+        ok &= c_used1 == c_used; // 通道注册表占用不变（bind 存续语义）
+                                 // kind 越界防御面（直调；parse 层已在 abi 单测钉死）+ 取证自洽
+        ok &= procs::sys_quota(3) == 1; // ERR_CAP
+        ok &= procs::quota_stamp() == 1;
+        ok
+    };
+    report(&mut log, t49, "quota-governance");
 
     let _ = writeln!(log, "----");
     interrupts::disable();

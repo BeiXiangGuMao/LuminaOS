@@ -342,6 +342,11 @@ extern "C" fn lumina_syscall_dispatch(frame: &mut SyscallFrame) -> u64 {
             // M13-② timer 阻塞源：第三类等待对象（探针化同族）
             crate::timer::sys_nanosleep(ticks)
         }
+        Syscall::Quota { kind } => {
+            task::count_syscall(2);
+            // M14-② 配额治理统计面
+            crate::procs::sys_quota(kind)
+        }
     }
 }
 

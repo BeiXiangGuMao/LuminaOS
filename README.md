@@ -58,7 +58,7 @@ lumina-os/                 ← 源码树（保持干爽，永不出现编译产�
 │   │                SAFETY 四行模板）
 │   ├── kernel/      内核映像（multiboot1 启动汇编 + VGA/串口控制台 + 中断子系统
 │   │                + 协作式任务调度 + 十一项自检）
-│   ├── bedrock/     磐基内核（syscall ABI v0.7、TLV 编帧、IPC 端点信箱、VFS 骨架）
+│   ├── bedrock/     磐基内核（syscall ABI v0.8、TLV 编帧、IPC 端点信箱、VFS 骨架、LXE1 映像格式）
 │   ├── harbor/      港湾分配器（Bump + 统计 + 启动期 rebind，GlobalAlloc 契约）
 │   ├── vanguard/    前卫能力模型（权限位、派生收窄、撤销）
 │   ├── meridian/    经纬监管者（幂等恢复、指数退避封顶 30s）

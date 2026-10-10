@@ -16,8 +16,12 @@
 
 use core::arch::global_asm;
 
+use alloc::vec::Vec;
 use ostd::mm::frame::FRAME_SIZE;
 use ostd::mm::page::Entry;
+
+// M14-① 多段映像生成产物（勿手改：scripts/gen_m14_images.py 再生成）。
+include!("exec_images_gen.rs");
 
 /// 用户代码段虚拟基址（PT[0]）。
 pub const USER_CODE_VIRT: u64 = 0x40_0000;
@@ -425,7 +429,31 @@ pub const USER_WAITPID_PROGRAM: [u8; 0xBC] = [
 pub enum UserSpaceError {
     /// 中间表/页帧分配失败。
     FramesExhausted,
+    /// LXE1 结构或放置策略不合格（M14-①：parse 失败/entry 不落 X 段/
+    /// 段落点越域/槽位重叠/stack_top 非法）。
+    BadImage,
 }
+
+// ---- M14-① 多段映像放置策略常量（与 scripts/gen_m14_images.py 交叉锚点双向对账） ----
+
+/// PDPT[6] 全新分支段区基址（0x1_8000_0000；attach_data_pages 的
+/// PDPT[5] 先例同款——**PD[2] 恒等镜像不可拆位**：内核堆 .bss 跨距
+/// 覆盖 0x400000-0x600000，内核在用户 CR3 下经镜像访问堆，任何
+/// PT[1]/PT[4+] 槽改写均属禁区，M14 设计定案 S55）。
+pub const FRESH_BASE: u64 = 0x1_8000_0000;
+/// 全新分支段区上界（PD6[0]→PT 一张，覆盖 2 MiB；段映射不得越界）。
+pub const FRESH_LIMIT: u64 = FRESH_BASE + 0x20_0000;
+/// 增长栈顶（PD6[1]→pt_stack 顶；pt_stack[511] 预映射首帧，rsp 起此）。
+pub const STACK_TOP_GROW: u64 = 0x1_8040_0000;
+/// 增长栈窗口页数（#PF 可扩上限 = 增长配额；与 M14-② 配额治理呼应）。
+pub const STACK_GROW_WINDOW: usize = 32;
+/// prog.lxe 成功哨兵（gen 脚本 RESULT_MAGIC 对账；低 16 位 = 退出码 91）。
+/// 数据段虚地址 = FRESH_BASE + 0x1000（gen 脚本 PROG_DATA_VA 对账）、
+/// 种子 = 0x00B0_0001（gen 脚本 SEED_MAGIC 对账）——仅生成器与映像
+/// 字节引用，内核侧不直接取用（dead-code 门禁同步删除锚点常量）。
+pub const PROG_RESULT_MAGIC: u64 = 0x00B0_0091;
+/// LXE 映像装载预算（read_image 上限；v0 静态映像均 ≤ 256B，宽留余量）。
+pub const EXEC_IMAGE_MAX: usize = 8 * 1024;
 
 /// 构建用户地址空间：4 张中间表 + 代码帧 + 栈帧；返回根与帧地址。
 ///
@@ -457,10 +485,200 @@ where
     })
 }
 
-/// SYS_EXEC 映像表（M12-B v0）：内核内嵌映像的可执行面。索引即
-/// SYS_EXEC 参数；越界 → ERR_IMAGE(10)。v0 仅基础映像；表随后续
-/// 里程碑扩展（应用装载面接入后由 Weave 提供映像源）。
-pub const EXEC_IMAGES: [&[u8]; 1] = [&USER_PROGRAM];
+/// SYS_EXEC 映像表（M14-① 扩容：内核内嵌字节表 → **VFS 路径表**）。
+/// 索引即 SYS_EXEC 参数；越界 → ERR_IMAGE(10)。装载器经命名空间
+/// 解析路径并整读映像（**VFS 第二消费者**——第一消费者为文件面
+/// syscall），LXE1 解析与放置策略见 [`build_user_space_lxe`]。
+/// 映像源随后续里程碑可扩展至其他挂载（Weave 包源预留）。
+pub const EXEC_IMAGES: [&str; 3] = ["/files/selftest.lxe", "/files/prog.lxe", "/files/grow.lxe"];
+
+/// 多段映像装载结果（M14-①）：根、入口、栈顶 + 段帧取证表。
+pub struct ExecSpace {
+    /// 用户页表根物理地址。
+    pub root: u64,
+    /// 入口虚地址（LXE 头 entry；已验证落于某 X 段内）。
+    pub entry: u64,
+    /// 栈顶（0x403000 遗留或 [`STACK_TOP_GROW`] 增长栈）。
+    pub stack_top: u64,
+    /// 段帧表 (vaddr, frame)：每段首帧一条（v0 段均单帧预算内）。
+    pub seg_frames: Vec<(u64, u64)>,
+    /// 首个 W 段的首帧（哨兵轮询取证；无 W 段 = 0）。
+    pub data_frame: u64,
+}
+
+/// LXE1 多段映像装载（M14-①）：结构解析（bedrock::exec）→ 放置
+/// 策略校验 → PDPT[6] 全新分支映射。
+///
+/// 策略（结构校验已在 parse 完成，此处仅放置域）：
+/// - 段 vaddr ∈ {0x400000（兼容槽：RX、单帧——repkg 既有程序）} ∪
+///   [[`FRESH_BASE`], [`FRESH_LIMIT`])（PD6[0]→PT 全新分支，逐槽
+///   映射、槽位互斥、段不得越 PT 上界）；
+/// - **PD[2] 恒等镜像不可拆位**：除兼容槽 PT[0]（既有先例豁免）外，
+///   禁止任何 PD[2] 落点；
+/// - entry 必须落于某 X 段 [vaddr, vaddr+mem_len) 内；
+/// - stack_top ∈ {0（遗留栈：PT[2] 单帧，rsp=0x403000）,
+///   [`STACK_TOP_GROW`]（增长栈：PD6[1]→pt_stack，顶帧预映射，
+///   其余窗口页由 #PF 扩栈补帧）}。
+///
+/// 映射纪律：中间层逐层补 U 位（权限逐层 AND）；帧内容经
+/// `ostd::hw::phys` 直写（文件部分拷贝、mem_len 尾部保持清零）。
+/// 失败路径：已分配帧按 v0 存续期语义不回收（与 build_space_frames
+/// 同款，如实记档）。
+pub fn build_user_space_lxe<F>(
+    blob: &[u8],
+    alloc_frame: &mut F,
+) -> Result<ExecSpace, UserSpaceError>
+where
+    F: FnMut() -> Option<u64>,
+{
+    use bedrock::exec::{parse, FLAG_W, FLAG_X};
+    let img = parse(blob).map_err(|_| UserSpaceError::BadImage)?;
+    if img.stack_top != 0 && img.stack_top != STACK_TOP_GROW {
+        return Err(UserSpaceError::BadImage);
+    }
+    // 段表策略预检：落点域 + 槽位互斥 + entry 落段
+    let mut slots = [false; 512];
+    let mut entry_ok = false;
+    for seg in img.segments.iter().take(img.seg_count) {
+        let is_compat = seg.vaddr == USER_CODE_VIRT;
+        let in_fresh = seg.vaddr >= FRESH_BASE && seg.vaddr < FRESH_LIMIT;
+        if !is_compat && !in_fresh {
+            return Err(UserSpaceError::BadImage);
+        }
+        if is_compat {
+            // 兼容槽：RX 单帧（代码只读；W 位拒绝；mem_len ≤ 一页）
+            if seg.flags & FLAG_W != 0 || seg.mem_len > FRAME_SIZE {
+                return Err(UserSpaceError::BadImage);
+            }
+        } else {
+            let end = seg.vaddr + seg.mem_len;
+            if end > FRESH_LIMIT {
+                return Err(UserSpaceError::BadImage);
+            }
+            for k in 0..seg.mem_len.div_ceil(FRAME_SIZE) {
+                let slot = ((seg.vaddr - FRESH_BASE) / FRAME_SIZE + k) as usize;
+                if slots[slot] {
+                    return Err(UserSpaceError::BadImage); // 槽位重叠
+                }
+                slots[slot] = true;
+            }
+        }
+        if seg.flags & FLAG_X != 0 && img.entry >= seg.vaddr && img.entry < seg.vaddr + seg.mem_len
+        {
+            entry_ok = true;
+        }
+    }
+    if !entry_ok {
+        return Err(UserSpaceError::BadImage);
+    }
+    // 4 表骨架（PD[2] 恒等镜像纪律同 build_space_tables）
+    let (root, pdpt, _pd, pt) = build_space_tables(alloc_frame)?;
+    let mut seg_frames: Vec<(u64, u64)> = Vec::new();
+    let mut data_frame = 0u64;
+    // PDPT[6] 分支帧（惰性建支）：pd6[0] → 段区 PT、pd6[1] → 增长栈 PT
+    let mut pd6 = 0u64;
+    let mut pt_seg = 0u64;
+    for i in 0..img.seg_count {
+        let seg = img.segments[i];
+        let is_compat = seg.vaddr == USER_CODE_VIRT;
+        let bytes = img.seg_bytes(i);
+        if is_compat {
+            let Some(code) = alloc_frame() else {
+                return Err(UserSpaceError::FramesExhausted);
+            };
+            ostd::hw::phys::write_zero(code, FRAME_SIZE);
+            ostd::hw::phys::write_bytes(code, bytes);
+            ostd::hw::phys::write_u64(pt, Entry::page(code, Entry::USER).bits());
+            seg_frames.push((seg.vaddr, code));
+        } else {
+            if pd6 == 0 {
+                // 首个新分支段触发建支：PDPT[6]→pd6→段区 PT（逐层补 U）
+                let Some(p) = alloc_frame() else {
+                    return Err(UserSpaceError::FramesExhausted);
+                };
+                ostd::hw::phys::write_zero(p, FRAME_SIZE);
+                let Some(s) = alloc_frame() else {
+                    return Err(UserSpaceError::FramesExhausted);
+                };
+                ostd::hw::phys::write_zero(s, FRAME_SIZE);
+                let slot6 = (FRESH_BASE >> 30) & 0x1FF;
+                ostd::hw::phys::write_u64(pdpt + slot6 * 8, Entry::table(p).bits() | Entry::USER);
+                ostd::hw::phys::write_u64(p, Entry::table(s).bits() | Entry::USER);
+                pd6 = p;
+                pt_seg = s;
+            }
+            let frames_n = seg.mem_len.div_ceil(FRAME_SIZE);
+            for k in 0..frames_n {
+                let Some(f) = alloc_frame() else {
+                    return Err(UserSpaceError::FramesExhausted);
+                };
+                ostd::hw::phys::write_zero(f, FRAME_SIZE);
+                let start = (k * FRAME_SIZE) as usize;
+                let end = (start + FRAME_SIZE as usize).min(bytes.len());
+                if start < end {
+                    ostd::hw::phys::write_bytes(f, &bytes[start..end]);
+                }
+                let flags = if seg.flags & FLAG_W != 0 {
+                    Entry::USER | Entry::WRITABLE
+                } else {
+                    Entry::USER
+                };
+                let slot = ((seg.vaddr - FRESH_BASE) / FRAME_SIZE + k) as usize;
+                ostd::hw::phys::write_u64(pt_seg + slot as u64 * 8, Entry::page(f, flags).bits());
+                if k == 0 {
+                    seg_frames.push((seg.vaddr, f));
+                    if seg.flags & FLAG_W != 0 && data_frame == 0 {
+                        data_frame = f;
+                    }
+                }
+            }
+        }
+    }
+    // 栈：遗留（PT[2] 单帧）或增长（pd6[1] → pt_stack，顶帧预映射）
+    let stack_top = if img.stack_top == 0 {
+        let Some(stack) = alloc_frame() else {
+            return Err(UserSpaceError::FramesExhausted);
+        };
+        ostd::hw::phys::write_zero(stack, FRAME_SIZE);
+        ostd::hw::phys::write_u64(
+            pt + 2 * 8,
+            Entry::page(stack, Entry::USER | Entry::WRITABLE).bits(),
+        );
+        USER_STACK_TOP
+    } else {
+        if pd6 == 0 {
+            // 无段区但需增长栈：仅建 pd6（pd6[0] 留空，段区无人映射）
+            let Some(p) = alloc_frame() else {
+                return Err(UserSpaceError::FramesExhausted);
+            };
+            ostd::hw::phys::write_zero(p, FRAME_SIZE);
+            let slot6 = (FRESH_BASE >> 30) & 0x1FF;
+            ostd::hw::phys::write_u64(pdpt + slot6 * 8, Entry::table(p).bits() | Entry::USER);
+            pd6 = p;
+        }
+        let Some(s) = alloc_frame() else {
+            return Err(UserSpaceError::FramesExhausted);
+        };
+        ostd::hw::phys::write_zero(s, FRAME_SIZE);
+        ostd::hw::phys::write_u64(pd6 + 8, Entry::table(s).bits() | Entry::USER); // pd6[1]
+        let Some(stack) = alloc_frame() else {
+            return Err(UserSpaceError::FramesExhausted);
+        };
+        ostd::hw::phys::write_zero(stack, FRAME_SIZE);
+        ostd::hw::phys::write_u64(
+            s + 511 * 8,
+            Entry::page(stack, Entry::USER | Entry::WRITABLE).bits(),
+        );
+        STACK_TOP_GROW
+    };
+    Ok(ExecSpace {
+        root,
+        entry: img.entry,
+        stack_top,
+        seg_frames,
+        data_frame,
+    })
+}
 
 /// 构建用户页表骨架（M11-A 重构；M12-B 拆分：表主体与叶帧分离）。
 /// 4 张中间表 + 内核分支克隆 + PD/PT 恒等镜像；PT[0]/PT[2] 留空由

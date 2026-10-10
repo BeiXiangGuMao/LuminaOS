@@ -3,6 +3,63 @@
 版本语义：工作区里程碑版（0.x.y，x=里程碑，y=里程碑内迭代）。
 本文档记录源码树的对外可见变更；指标与规格变更见《指标与规范手册》修订记录。
 
+## v0.15.0（2026-10-10）—— M14-①：多段映像与栈增长 + M14-②：配额治理
+
+### 新增
+- **LXE1 多段可执行映像格式（bedrock::exec 新模块，M14-①）**：64B 头
+  （magic/version/seg_count≤8/entry/stack_top/payload_off）+ 32B 段头
+  （vaddr/mem_len/file_len/flags W|X）+ 紧排载荷；parse 纯结构校验
+  （宿主测试钉死：magic/版本/截断/对齐/file_len≤mem_len/flags 域/
+  越界段号防御）+ encode 构造器（roundtrip 双向对账）。**职责分层：
+  结构归 bedrock、放置策略归内核装载器**。
+- **EXEC 装载器经 VFS 取段（VFS 第二消费者）**：EXEC_IMAGES 从内核
+  内嵌字节表改为 **VFS 路径表**（/files/selftest.lxe|prog.lxe|
+  grow.lxe）；sys_exec 链 = 路径 → vfs::read_image 内核侧整读（不走
+  句柄面，零能力铸造）→ LXE1 解析 → 放置策略 → PDPT[6] 全新分支
+  映射 → frame.rip = 头 entry、user_rsp = 头 stack_top。装载器戳
+  （vfs_bytes/segs/data_frame）+ 映像面失败折叠 ERR_IMAGE(10)。
+- **放置策略（PD[2] 恒等镜像不可拆位纪律，S55 定案）**：段 vaddr ∈
+  {0x400000 兼容槽（RX 单帧，repkg 既有程序）} ∪ [0x1_8000_0000,
+  0x1_8020_0000)（PDPT[6]→pd6[0]→段 PT 全新分支，槽位互斥）；数据段
+  与栈一律不落 PD[2]（内核堆 .bss 跨距依赖镜像完整）；entry 须落
+  某 X 段。
+- **缺页驱动的 ring3 栈增长**：LXE stack_top = 0x1_8040_0000 的空间
+  经 pd6[1]→pt_stack 顶帧预映射（rsp 起栈顶），其余窗口页由 #PF
+  按需补帧（pf_hook 新分支：ring3 源 + 窗口内 + 叶未映射 → 分配/
+  清零/写 P|U|W/invlpg + STACK_GROWS 计数）；**窗口上限 32 页 = 增长
+  配额**（与 M14-② 呼应）；走表索引自 va_page 推导（首轮冒烟实测：
+  以 STACK_TOP 推 PD 索引落边界外槽 pd6[2]，记档）；无分支空间故障
+  走表失败自然致命（自保护）。
+- **SYS_QUOTA(25)（abi v0.7 → v0.8，M14-②）**：kind 0/1/2 = 调用方
+  句柄表/内核文件注册表/通道注册表 → `(1<<32)|(used<<16)|cap`；
+  parse 层 kind≤2 结构校验（SEEK whence 先例）；usage 助手三处
+  （task::handle_usage / vfs::files_usage / ipc::channels_usage）。
+- **配额容量首审**：HANDLE_MAX 8 → 16（统一句柄面叠加后 fd 吃紧，
+  TCB 内联表增量 ≈ 3 KiB 可忽略）、MAX_FILES 16 → 32、MAX_CHANNELS
+  16 → 32（与文件面同档首过线）。
+- **自检 46 → 49**：t47 exec-multiseg-vfs（EXEC(9) 负探针 → EXEC(1)
+  双段映像：种子校验/结果哨兵/EXIT 91 + 数据帧 phys 直读取证）、
+  t48 stack-growth-pagefault（EXEC(2) 增长栈：sub rsp 0x1800 → #PF
+  补帧 → 写读回 → EXIT 92 + STACK_GROWS ≥ 1）、t49 quota-governance
+  （三 kind 快照 + 容量首审实证 + 关闭还原 + kind 越界防御面）。
+- **映像生成器入库**：scripts/gen_m14_images.py（gen_t45.py 未入库
+  教训——本轮脚本随 src 包归档）；标签式微汇编 + LXE1 封装 →
+  exec_images_gen.rs（user.rs include!）；交叉锚点常量双向对账。
+
+### 变更
+- **vfs::init 迁启动区**（原 t44 内惰性 init）：EXEC 装载器经 VFS
+  取段后，t42 及全部映像面依赖必须先于自检就位（首轮冒烟实测：t42
+  读 /files/selftest.lxe 返回 None——命名空间未初始化，记档）。
+- **t47/t48 完成信号改退出码轮询**：t46 sleeper 常驻
+  （all_workers_finished 在 t46 后恒 false，不可用作完成信号）。
+
+### 修复
+- prog.lxe 生成器 `mov [r15+8], imm32` 编码：48→49（REX.WB——rm=r15；
+  误用 48 时实际写 [rdi+8]，rdi 被 exec 现场清零 → cr2=0x8 故障环，
+  首轮冒烟实测记档）。
+- stack_grow 走表索引：PD 层自 va_page 推导（原自 STACK_TOP_GROW 推
+  导落 pd6[2] 边界外槽）。
+
 ## v0.14.0（2026-10-10）—— M13-②：文件面统一句柄面 + timer 第三类阻塞源
 
 ### 新增

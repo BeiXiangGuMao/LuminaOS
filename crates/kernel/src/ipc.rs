@@ -37,7 +37,9 @@ use crate::console::DualLog;
 use crate::task;
 
 /// 通道注册表容量（含预设面；运行时 BIND 与预设共享定容空间）。
-const MAX_CHANNELS: usize = 16;
+/// M14-② 首审：16 → 32（与 MAX_FILES=32 同档；文件面叠加后同量级
+/// 工作集首次过线，配额治理统一抬升）。
+const MAX_CHANNELS: usize = 32;
 /// 回声服务对象 id（能力对象寻址；通道 0）。
 pub const ECHO_OBJECT: u64 = 0xC0DE_0000_0000_0001;
 /// 阻塞接收测试对象 id（通道 1；t39 对端）。
@@ -93,6 +95,13 @@ pub fn init() {
         fast: block,
         object: BLOCK_OBJECT,
     });
+}
+
+/// 通道注册表用量快照（M14-② SYS_QUOTA kind 2 断言面）：(used, MAX_CHANNELS)。
+pub fn channels_usage() -> (usize, usize) {
+    let chans = CHANNELS.lock();
+    let used = chans.iter().filter(|c| c.is_some()).count();
+    (used, MAX_CHANNELS)
 }
 
 /// 阻塞接收取证复位（跨自检隔离）。

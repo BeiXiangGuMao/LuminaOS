@@ -94,7 +94,10 @@ pub const AGE_TICKS: u32 = 5;
 /// 32 → 48（静态占用 ≈ 10 KiB；Task 栈为堆分配，槽位表仅承载元数据）。
 const MAX_TASKS: usize = 48;
 /// 每任务句柄表容量（M9-A；句柄 0 = NULL 保留，1..HANDLE_MAX 可用）。
-pub const HANDLE_MAX: usize = 8;
+/// M14-② 首审：8 → 16（文件面 fd 与通道/授予句柄共享命名空间后，
+/// 8 槽吃紧——统一句柄面叠加用量实测抬升；TCB 内联表 16×8B/任务，
+/// MAX_TASKS=48 下静态增量 ≈ 3 KiB，可忽略）。
+pub const HANDLE_MAX: usize = 16;
 /// CURRENT 槽的 idle 哨兵（本核无任务在跑）。
 const IDLE: usize = usize::MAX;
 
@@ -1202,6 +1205,13 @@ pub fn with_task_handles<R>(
         .get_mut(id)
         .and_then(|t| t.as_mut())
         .map(|t| f(&mut t.handles))
+}
+
+/// 句柄表用量快照（M14-② SYS_QUOTA kind 0 断言面）：(used, HANDLE_MAX)。
+/// 任务不存在返回 (0, 0)（调用方按错误面处置）。
+pub fn handle_usage(id: usize) -> (usize, usize) {
+    with_task_handles(id, |t| t.iter().filter(|h| h.is_some()).count())
+        .map_or((0, 0), |used| (used, HANDLE_MAX))
 }
 
 /// 目标任务的主身份能力槽号（M9-A 撤销保护面；不存在 = None）。
