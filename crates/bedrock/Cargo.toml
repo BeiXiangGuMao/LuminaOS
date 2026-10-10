@@ -1,0 +1,16 @@
+[package]
+name = "bedrock"
+description = "Bedrock 磐基 —— 100% Rust framekernel 内核（指标族 B-P01…B-P07）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ostd = { workspace = true }
+vanguard = { workspace = true }
+
+[dev-dependencies]

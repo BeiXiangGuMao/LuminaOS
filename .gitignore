@@ -1,0 +1,3 @@
+# 编译产物在源码树外（见 .cargo/config.toml），此处仅防御性兜底
+/target/
+**/*.rs.bk

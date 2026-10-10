@@ -1,0 +1,12 @@
+[package]
+name = "weave"
+description = "Weave 织流 —— 包管理：清单解析与代际事务状态机"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

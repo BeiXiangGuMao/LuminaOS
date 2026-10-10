@@ -1,0 +1,12 @@
+[package]
+name = "glyph"
+description = "Glyph 曜纹 —— 图标体系：24/48/96 同源缩放与悬停规格"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

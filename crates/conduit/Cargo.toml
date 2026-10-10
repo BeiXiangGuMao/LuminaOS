@@ -1,0 +1,12 @@
+[package]
+name = "conduit"
+description = "Conduit 通衢 —— Linux 5.15 ABI 兼容层常量表（布局快照 + 三级语义）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

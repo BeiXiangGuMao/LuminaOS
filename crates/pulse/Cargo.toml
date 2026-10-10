@@ -1,0 +1,12 @@
+[package]
+name = "pulse"
+description = "Pulse 脉冲 —— 网络栈：地址类型与零拷贝 SPSC 环（三路径之一）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

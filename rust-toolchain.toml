@@ -1,0 +1,5 @@
+# 工具链锁定（DEV-002 1.1 节：rust-toolchain.toml 自动锁定精确版本）
+[toolchain]
+channel = "1.99.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

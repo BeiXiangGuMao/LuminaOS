@@ -1,0 +1,12 @@
+[package]
+name = "crystal"
+description = "Crystal 晶簇 —— 存储栈的代际槽位容器（双代际根槽 + ABA 防护）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
