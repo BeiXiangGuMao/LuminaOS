@@ -126,14 +126,97 @@ pub const SYS_SEEK: u64 = 23;
 /// 本面属进程面错误域（不属文件面 errno 域）。
 pub const SYS_QUOTA: u64 = 25;
 
-/// 以全局节拍为粒度睡眠当前任务（v0.14 追加，M13-② timer 阻塞源）。
+/// 以纳秒为粒度睡眠当前任务（v0.14 追加；**v0.16 语义升级 = TSC 纳秒面**，
+/// M15-③）。
 ///
-/// 参数 = 时长（全局节拍数，[`ostd::time::now`] 同源计数；0 = 立即
-/// 返回）。任务以 [`WaitWhat::Timer`] 等待对象阻塞（swap/waitpid/ipc
-/// 之外的第三类阻塞源，探针化同款：deadline 已过即探针命中回滚）。
-/// 成功（睡眠期满或已期满）返回 0。v0 语义 = tick 粒度睡眠
-/// （非真纳秒；TSC 纳秒面留待后续块，如实记档）。
+/// 参数 = 时长（**纳秒**；v0.14–v0.15 为全局节拍数，v0.16 起经 TSC
+/// 单调纳秒基线度量——[`ostd::time::tsc_clock::now_ns`] 同源；0 = 立即
+/// 返回）。任务以 [`WaitWhat::Timer`] 等待对象阻塞（deadline = TSC
+/// 纳秒时刻；探针化同款：deadline 已过即探针命中回滚）。成功（睡眠
+/// 期满或已期满）返回 0。唤醒检查仍随 PIT 节拍交付（有效分辨率 ≈
+/// 节拍周期；deadline 本体为纳秒精确值，如实记档）。
 pub const SYS_NANOSLEEP: u64 = 24;
+
+/// 创建目录（v0.16 追加，M15-① 目录面）。
+///
+/// 参数布局：路径指针 = rdi（调用方只读内存）、路径长 = rsi
+/// （字节，上限 512，结构校验）。语义 = 逐段父走查后叶子建目录
+/// （POSIX `mkdir` 同款：中间组件必须已存在）。成功返回 0；已存在 →
+/// `EEXIST(17)`；父缺失 → `ENOENT(2)`；父组件非目录 → `ENOTDIR(20)`；
+/// 路径非法（相对/越过根/建根本身）→ `EINVAL(22)`。
+pub const SYS_MKDIR: u64 = 26;
+
+/// 摘除文件或空目录（v0.16 追加，M15-① 目录面）。
+///
+/// 参数布局同 [`SYS_MKDIR`]（路径指针 = rdi、长 = rsi）。语义 =
+/// POSIX `remove`：文件与空目录同面可摘；目录非空 →
+/// `ENOTEMPTY(39)`；目标缺失 → `ENOENT(2)`；摘除根自身 →
+/// `EINVAL(22)`。v0 不做占用检查（有打开句柄的节点仍可摘除——
+/// ramfs 节点随名字摘除即不可达，如实记档）。
+pub const SYS_REMOVE: u64 = 27;
+
+/// 分页读取目录项（v0.16 追加，M15-① 目录面）。
+///
+/// 参数布局：句柄 = rdi（须为**目录**句柄）、缓冲指针 = rsi、
+/// 缓冲长 = rdx（字节，上限 512，结构校验）。分页语义 = OFD 私有
+/// 偏移兼任**目录项游标**（对目录 `read` 恒 `EISDIR`，偏移域专用；
+/// SEEK 可重定位游标）；每次调用自游标起尽量多打包目录项直至缓冲
+/// 满。项编码 = `[kind:u8][name_len:u8][name…]` 紧排（kind：
+/// 0 = File / 1 = Dir / 2 = CharDev / 3 = Pipe / 4 = Symlink）。
+/// 成功返回 `(1 << 32) | n_entries`（0 项 = 枚举尽/EOF）；句柄非
+/// 目录 → `ENOTDIR(20)`；句柄无效 → `EBADF(9)`；缓冲不足容纳
+/// 首项（< 3 字节）→ `EINVAL(22)`。游标为项序号而非稳定 cookie
+/// ——枚举中途目录被修改的漂移语义同 getdents 现实，如实记档。
+pub const SYS_READDIR: u64 = 28;
+
+/// 在目录上挂载新文件系统（v0.16 追加，M15-① 目录面）。
+///
+/// 参数布局：挂载点路径指针 = rdi、长 = rsi、类型 = rdx（v0 恒 0 =
+/// 内核侧新建 [`crate::vfs::RamFs`] 内存文件系统；结构校验）。
+/// 挂载点必须已存在且为目录（内核侧校验）；同路径重复挂载 →
+/// `EEXIST(17)`；挂载点缺失 → `ENOENT(2)`；非目录 → `ENOTDIR(20)`。
+/// 成功返回 0（挂载后子 fs 遮蔽挂载点原内容，最长前缀解析生效）。
+pub const SYS_MOUNT: u64 = 29;
+
+/// 卸载挂载点（v0.16 追加，M15-① 目录面）。
+///
+/// 参数布局同 [`SYS_MKDIR`]（路径指针 = rdi、长 = rsi）。成功返回
+/// 0；路径未挂载 → `ENOENT(2)`（根挂载不可卸载亦落此域——根不在
+/// 挂载表中）。v0 不做占用检查（打开句柄经 `Arc` 存续，卸载后
+/// 已打开对象仍可读写至关闭，如实记档）。
+pub const SYS_UMOUNT: u64 = 30;
+
+/// 复制文件句柄（v0.16 追加，M15-② 句柄面深化）。
+///
+/// 参数 = 源句柄（rdi）。语义 = POSIX `dup`：新句柄与源句柄共享
+/// 同一开放文件描述（**共享偏移**——一侧读写推进偏移，另一侧可见）。
+/// 新句柄安装于调用方句柄表首个空闲位；权限位同源复制。成功返回
+/// `(1 << 32) | new_handle`；句柄无效/非文件对象 → `EBADF(9)`；
+/// 句柄表满 → `EMFILE(24)`。关闭任一副本不影响另一副本（引用计数
+/// 承载，见 [`SYS_CLOSE`]）。
+pub const SYS_DUP: u64 = 31;
+
+/// 句柄描述符控制（v0.16 追加，M15-② 句柄面深化）。
+///
+/// 参数布局：句柄 = rdi、命令 = rsi（[`F_DUPFD`] / [`F_GETFD`] /
+/// [`F_SETFD`]，结构校验）、参数 = rdx。`F_DUPFD` = 以 rdx 为下界
+/// 复制句柄（≥ rdx 的首个空闲位；成功 `(1 << 32) | new_handle`）；
+/// `F_GETFD` = 读描述符旗标（成功 `(1 << 32) | flags`）；`F_SETFD`
+/// = 写描述符旗标（rdx bit0 = [`FD_CLOEXEC`]；成功 0）。v0 仅
+/// `FD_CLOEXEC` 一旗：置位句柄在 [`SYS_EXEC`] 成功路径被内核关闭
+/// （未置位句柄跨 exec 存续——fd 继承语义）。命令未知 →
+/// `EINVAL(22)`；句柄无效/非文件对象 → `EBADF(9)`；下界越界/无
+/// 空闲位 → `EMFILE(24)`。
+pub const SYS_FCNTL: u64 = 32;
+
+/// [`SYS_FCNTL`] 命令：复制句柄（rdx = 新句柄号下界）。
+pub const F_DUPFD: u64 = 0;
+/// [`SYS_FCNTL`] 命令：读描述符旗标。
+pub const F_GETFD: u64 = 1;
+/// [`SYS_FCNTL`] 命令：写描述符旗标（参数 = 旗标位集）。
+pub const F_SETFD: u64 = 2;
+/// 描述符旗标 bit0：exec 时关闭（`close-on-exec`）。
+pub const FD_CLOEXEC: u64 = 1;
 
 /// 以内核内嵌映像重建调用方地址空间（v0.12 追加，M12-B 执行映像面）。
 ///
@@ -144,9 +227,11 @@ pub const SYS_NANOSLEEP: u64 = 24;
 /// 无独立用户空间 → `ERR_CAP`；帧耗尽 → `ERR_NOMEM(9)`。
 pub const SYS_EXEC: u64 = 17;
 
-/// 系统调用 ABI 版本（追加 SYS_QUOTA → 0.8；M14-② 配额治理统计面。
-/// v0.7 = 文件面六落点 + NANOSLEEP + 统一句柄面 + 错误码分域）。
-pub const ABI_VERSION: (u16, u16) = (0, 8);
+/// 系统调用 ABI 版本（v0.16 = M15：目录面五落点 MKDIR/REMOVE/READDIR/
+/// MOUNT/UMOUNT + 句柄面深化 DUP/FCNTL（CLOEXEC）+ NANOSLEEP 参数语义
+/// 升级为 TSC 纳秒（寄存器面不变，单位变更如实记档）。
+/// v0.8 = SYS_QUOTA；v0.7 = 文件面六落点 + NANOSLEEP + 统一句柄面）。
+pub const ABI_VERSION: (u16, u16) = (0, 9);
 
 /// 寄存器快照形式的系统调用请求。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -302,15 +387,58 @@ pub enum Syscall {
         /// 偏移（i64 位型透传）。
         offset: u64,
     },
-    /// 节拍粒度睡眠（M13-②；见 [`SYS_NANOSLEEP`]）。
+    /// 纳秒粒度睡眠（M13-②；v0.16 TSC 纳秒语义，见 [`SYS_NANOSLEEP`]）。
     NanoSleep {
-        /// 时长（全局节拍数，0 = 立即返回）。
+        /// 时长（**纳秒**，v0.16 TSC 纳秒语义；0 = 立即返回）。
         ticks: u64,
     },
     /// 配额用量查询（M14-②；见 [`SYS_QUOTA`]）。
     Quota {
         /// 类别（0 = 句柄表 / 1 = 文件注册表 / 2 = 通道注册表）。
         kind: u64,
+    },
+    /// 创建目录（M15-①；指针 = rdi 慢路径语义，见 [`SYS_MKDIR`]）。
+    MkDir {
+        /// 路径长（字节，≤ 512）。
+        len: u64,
+    },
+    /// 摘除文件/空目录（M15-①；指针 = rdi 慢路径语义，见 [`SYS_REMOVE`]）。
+    Remove {
+        /// 路径长（字节，≤ 512）。
+        len: u64,
+    },
+    /// 分页读目录项（M15-①；缓冲 = rsi 慢路径语义，见 [`SYS_READDIR`]）。
+    ReadDir {
+        /// 目录句柄。
+        handle: u64,
+        /// 缓冲长度（字节，≤ 512）。
+        buf_len: u64,
+    },
+    /// 挂载新文件系统（M15-①；指针 = rdi 慢路径语义，见 [`SYS_MOUNT`]）。
+    Mount {
+        /// 挂载点路径长（字节，≤ 512）。
+        len: u64,
+        /// 文件系统类型（v0 恒 0 = RamFs）。
+        fs_type: u64,
+    },
+    /// 卸载挂载点（M15-①；指针 = rdi 慢路径语义，见 [`SYS_UMOUNT`]）。
+    Umount {
+        /// 路径长（字节，≤ 512）。
+        len: u64,
+    },
+    /// 复制文件句柄（M15-②；见 [`SYS_DUP`]）。
+    Dup {
+        /// 源句柄。
+        handle: u64,
+    },
+    /// 句柄描述符控制（M15-②；见 [`SYS_FCNTL`]）。
+    Fcntl {
+        /// 句柄。
+        handle: u64,
+        /// 命令（0 = DUPFD / 1 = GETFD / 2 = SETFD）。
+        cmd: u64,
+        /// 参数（DUPFD 下界 / SETFD 旗标位集）。
+        arg: u64,
     },
 }
 
@@ -379,6 +507,29 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
         SYS_NANOSLEEP => Ok(Syscall::NanoSleep { ticks: a0 }),
         SYS_QUOTA if a0 <= 2 => Ok(Syscall::Quota { kind: a0 }),
         SYS_QUOTA => Err(AbiError::BadArgs),
+        SYS_MKDIR if a1 <= 512 => Ok(Syscall::MkDir { len: a1 }),
+        SYS_MKDIR => Err(AbiError::BadArgs),
+        SYS_REMOVE if a1 <= 512 => Ok(Syscall::Remove { len: a1 }),
+        SYS_REMOVE => Err(AbiError::BadArgs),
+        SYS_READDIR if a2 <= 512 => Ok(Syscall::ReadDir {
+            handle: a0,
+            buf_len: a2,
+        }),
+        SYS_READDIR => Err(AbiError::BadArgs),
+        SYS_MOUNT if a1 <= 512 && a2 == 0 => Ok(Syscall::Mount {
+            len: a1,
+            fs_type: a2,
+        }),
+        SYS_MOUNT => Err(AbiError::BadArgs),
+        SYS_UMOUNT if a1 <= 512 => Ok(Syscall::Umount { len: a1 }),
+        SYS_UMOUNT => Err(AbiError::BadArgs),
+        SYS_DUP => Ok(Syscall::Dup { handle: a0 }),
+        SYS_FCNTL if a1 <= 2 => Ok(Syscall::Fcntl {
+            handle: a0,
+            cmd: a1,
+            arg: a2,
+        }),
+        SYS_FCNTL => Err(AbiError::BadArgs),
         _ => Err(AbiError::UnknownSyscall),
     }
 }
@@ -576,7 +727,7 @@ mod tests {
             Err(AbiError::BadArgs),
             "whence 越界"
         );
-        // NANOSLEEP：ticks 透传（0 合法 = 探针命中即时返回语义）
+        // NANOSLEEP：ns 透传（v0.16 TSC 纳秒语义；0 合法 = 探针命中即时返回语义）
         assert_eq!(
             super::parse(r(super::SYS_NANOSLEEP, [0, 0, 0, 0, 0])),
             Ok(Syscall::NanoSleep { ticks: 0 })
@@ -588,8 +739,93 @@ mod tests {
     }
 
     #[test]
+    fn parses_directory_face_calls() {
+        let r = |num: u64, args: [u64; 5]| SyscallRegs { num, args };
+        // MKDIR/REMOVE：len ≤ 512 结构校验（指针 = rdi 慢路径语义）
+        assert_eq!(
+            super::parse(r(super::SYS_MKDIR, [0x2000, 14, 0, 0, 0])),
+            Ok(Syscall::MkDir { len: 14 })
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_MKDIR, [0x2000, 513, 0, 0, 0])),
+            Err(AbiError::BadArgs),
+            "len 越界"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_REMOVE, [0x2000, 9, 0, 0, 0])),
+            Ok(Syscall::Remove { len: 9 })
+        );
+        // READDIR：句柄 + buf_len ≤ 512（缓冲 = rsi 慢路径语义）
+        assert_eq!(
+            super::parse(r(super::SYS_READDIR, [3, 0x402E00, 128, 0, 0])),
+            Ok(Syscall::ReadDir {
+                handle: 3,
+                buf_len: 128
+            })
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_READDIR, [3, 0x402E00, 513, 0, 0])),
+            Err(AbiError::BadArgs),
+            "buf_len 越界"
+        );
+        // MOUNT：len ≤ 512 且 fs_type 恒 0（v0 仅 RamFs；非 0 拒收）
+        assert_eq!(
+            super::parse(r(super::SYS_MOUNT, [0x2000, 10, 0, 0, 0])),
+            Ok(Syscall::Mount {
+                len: 10,
+                fs_type: 0
+            })
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_MOUNT, [0x2000, 10, 1, 0, 0])),
+            Err(AbiError::BadArgs),
+            "fs_type 保留位拒收"
+        );
+        // UMOUNT：len ≤ 512
+        assert_eq!(
+            super::parse(r(super::SYS_UMOUNT, [0x2000, 10, 0, 0, 0])),
+            Ok(Syscall::Umount { len: 10 })
+        );
+    }
+
+    #[test]
+    fn parses_handle_deepening_calls() {
+        let r = |num: u64, args: [u64; 5]| SyscallRegs { num, args };
+        // DUP：句柄透传
+        assert_eq!(
+            super::parse(r(super::SYS_DUP, [3, 0, 0, 0, 0])),
+            Ok(Syscall::Dup { handle: 3 })
+        );
+        // FCNTL：命令 ∈ 0..=2 结构校验（F_DUPFD/F_GETFD/F_SETFD）；arg 透传
+        assert_eq!(
+            super::parse(r(super::SYS_FCNTL, [3, super::F_DUPFD, 4, 0, 0])),
+            Ok(Syscall::Fcntl {
+                handle: 3,
+                cmd: super::F_DUPFD,
+                arg: 4
+            })
+        );
+        assert_eq!(
+            super::parse(r(
+                super::SYS_FCNTL,
+                [3, super::F_SETFD, super::FD_CLOEXEC, 0, 0]
+            )),
+            Ok(Syscall::Fcntl {
+                handle: 3,
+                cmd: super::F_SETFD,
+                arg: super::FD_CLOEXEC
+            })
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_FCNTL, [3, 3, 0, 0, 0])),
+            Err(AbiError::BadArgs),
+            "命令越界"
+        );
+    }
+
+    #[test]
     fn file_face_numbers_are_appended_in_order() {
-        // 追加纪律：v0 编号不得复用或改序——18..=25 顺序落位自证
+        // 追加纪律：v0 编号不得复用或改序——18..=32 顺序落位自证
         assert_eq!(super::SYS_OPEN, 18);
         assert_eq!(super::SYS_READ, 19);
         assert_eq!(super::SYS_WRITE, 20);
@@ -598,7 +834,14 @@ mod tests {
         assert_eq!(super::SYS_SEEK, 23);
         assert_eq!(super::SYS_NANOSLEEP, 24);
         assert_eq!(super::SYS_QUOTA, 25);
-        assert_eq!(super::ABI_VERSION, (0, 8));
+        assert_eq!(super::SYS_MKDIR, 26);
+        assert_eq!(super::SYS_REMOVE, 27);
+        assert_eq!(super::SYS_READDIR, 28);
+        assert_eq!(super::SYS_MOUNT, 29);
+        assert_eq!(super::SYS_UMOUNT, 30);
+        assert_eq!(super::SYS_DUP, 31);
+        assert_eq!(super::SYS_FCNTL, 32);
+        assert_eq!(super::ABI_VERSION, (0, 9));
     }
 
     #[test]

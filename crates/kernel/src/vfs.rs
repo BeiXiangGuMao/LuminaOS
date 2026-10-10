@@ -25,8 +25,21 @@
 //!
 //! 锁序契约：NAMESPACE/FILES → 各 FileSystem 内部锁（单向嵌套；任何
 //! FileSystem 实现不回调本模块——RamFs 纯数据结构）；本面不取 SCHED
-//! （全同步语义，零阻塞）。骨架边界：无 O_CREAT/无 dup/无 readdir 落点/
-//! 无 CLOEXEC（多段映像与配额治理块按 M13 路线另列）。
+//! （全同步语义，零阻塞）。M15 扩展单向链：**FILES → CAPS**（孤儿
+//! 回收面 [`reap_orphaned_files`]；全局纪律 = SCHED 最外层，无反向边）。
+//!
+//! **M15-① 目录面**：SYS_MKDIR/REMOVE（父走查 + 叶子操作，[`PathBuf::
+//! parent`]/[`PathBuf::name`] 切片）+ SYS_READDIR（**分页化**——OFD
+//! 偏移兼任目录项游标，[`bedrock::vfs::pack_dir_page`] 纯函数打包）+
+//! SYS_MOUNT/UMOUNT（v0 仅 RamFs 挂载：内核侧新建空实例，mount 契约
+//! M13-① 已备）。错误域同文件面 errno。
+//!
+//! **M15-② 句柄面深化**：SYS_DUP/FCNTL（开放文件描述跨句柄共享——
+//! 引用计数承载，dup/grant 每槽 +1、close/revoke 递减、归零回收）+
+//! CLOEXEC（per-handle 旗标存 TCB `hflags`，[`crate::task::
+//! close_cloexec_handles`] 在 EXEC 成功路径消费）+ **通道句柄关闭
+//! 落点**（v0 bind 存续语义补全：通道句柄可关——句柄/能力回收，
+//! 通道对象在注册表存续）。
 //!
 //! unsafe 面：零（用户缓冲校验复用 `crate::syscall::validate_user_slice*`）。
 
@@ -60,6 +73,8 @@ const EINVAL: u64 = 22;
 const ENFILE: u64 = 23;
 /// 调用方句柄表满。
 const EMFILE: u64 = 24;
+/// 对非目录句柄请求目录语义（READDIR on 文件）。
+const ENOTDIR: u64 = 20;
 /// STAT 尺寸域（31 位）溢出（ramfs 不可达，防御性）。
 const EOVERFLOW: u64 = 75;
 
@@ -102,6 +117,47 @@ pub fn reset_evidence() {
     CLOSE_RESULT.store(u64::MAX, Ordering::Release);
     STAT_RESULT.store(u64::MAX, Ordering::Release);
     SEEK_RESULT.store(u64::MAX, Ordering::Release);
+}
+
+// ---- 目录面取证（t50 断言面） ----
+static MKDIR_RESULT: AtomicU64 = AtomicU64::new(u64::MAX);
+static REMOVE_RESULT: AtomicU64 = AtomicU64::new(u64::MAX);
+static READDIR_RESULT: AtomicU64 = AtomicU64::new(u64::MAX);
+static MOUNT_RESULT: AtomicU64 = AtomicU64::new(u64::MAX);
+static UMOUNT_RESULT: AtomicU64 = AtomicU64::new(u64::MAX);
+
+// ---- 句柄深化取证（t51 断言面） ----
+static DUP_RESULT: AtomicU64 = AtomicU64::new(u64::MAX);
+static FCNTL_RESULT: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// 目录面 + 句柄深化取证复位（跨自检隔离）。
+pub fn reset_dir_evidence() {
+    MKDIR_RESULT.store(u64::MAX, Ordering::Release);
+    REMOVE_RESULT.store(u64::MAX, Ordering::Release);
+    READDIR_RESULT.store(u64::MAX, Ordering::Release);
+    MOUNT_RESULT.store(u64::MAX, Ordering::Release);
+    UMOUNT_RESULT.store(u64::MAX, Ordering::Release);
+    DUP_RESULT.store(u64::MAX, Ordering::Release);
+    FCNTL_RESULT.store(u64::MAX, Ordering::Release);
+}
+
+/// 目录面取证快照：(MKDIR, REMOVE, READDIR, MOUNT, UMOUNT)。
+pub fn dir_stamps() -> (u64, u64, u64, u64, u64) {
+    (
+        MKDIR_RESULT.load(Ordering::Acquire),
+        REMOVE_RESULT.load(Ordering::Acquire),
+        READDIR_RESULT.load(Ordering::Acquire),
+        MOUNT_RESULT.load(Ordering::Acquire),
+        UMOUNT_RESULT.load(Ordering::Acquire),
+    )
+}
+
+/// 句柄深化取证快照：(DUP, FCNTL)。
+pub fn hdeep_stamps() -> (u64, u64) {
+    (
+        DUP_RESULT.load(Ordering::Acquire),
+        FCNTL_RESULT.load(Ordering::Acquire),
+    )
 }
 
 /// 文件面取证快照：(OPEN 码, OPEN 句柄, READ 码, WRITE 码, CLOSE 码,
@@ -206,20 +262,43 @@ pub fn files_usage() -> (usize, usize) {
     (used, MAX_FILES)
 }
 
-/// 节点类型编码（SYS_STAT kind 域）。
+/// 节点类型编码（SYS_STAT kind 域）：委托 bedrock 单一事实源
+/// （READDIR 项首字节同一映射，宿主测试交叉钉值）。
 const fn kind_code(kind: NodeKind) -> u64 {
-    match kind {
-        NodeKind::File => 0,
-        NodeKind::Dir => 1,
-        NodeKind::CharDev { .. } => 2,
-        NodeKind::Pipe => 3,
-        NodeKind::Symlink => 4,
-    }
+    bedrock::vfs::dir_entry_abi_code(kind) as u64
 }
 
 /// 段位判定：对象 id 是否属于文件段。
 fn is_file_object(object: u64) -> bool {
     (object >> 32) == (FILE_OBJECT_BASE >> 32)
+}
+
+/// 能力表存活引用计数（M15-② 句柄面深化）：扫描全局能力表统计
+/// `object` 的存活引用槽数（open 铸造 = 1，dup/跨任务授予各 +1，
+/// close/revoke/EXEC-CLOEXEC 撤销后递减）。O(CAPACITY)=64 单向扫描
+/// ——内核规模下常数可忽略；**引用计数即存活槽数**（零簿记、对
+/// dup/grant/revoke 三条路径一致成立）。
+fn caps_refcount(object: u64) -> usize {
+    let t = crate::caps::table().lock();
+    (0..vanguard::CAPACITY)
+        .filter(|&s| t.get(s).map(|c| c.object()) == Ok(object))
+        .count()
+}
+
+/// 回收孤儿文件对象（M15-②）：任务终结清算 / EXEC CLOEXEC 消费 /
+/// SYS_CAP_REVOKE 撤销能力槽后，注册表中已无任何能力引用的文件对象
+/// 就地回收（引用计数收敛面；close 路径的即时判定之外的补扫）。
+/// 锁序：FILES → CAPS（本模块新墢单向链，无反向边）。
+pub fn reap_orphaned_files() {
+    let mut files = FILES.lock();
+    for slot in files.iter_mut() {
+        let Some(f) = slot.as_ref() else {
+            continue;
+        };
+        if caps_refcount(f.object) == 0 {
+            *slot = None;
+        }
+    }
 }
 
 /// 句柄解析共用切片（M13-②）：调用方句柄 → (全局槽, 能力, 文件槽)。
@@ -438,9 +517,18 @@ pub fn sys_write(handle: u64, buf_ptr: u64, len: u64) -> u64 {
     code
 }
 
-/// SYS_CLOSE 主体（M13-②）：句柄回收（任务表 + 全局槽 + 注册表槽）。
-/// 非文件对象句柄（通道等）一律 EBADF 且**原样保留**（文件面绝不消费
-/// 他面对象——段位判定守门）。成功返回 0。
+/// SYS_CLOSE 主体（M13-②；**M15-② 深化**）：句柄回收（任务表 + 全局
+/// 槽 + 对象面收敛）。三分支：
+/// 1. 文件对象：撤销全局槽后按 [`caps_refcount`] 判定——仍有存活引用
+///    （dup 副本/跨任务授予）则对象保留（关闭一副本不影响其余副本，
+///    POSIX dup 语义），归零才释放注册表槽；
+/// 2. 通道对象（[`crate::ipc::is_channel_object`]）：**通道句柄关闭
+///    落点**（v0 bind 存续语义补全）——句柄 + 全局槽回收，通道对象
+///    （环对 + 注册表槽）存续不回收（bind 存续纪律不变）；
+/// 3. 其余对象（主身份句柄等）：原样保留回插，EBADF（绝不消费他面
+///    ——段位/注册表双重守门）。
+///
+/// 成功路径同时清除该句柄 CLOEXEC 旗标（同号复用不继承陈值）。
 pub fn sys_close(handle: u64) -> u64 {
     let caller = task::current_task_id();
     let h = handle as usize;
@@ -454,17 +542,26 @@ pub fn sys_close(handle: u64) -> u64 {
                 match object {
                     Ok(o) if is_file_object(o) => {
                         let _ = crate::caps::table().lock().revoke(g);
-                        let mut files = FILES.lock();
-                        if let Some(i) = files
-                            .iter()
-                            .position(|f| f.as_ref().is_some_and(|f| f.object == o))
-                        {
-                            files[i] = None;
+                        if caps_refcount(o) == 0 {
+                            let mut files = FILES.lock();
+                            if let Some(i) = files
+                                .iter()
+                                .position(|f| f.as_ref().is_some_and(|f| f.object == o))
+                            {
+                                files[i] = None;
+                            }
                         }
+                        task::clear_hflag(caller, h);
+                        0
+                    }
+                    Ok(o) if crate::ipc::is_channel_object(o) => {
+                        // M15-② 通道句柄关闭落点：句柄/能力回收，对象存续
+                        let _ = crate::caps::table().lock().revoke(g);
+                        task::clear_hflag(caller, h);
                         0
                     }
                     _ => {
-                        // 非文件对象：回插原句柄（不消费他面），EBADF
+                        // 非文件/通道对象：回插原句柄（不消费他面），EBADF
                         task::with_task_handles(caller, |t| t[h] = Some(g));
                         EBADF
                     }
@@ -544,5 +641,278 @@ pub fn sys_seek(handle: u64, whence: u64, offset: u64) -> u64 {
         }
     };
     SEEK_RESULT.store(code, Ordering::Release);
+    code
+}
+
+// ---- M15-① 目录面（SYS_MKDIR/REMOVE/READDIR + MOUNT/UMOUNT 落点） ----
+
+/// 路径参数共用切片（MKDIR/REMOVE/MOUNT/UMOUNT）：用户路径 → 规范化。
+/// 非 UTF-8 / 非法词法 → errno；len == 0 由调用方先行 EINVAL（validate
+/// 面零长视作不可达 → EFAULT，目录面改判 EINVAL 更贴 POSIX）。
+fn normalize_user_path(path_bytes: &[u8]) -> Result<PathBuf, u64> {
+    let Ok(path_str) = core::str::from_utf8(path_bytes) else {
+        return Err(FsError::InvalidPath.errno());
+    };
+    PathBuf::normalize(path_str).map_err(|e| e.errno())
+}
+
+/// 父落点解析（MKDIR/REMOVE 共用）：规范化路径 → 深度检查（根自身
+/// 不可建/摘 → EINVAL）→ `parent()/name()` 切片 → 命名空间解析父 →
+/// (落点 fs, 父 vnode, 叶子名)。锁序：NAMESPACE → FileSystem 内部锁
+/// （既有单向嵌套；fs 返回后命名空间锁已释放，叶子操作不持锁）。
+fn resolve_parent(
+    path: &PathBuf,
+) -> Result<(Arc<dyn FileSystem>, VnodeId, alloc::string::String), u64> {
+    if path.depth() == 0 {
+        return Err(EINVAL); // 根自身：mkdir/remove 均无意义
+    }
+    let parent = path.parent().ok_or(EINVAL)?; // depth ≥ 1 恒有父（防御面）
+    let leaf = alloc::string::String::from(path.name());
+    let resolved = {
+        let ns = NAMESPACE.lock();
+        let Some(ns) = ns.as_ref() else {
+            return Err(EBADF); // 未初始化：防御路径（自检序保证不达）
+        };
+        match ns.resolve(&parent) {
+            Ok(r) => r,
+            Err(e) => return Err(e.errno()),
+        }
+    };
+    Ok((resolved.fs, resolved.vnode, leaf))
+}
+
+/// SYS_MKDIR 主体（M15-①）：父走查 + 叶子建目录（POSIX mkdir 同款：
+/// 中间组件必须已存在）。成功返回 0；EEXIST/ENOENT/ENOTDIR/EINVAL/
+/// EFAULT 域见 abi 文档。RamFs::create 对非目录父返回 NotADirectory
+/// （→ ENOTDIR）。
+pub fn sys_mkdir(path_ptr: u64, len: u64) -> u64 {
+    let code = if len == 0 {
+        EINVAL
+    } else {
+        match validate_user_slice(path_ptr, len) {
+            None => EFAULT,
+            Some(pb) => match normalize_user_path(pb).and_then(|p| resolve_parent(&p)) {
+                Err(e) => e,
+                Ok((fs, dir, leaf)) => match fs.create(dir, &leaf, NodeKind::Dir) {
+                    Ok(_) => 0,
+                    Err(e) => e.errno(),
+                },
+            },
+        }
+    };
+    MKDIR_RESULT.store(code, Ordering::Release);
+    code
+}
+
+/// SYS_REMOVE 主体（M15-①）：父走查 + 叶子摘除（POSIX remove：文件与
+/// 空目录同面可摘；目录非空 → ENOTEMPTY，RamFs::unlink 承载）。成功
+/// 返回 0。v0 不做打开句柄占用检查（如实记档——节点摘除即不可达，
+/// 已打开对象经 Arc 存续至关闭）。
+pub fn sys_remove(path_ptr: u64, len: u64) -> u64 {
+    let code = if len == 0 {
+        EINVAL
+    } else {
+        match validate_user_slice(path_ptr, len) {
+            None => EFAULT,
+            Some(pb) => match normalize_user_path(pb).and_then(|p| resolve_parent(&p)) {
+                Err(e) => e,
+                Ok((fs, dir, leaf)) => match fs.unlink(dir, &leaf) {
+                    Ok(()) => 0,
+                    Err(e) => e.errno(),
+                },
+            },
+        }
+    };
+    REMOVE_RESULT.store(code, Ordering::Release);
+    code
+}
+
+/// SYS_READDIR 主体（M15-①）：**分页化**目录枚举（替代 M13-① 一次性
+/// 全量骨架的 syscall 面形态）。
+///
+/// 句柄须为目录（metadata kind 判定，非目录 → ENOTDIR；无需 READ
+/// 权限位以外的门禁——目录打开即枚举，v0 与 read 的 READ 位校验对齐：
+/// 未以读方式打开 → EBADF）。OFD 私有偏移兼任**目录项游标**：自游标
+/// 起调用 [`bedrock::vfs::pack_dir_page`] 尽量多打包（半项不落盘），
+/// 消费后游标推进。SEEK 可重定位游标（目录 read 恒 EISDIR，偏移域
+/// 专用）。成功返回 `(1 << 32) | n_entries`（0 = 枚举尽/EOF）。
+pub fn sys_readdir(handle: u64, buf_ptr: u64, buf_len: u64) -> u64 {
+    let code = if buf_len < 3 {
+        EINVAL // 不足容纳最小项（[kind][len][1 字节名]）
+    } else {
+        match validate_user_slice_mut(buf_ptr, buf_len) {
+            None => EFAULT,
+            Some(buf) => readdir_checked(handle, buf),
+        }
+    };
+    READDIR_RESULT.store(code, Ordering::Release);
+    code
+}
+
+/// READDIR 校验后内聚链（句柄门禁 + 目录判定 + 分页打包 + 游标推进）。
+fn readdir_checked(handle: u64, buf: &mut [u8]) -> u64 {
+    let Some((_slot, cap, idx)) = resolve_file_object(handle) else {
+        return EBADF;
+    };
+    if cap.rights() & Right::READ.bits() == 0 {
+        return EBADF; // 目录枚举对齐 read：须以读方式打开
+    }
+    let mut files = FILES.lock();
+    match files[idx].as_mut() {
+        None => EBADF,
+        Some(f) => match f.fs.metadata(f.vnode) {
+            Err(e) => e.errno(),
+            Ok(meta) if !meta.kind.is_dir() => ENOTDIR,
+            Ok(_) => match f.fs.readdir(f.vnode) {
+                Err(e) => e.errno(),
+                Ok(entries) => {
+                    // 游标漂移防御：目录中途缩短 → clamp 后按枚举尽
+                    let cursor = (f.pos as usize).min(entries.len());
+                    let (_packed, consumed) = bedrock::vfs::pack_dir_page(&entries, cursor, buf);
+                    if consumed > 0 {
+                        f.pos += consumed as u64;
+                    }
+                    OK_BIT | consumed as u64
+                }
+            },
+        },
+    }
+}
+
+/// SYS_MOUNT 主体（M15-①）：挂载点路径上挂载**内核侧新建**空 RamFs
+/// （v0 仅内存文件系统，fs_type = 0；ABI 面结构校验已拒非零）。挂载
+/// 点必须已存在且为目录（[`Namespace::mount`] 承载校验：缺失 → ENOENT、
+/// 非目录 → ENOTDIR、同路径重复 → EEXIST）。成功返回 0（最长前缀
+/// 解析即时生效，子 fs 遮蔽挂载点原内容）。
+pub fn sys_mount(path_ptr: u64, len: u64, fs_type: u64) -> u64 {
+    let code = if fs_type != 0 || len == 0 {
+        EINVAL
+    } else {
+        match validate_user_slice(path_ptr, len) {
+            None => EFAULT,
+            Some(pb) => {
+                match normalize_user_path(pb).and_then(|path| {
+                    let fs: Arc<dyn FileSystem> = Arc::new(RamFs::new());
+                    let ns = NAMESPACE.lock();
+                    match ns.as_ref() {
+                        None => Err(EBADF), // 防御路径（自检序保证不达）
+                        Some(ns) => ns.mount(&path, fs).map_err(|e| e.errno()),
+                    }
+                }) {
+                    Ok(()) => 0,
+                    Err(e) => e,
+                }
+            }
+        }
+    };
+    MOUNT_RESULT.store(code, Ordering::Release);
+    code
+}
+
+/// SYS_UMOUNT 主体（M15-①）：卸载路径处挂载（[`Namespace::unmount`]
+/// 承载：未挂载 → ENOENT；根挂载不在表中同落此域）。v0 不做占用
+/// 检查（已打开对象经 Arc 存续至关闭，如实记档）。成功返回 0。
+pub fn sys_umount(path_ptr: u64, len: u64) -> u64 {
+    let code = if len == 0 {
+        EINVAL
+    } else {
+        match validate_user_slice(path_ptr, len) {
+            None => EFAULT,
+            Some(pb) => {
+                match normalize_user_path(pb).and_then(|path| {
+                    let ns = NAMESPACE.lock();
+                    match ns.as_ref() {
+                        None => Err(EBADF),
+                        Some(ns) => ns.unmount(&path).map_err(|e| e.errno()),
+                    }
+                }) {
+                    Ok(()) => 0,
+                    Err(e) => e,
+                }
+            }
+        }
+    };
+    UMOUNT_RESULT.store(code, Ordering::Release);
+    code
+}
+
+// ---- M15-② 句柄面深化（SYS_DUP/FCNTL + CLOEXEC） ----
+
+/// DUP/F_DUPFD 共用链：源句柄解析（文件对象门禁）→ ≥ floor 首空闲位
+/// 预检（满 → EMFILE；floor ≥ HANDLE_MAX → EINVAL，对齐 POSIX 语义）→
+/// 新能力槽铸造（同对象同权限）+ 句柄安装。新句柄与源句柄共享同一
+/// [`FileObject`]（**共享偏移**——开放文件描述一份，句柄多个视角）。
+/// 旗标随新句柄置 0（TCB 零化 + 关闭面清理保证无陈值继承）。
+fn dup_impl(handle: u64, floor: u64) -> u64 {
+    let caller = task::current_task_id();
+    let Some((_slot, cap, _idx)) = resolve_file_object(handle) else {
+        return EBADF;
+    };
+    let floor = floor.max(1) as usize;
+    if floor >= task::HANDLE_MAX {
+        return EINVAL;
+    }
+    let free = task::with_task_handles(caller, |t| {
+        t.iter()
+            .enumerate()
+            .skip(floor)
+            .find_map(|(h, s)| s.is_none().then_some(h))
+    });
+    let Some(Some(free_handle)) = free else {
+        return EMFILE;
+    };
+    let gslot = crate::caps::alloc_slot(Capability::new(cap.object(), cap.rights()));
+    let installed = gslot
+        .map(|g| task::with_task_handles(caller, |t| t[free_handle] = Some(g)).is_some())
+        .unwrap_or(false);
+    if !installed {
+        return ENOMEM;
+    }
+    OK_BIT | free_handle as u64
+}
+
+/// SYS_DUP 主体（M15-②）：复制文件句柄（首个空闲位；POSIX dup 同款）。
+/// 成功返回 `(1 << 32) | new_handle`。
+pub fn sys_dup(handle: u64) -> u64 {
+    let r = dup_impl(handle, 1);
+    DUP_RESULT.store(r, Ordering::Release);
+    r
+}
+
+/// SYS_FCNTL 主体（M15-②）：句柄描述符控制（F_DUPFD/F_GETFD/F_SETFD；
+/// 命令结构校验在 abi parse 层已限定 0..=2，此处防御性兜底 EINVAL）。
+/// v0 仅 [`bedrock::abi::FD_CLOEXEC`] 一旗：置位句柄在 SYS_EXEC 成功
+/// 路径由 [`crate::task::close_cloexec_handles`] 消费关闭。成功编码：
+/// DUPFD → `(1 << 32) | new_handle`、GETFD → `(1 << 32) | flags`、
+/// SETFD → 0。
+pub fn sys_fcntl(handle: u64, cmd: u64, arg: u64) -> u64 {
+    let caller = task::current_task_id();
+    let code = match cmd {
+        bedrock::abi::F_DUPFD => dup_impl(handle, arg),
+        bedrock::abi::F_GETFD => {
+            if resolve_file_object(handle).is_none() {
+                EBADF
+            } else {
+                match task::with_task_hflags(caller, |f| f[handle as usize]) {
+                    Some(fl) => OK_BIT | u64::from(fl),
+                    None => EBADF,
+                }
+            }
+        }
+        bedrock::abi::F_SETFD => {
+            if arg > u64::from(u8::MAX) {
+                EINVAL // 旗标域单字节（v0 仅 bit0 有义）
+            } else if resolve_file_object(handle).is_none() {
+                EBADF
+            } else {
+                match task::with_task_hflags(caller, |f| f[handle as usize] = arg as u8) {
+                    Some(()) => 0,
+                    None => EBADF,
+                }
+            }
+        }
+        _ => EINVAL,
+    };
+    FCNTL_RESULT.store(code, Ordering::Release);
     code
 }

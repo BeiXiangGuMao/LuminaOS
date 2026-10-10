@@ -72,7 +72,7 @@ const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
 /// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项
 /// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加）。
-const SELFTEST_TOTAL: usize = 49;
+const SELFTEST_TOTAL: usize = 52;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐，链接进 .bss（NOLOAD）。
 #[repr(align(4096))]
@@ -2112,7 +2112,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
             task::yield_now();
         }
         ok &= SLEEPER_DONE.load(Ordering::Acquire) == 1;
-        ok &= SLEEPER_ELAPSED.load(Ordering::Acquire) >= 5;
+        ok &= SLEEPER_ELAPSED_NS.load(Ordering::Acquire) >= 50_000_000;
         let (blocks, wakes, hits) = timer::stamps();
         ok &= blocks >= 1 && wakes >= 1;
         // 探针命中路径：nanosleep(0)（deadline 即当前节拍，时间单调保证
@@ -2123,8 +2123,6 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t46, "timer-block-nanosleep");
-    // tickd 退役（echo worker 同款退出协议；套件收尾防泄漏任务）
-    timer::shutdown();
 
     // 47) 多段映像 VFS 装载（M14-① EXEC 经 VFS 取段——VFS 第二消费者）：
     //     探针任务（钉 CPU0）运行 EXEC1_PROGRAM——EXEC(9) 越界负探针
@@ -2159,6 +2157,9 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                 ok &= res == 0 && img == 1; // EXEC(1) 成功落证
                 ok &= vfs_bytes > 0 && segs == 2; // VFS 取段 + 双段装载实证
                 ok &= data_frame != 0;
+                // M15-② CLOEXEC 消费随真实 EXEC 路径执行：探针任务句柄
+                // 表为空 → 关闭数 0（钩子贯通取证，消费语义见 t51）
+                ok &= procs::exec_cloexec_stamp() == 0;
                 // 数据段哨兵：RESULT magic 落帧（帧首 = PROG_DATA_VA 页基，
                 // 程序写 [r15+8]，内核 phys 直读 + 8）
                 let sentinel = ostd::hw::phys::read_u64(data_frame + 8);
@@ -2248,8 +2249,8 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
             "  quota: bind={br:#x} files={f_used}/{f_cap} chans={c_used}/{c_cap} h0={}",
             (q0b >> 16) & 0xFFFF
         );
-        // 全关还原（文件面；通道句柄 v0 无关闭落点——bind 通道存续，
-        // 与 t41 同款边界，如实记档）
+        // 全关还原（文件面；bind 通道句柄存续不关——M15-② 落点见 t51，
+        // 本测保持 bind 存续语义不变量）
         for h in hs.iter() {
             ok &= vfs::sys_close(*h) == 0;
         }
@@ -2263,6 +2264,254 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t49, "quota-governance");
+
+    // 50) 目录面（M15-①）：MKDIR/REMOVE（父走查 + 负探针）+ READDIR
+    //     分页（首页小缓冲强制分页 → 续页至 EOF → 名单+ kind 抽查）
+    //     + MOUNT/UMOUNT（RamFs 挂载遮蔽面 + 卸载回落 + 负探针族）。
+    //     取证：dir_stamps 五戳终值确定性断言。
+    let t50 = {
+        let mut ok = true;
+        let mut fail_line = 0usize;
+        macro_rules! chk {
+            ($v:expr, $want:expr) => {{
+                let v = $v;
+                if v != $want {
+                    fail_line = line!() as usize;
+                }
+                ok &= v == $want;
+                v
+            }};
+        }
+        vfs::reset_dir_evidence();
+        let pa = |s: &str| (s.as_ptr() as u64, s.len() as u64);
+        // ① MKDIR 正面 + 负探针（EEXIST/ENOENT/建根 EINVAL）
+        let (pp, pl) = pa("/files/scratch");
+        let mk1 = chk!(vfs::sys_mkdir(pp, pl), 0);
+        let (sp2, sl2) = pa("/files/scratch/sub");
+        let mk2 = chk!(vfs::sys_mkdir(sp2, sl2), 0);
+        chk!(vfs::sys_mkdir(pp, pl), 17);
+        let (np, nl) = pa("/files/nope/deep");
+        chk!(vfs::sys_mkdir(np, nl), 2);
+        let (rp, rl) = pa("/");
+        chk!(vfs::sys_mkdir(rp, rl), 22);
+        // ② MOUNT：mkdir mnt → 挂载（RamFs 遮蔽）→ 重复 EEXIST → 新 fs 内建目录
+        let (mp, ml) = pa("/files/mnt");
+        chk!(vfs::sys_mkdir(mp, ml), 0);
+        chk!(vfs::sys_mount(mp, ml, 0), 0);
+        chk!(vfs::sys_mount(mp, ml, 0), 17);
+        let (ap, al) = pa("/files/mnt/a");
+        chk!(vfs::sys_mkdir(ap, al), 0); // 落在新 fs（遮蔽面）
+                                         // ③ MOUNT/UMOUNT 负探针：挂文件 ENOTDIR(20)、挂缺失 ENOENT(2)、
+                                         //    umount 未挂载 ENOENT(2)、umount 根 ENOENT(2)、fs_type≠0 EINVAL(22)
+        let (fp, fl) = pa("/files/hello");
+        chk!(vfs::sys_mount(fp, fl, 0), 20);
+        chk!(vfs::sys_mount(np, nl, 0), 2);
+        chk!(vfs::sys_umount(np, nl), 2);
+        chk!(vfs::sys_umount(rp, rl), 2);
+        chk!(vfs::sys_mount(fp, fl, 1), 22);
+        // ④ READDIR 分页：open /files → 首页 16B（dir+echo 恰 11B，
+        //    第三项放不下 → 半项不落盘）→ 续页 512B 至 EOF → 全量积累
+        let (dp, dl) = pa("/files");
+        let or = vfs::sys_open(dp, dl, 1);
+        ok &= or >> 32 == 1;
+        let dh = or & 0xFFFF_FFFF;
+        let r1 = chk!(vfs::sys_readdir(dh, dir_page_addr(), 16), (1 << 32) | 2);
+        let mut acc_len = copy_page_to_acc(2, 0);
+        let mut total = 2usize;
+        loop {
+            let r = vfs::sys_readdir(dh, dir_page_addr(), 512);
+            let n = (r & 0xFFFF_FFFF) as usize;
+            if r == 1 << 32 {
+                break; // EOF（枚举尽）
+            }
+            ok &= n >= 1;
+            if n == 0 {
+                break;
+            }
+            total += n;
+            acc_len = copy_page_to_acc(n, acc_len);
+        }
+        ok &= total == 8; // dir/echo/grow.lxe/hello/mnt/prog.lxe/scratch/selftest.lxe
+                          // 名单 + kind 抽查（顺序无关：积累缓冲逐项走查，项编码自对齐）
+        let scan_ok = acc_scan(acc_len);
+        ok &= scan_ok;
+        // ⑤ READDIR 负探针：文件句柄 ENOTDIR(20)、坏句柄 EBADF(9)、
+        //    短缓冲 EINVAL(22)；write-only 目录 EBADF(9)
+        let fr = vfs::sys_open(fp, fl, 1);
+        let fh = fr & 0xFFFF_FFFF;
+        chk!(vfs::sys_readdir(fh, dir_page_addr(), 64), 20);
+        chk!(vfs::sys_readdir(9999, dir_page_addr(), 64), 9);
+        chk!(vfs::sys_readdir(dh, dir_page_addr(), 2), 22);
+        let (mp2, ml2) = pa("/files/scratch/sub");
+        let wr = vfs::sys_open(mp2, ml2, 2); // write-only
+        ok &= wr >> 32 == 1;
+        chk!(vfs::sys_readdir(wr & 0xFFFF_FFFF, dir_page_addr(), 64), 9);
+        chk!(vfs::sys_close(wr & 0xFFFF_FFFF), 0);
+        // ⑥ 挂载面枚举：/files/mnt（新 fs）恰 1 项 → 同句柄续读即尽；
+        //    卸载后已打开句柄经 Arc 存续（仍见挂载 fs 内容——SEEK 游标
+        //    复位重读实证）；新解析回落：重新 open → 原 fs 空目录 → EOF
+        let mr = vfs::sys_open(mp, ml, 1);
+        let mh = mr & 0xFFFF_FFFF;
+        let mnt1 = chk!(vfs::sys_readdir(mh, dir_page_addr(), 512), (1 << 32) | 1);
+        chk!(vfs::sys_readdir(mh, dir_page_addr(), 512), 1 << 32);
+        let umt = chk!(vfs::sys_umount(mp, ml), 0);
+        chk!(vfs::sys_seek(mh, 0, 0), 1 << 32); // SET 0 重定位游标
+        chk!(vfs::sys_readdir(mh, dir_page_addr(), 512), (1 << 32) | 1); // Arc 存续
+        chk!(vfs::sys_close(mh), 0);
+        let mr2 = vfs::sys_open(mp, ml, 1); // 新解析 → 回落原 fs
+        ok &= mr2 >> 32 == 1;
+        chk!(
+            vfs::sys_readdir(mr2 & 0xFFFF_FFFF, dir_page_addr(), 512),
+            1 << 32
+        );
+        chk!(vfs::sys_close(mr2 & 0xFFFF_FFFF), 0);
+        // ⑦ REMOVE：sub → scratch → 已摘 ENOENT → 非空 /files ENOTEMPTY(39)
+        chk!(vfs::sys_remove(sp2, sl2), 0);
+        chk!(vfs::sys_remove(pp, pl), 0);
+        chk!(vfs::sys_remove(pp, pl), 2);
+        chk!(vfs::sys_remove(dp, dl), 39);
+        // 收尾：关句柄（引用计数收敛）+ remove 回落后的空 mnt
+        chk!(vfs::sys_close(fh), 0);
+        chk!(vfs::sys_close(dh), 0);
+        chk!(vfs::sys_remove(mp, ml), 0);
+        // 取证终值（确定性）：末次 mkdir=建 a=0、remove=删 mnt=0、
+        // readdir=EOF、mount=fs_type 探针=22、umount=卸 mnt=0
+        let (mk, rm, rd, mo, um) = vfs::dir_stamps();
+        ok &= mk == 0 && rm == 0 && rd == 1 << 32 && mo == 22 && um == 0;
+        let _ = writeln!(
+            log,
+            "  dir: mk1={mk1} mk2={mk2} r1={r1:#x} tot={total} scan={scan_ok} mnt1={mnt1:#x} umt={umt} stamps=({mk},{rm},{rd:#x},{mo},{um}) fail@L{fail_line}"
+        );
+        ok
+    };
+    report(&mut log, t50, "directory-face");
+
+    // 51) 句柄面深化（M15-②）：dup 共享 OFD 偏移（一写一读对账）+
+    //     引用计数关闭（关一副本余副本存活）+ fcntl 三命令 + CLOEXEC
+    //     + 通道句柄关闭落点（bind 存续语义补全）+ EXEC CLOEXEC 消费。
+    let t51 = {
+        let mut ok = true;
+        let mut fail_line = 0usize;
+        macro_rules! chk {
+            ($v:expr, $want:expr) => {{
+                let v = $v;
+                if v != $want {
+                    fail_line = line!() as usize;
+                }
+                ok &= v == $want;
+                v
+            }};
+        }
+        vfs::reset_dir_evidence();
+        let pa = |s: &str| (s.as_ptr() as u64, s.len() as u64);
+        let used00 = task::handle_usage(0).0; // t49 遗留 bind 通道句柄计入基线
+                                              // ① dup 共享偏移：open echo RW → write ABC → dup → write DEF
+                                              //    （共享 pos=6）→ h1 seek 0 → read 6 == "ABCDEF"
+        let (ep, el) = pa("/files/echo");
+        let r1 = vfs::sys_open(ep, el, 3);
+        ok &= r1 >> 32 == 1;
+        let h1 = r1 & 0xFFFF_FFFF;
+        let wb = b"ABC";
+        chk!(vfs::sys_write(h1, wb.as_ptr() as u64, 3), (1 << 32) | 3);
+        let r2 = vfs::sys_dup(h1);
+        ok &= r2 >> 32 == 1;
+        let h2 = r2 & 0xFFFF_FFFF;
+        ok &= h2 != h1;
+        let wb = b"DEF";
+        chk!(vfs::sys_write(h2, wb.as_ptr() as u64, 3), (1 << 32) | 3);
+        chk!(vfs::sys_seek(h1, 0, 0), 1 << 32);
+        let mut rb = [0u8; 8];
+        chk!(vfs::sys_read(h1, rb.as_mut_ptr() as u64, 6), (1 << 32) | 6);
+        ok &= &rb[..6] == b"ABCDEF"; // 偏移共享实证
+                                     // ② 引用计数关闭：close h1 → 0；h2 仍读得全量（对象保活）
+        chk!(vfs::sys_close(h1), 0);
+        chk!(vfs::sys_seek(h2, 0, 0), 1 << 32);
+        chk!(vfs::sys_read(h2, rb.as_mut_ptr() as u64, 6), (1 << 32) | 6);
+        ok &= &rb[..6] == b"ABCDEF";
+        // ③ fcntl：SETFD CLOEXEC → GETFD 复读；未置位句柄 GETFD == 0；
+        //    F_DUPFD 下界 ≥ 4；命令越界 EINVAL（直调防御面）
+        chk!(
+            vfs::sys_fcntl(h2, bedrock::abi::F_SETFD, bedrock::abi::FD_CLOEXEC),
+            0
+        );
+        chk!(
+            vfs::sys_fcntl(h2, bedrock::abi::F_GETFD, 0),
+            (1 << 32) | bedrock::abi::FD_CLOEXEC
+        );
+        let (hp, hl) = pa("/files/hello");
+        let r3 = vfs::sys_open(hp, hl, 1);
+        ok &= r3 >> 32 == 1;
+        let h3 = r3 & 0xFFFF_FFFF;
+        chk!(vfs::sys_fcntl(h3, bedrock::abi::F_GETFD, 0), 1 << 32);
+        let r4 = vfs::sys_fcntl(h3, bedrock::abi::F_DUPFD, 4);
+        ok &= r4 >> 32 == 1 && (r4 & 0xFFFF_FFFF) >= 4;
+        let h4 = r4 & 0xFFFF_FFFF;
+        chk!(vfs::sys_fcntl(h3, 9, 0), 22);
+        // ④ 通道句柄关闭落点：bind（注册表 +1）→ close == 0（M15-② 新面）
+        //    → 存续语义（占用保持 bind 后水位）→ 已关句柄 send ERR_CAP(1)
+        //    → 重复 close EBADF(9)
+        let (c_used, c_cap) = ipc::channels_usage();
+        let br = ipc::sys_bind(0);
+        ok &= br >> 32 == 1;
+        let ch = br & 0xFFFF_FFFF;
+        let cl1 = chk!(vfs::sys_close(ch), 0);
+        let (c_used1, c_cap1) = ipc::channels_usage();
+        ok &= c_used1 == c_used + 1 && c_cap1 == c_cap; // bind +1，close 存续不减
+        chk!(ipc::sys_send(ch, ep, 0, 0), 1); // ERR_CAP（句柄已回收）
+        chk!(vfs::sys_close(ch), 9);
+        // ⑤ EXEC CLOEXEC 消费：h2 置位、h3/h4 未置位 → 钩子关 1（h2）
+        //    → h3 存活可 GETFD（fd 继承语义）
+        let before = task::handle_usage(0).0;
+        let closed = task::close_cloexec_handles(0);
+        ok &= closed == 1;
+        ok &= task::handle_usage(0).0 == before - 1;
+        chk!(vfs::sys_fcntl(h3, bedrock::abi::F_GETFD, 0), 1 << 32);
+        // ⑥ 收尾全关（引用计数归零 → 注册表还原；句柄表回 used00——
+        //    含 t49 遗留通道句柄存续位）
+        chk!(vfs::sys_close(h3), 0);
+        chk!(vfs::sys_close(h4), 0);
+        ok &= task::handle_usage(0).0 == used00;
+        // 取证：DUP 末值 = sys_dup 打包返回、FCNTL 末值 = ⑤ GETFD 复读
+        // （cmd-9 探针之后的末次 fcntl 调用 = F_GETFD(h3)）
+        let (dr, fr) = vfs::hdeep_stamps();
+        ok &= dr == r2 && fr == 1 << 32;
+        let _ = writeln!(
+            log,
+            "  hdeep: h1={h1} h2={h2} h3={h3} h4={h4} ch={ch} cl1={cl1} closed={closed} used00={used00} dup={dr:#x} fcntl={fr:#x} fail@L{fail_line}"
+        );
+        ok
+    };
+    report(&mut log, t51, "handle-deepening");
+
+    // 52) TSC 纳秒面（M15-③）：hz 已校准（>0）+ 20ms 真阻塞（TSC 纳秒
+    //     下界：单调域内不早醒）+ 探针命中（nanosleep(0)）+ now_ns 单调。
+    let t52 = {
+        let mut ok = true;
+        timer::reset_evidence();
+        ok &= ostd::time::tsc_clock::hz() > 0;
+        let n0 = ostd::time::tsc_clock::now_ns();
+        ok &= n0.is_some();
+        ok &= timer::sys_nanosleep(20_000_000) == 0; // 20ms
+        let elapsed = ostd::time::tsc_clock::now_ns()
+            .unwrap_or(0)
+            .saturating_sub(n0.unwrap_or(0));
+        ok &= elapsed >= 20_000_000; // 纳秒下界（不早醒）
+        let (blocks, wakes, _) = timer::stamps();
+        ok &= blocks >= 1 && wakes >= 1;
+        ok &= timer::sys_nanosleep(0) == 0; // 探针命中
+        let (_, _, hits) = timer::stamps();
+        ok &= hits >= 1;
+        let _ = writeln!(
+            log,
+            "  tsc: hz={} elapsed_ns={elapsed}",
+            ostd::time::tsc_clock::hz()
+        );
+        ok
+    };
+    report(&mut log, t52, "tsc-nanosleep");
+    // tickd 退役（echo worker 同款退出协议；t52 后收尾——TSC 纳秒面
+    // 依赖唤醒链存活，防泄漏任务）
+    timer::shutdown();
 
     let _ = writeln!(log, "----");
     interrupts::disable();
@@ -2279,18 +2528,91 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
 /// 用户任务占位入口（真实进入经 trampoline_user → 桥函数）。
 fn user_noop() {}
 
+// ---- t50 目录面取证辅助（内核 .bss 恒等映射区，validate_user_slice 窗口内） ----
+
+/// t50 目录页缓冲（READDIR 目标；512B = ABI 上限）。
+static mut DIR_PAGE: [u8; 512] = [0u8; 512];
+/// t50 目录项积累缓冲（跨页拼接；项编码自对齐，256B 足容 8 项）。
+static mut DIR_ACC: [u8; 256] = [0u8; 256];
+
+/// DIR_PAGE 缓冲地址（raw 指针形态，避开 static_mut_refs 语义）。
+fn dir_page_addr() -> u64 {
+    (&raw mut DIR_PAGE) as *mut u8 as u64
+}
+
+/// 把 DIR_PAGE 首部 `n` 项追加进 DIR_ACC（项编码自对齐走查定页长），
+/// 返回新积累长度。t50 断言辅助：跨页项边界拼接后整体走查。
+fn copy_page_to_acc(n: usize, acc_len: usize) -> usize {
+    let page = (&raw const DIR_PAGE) as *const u8;
+    let acc = (&raw mut DIR_ACC) as *mut u8;
+    let mut p = 0usize;
+    // SAFETY: 单核自检上下文串行访问；页长由项编码链定界（≤ 512，
+    // DIR_ACC 256B 足容 8 项，acc_len + p ≤ 256 由调用方页数保证）。
+    unsafe {
+        for _ in 0..n {
+            p += 2 + *page.add(p + 1) as usize;
+        }
+        core::ptr::copy_nonoverlapping(page, acc.add(acc_len), p);
+    }
+    acc_len + p
+}
+
+/// t50 积累缓冲全量走查：项编码闭合（2+len 链走到底）+ 8 名单全在 +
+/// kind 抽查（lxe/hello/echo = File；dir/scratch/mnt = Dir）。
+fn acc_scan(acc_len: usize) -> bool {
+    let acc = (&raw const DIR_ACC) as *const u8;
+    let mut hello = false;
+    let mut echo = false;
+    let mut dir = false;
+    let mut selftest = false;
+    let mut prog = false;
+    let mut grow = false;
+    let mut scratch = false;
+    let mut mnt = false;
+    // SAFETY: 单核自检上下文串行访问；走查边界由 acc_len 与项编码链
+    // 双重定界（i + 2 + nl ≤ acc_len）。
+    unsafe {
+        let mut i = 0usize;
+        while i + 2 <= acc_len {
+            let kind = *acc.add(i);
+            let nl = *acc.add(i + 1) as usize;
+            if i + 2 + nl > acc_len {
+                return false; // 编码破损
+            }
+            let name = core::slice::from_raw_parts(acc.add(i + 2), nl);
+            match (kind, name) {
+                (0, b"hello") => hello = true,
+                (0, b"echo") => echo = true,
+                (1, b"dir") => dir = true,
+                (0, b"selftest.lxe") => selftest = true,
+                (0, b"prog.lxe") => prog = true,
+                (0, b"grow.lxe") => grow = true,
+                (1, b"scratch") => scratch = true,
+                (1, b"mnt") => mnt = true,
+                _ => {}
+            }
+            i += 2 + nl;
+        }
+        if i != acc_len {
+            return false; // 走查未闭合（尾残）
+        }
+    }
+    hello && echo && dir && selftest && prog && grow && scratch && mnt
+}
+
 /// t46 sleeper 完成旗标（1 = nanosleep 返回后落证）。
 static SLEEPER_DONE: AtomicU64 = AtomicU64::new(0);
-/// t46 sleeper 实际耗时（全局节拍差；≥ 5 断言真阻塞）。
-static SLEEPER_ELAPSED: AtomicU64 = AtomicU64::new(0);
+/// t46 sleeper 实际耗时（TSC 纳秒差；M15-③ 纳秒面下界断言：单调域内
+/// 绝不早醒 → ≥ 请求值）。
+static SLEEPER_ELAPSED_NS: AtomicU64 = AtomicU64::new(0);
 
-/// t46 sleeper 任务体（内核 worker）：nanosleep(5) 真阻塞 → 耗时落证 →
-/// 驻车让出（kernel worker 不计入 all_workers_finished，不碍后续检查）。
+/// t46 sleeper 任务体（内核 worker）：nanosleep(50ms) 真阻塞 → 耗时
+/// 落证 → 驻车让出（kernel worker 不计入 all_workers_finished）。
 fn sleeper_body() {
-    let t0 = ostd::time::now();
-    crate::timer::sys_nanosleep(5);
-    let elapsed = ostd::time::now().saturating_sub(t0);
-    SLEEPER_ELAPSED.store(elapsed, Ordering::Release);
+    let t0 = ostd::time::tsc_clock::now_ns().unwrap_or(0);
+    crate::timer::sys_nanosleep(50_000_000); // 50ms（TSC 纳秒域）
+    let t1 = ostd::time::tsc_clock::now_ns().unwrap_or(0);
+    SLEEPER_ELAPSED_NS.store(t1.saturating_sub(t0), Ordering::Release);
     SLEEPER_DONE.store(1, Ordering::Release);
     loop {
         task::yield_now();

@@ -24,7 +24,7 @@ pub mod path;
 pub mod ramfs;
 
 pub use fd::{Fd, FdError, FdTable, OpenFileDescription, OpenFlags, Whence};
-pub use fs::FileSystem;
+pub use fs::{dir_entry_abi_code, pack_dir_page, FileSystem};
 pub use mount::{Namespace, ResolvedNode};
 pub use node::{DirEntry, FsError, Metadata, NodeKind, VnodeId};
 pub use path::PathBuf;

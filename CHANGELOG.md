@@ -3,6 +3,64 @@
 版本语义：工作区里程碑版（0.x.y，x=里程碑，y=里程碑内迭代）。
 本文档记录源码树的对外可见变更；指标与规格变更见《指标与规范手册》修订记录。
 
+## v0.16.0（2026-10-10）—— M15-①：目录面 + M15-②：句柄面深化 + M15-③：TSC 纳秒面
+
+### 新增
+- **目录面五落点（abi v0.8 → v0.9，M15-①）**：SYS_MKDIR(26)/REMOVE(27)
+  （父走查 + 叶子操作——`PathBuf::parent()/name()` 切片，中间组件必须
+  已存在；REMOVE = POSIX remove：文件与空目录同面可摘，非空
+  ENOTEMPTY(39)）+ SYS_READDIR(28)（**分页化**目录枚举，替代 M13-①
+  一次性全量骨架的 syscall 面形态）+ SYS_MOUNT(29)/UMOUNT(30)（v0
+  仅内核侧新建 RamFs 挂载，mount 契约 M13-① 已备；最长前缀解析即时
+  生效）。
+- **READDIR 分页打包纯函数（bedrock::vfs）**：`pack_dir_page`——项
+  编码 `[kind:u8][name_len:u8][name…]` 紧排、半项不落盘、游标越界
+  clamp 防御；`dir_entry_abi_code` 类型域单一事实源（内核 STAT kind
+  编码委托至此）。宿主测试 4 项（编码钉值/缓冲边界不劈半项/EOF 与
+  防御边/kind 映射交叉钉值）。OFD 私有偏移兼任**目录项游标**（对
+  目录 read 恒 EISDIR，偏移域专用；SEEK 可重定位游标）。
+- **句柄面深化（M15-②）**：SYS_DUP(31)（POSIX dup 同款——新句柄与
+  源句柄共享同一开放文件描述，**共享偏移**）+ SYS_FCNTL(32)
+  （F_DUPFD 下界复制/F_GETFD/F_SETFD）+ FD_CLOEXEC（TCB 内 per-handle
+  旗标字节 `hflags` 承载；SYS_EXEC 成功路径经 `close_cloexec_handles`
+  消费——fd 继承语义：未置位句柄跨 exec 存续）。
+- **文件对象引用计数（close 语义升级）**：撤销全局槽后按能力表存活
+  引用扫描判定（`caps_refcount`，O(64)）——dup/跨任务授予的其余副本
+  不受单副本关闭影响，归零才释放注册表槽；`reap_orphaned_files` 在
+  任务终结清算/SYS_CAP_REVOKE/EXEC-CLOEXEC 消费后补扫孤儿。
+- **通道句柄关闭落点（v0 bind 存续语义补全）**：SYS_CLOSE 三分支
+  （文件对象按引用计数 / 通道对象按 `ipc::is_channel_object` 判定
+  ——句柄与能力回收、通道对象与环对存续 / 其余对象回插 EBADF）。
+- **TSC 纳秒面（M15-③）**：SYS_NANOSLEEP 参数语义 tick → **TSC 单调
+  纳秒**（寄存器面不变，abi 文档面如实记档）；TIMER_NEXT 哨兵与
+  WaitWhat::Timer deadline 全域 ns 化；未校准防御面读 0 保守（不产生
+  虚假唤醒）；唤醒检查仍随 PIT 节拍交付（有效分辨率 ≈ 节拍周期，
+  deadline 本体纳秒精确——单调域内绝不早醒）。
+- **自检 49 → 52**：t50 directory-face（MKDIR/REMOVE 正负探针 +
+  READDIR 分页（首页 16B 强制分页 → 续页至 EOF → 全量积累走查 +
+  名单/kind 抽查）+ MOUNT 遮蔽面/重复 EEXIST/挂文件 ENOTDIR/卸载
+  回落（新解析回落 vs 已打开句柄 Arc 存续双实证）+ dir_stamps 五戳
+  终值确定性断言）、t51 handle-deepening（dup 共享偏移一写一读对账
+  "ABCDEF" + 关一副本余副本存活 + fcntl 三命令 + CLOEXEC + 通道句柄
+  关闭落点（bind +1 水位、close 存续不减、已关句柄 send ERR_CAP）+
+  close_cloexec_handles 消费 + EXEC 钩子贯通取证（t47 空表关闭数 0））、
+  t52 tsc-nanosleep（hz 校准实证 + 20ms 真阻塞 TSC 纳秒下界 +
+  nanosleep(0) 探针命中）。
+
+### 变更
+- **tickd 退役后移**：t52 依赖唤醒链存活，timer::shutdown 从 t46 后
+  移至套件尾（t52 后）；t46 sleeper 改 nanosleep(50ms) + TSC 纳秒
+  耗时落证（SLEEPER_ELAPSED_NS ≥ 请求值下界断言）。
+- 宿主用例 135 → 141（abi parse 2 + bedrock::vfs pack_dir_page 族 4）；
+  xtask SELFTEST_EXPECTED 49/49 → 52/52。
+
+### 修复
+- t50 首轮冒烟实测：卸载后**已打开句柄经 Arc 存续**（仍见挂载 fs
+  内容）而非回落原 fs——回落仅影响新解析；测试改双实证（旧句柄
+  存续重读 + 新 open 回落空目录），与 mount.rs 骨架文档记档对齐。
+- t51 首轮冒烟实测：通道存续水位断言应为 bind +1（close 存续不减），
+  原断言误用 bind 前基线。
+
 ## v0.15.0（2026-10-10）—— M14-①：多段映像与栈增长 + M14-②：配额治理
 
 ### 新增

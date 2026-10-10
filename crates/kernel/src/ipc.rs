@@ -104,6 +104,16 @@ pub fn channels_usage() -> (usize, usize) {
     (used, MAX_CHANNELS)
 }
 
+/// 通道对象判定（M15-② 通道句柄关闭落点）：对象 id 是否登记于通道
+/// 注册表。SYS_CLOSE 的通道分支以此守门——identity 能力等非通道对象
+/// 不误消费（同面不泄拓扑纪律：判定只回是/否，不泄槽位）。
+pub fn is_channel_object(object: u64) -> bool {
+    let chans = CHANNELS.lock();
+    chans
+        .iter()
+        .any(|c| c.as_ref().is_some_and(|c| c.object == object))
+}
+
 /// 阻塞接收取证复位（跨自检隔离）。
 pub fn reset_recv_evidence() {
     RECV_BLOCKS.store(0, Ordering::Release);

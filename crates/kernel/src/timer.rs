@@ -1,19 +1,25 @@
-//! timer 阻塞源（M13-②）：第三类等待对象——tick 粒度睡眠与节拍唤醒。
+//! timer 阻塞源（M13-② 第三类阻塞源；**M15-③ TSC 纳秒面**）。
 //!
 //! 与 swap（M10-B）/waitpid（M10-C）/ipc（M11-C）同族的探针化阻塞：
-//! [`sys_nanosleep`] 以 [`crate::task::WaitWhat::Timer`]（deadline = 全局
-//! 节拍数）登记阻塞，[`crate::task::block_current_unless`] 在同一 SCHED
-//! 锁窗口内执行探针（`now() < deadline` 仍待 → 阻塞；已期满 → 回滚立即
-//! 返回）——丢失唤醒免疫论证与 swap/waitpid 完全同构：若到期判定先于
-//! 探针，探针命中（时间单调，粘滞真态）；若晚于登记，唤醒方在锁窗口内
-//! 必然观察到 Blocked。
+//! [`sys_nanosleep`] 以 [`crate::task::WaitWhat::Timer`]（deadline = TSC
+//! 单调纳秒时刻）登记阻塞，[`crate::task::block_current_unless`] 在同一
+//! SCHED 锁窗口内执行探针（`now < deadline` 仍待 → 阻塞；已期满 → 回滚
+//! 立即返回）——丢失唤醒免疫论证与 swap/waitpid 完全同构：若到期判定先
+//! 于探针，探针命中（时间单调，粘滞真态）；若晚于登记，唤醒方在锁窗口
+//! 内必然观察到 Blocked。
 //!
-//! 唤醒源 = **IRQ0 墙钟钩子**（wall_hook 头部 [`expire_check`]，BSP 唯一
-//! 交付点）：`TIMER_NEXT` 最早到期哨兵做锁自由快路径（无 sleeper / 未
-//! 到期 = 两次原子读，零 SCHED 锁）；到期才 `store(MAX)` +
-//! `task::wake_tasks`（谓词匹配 Timer 项；未过期项 `fetch_min` 回填哨兵
-//! ——陈值自收敛：多回检一次无害）。ISR 取 SCHED 的先例 = timer_hook
-//! （任务侧恒在 IntWindow 内取 SCHED，IF=0 串行化保证无自旋死锁）。
+//! **M15-③ 精度升级**：deadline 域由全局节拍数（100 Hz 粒度）升级为
+//! **TSC 单调纳秒**（[`ostd::time::tsc_clock`]，M4 校准底座：PIT 节拍
+//! 采样定 `tsc_hz`，基线起算单调纳秒）。唤醒检查仍随 IRQ0 节拍交付
+//! （wall_hook 头部 [`expire_pending_isr`]）——有效分辨率 ≈ 节拍周期，
+//! deadline 本体为纳秒精确值（下界严格：单调域内绝不早醒，t52 断言面）。
+//!
+//! 唤醒源 = **IRQ0 墙钟钩子**（BSP 唯一交付点）：`TIMER_NEXT` 最早到期
+//! 哨兵（纳秒域）做锁自由快路径（无 sleeper / 未到期 = 两次原子读，零
+//! SCHED 锁）；到期才 `store(MAX)` + `task::wake_tasks`（谓词匹配 Timer
+//! 项；未过期项 `fetch_min` 回填哨兵——陈值自收敛：多回检一次无害）。
+//! TSC 未校准（防御面——自检序保证任何 sleeper 登记前校准已完成）读 0
+//! → 所有比较按「未到期」保守处理（不产生虚假唤醒，[`mononow_ns`]）。
 //!
 //! 取证面 = swap 族同款三计数：TIMER_BLOCKS（进入阻塞点，探针命中回滚
 //! 亦计）/ TIMER_WAKES（真实阻塞后唤醒）/ TIMER_PROBE_HITS（探针命中
@@ -25,7 +31,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::task;
 
-/// 最早到期哨兵（u64::MAX = 无 sleeper；fetch_min 登记 / store(MAX) 清扫）。
+/// 最早到期哨兵（TSC 纳秒域；u64::MAX = 无 sleeper；fetch_min 登记 /
+/// store(MAX) 清扫）。
 static TIMER_NEXT: AtomicU64 = AtomicU64::new(u64::MAX);
 /// 到期旗（PIT ISR 置位零锁；RESCHED IPI / LAPIC tick 消费者 swap 清除）。
 static TIMER_PENDING: AtomicU64 = AtomicU64::new(0);
@@ -35,6 +42,14 @@ static TIMER_BLOCKS: AtomicU64 = AtomicU64::new(0);
 static TIMER_WAKES: AtomicU64 = AtomicU64::new(0);
 /// 探针命中计数（deadline 已过即返回的路径）。
 static TIMER_PROBE_HITS: AtomicU64 = AtomicU64::new(0);
+
+/// 单调纳秒当前时刻（M15-③）：TSC 校准后 = `now_ns()`；未校准（防御
+/// 面）读 0 —— 0 < 任何非零 deadline 恒真 → 探针判「仍待」、到期扫描
+/// 判「未到期」，全链保守（不产生虚假唤醒；sleeper 只会睡到校准后首次
+/// 到期扫描，自检序下不可达）。
+fn mononow_ns() -> u64 {
+    ostd::time::tsc_clock::now_ns().unwrap_or(0)
+}
 
 /// timer 取证复位（跨自检隔离）。
 pub fn reset_evidence() {
@@ -52,16 +67,18 @@ pub fn stamps() -> (u64, u64, u64) {
     )
 }
 
-/// SYS_NANOSLEEP 主体（M13-②）：tick 粒度睡眠（探针化第三类阻塞源）。
+/// SYS_NANOSLEEP 主体（M13-②；**M15-③ TSC 纳秒面**）：纳秒粒度睡眠
+/// （探针化第三类阻塞源）。
 ///
-/// `deadline = now() + ticks`（饱和）；登记哨兵 → 条件阻塞（探针 =
-/// `now() < deadline`，resume_if = true——syscall 上下文恢复点开中断，
+/// `deadline = mononow_ns() + ns`（饱和）；登记哨兵 → 条件阻塞（探针 =
+/// `now < deadline`，resume_if = true——syscall 上下文恢复点开中断，
 /// 内核任务 IF 约定同款）。返回 0 = 睡眠期满或已期满（v0 无中断语义，
-/// 不存在被提前打断的错误路径）。ticks = 0 自然落入探针命中（deadline
-/// 即当前节拍，时间单调保证已期满）——与 Linux nanosleep(0) 即时返回
-/// 语义对齐。
-pub fn sys_nanosleep(ticks: u64) -> u64 {
-    let deadline = ostd::time::now().saturating_add(ticks);
+/// 不存在被提前打断的错误路径）。ns = 0 自然落入探针命中（deadline 即
+/// 当前时刻，时间单调保证已期满）——与 Linux nanosleep(0) 即时返回
+/// 语义对齐。参数语义演进：v0.14–v0.15 为全局节拍数，v0.16（abi v0.9
+/// 文档面）升级为纳秒——寄存器面不变，单位变更如实记档。
+pub fn sys_nanosleep(ns: u64) -> u64 {
+    let deadline = mononow_ns().saturating_add(ns);
     TIMER_NEXT.fetch_min(deadline, Ordering::AcqRel);
     // 进入阻塞点即落证（swap 族同款：探针命中回滚亦计入尝试面）
     TIMER_BLOCKS.fetch_add(1, Ordering::AcqRel);
@@ -69,7 +86,7 @@ pub fn sys_nanosleep(ticks: u64) -> u64 {
         // 同 SCHED 锁窗再武装（闭 erase 竞态：expire_work 的哨兵清零与
         // 本处登记并发时，后到者的 SCHED 窗口必然重新 fetch_min）
         TIMER_NEXT.fetch_min(deadline, Ordering::AcqRel);
-        ostd::time::now() < deadline
+        mononow_ns() < deadline
     }) {
         TIMER_WAKES.fetch_add(1, Ordering::AcqRel);
     } else {
@@ -80,11 +97,11 @@ pub fn sys_nanosleep(ticks: u64) -> u64 {
 
 /// PIT-ISR 到期检测（wall_hook 专用；**零锁零任务表触碰**——S31 极短
 /// ISR 纪律：PIT 在 ring3 驻留期不屏蔽，「长 ISR + iretq 进 ring3」= TCG
-/// 帧腐坏触发面，故本函数只碰原子量）。返回 true = 已置旗，调用方应
-/// 向对侧核发 RESCHED IPI（消费者在彼处 / 本核 LAPIC tick）。
+/// 帧腐坏触发面，故本函数只碰原子量 + 一次 TSC 读）。返回 true = 已置
+/// 旗，调用方应向对侧核发 RESCHED IPI（消费者在彼处 / 本核 LAPIC tick）。
 pub fn expire_pending_isr() -> bool {
     let next = TIMER_NEXT.load(Ordering::Acquire);
-    if next == u64::MAX || ostd::time::now() < next {
+    if next == u64::MAX || mononow_ns() < next {
         return false;
     }
     TIMER_PENDING.store(1, Ordering::Release);
@@ -101,7 +118,7 @@ pub fn expire_work() -> usize {
     TIMER_NEXT.store(u64::MAX, Ordering::Release);
     task::wake_tasks(|w| match w {
         task::WaitWhat::Timer { deadline } => {
-            let now = ostd::time::now();
+            let now = mononow_ns();
             if now >= *deadline {
                 true
             } else {

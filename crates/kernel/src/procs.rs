@@ -194,6 +194,10 @@ pub fn sys_revoke(handle: u64) -> u64 {
         match removed {
             Some(Some(g)) if !(primary != 0 && g == primary) => {
                 let _ = crate::caps::table().lock().revoke(g);
+                // M15-②：旗标清理（同号复用不继承陈值）+ 孤儿文件对象
+                // 补扫（撤销可能使引用归零——dup/授予面之外的回收路径）
+                task::clear_hflag(caller, h);
+                crate::vfs::reap_orphaned_files();
                 0
             }
             Some(Some(g)) => {
@@ -387,6 +391,11 @@ pub fn sys_exec(image: u64, frame: &mut crate::syscall::SyscallFrame) -> u64 {
     };
     EXEC_SEGS.store(es.seg_frames.len() as u64, Ordering::Release);
     EXEC_DATA_FRAME.store(es.data_frame, Ordering::Release);
+    // M15-② CLOEXEC 消费（成功路径；失败路径不消费——POSIX exec 失败
+    // 语义）：关闭全部 CLOEXEC 置位句柄 + 孤儿文件对象 reap，取证落戳
+    // （t51 断言面；fd 继承语义——未置位句柄跨 exec 存续）。
+    let closed = task::close_cloexec_handles(caller);
+    EXEC_CLOEXEC_CLOSED.store(closed as u64, Ordering::Release);
     // 切换：先登记任务面（后续派发/清算面读到新根），再写 CR3，
     // 最后改写系统调用帧（返回即入新映像）
     task::set_user_root(caller, es.root);
@@ -405,6 +414,14 @@ pub fn sys_exec(image: u64, frame: &mut crate::syscall::SyscallFrame) -> u64 {
 
 /// HANDLE_QUERY/ENUM 成功标记位：`(1 << 32) | ...`（与错误码域隔离）。
 const HQ_OK_BIT: u64 = 1 << 32;
+
+/// SYS_EXEC 取证（t47/t51 断言面）：最近一次成功路径 CLOEXEC 关闭数。
+static EXEC_CLOEXEC_CLOSED: AtomicU64 = AtomicU64::new(0);
+
+/// SYS_EXEC CLOEXEC 消费取证快照（t51 断言面）。
+pub fn exec_cloexec_stamp() -> u64 {
+    EXEC_CLOEXEC_CLOSED.load(Ordering::Acquire)
+}
 
 /// SYS_QUOTA 取证（t49 断言面）：最近一次返回码。
 static QUOTA_RESULT: AtomicU64 = AtomicU64::new(u64::MAX);

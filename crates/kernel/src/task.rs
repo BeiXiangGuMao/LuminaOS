@@ -144,11 +144,13 @@ pub enum WaitWhat {
         /// 目标通道 id。
         endpoint: usize,
     },
-    /// timer 阻塞源（M13-②）：等待全局节拍到达 deadline（ostd::time
-    /// 同源计数；wall_hook 头部到期扫描 + wake_tasks 唤醒——swap/waitpid/
-    /// ipc 之外的第三类阻塞源，探针化同族）。
+    /// timer 阻塞源（M13-②；**M15-③ TSC 纳秒面**）：等待 TSC 单调纳秒
+    /// 时刻到达 deadline（[`ostd::time::tsc_clock::now_ns`] 同源计数；
+    /// wall_hook 到期扫描 + tickd wake_tasks 唤醒——swap/waitpid/ipc
+    /// 之外的第三类阻塞源，探针化同族）。
     Timer {
-        /// 到期 deadline（全局节拍数）。
+        /// 到期 deadline（TSC 纳秒时刻；v0.14–v0.15 为全局节拍数，
+        /// v0.16 单位变更如实记档）。
         deadline: u64,
     },
 }
@@ -190,6 +192,12 @@ struct Task {
     /// **槽位单属主不变式**：任一全局槽任一时刻至多被一个 (任务, 句柄)
     /// 对引用；终结清算（revoke_all_handles）回收到能力表。
     handles: [Option<usize>; HANDLE_MAX],
+    /// 句柄描述符旗标（M15-② 句柄面深化）：与 `handles` 同域并行的
+    /// per-handle 旗标字节（bit0 = `bedrock::abi::FD_CLOEXEC`）。旗标
+    /// 随句柄生命周期：F_SETFD 置位、close/revoke 清除、EXEC 成功路径
+    /// 消费关闭；首次安装恒 0（Task::new 零化 + 关闭面清理保证无陈值
+    /// 继承——首空闲位复用只发生在 close/revoke 之后）。
+    hflags: [u8; HANDLE_MAX],
     /// 调度优先级（0=最高 … 3=最低；有效级，M9-C 老化提升可临时高于 base）。
     prio: u8,
     /// 基准优先级（M9-C：用户设定级；回队衰减目标，SET_PRIO 写入面）。
@@ -231,6 +239,7 @@ impl Task {
             wait: None,
             exit_code: u64::MAX,
             kernel_cr3: 0,
+            hflags: [0; HANDLE_MAX],
         }
     }
 
@@ -266,6 +275,10 @@ impl Task {
                 let _ = crate::caps::table().lock().revoke(g);
             }
         }
+        // M15-②：句柄随任务终结全撤后，注册表中已无能力引用的文件对象
+        // 就地回收（dup/开放句柄跨终结的引用计数收敛面；SCHED → FILES
+        // → CAPS 单向链，无反向边）。
+        crate::vfs::reap_orphaned_files();
     }
 
     /// 主任务槽（运行在引导栈上）。
@@ -283,6 +296,7 @@ impl Task {
             cap_slot: 0,
             parent: None,
             handles: [None; HANDLE_MAX],
+            hflags: [0; HANDLE_MAX],
             prio: PRIO_NORMAL,
             base_prio: PRIO_NORMAL,
             waited: 0,
@@ -1205,6 +1219,56 @@ pub fn with_task_handles<R>(
         .get_mut(id)
         .and_then(|t| t.as_mut())
         .map(|t| f(&mut t.handles))
+}
+
+/// 在调度锁窗口内访问目标任务句柄旗标（M15-② 句柄面深化）：
+/// F_GETFD/F_SETFD 的 TCB 承载面；任务不存在返回 None。
+pub fn with_task_hflags<R>(id: usize, f: impl FnOnce(&mut [u8; HANDLE_MAX]) -> R) -> Option<R> {
+    let _w = IntWindow::new();
+    let mut s = SCHED.lock();
+    s.tasks
+        .get_mut(id)
+        .and_then(|t| t.as_mut())
+        .map(|t| f(&mut t.hflags))
+}
+
+/// 清除目标句柄旗标（M15-② close/revoke 面配套：同号复用不继承陈值；
+/// 任务/句柄不存在静默忽略）。
+pub fn clear_hflag(id: usize, h: usize) {
+    if h > 0 && h < HANDLE_MAX {
+        let _ = with_task_hflags(id, |f| f[h] = 0);
+    }
+}
+
+/// EXEC CLOEXEC 消费钩子（M15-② 句柄面深化）：关闭目标任务全部
+/// CLOEXEC 置位句柄（句柄清除 + 全局槽撤销 + 旗标复位），返回关闭数。
+/// fd 继承语义：未置位句柄跨 exec 存续。被撤能力槽的孤儿文件对象由
+/// [`crate::vfs::reap_orphaned_files`] 收敛（本函数尾部统一补扫）。
+/// 锁序：SCHED（收集）→ CAPS（撤销）→ FILES/CAPS（reap），全程单向。
+pub fn close_cloexec_handles(id: usize) -> usize {
+    let _w = IntWindow::new();
+    let mut revoked: Vec<(usize, usize)> = Vec::new();
+    {
+        let mut s = SCHED.lock();
+        if let Some(Some(t)) = s.tasks.get_mut(id) {
+            for h in 1..HANDLE_MAX {
+                if t.hflags[h] & (bedrock::abi::FD_CLOEXEC as u8) != 0 {
+                    if let Some(g) = t.handles[h].take() {
+                        revoked.push((h, g));
+                    }
+                    t.hflags[h] = 0;
+                }
+            }
+        }
+    }
+    let n = revoked.len();
+    for (_h, g) in revoked {
+        let _ = crate::caps::table().lock().revoke(g);
+    }
+    if n > 0 {
+        crate::vfs::reap_orphaned_files();
+    }
+    n
 }
 
 /// 句柄表用量快照（M14-② SYS_QUOTA kind 0 断言面）：(used, HANDLE_MAX)。

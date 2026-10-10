@@ -339,13 +339,48 @@ extern "C" fn lumina_syscall_dispatch(frame: &mut SyscallFrame) -> u64 {
         }
         Syscall::NanoSleep { ticks } => {
             task::count_syscall(2);
-            // M13-② timer 阻塞源：第三类等待对象（探针化同族）
+            // M13-② timer 阻塞源；M15-③ 参数语义 = TSC 纳秒（寄存器面不变）
             crate::timer::sys_nanosleep(ticks)
         }
         Syscall::Quota { kind } => {
             task::count_syscall(2);
             // M14-② 配额治理统计面
             crate::procs::sys_quota(kind)
+        }
+        Syscall::MkDir { len } => {
+            task::count_syscall(2);
+            // M15-① 目录面：路径指针 = rdi 慢路径语义
+            crate::vfs::sys_mkdir(frame.rdi, len)
+        }
+        Syscall::Remove { len } => {
+            task::count_syscall(2);
+            // M15-① 目录面：路径指针 = rdi 慢路径语义
+            crate::vfs::sys_remove(frame.rdi, len)
+        }
+        Syscall::ReadDir { handle, buf_len } => {
+            task::count_syscall(2);
+            // M15-① 目录面：缓冲指针 = rsi 慢路径语义（分页枚举）
+            crate::vfs::sys_readdir(handle, frame.rsi, buf_len)
+        }
+        Syscall::Mount { len, fs_type } => {
+            task::count_syscall(2);
+            // M15-① 目录面：挂载点路径 = rdi 慢路径语义（v0 仅 RamFs）
+            crate::vfs::sys_mount(frame.rdi, len, fs_type)
+        }
+        Syscall::Umount { len } => {
+            task::count_syscall(2);
+            // M15-① 目录面：路径指针 = rdi 慢路径语义
+            crate::vfs::sys_umount(frame.rdi, len)
+        }
+        Syscall::Dup { handle } => {
+            task::count_syscall(2);
+            // M15-② 句柄面深化：共享 OFD 偏移的句柄复制
+            crate::vfs::sys_dup(handle)
+        }
+        Syscall::Fcntl { handle, cmd, arg } => {
+            task::count_syscall(2);
+            // M15-② 句柄面深化：描述符控制（F_DUPFD/GETFD/SETFD + CLOEXEC）
+            crate::vfs::sys_fcntl(handle, cmd, arg)
         }
     }
 }
