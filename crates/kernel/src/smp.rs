@@ -151,6 +151,13 @@ static FP_RESP: AtomicUsize = AtomicUsize::new(0);
 /// AP 独立内核栈（常驻锚点；与 task.rs 栈同纪律）。
 static AP_STACK: SpinLock<Vec<u128>> = SpinLock::new(Vec::new());
 
+/// AP 引导栈 canary 完好性（M18-① t59 审计面）：锁内读栈底首 qword
+/// 与任务栈同款魔数对账。盖章点见 boot_ap handoff 块。
+pub fn ap_stack_canary_ok() -> bool {
+    let s = AP_STACK.lock();
+    ostd::hw::phys::read_u64(s.as_ptr() as u64) == crate::task::STACK_CANARY
+}
+
 /// LAPIC 定时器校准结果（每 10 ms 的计数；BSP 校准、AP 复用）。
 static TIMER_COUNTS: AtomicU64 = AtomicU64::new(0);
 /// LAPIC 定时器已启动的核位图（bit0 = BSP，bit1 = AP；诊断可见）。
@@ -614,6 +621,10 @@ pub fn bring_up(log: &mut DualLog, frames: &FrameAllocator) -> (bool, u8, usize)
         let mut s = AP_STACK.lock();
         s.clear();
         s.resize(16 * 1024 / core::mem::size_of::<u128>(), 0u128);
+        // M18-①：AP 引导栈底 canary 盖章（与任务栈同款魔数、同款语义：
+        // 栈向下生长，底首四字永不入帧；AP 上线后本栈退为 handoff 残迹，
+        // 驻留期完整性纳入 t59 审计面）。
+        ostd::hw::phys::write_u64(s.as_ptr() as u64, crate::task::STACK_CANARY);
         s.as_ptr() as u64 + (16 * 1024) as u64
     };
     let (gdt_base, gdt_limit) = ostd::hw::gdt::location_cpu(1); // M7-A：AP 专属 GDT/TSS

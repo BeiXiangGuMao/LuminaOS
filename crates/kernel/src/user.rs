@@ -502,6 +502,31 @@ pub const EXEC_IMAGES: [&str; 5] = [
     "/files/deep.lxe",
 ];
 
+/// SYS_IMAGE_ENUM 主体（M18-③）：[`EXEC_IMAGES`] ring3 查询面。
+///
+/// 成功 = `(1 << 32) | (表容量 << 16) | 拷贝字节数`：第 `index` 项路径
+/// 以 NUL 结尾整路径拷入调用方缓冲（零拷贝路径——长度校验先行）。
+/// 索引越界 → [`crate::procs::ERR_IMAGE`]；缓冲容不下 NUL 结尾全路径
+/// 或不可写 → `EFAULT(14)`。ring3 自此免硬编码映像表（枚举循环以
+/// ERR_IMAGE 或高 16 位总数收口）。
+pub fn sys_image_enum(index: u64, buf: u64, buf_len: u64) -> u64 {
+    const EFAULT: u64 = 14;
+    if index >= EXEC_IMAGES.len() as u64 {
+        return crate::procs::ERR_IMAGE;
+    }
+    let path = EXEC_IMAGES[index as usize].as_bytes();
+    let need = path.len() + 1; // NUL 结尾全路径
+    if buf_len < need as u64 {
+        return EFAULT;
+    }
+    let Some(dst) = crate::syscall::validate_user_slice_mut(buf, need as u64) else {
+        return EFAULT;
+    };
+    dst[..path.len()].copy_from_slice(path);
+    dst[path.len()] = 0;
+    (1 << 32) | ((EXEC_IMAGES.len() as u64) << 16) | need as u64
+}
+
 /// 多段映像装载结果（M14-①）：根、入口、栈顶 + 段帧取证表。
 pub struct ExecSpace {
     /// 用户页表根物理地址。

@@ -72,8 +72,8 @@ use crate::multiboot1::BOOT_MAGIC;
 const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
 /// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项
-/// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M17 起 58）。
-const SELFTEST_TOTAL: usize = 58;
+/// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M18 起 62）。
+const SELFTEST_TOTAL: usize = 62;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐，链接进 .bss（NOLOAD）。
 #[repr(align(4096))]
@@ -2924,6 +2924,110 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t58, "umount-busy");
+
+    // 59) 栈 canary 审计面（M18-① #PF 专项取证面自证）：任务栈盖章
+    //     覆盖数 > 0（派发咽喉校验全程在跑）+ 全表审计现场 + AP 引导
+    //     栈完好 + 违反计数为零。取证面自身不引入新破坏。
+    let t59 = {
+        let checked = task::canary_audit_all();
+        let violations = task::canary_violations();
+        let ap_ok = smp::ap_stack_canary_ok();
+        let _ = writeln!(
+            log,
+            "  canary: audit-checked={checked} violations={violations} ap-stack-ok={ap_ok}"
+        );
+        checked > 0 && violations == 0 && ap_ok
+    };
+    report(&mut log, t59, "canary-audit");
+
+    // 60) O_EXCL 排他创建（M18-③，abi v0.12）：已存目标 + O_CREAT|O_EXCL
+    //     → EEXIST(17) 原子拒开；无 O_CREAT 时 O_EXCL 无效应（POSIX 未
+    //     定义域收敛）；新目标 O_CREAT|O_EXCL 正常落位。
+    let t60 = {
+        let mut ok = true;
+        let pa = |s: &str| (s.as_ptr() as u64, s.len() as u64);
+        let m_c = bedrock::abi::O_CREAT | 0b10;
+        let m_ce = m_c | bedrock::abi::O_EXCL;
+        let (dp, dl) = pa("/m18");
+        ok &= vfs::sys_mkdir(dp, dl) == 0;
+        ok &= vfs::sys_mount(dp, dl, 0) == 0;
+        let (fp, fl) = pa("/m18/f.txt");
+        let o = vfs::sys_open(fp, fl, m_c);
+        ok &= o >> 32 == 1;
+        ok &= vfs::sys_close(o & 0xFFFF_FFFF) == 0;
+        ok &= vfs::sys_open(fp, fl, m_ce) == 17; // EEXIST：排他拒开
+        let o = vfs::sys_open(fp, fl, 0b10);
+        ok &= o >> 32 == 1;
+        ok &= vfs::sys_close(o & 0xFFFF_FFFF) == 0;
+        // 无 O_CREAT 时 O_EXCL 无效应：目标缺失 → ENOENT(2)
+        let (gp, gl) = pa("/m18/g.txt");
+        ok &= vfs::sys_open(gp, gl, bedrock::abi::O_EXCL | 0b10) == 2;
+        let (hp, hl) = pa("/m18/h.txt");
+        let o = vfs::sys_open(hp, hl, m_ce);
+        ok &= o >> 32 == 1;
+        ok &= vfs::sys_close(o & 0xFFFF_FFFF) == 0;
+        ok
+    };
+    report(&mut log, t60, "o-excl-atomic-create");
+
+    // 61) F_DUP2FD 精确槽位（M18-③，abi v0.12）：指定槽落位 + 同槽位
+    //     无操作 + 越界 EINVAL + 野句柄 EBADF + EBUSY 卸载占用联动
+    //     （dup2 副本同样拦截——OFD 引用计数语义）。
+    let t61 = {
+        let mut ok = true;
+        let pa = |s: &str| (s.as_ptr() as u64, s.len() as u64);
+        const FOK: u64 = 1 << 32;
+        let (dp, dl) = pa("/m19");
+        ok &= vfs::sys_mkdir(dp, dl) == 0;
+        ok &= vfs::sys_mount(dp, dl, 0) == 0;
+        let (fp, fl) = pa("/m19/a.txt");
+        let o = vfs::sys_open(fp, fl, bedrock::abi::O_CREAT | 0b10);
+        ok &= o >> 32 == 1;
+        let h1 = o & 0xFFFF_FFFF;
+        // 精确槽位：目标 5（1 号槽已占，5 空闲）
+        let d = vfs::sys_fcntl(h1, bedrock::abi::F_DUP2FD, 5);
+        ok &= d == FOK | 5;
+        // 同槽位无操作直返
+        ok &= vfs::sys_fcntl(h1, bedrock::abi::F_DUP2FD, h1) == FOK | h1;
+        // 越界目标（≥ HANDLE_MAX=16）→ EINVAL(22)
+        ok &= vfs::sys_fcntl(h1, bedrock::abi::F_DUP2FD, 16) == 22;
+        // 野句柄 → EBADF(9)
+        ok &= vfs::sys_fcntl(999, bedrock::abi::F_DUP2FD, 5) == 9;
+        // 关原句柄 → 5 号副本仍占（OFD 引用计数）；再 dup2 5→6 精确落位
+        ok &= vfs::sys_close(h1) == 0;
+        let d2 = vfs::sys_fcntl(5, bedrock::abi::F_DUP2FD, 6);
+        ok &= d2 == FOK | 6;
+        ok &= vfs::sys_close(5) == 0;
+        ok &= vfs::sys_umount(dp, dl) == 16; // 6 号副本仍占 → EBUSY
+        ok &= vfs::sys_close(6) == 0;
+        ok &= vfs::sys_umount(dp, dl) == 0;
+        ok
+    };
+    report(&mut log, t61, "dup2-exact-slot");
+
+    // 62) SYS_IMAGE_ENUM 查询面（M18-③，abi v0.12）：逐项路径对账
+    //     EXEC_IMAGES（NUL 结尾）+ 越界 ERR_IMAGE(10) + 缓冲过短 EFAULT(14)。
+    let t62 = {
+        let mut ok = true;
+        let buf = m17_buf_addr();
+        for (idx, want) in crate::user::EXEC_IMAGES.iter().enumerate() {
+            // SAFETY: 先清缓冲再对账（t56 取证缓冲同款纪律）
+            unsafe {
+                core::ptr::write_bytes(buf as *mut u8, 0, 32);
+            }
+            let r = crate::user::sys_image_enum(idx as u64, buf, 64);
+            let need = want.len() + 1;
+            ok &= r == (1 << 32) | ((crate::user::EXEC_IMAGES.len() as u64) << 16) | need as u64;
+            // SAFETY: 同上（内容对账，含 NUL 终止符）
+            let got =
+                unsafe { core::slice::from_raw_parts((&raw const M17_BUF) as *const u8, need) };
+            ok &= &got[..want.len()] == want.as_bytes() && got[want.len()] == 0;
+        }
+        ok &= crate::user::sys_image_enum(5, m17_buf_addr(), 64) == crate::procs::ERR_IMAGE;
+        ok &= crate::user::sys_image_enum(0, m17_buf_addr(), 4) == 14; // 缓冲过短
+        ok
+    };
+    report(&mut log, t62, "image-enum-face");
 
     let _ = writeln!(log, "----");
     interrupts::disable();

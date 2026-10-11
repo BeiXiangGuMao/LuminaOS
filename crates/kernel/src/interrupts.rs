@@ -106,8 +106,16 @@ pub fn idt_location() -> (u64, u16) {
 }
 
 /// 致命异常钩子：落盘诊断后以失败码退出（永不返回）。
-/// `aux` = 异常桩入场帧指针（仅 #GP 设置）：据此转储被 iretq 消费的
-/// 中断帧（RIP/CS/RFLAGS/RSP/SS）——M7 调试期取证面，保留为长期诊断。
+/// `aux` = 异常桩入场帧指针（#GP/#PF 设置，M18-① 起 #PF 两路径补齐）：
+/// 据此转储被 iretq 消费的中断帧（RIP/CS/RFLAGS/RSP/SS）——M7 调试期
+/// 取证面，保留为长期诊断。
+///
+/// **M18-① 取证面加固**：aux 经合法性门后才转储（v0.18 及之前可恢复
+/// #PF 致命分支传入寄存器残渣，转储面读野值指针即产生伪影——「实模式
+/// IVT 形态帧」与「二次 #PF cr2=-0x28」均为取证面自身行为，非系统
+/// 状态；残渣指向恒等映射低物理区时读到的正是 IVT 内容，指向野值时
+/// read_u64(aux) 自身即 #PF）。门限依据：QEMU -m 256M + 恒等映射低
+/// 1 GiB——内核栈与帧必落 256 MiB 物理界内且 8 字节对齐。
 fn fault_hook(vector: u64, rip: u64, aux: u64) -> ! {
     // 不得分配（异常现场不可信）：使用免分配串口直写
     let mut serial = crate::console::SerialPort::com1();
@@ -117,10 +125,16 @@ fn fault_hook(vector: u64, rip: u64, aux: u64) -> ! {
         // #PF 取证：CR2 = 故障线性地址（HW-04 扩展面；定位桩/表路径缺页）
         let _ = writeln!(serial, "  cr2={:#x}", ostd::hw::control::read_cr2());
     }
-    if aux != 0 {
+    let aux_sane = (0x1000..0x1000_0000).contains(&aux) && aux & 7 == 0;
+    if aux != 0 && !aux_sane {
+        // 门拒：aux 不像有效内核帧——打印原值即止，绝不解引用
+        // （v0.18 伪影链的根治面：宁可少读，不可再制造二次 #PF）
+        let _ = writeln!(serial, "  aux-suspect={aux:#x} (dump suppressed)");
+    }
+    if aux != 0 && aux_sane {
         let err = ostd::hw::phys::read_u64(aux);
-        let _ = writeln!(serial, "  gp-error-code={err:#x}");
-        let f = ostd::hw::phys::read_u64(aux + 32); // 故障时 RSP = iretq 帧基址
+        let _ = writeln!(serial, "  err-code={err:#x}");
+        let f = aux + 8; // 越过错误码槽：iretq 帧基址（RIP/CS/RFLAGS/RSP/SS）
         let rip2 = ostd::hw::phys::read_u64(f);
         let cs = ostd::hw::phys::read_u64(f + 8);
         let rfl = ostd::hw::phys::read_u64(f + 16);

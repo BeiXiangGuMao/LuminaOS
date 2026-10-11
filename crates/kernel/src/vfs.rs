@@ -397,6 +397,7 @@ fn open_impl(path_bytes: &[u8], mode: u64) -> u64 {
     };
     let o_creat = mode & bedrock::abi::O_CREAT != 0;
     let o_trunc = mode & bedrock::abi::O_TRUNC != 0;
+    let o_excl = mode & bedrock::abi::O_EXCL != 0;
     // 首次解析（守卫块内自持：锁不可重入，父走查前必须释放）
     let pre = {
         let ns = NAMESPACE.lock();
@@ -404,7 +405,14 @@ fn open_impl(path_bytes: &[u8], mode: u64) -> u64 {
             return EBADF; // 未初始化：防御路径（自检序保证不达）
         };
         match ns.resolve(&path) {
-            Ok(r) => Some(r),
+            Ok(r) => {
+                // M18-③ O_EXCL：O_CREAT|O_EXCL 且目标已存在 → EEXIST
+                // 原子拒开（fs create 自身检查在锁内，无插队窗口）。
+                if o_creat && o_excl {
+                    return FsError::AlreadyExists.errno();
+                }
+                Some(r)
+            }
             Err(FsError::NotFound) if o_creat => None, // M16-①：走创建链
             Err(e) => return e.errno(),
         }
@@ -418,7 +426,13 @@ fn open_impl(path_bytes: &[u8], mode: u64) -> u64 {
                 Err(e) => return e,
             };
             match fs.create(dir, &leaf, NodeKind::File) {
-                Ok(_) | Err(FsError::AlreadyExists) => {} // 已存在：直接打开（v0 无 O_EXCL）
+                Ok(_) => {}
+                // M18-③ O_EXCL：创建竞窗内他者抢先落位 → EEXIST 拒开
+                //（fs create 检查在 fs 锁内——排他语义原子面收口）。
+                Err(FsError::AlreadyExists) if o_excl => {
+                    return FsError::AlreadyExists.errno();
+                }
+                Err(FsError::AlreadyExists) => {} // 已存在：直接打开
                 Err(e) => return e.errno(),
             }
             let ns = NAMESPACE.lock();
@@ -958,6 +972,41 @@ fn dup_impl(handle: u64, floor: u64) -> u64 {
     OK_BIT | free_handle as u64
 }
 
+/// DUP2 共用链（M18-③ F_DUP2FD）：源句柄解析 → 目标槽位界检
+/// （≥ HANDLE_MAX → EINVAL，对齐本内核 F_DUPFD 的 EINVAL 语义；
+/// POSIX 原生 dup2 为 EBADF，偏差如实记档）→ 目标 == 源 → 无操作
+/// 直返 → 目标已开则先关（同款 close 链：能力撤销 + 槽位清零 +
+/// OFD 引用计数递减——EBUSY 卸载占用面自然联动）→ 精确槽位安装。
+fn dup2_impl(handle: u64, target: u64) -> u64 {
+    let caller = task::current_task_id();
+    let Some((_slot, cap, _idx)) = resolve_file_object(handle) else {
+        return EBADF;
+    };
+    if target >= task::HANDLE_MAX as u64 {
+        return EINVAL;
+    }
+    if target == handle {
+        return OK_BIT | handle; // POSIX dup2 同槽位无操作
+    }
+    let target = target as usize;
+    // 目标已开 → 先关（close 链同款：revoke + 清槽 + OFD 释放）。
+    let occupied = task::with_task_handles(caller, |t| t[target].is_some()).unwrap_or(false);
+    if occupied {
+        let code = sys_close(target as u64);
+        if code & OK_BIT == 0 && code != 0 {
+            return code; // 关闭失败（非 EBADF 类）原样上抛
+        }
+    }
+    let gslot = crate::caps::alloc_slot(Capability::new(cap.object(), cap.rights()));
+    let installed = gslot
+        .map(|g| task::with_task_handles(caller, |t| t[target] = Some(g)).is_some())
+        .unwrap_or(false);
+    if !installed {
+        return ENOMEM;
+    }
+    OK_BIT | target as u64
+}
+
 /// SYS_DUP 主体（M15-②）：复制文件句柄（首个空闲位；POSIX dup 同款）。
 /// 成功返回 `(1 << 32) | new_handle`。
 pub fn sys_dup(handle: u64) -> u64 {
@@ -966,16 +1015,17 @@ pub fn sys_dup(handle: u64) -> u64 {
     r
 }
 
-/// SYS_FCNTL 主体（M15-②）：句柄描述符控制（F_DUPFD/F_GETFD/F_SETFD；
-/// 命令结构校验在 abi parse 层已限定 0..=2，此处防御性兜底 EINVAL）。
-/// v0 仅 [`bedrock::abi::FD_CLOEXEC`] 一旗：置位句柄在 SYS_EXEC 成功
-/// 路径由 [`crate::task::close_cloexec_handles`] 消费关闭。成功编码：
-/// DUPFD → `(1 << 32) | new_handle`、GETFD → `(1 << 32) | flags`、
-/// SETFD → 0。
+/// SYS_FCNTL 主体（M15-②）：句柄描述符控制（F_DUPFD/F_GETFD/F_SETFD/
+/// F_DUP2FD；命令结构校验在 abi parse 层已限定 0..=3，此处防御性兜底
+/// EINVAL）。v0 仅 [`bedrock::abi::FD_CLOEXEC`] 一旗：置位句柄在
+/// SYS_EXEC 成功路径由 [`crate::task::close_cloexec_handles`] 消费关闭。
+/// 成功编码：DUPFD/DUP2FD → `(1 << 32) | new_handle`、
+/// GETFD → `(1 << 32) | flags`、SETFD → 0。
 pub fn sys_fcntl(handle: u64, cmd: u64, arg: u64) -> u64 {
     let caller = task::current_task_id();
     let code = match cmd {
         bedrock::abi::F_DUPFD => dup_impl(handle, arg),
+        bedrock::abi::F_DUP2FD => dup2_impl(handle, arg),
         bedrock::abi::F_GETFD => {
             if resolve_file_object(handle).is_none() {
                 EBADF

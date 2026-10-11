@@ -380,7 +380,17 @@ extern "C" fn lumina_syscall_dispatch(frame: &mut SyscallFrame) -> u64 {
         Syscall::Fcntl { handle, cmd, arg } => {
             task::count_syscall(2);
             // M15-② 句柄面深化：描述符控制（F_DUPFD/GETFD/SETFD + CLOEXEC）
+            // M18-③：+ F_DUP2FD（dup2 精确槽位，关替原子面）
             crate::vfs::sys_fcntl(handle, cmd, arg)
+        }
+        Syscall::ImageEnum {
+            index,
+            buf,
+            buf_len,
+        } => {
+            task::count_syscall(2);
+            // M18-③：EXEC_IMAGES ring3 查询面（免硬编码映像表）
+            crate::user::sys_image_enum(index, buf, buf_len)
         }
     }
 }

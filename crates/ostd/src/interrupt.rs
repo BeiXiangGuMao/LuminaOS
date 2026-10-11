@@ -221,9 +221,16 @@ pub fn stub_addr(stub: Stub) -> u64 {
 static FAULT_HOOK: AtomicUsize = AtomicUsize::new(0);
 
 /// 注册致命异常钩子：收到未恢复异常时以（向量号, 故障 RIP, 诊断帧指针）
-/// 调用并永不返回。诊断帧指针 = 异常桩入场时栈指针（#GP 桩传入，
+/// 调用并永不返回。诊断帧指针 = 异常桩入场时栈指针（#GP/#PF 桩传入，
 /// 其余传 0）：[frame]=错误码、[frame+8]=RIP、[frame+16]=CS、
 /// [frame+24]=RFLAGS、[frame+32]=故障时 RSP、[frame+40]=SS。
+///
+/// **M18-① 取证面扩容与伪影根治**：v0.18 及之前仅 #GP 传入 aux——
+/// 可恢复 #PF 桩的致命分支从未设置 rdx，钩子拿到的 aux = 主体返回后
+/// 的寄存器残渣：指向低物理地址时转储出的「iretq 帧」实为恒等映射
+/// IVT 区内容（v0.18.0 观察记档「实模式 IVT 形态」即此伪影），指向
+/// 野值时 read_u64(aux) 自身二次 #PF（cr2=-0x28 同源）。自本版起
+/// #PF 致命桩与可恢复→致命分支均传入真实帧指针，伪影链封死。
 ///
 /// 注册时机 MUST 早于 `sti`（否则早期异常只停机不落盘诊断）。
 pub fn set_fault_hook(hook: fn(u64, u64, u64) -> !) {
@@ -252,7 +259,8 @@ fn fault_exit(vector: u64, rip: u64, aux: u64) -> ! {
 /// - 定时器桩：9 个 caller-saved 入栈 → `and rsp, -16` 对齐 → 主体 →
 ///   `mov rsp, rbp` 一口气撤栈 → `iretq`；rbp 作锚点由主体按 ABI 保护。
 /// - 异常桩：向量号置 edi → 主体（永不返回）→ 兜底 cli+hlt。
-///   #GP/#PF 的错误码留在栈上无人读取（致命路径，随退出销毁）。
+///   #GP/#PF 的错误码留在栈上无人读取（致命路径，随退出销毁）；
+///   #GP/#PF 桩另将入场 rsp 作 aux 传入（诊断帧指针，M18-① 扩容）。
 pub mod stubs {
     core::arch::global_asm! {
         ".text",
@@ -542,7 +550,7 @@ pub mod stubs {
         "isr_fault_pf:",
         "    mov edi, 14",
         "    mov rsi, [rsp+8]",
-        "    xor edx, edx",
+        "    mov rdx, rsp", // M18-①：aux = 真实帧指针（错误码槽；与 #GP 同款）
         "    sub rsp, 8",
         "    and rsp, -16",
         "    call isr_fault_body",
@@ -624,6 +632,10 @@ pub mod stubs {
         "    jnz 5f",
         "    mov rdi, 14",
         "    mov rsi, [rbp+88]",
+        // M18-①：aux = rbp+80 = 错误码槽（真实帧基址）——v0.18 及之前
+        // 本分支不设 rdx，钩子拿到的 aux = 主体返回后寄存器残渣，
+        // 转储面读野值指针即伪影（IVT 形态帧 / cr2=-0x28 链式 #PF）
+        "    lea rdx, [rbp+80]",
         "    call isr_fault_body",
         "    cli",
         "    hlt",

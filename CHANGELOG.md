@@ -3,6 +3,76 @@
 版本语义：工作区里程碑版（0.x.y，x=里程碑，y=里程碑内迭代）。
 本文档记录源码树的对外可见变更；指标与规格变更见《指标与规范手册》修订记录。
 
+## v0.19.0（2026-10-11）—— M18-①：#PF 专项取证面 + M18-②：fsck-lite 崩溃一致性 + M18-③：候补三条转正
+
+### 新增
+- **#PF 伪影链根治（M18-①）**：v0.18.0 观察记档的「iretq 帧实模式
+  IVT 形态」实为取证面自身伪影——可恢复 #PF 桩致命分支从未设置
+  rdx，钩子拿到的 aux = 主体返回后寄存器残渣，指向恒等映射低区时
+  转储出的正是 IVT 内容，指向野值时 `read_u64(aux)` 自身二次 #PF
+  （cr2=-0x28 同源）。本版 #PF 致命桩与可恢复→致命分支均传入真实
+  帧指针（与 #GP 同款契约）；fault_hook 增 aux 合法性门
+  （0x1000..0x1000_0000 且 8 字节对齐，拒读野值——宁可少读，不再
+  制造二次 #PF）。
+- **per-CPU 栈 canary 面（M18-①）**：栈底魔数 "LUMINACN"
+  （0x4C55_4D49_4E41_434E）——`Task::new` 盖章（Kernel/User 同源）+
+  AP 引导栈同源盖章（smp）；校验点 = `prepare_dispatch` 派发咽喉
+  （五条派发路径唯一收口，锁内零分配）+ t59 全表审计；破坏即串口
+  直写 `LUMINA-CANARY-FAIL` + 计数（自检断言零违反）。GS 哨兵方案
+  作废（M8-A 定版：内核不使用 GS per-CPU 面，如实记档）。
+- **slots_pair 自切换取证点（M18-①）**：a == b（自切换）= 调度面
+  竞态实锤——v0.18 观察期即有本点 panic（len/idx 同值成对 2/2 与
+  0/0）；本版升级为全现场转储（`LUMINA-SCHED-BUG`：双方状态 + 就绪
+  队列在位性 + SWITCHING 旗 + 全队列内容）后再触达不可达断言。
+- **fsck-lite 崩溃一致性（M18-②）**：LFS1 超级块脏旗（偏移 68）+
+  `with_dirty` 包装四变更操作（create/unlink/truncate/write_at；
+  失败路径有意留脏——保守方向：多余一次无害 fsck 优于漏一次）+
+  挂载时一致性修复：根目录不可信 → 重格式化；BFS 可达集对账 →
+  孤儿/幽灵 inode 回收；链越界防御回收；数据位图全量重建（泄漏
+  清除 + 未标记活块补置）；目录 next_cookie 抬升（max+1）。修复
+  报告四计数（`FsckReport`）+ `Lfs::fsck` 独立入口 +
+  `last_fsck` 查询。**议案修正记档**：v0.18 议案推演的「cookie 回退
+  窗口」实不存在（size/next_cookie 同一次 inode 写落地），修复面
+  为纯防御 + 手工腐坏修复通道。
+- **宿主故障注入族（M18-②）**：`FaultyBlock` 断电模拟盘（第 k 次
+  写后静默丢弃——介质冻结在截断点）+ create/mkdir/unlink/write/
+  truncate 全截断点扫描（幂等收敛断言：修复后再挂零修复）+ 手工
+  腐坏四件（孤儿回收/泄漏清除/丢标记补置/cookie 回退修复）+ 根
+  腐坏重格式化 + 脏旗生命周期。bedrock 宿主 87 → 99。
+- **O_EXCL 排他创建（M18-③，abi v0.11 → v0.12）**：SYS_OPEN 模式
+  bit4——O_CREAT|O_EXCL 且目标已存在 → `EEXIST(17)` 原子拒开
+  （fs create 检查在 fs 锁内，无插队窗口；lockfile 语义基座）；
+  无 O_CREAT 时无效应（POSIX 未定义域收敛记档）。
+- **F_DUP2FD 精确槽位（M18-③）**：SYS_FCNTL 命令 3——dup2 面：
+  精确槽落位 / 同槽位无操作 / 越界 EINVAL（对齐本内核 F_DUPFD
+  语义；POSIX EBADF 偏差记档）/ 已开目标先关（OFD 引用计数递减
+  ——EBUSY 卸载占用面联动）。
+- **SYS_IMAGE_ENUM(33) 查询面（M18-③）**：EXEC_IMAGES ring3 枚举
+  ——NUL 结尾路径拷入，返回 `(1<<32)|(总数<<16)|字节数`；越界
+  ERR_IMAGE / 过短 EFAULT（零拷贝路径：长度校验先行）；ring3 自此
+  免硬编码映像表。
+- **pf-hunt 复跑统计面（M18-①）**：`scripts/pf-hunt.sh`——S8 同款
+  QEMU 冒烟自动复跑（TLV 注帧定型：进程替换方案，FIFO 方案实测
+  死锁记档），退出码 + 全量串口逐轮留存（lumina-build/pf-evidence/），
+  失败轮自动保全证据。
+
+### 自检
+- 裸机 59 → 62：t59 canary-audit（全表审计 + AP 栈 + 零违反）、
+  t60 o-excl-atomic-create、t61 dup2-exact-slot、t62 image-enum-face。
+- 宿主 bedrock 87 → 99（fsck 故障注入族 +12）。
+
+### 观察记档（M19 候补——诚实记档）
+- **间歇性不稳定家族（v0.17 时代同源，v0.18 记档 #PF 的扩展画像）**：
+  B3 基线 23 轮 pf-hunt 统计 = 19 过 / 3 静默挂死 / 1 自检簇败
+  （58/62，t29–t32 IPC/调度簇）；挂死点漂移（demand-paging 后 /
+  cap-grant 后），无 FAULT 无 CANARY 前兆——指向阻塞/唤醒/跨核
+  派发织物的时序窗（slots_pair a==b panic 与 t24 served=0 同族）。
+  取证面已就位（canary + SCHED-BUG 转储 + #PF 真帧 + 复跑统计），
+  根因定位 = M19 首块。
+- **布局敏感实证**：同源码几字节位移（slots_pair 取证分支 + fmt）
+  即令 B2 六连 193 → B3 全绿——竞争窗口随代码布局成败（M17「布局
+  漂移放大」机制同源复证）。
+
 ## v0.18.0（2026-10-11）—— M17-①：持久化存储面 + M17-②：readdir 稳定 cookie + M17-③：mount 占用检查
 
 ### 新增

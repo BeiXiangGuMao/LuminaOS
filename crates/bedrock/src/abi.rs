@@ -219,12 +219,27 @@ pub const SYS_DUP: u64 = 31;
 /// 空闲位 → `EMFILE(24)`。
 pub const SYS_FCNTL: u64 = 32;
 
+/// 执行映像表查询（v0.19 追加，M18-③ ring3 查询面）。
+///
+/// 参数：映像号 = rdi（内核 `EXEC_IMAGES` 路径表索引）、缓冲
+/// 指针 = rsi（调用方可写内存）、缓冲长 = rdx（字节，≤ 512，结构
+/// 校验）。成功返回 `(1 << 32) | (总数 << 16) | 拷贝字节数`：将第
+/// `index` 项路径（NUL 结尾，截断防御）拷入调用方缓冲；总数 = 表
+/// 容量（ring3 可据此或以 `ERR_IMAGE` 终止枚举循环）。索引越界 →
+/// `ERR_IMAGE(10)`；缓冲不可写/过短 → `EFAULT(14)`（零拷贝路径——
+/// 长度校验先行）。ring3 自此免硬编码映像表。
+pub const SYS_IMAGE_ENUM: u64 = 33;
+
 /// [`SYS_FCNTL`] 命令：复制句柄（rdx = 新句柄号下界）。
 pub const F_DUPFD: u64 = 0;
 /// [`SYS_FCNTL`] 命令：读描述符旗标。
 pub const F_GETFD: u64 = 1;
 /// [`SYS_FCNTL`] 命令：写描述符旗标（参数 = 旗标位集）。
 pub const F_SETFD: u64 = 2;
+/// [`SYS_FCNTL`] 命令：复制句柄至**指定槽位**（v0.19，M18-③ dup2 面：
+/// 参数 = 目标句柄号；目标已开则原子关替（OFD 引用计数递减——
+/// EBUSY 卸载占用面联动）；目标 == 源 → 无操作直返）。
+pub const F_DUP2FD: u64 = 3;
 /// 描述符旗标 bit0：exec 时关闭（`close-on-exec`）。
 pub const FD_CLOEXEC: u64 = 1;
 
@@ -232,8 +247,14 @@ pub const FD_CLOEXEC: u64 = 1;
 pub const O_CREAT: u64 = 0b0100;
 /// [`SYS_OPEN`] 模式 bit3：可写打开成功后截断为零长（v0.17，M16-①）。
 pub const O_TRUNC: u64 = 0b1000;
-/// [`SYS_OPEN`] 模式合法域掩码（访问位 0b11 | O_CREAT(bit2) | O_TRUNC(bit3)）。
-pub const OPEN_MODE_MASK: u64 = 0b1111;
+/// [`SYS_OPEN`] 模式 bit4：排他创建（v0.19，M18-③）：与 [`O_CREAT`]
+/// 同用时目标已存在 → `EEXIST(17)` 原子拒开（不加不删——lockfile
+/// 语义基座）。不与 [`O_CREAT`] 同用时无效应（POSIX 未定义域收敛，
+/// 如实记档）。
+pub const O_EXCL: u64 = 0b1_0000;
+/// [`SYS_OPEN`] 模式合法域掩码（访问位 0b11 | O_CREAT(bit2) | O_TRUNC(bit3)
+/// | O_EXCL(bit4)）。
+pub const OPEN_MODE_MASK: u64 = 0b1_1111;
 
 /// 以内核内嵌映像重建调用方地址空间（v0.12 追加，M12-B 执行映像面）。
 ///
@@ -244,7 +265,9 @@ pub const OPEN_MODE_MASK: u64 = 0b1111;
 /// 无独立用户空间 → `ERR_CAP`；帧耗尽 → `ERR_NOMEM(9)`。
 pub const SYS_EXEC: u64 = 17;
 
-/// 系统调用 ABI 版本（v0.18 = M17：SYS_MOUNT fs_type 域扩容 0..=1
+/// 系统调用 ABI 版本（v0.19 = M18：SYS_OPEN 模式域扩容 O_EXCL（bit4）、
+/// SYS_FCNTL 命令域扩容 F_DUP2FD（0..=3）、新增 SYS_IMAGE_ENUM(33)
+/// ring3 映像表查询面；v0.18 = M17：SYS_MOUNT fs_type 域扩容 0..=1
 /// （1 = LFS1 盘上文件系统——块设备 + 盘上 fs，ABI 寄存器面不变）；
 /// v0.17 = M16：文件创建面 SYS_OPEN 模式域扩展 O_CREAT/O_TRUNC +
 /// SYS_QUOTA kind 3 栈增长窗口 + EXEC Weave 包源映像（ABI 寄存器面
@@ -252,7 +275,7 @@ pub const SYS_EXEC: u64 = 17;
 /// v0.16 = M15：目录面五落点 MKDIR/REMOVE/READDIR/MOUNT/UMOUNT +
 /// 句柄面深化 DUP/FCNTL（CLOEXEC）+ NANOSLEEP 参数语义升级为 TSC 纳秒。
 /// v0.8 = SYS_QUOTA；v0.7 = 文件面六落点 + NANOSLEEP + 统一句柄面）。
-pub const ABI_VERSION: (u16, u16) = (0, 11);
+pub const ABI_VERSION: (u16, u16) = (0, 12);
 
 /// 寄存器快照形式的系统调用请求。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -458,10 +481,19 @@ pub enum Syscall {
     Fcntl {
         /// 句柄。
         handle: u64,
-        /// 命令（0 = DUPFD / 1 = GETFD / 2 = SETFD）。
+        /// 命令（0 = DUPFD / 1 = GETFD / 2 = SETFD / 3 = DUP2FD）。
         cmd: u64,
-        /// 参数（DUPFD 下界 / SETFD 旗标位集）。
+        /// 参数（DUPFD 下界 / SETFD 旗标位集 / DUP2FD 目标槽位）。
         arg: u64,
+    },
+    /// 执行映像表查询（v0.19，M18-③；见 [`SYS_IMAGE_ENUM`]）。
+    ImageEnum {
+        /// 映像号（表索引；越界 → `ERR_IMAGE(10)`）。
+        index: u64,
+        /// 调用方缓冲指针（可写；路径 NUL 结尾拷入）。
+        buf: u64,
+        /// 缓冲长（字节，≤ 512）。
+        buf_len: u64,
     },
 }
 
@@ -547,12 +579,18 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
         SYS_UMOUNT if a1 <= 512 => Ok(Syscall::Umount { len: a1 }),
         SYS_UMOUNT => Err(AbiError::BadArgs),
         SYS_DUP => Ok(Syscall::Dup { handle: a0 }),
-        SYS_FCNTL if a1 <= 2 => Ok(Syscall::Fcntl {
+        SYS_FCNTL if a1 <= 3 => Ok(Syscall::Fcntl {
             handle: a0,
             cmd: a1,
             arg: a2,
         }),
         SYS_FCNTL => Err(AbiError::BadArgs),
+        SYS_IMAGE_ENUM if a2 <= 512 => Ok(Syscall::ImageEnum {
+            index: a0,
+            buf: a1,
+            buf_len: a2,
+        }),
+        SYS_IMAGE_ENUM => Err(AbiError::BadArgs),
         _ => Err(AbiError::UnknownSyscall),
     }
 }
@@ -855,13 +893,21 @@ mod tests {
             super::parse(r(super::SYS_DUP, [3, 0, 0, 0, 0])),
             Ok(Syscall::Dup { handle: 3 })
         );
-        // FCNTL：命令 ∈ 0..=2 结构校验（F_DUPFD/F_GETFD/F_SETFD）；arg 透传
+        // FCNTL：命令 ∈ 0..=3 结构校验（DUPFD/GETFD/SETFD/DUP2FD）；arg 透传
         assert_eq!(
             super::parse(r(super::SYS_FCNTL, [3, super::F_DUPFD, 4, 0, 0])),
             Ok(Syscall::Fcntl {
                 handle: 3,
                 cmd: super::F_DUPFD,
                 arg: 4
+            })
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_FCNTL, [3, super::F_DUP2FD, 5, 0, 0])),
+            Ok(Syscall::Fcntl {
+                handle: 3,
+                cmd: super::F_DUP2FD,
+                arg: 5
             })
         );
         assert_eq!(
@@ -876,9 +922,23 @@ mod tests {
             })
         );
         assert_eq!(
-            super::parse(r(super::SYS_FCNTL, [3, 3, 0, 0, 0])),
+            super::parse(r(super::SYS_FCNTL, [3, 4, 0, 0, 0])),
             Err(AbiError::BadArgs),
             "命令越界"
+        );
+        // IMAGE_ENUM：index/buf 透传，buf_len ≤ 512 结构校验
+        assert_eq!(
+            super::parse(r(super::SYS_IMAGE_ENUM, [1, 0x4000_0000, 64, 0, 0])),
+            Ok(Syscall::ImageEnum {
+                index: 1,
+                buf: 0x4000_0000,
+                buf_len: 64
+            })
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_IMAGE_ENUM, [1, 0x4000_0000, 513, 0, 0])),
+            Err(AbiError::BadArgs),
+            "缓冲长越界"
         );
     }
 
@@ -900,7 +960,8 @@ mod tests {
         assert_eq!(super::SYS_UMOUNT, 30);
         assert_eq!(super::SYS_DUP, 31);
         assert_eq!(super::SYS_FCNTL, 32);
-        assert_eq!(super::ABI_VERSION, (0, 11));
+        assert_eq!(super::SYS_IMAGE_ENUM, 33);
+        assert_eq!(super::ABI_VERSION, (0, 12));
     }
 
     #[test]

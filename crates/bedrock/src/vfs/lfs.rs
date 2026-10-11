@@ -23,8 +23,14 @@
 //!
 //! 语义注记（v0 诚实记档）：
 //! - `format_or_open`：magic 无效即格式化——挂载即接管语义，无属主
-//!   鉴别与 fsck（自检/实验内核定位）；
-//! - 无日志/写缓冲：每操作读-改-写直落块设备，崩溃窗口一致性不设防；
+//!   鉴别；**M18-② 起：挂载时若超级块脏旗置位，先跑 fsck-lite 一致性
+//!   修复（孤儿 inode 回收 / 数据位图重建 / 目录 next_cookie 修复 /
+//!   根目录不可信则重格式化）再挂载**（修复报告存入实例，
+//!   [`Lfs::last_fsck`] 读取）；
+//! - 无日志/写缓冲：每操作读-改-写直落块设备；崩溃窗口一致性由
+//!   **脏旗 + 挂载修复**承接（操作前置脏旗、完成后清除——中途断电
+//!   留下脏旗，下次挂载必过 fsck；误置方向保守：拒收型错误也可能
+//!   留脏旗，多余一次无害 fsck 优于漏一次）；
 //! - 目录区满 / 数据块耗尽 / inode 耗尽 → [`FsError::NoSpace`]；
 //! - readdir（全量面）按名字典序输出（RamFs 同款），readdir_from
 //!   （稳定 cookie 面）按 cookie 升序（= 创建序，盘上持久序）。
@@ -59,6 +65,23 @@ const INDIRECT_SLOTS: usize = BLOCK_SIZE / 4;
 const FILE_MAX_BLOCKS: u64 = (DIRECT_BLOCKS + INDIRECT_SLOTS) as u64;
 /// 格式化所需最小介质容量（超级块 + 双位图 + inode 表 + 少量数据块）。
 const MIN_BLOCKS: u64 = 16;
+/// 超级块脏旗偏移（u32；0 = clean，非 0 = 前次操作未完成，挂载必 fsck）。
+/// 与 ROOT_INO（偏移 64）相邻，superblock 预留区内的首个空槽。
+const SB_DIRTY_OFF: usize = 68;
+
+/// fsck-lite 修复报告（M18-②）：挂载时修复面/独立 fsck 的结果快照。
+/// 全零 = 无修复发生（干净挂载快路径）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FsckReport {
+    /// 孤儿/幽灵 inode 修复数（位图↔记录↔可达集对账后的回收与补登记）。
+    pub orphans_freed: u32,
+    /// 数据位图修正位数（泄漏清除 + 未标记活块补置）。
+    pub data_bitmap_fixed: u32,
+    /// 目录 next_cookie 修复数（≤ 最大历史 cookie → 抬到 max+1）。
+    pub cookies_repaired: u32,
+    /// 根目录记录不可信（kind ≠ DIR）→ 整盘重格式化。
+    pub reformatted: bool,
+}
 
 /// Lfs 实例的共享态：介质句柄 + 超级块（挂载时定，只读）+ 粗粒度
 /// 串行锁（v0 全操作互斥——确定性优先，细粒度留待并发文件面块）。
@@ -66,6 +89,8 @@ pub struct Lfs {
     dev: Arc<dyn BlockDevice>,
     sb: Superblock,
     io: SpinLock<()>,
+    /// 挂载时 fsck-lite 修复报告（无修复 = 全零；[`Lfs::last_fsck`]）。
+    fsck: FsckReport,
 }
 
 /// 超级块解析态（LBA 0 的内存映像；挂载时校验后固化）。
@@ -79,6 +104,8 @@ struct Superblock {
     data_bitmap_blocks: u64,
     inode_table_lba: u64,
     data_start_lba: u64,
+    /// 脏旗（M18-②：挂载决策面——置位则先 fsck-lite 再挂载）。
+    dirty: bool,
 }
 
 // ---- 小端字段读写辅助（块内偏移取放） ----
@@ -127,14 +154,20 @@ impl Lfs {
         Ok(v.0 as u32)
     }
 
-    /// 挂载入口：超级块有效即原样挂载；无效（含空白介质）即格式化后
-    /// 挂载（v0「挂载即接管」语义，见模块注记）。
+    /// 挂载入口：超级块有效即原样挂载（脏旗置位则先 fsck-lite 修复）；
+    /// 无效（含空白介质）即格式化后挂载（v0「挂载即接管」语义，见模块注记）。
     pub fn format_or_open(dev: Arc<dyn BlockDevice>) -> Result<Self, FsError> {
         if let Some(sb) = Self::probe(&dev) {
+            let fsck = if sb.dirty {
+                Self::repair(&dev, sb)?
+            } else {
+                FsckReport::default()
+            };
             return Ok(Self {
                 dev,
                 sb,
                 io: SpinLock::new(()),
+                fsck,
             });
         }
         Self::format(dev.clone())?;
@@ -143,7 +176,23 @@ impl Lfs {
             dev,
             sb,
             io: SpinLock::new(()),
+            fsck: FsckReport::default(),
         })
+    }
+
+    /// 独立 fsck 入口（M18-②）：探测有效且脏旗置位才修复；干净介质
+    /// 零写返回（快路径）；探测失败（非 LFS1/过小）→ `NotSupported`。
+    pub fn fsck(dev: Arc<dyn BlockDevice>) -> Result<FsckReport, FsError> {
+        match Self::probe(&dev) {
+            Some(sb) if sb.dirty => Self::repair(&dev, sb),
+            Some(_) => Ok(FsckReport::default()),
+            None => Err(FsError::NotSupported),
+        }
+    }
+
+    /// 挂载时修复报告（M18-②）：本实例挂载过程中 fsck-lite 的修复快照。
+    pub fn last_fsck(&self) -> FsckReport {
+        self.fsck
     }
 
     /// 仅读超级块并校验（不落任何写）；有效返回解析态。
@@ -167,6 +216,7 @@ impl Lfs {
             data_bitmap_blocks: le_u64(&b0, 40),
             inode_table_lba: le_u64(&b0, 48),
             data_start_lba: le_u64(&b0, 56),
+            dirty: le_u32(&b0, SB_DIRTY_OFF) != 0,
         })
     }
 
@@ -227,6 +277,225 @@ impl Lfs {
             &mut itab[(ROOT_INO as usize * INODE_SIZE)..(ROOT_INO as usize + 1) * INODE_SIZE],
         );
         dev.write_block(inode_table_lba, &itab).map_err(io_err)?;
+        Ok(())
+    }
+
+    // ---- 脏旗与崩溃窗口面（M18-②） ----
+
+    /// 读脏旗（独立面：测试与诊断用；probe 已随超级块解析）。
+    #[cfg(test)]
+    fn sb_dirty(dev: &Arc<dyn BlockDevice>) -> Result<bool, FsError> {
+        let mut b0 = [0u8; BLOCK_SIZE];
+        dev.read_block(0, &mut b0).map_err(io_err)?;
+        Ok(le_u32(&b0, SB_DIRTY_OFF) != 0)
+    }
+
+    /// 写脏旗（调用方须已持 io 锁：与操作体同窗，无额外同步）。
+    fn sb_set_dirty(dev: &Arc<dyn BlockDevice>, on: bool) -> Result<(), FsError> {
+        let mut b0 = [0u8; BLOCK_SIZE];
+        dev.read_block(0, &mut b0).map_err(io_err)?;
+        put_u32(&mut b0, SB_DIRTY_OFF, u32::from(on));
+        dev.write_block(0, &b0).map_err(io_err)
+    }
+
+    /// 变更操作脏旗包装（M18-②）：置位 → 操作体 → 成功则清除。
+    /// 失败路径**有意留脏**：拒收型错误（未写介质）也会留下脏旗，
+    /// 下次挂载多一次无害 fsck——保守方向（漏检不可接受，误检廉价）。
+    /// 调用方须已持 io 锁。
+    fn with_dirty<T>(&self, f: impl FnOnce() -> Result<T, FsError>) -> Result<T, FsError> {
+        Self::sb_set_dirty(&self.dev, true)?;
+        let r = f();
+        if r.is_ok() {
+            Self::sb_set_dirty(&self.dev, false)?;
+        }
+        r
+    }
+
+    /// fsck-lite 修复主体（M18-②）：自根可达集对账 → 孤儿 inode 回收
+    /// → 数据位图重建 → 目录 next_cookie 抬升 → 清脏旗。完成即介质
+    /// 一致（幂等收敛：修复后再挂零修复）。
+    fn repair(dev: &Arc<dyn BlockDevice>, sb: Superblock) -> Result<FsckReport, FsError> {
+        let tmp = Self {
+            dev: dev.clone(),
+            sb,
+            io: SpinLock::new(()),
+            fsck: FsckReport::default(),
+        };
+        let mut rep = FsckReport::default();
+        // 0) 根目录健全性：根记录 kind ≠ DIR → 全盘不可信 → 重格式化
+        //    （「挂载即接管」语义的崩惯终点；数据让位于可用性，记档）。
+        if tmp.read_inode(dev, ROOT_INO)?.kind != KIND_DIR {
+            Self::format(dev.clone())?;
+            rep.reformatted = true;
+            return Ok(rep); // format 后超级块 clean，无需再清旗
+        }
+        // 1) 自根可达集（BFS；mark-on-enqueue 防环防重；目录记录防御式
+        //    解析——尾残/坏名按 scan_dir 同款截断消化）。
+        let mut live = [false; INODE_TOTAL as usize];
+        live[ROOT_INO as usize] = true;
+        let mut queue = Vec::new();
+        queue.push(ROOT_INO);
+        let mut qi = 0usize;
+        while qi < queue.len() {
+            let d = queue[qi];
+            qi += 1;
+            for r in tmp.scan_dir(dev, d)? {
+                if r.ino == 0 || (r.ino as usize) >= INODE_TOTAL as usize {
+                    continue;
+                }
+                let slot = r.ino as usize;
+                if live[slot] {
+                    continue;
+                }
+                let crec = tmp.read_inode(dev, r.ino)?;
+                if crec.kind == KIND_FREE {
+                    continue; // 悬空记录（指向已空 inode）：readdir 面已防御，不修复
+                }
+                live[slot] = true;
+                if crec.kind == KIND_DIR {
+                    queue.push(r.ino);
+                }
+            }
+        }
+        // 2) 孤儿/幽灵 inode 对账：
+        //    - 位图置位但不可达 → 链释放 + 记录清零 + 位图清除；
+        //    - 位图未置但记录非空 → 幽灵记录清零；
+        //    - 位图未置但可达 → 补置位（防御面；正常时序不可达）。
+        for ino in 1..INODE_TOTAL {
+            let slot = ino as usize;
+            let marked = Self::bit_test(dev, sb.inode_bitmap_lba, u64::from(ino))?;
+            if live[slot] {
+                if !marked {
+                    Self::bit_set(dev, sb.inode_bitmap_lba, u64::from(ino), true)?;
+                    rep.orphans_freed += 1; // 补登记计入 inode 面修复
+                }
+                continue;
+            }
+            let rec = tmp.read_inode(dev, ino)?;
+            if marked {
+                if rec.kind != KIND_FREE {
+                    tmp.free_chain_guarded(dev, &rec)?;
+                }
+                tmp.write_inode(dev, ino, &InodeRec::default())?;
+                Self::bit_set(dev, sb.inode_bitmap_lba, u64::from(ino), false)?;
+                rep.orphans_freed += 1;
+            } else if rec.kind != KIND_FREE {
+                tmp.write_inode(dev, ino, &InodeRec::default())?;
+                rep.orphans_freed += 1;
+            }
+        }
+        // 2b) 链越界检测（活 inode 的 direct/indirect LBA 出数据区界 →
+        //     位图/记录区腐坏面）：按孤儿回收（防御式释放，不再计引用）。
+        let mut chain_bad = [false; INODE_TOTAL as usize];
+        for ino in 1..INODE_TOTAL {
+            let slot = ino as usize;
+            if !live[slot] {
+                continue;
+            }
+            let rec = tmp.read_inode(dev, ino)?;
+            let out = |lba: u64| lba < sb.data_start_lba || lba >= sb.total_blocks;
+            let bad = rec.direct.iter().any(|d| *d != 0 && out(u64::from(*d)))
+                || (rec.indirect != 0 && out(u64::from(rec.indirect)));
+            if bad {
+                chain_bad[slot] = true;
+                tmp.free_chain_guarded(dev, &rec)?;
+                tmp.write_inode(dev, ino, &InodeRec::default())?;
+                Self::bit_set(dev, sb.inode_bitmap_lba, u64::from(ino), false)?;
+                rep.orphans_freed += 1;
+            }
+        }
+        // 3) 数据位图重建：活且链健全 inode 的引用集 vs 位图全量对账
+        //    （泄漏清除 + 未标记活块补置；一次全扫，几何有界）。
+        let bits = (sb.total_blocks - sb.data_start_lba) as usize;
+        let mut refs = alloc::vec![false; bits];
+        for ino in 1..INODE_TOTAL {
+            let slot = ino as usize;
+            if !live[slot] || chain_bad[slot] {
+                continue;
+            }
+            let rec = tmp.read_inode(dev, ino)?;
+            for d in rec.direct.iter().copied().filter(|d| *d != 0) {
+                refs[(u64::from(d) - sb.data_start_lba) as usize] = true;
+            }
+            if rec.indirect != 0 {
+                refs[(u64::from(rec.indirect) - sb.data_start_lba) as usize] = true;
+                let mut ib = [0u8; BLOCK_SIZE];
+                dev.read_block(u64::from(rec.indirect), &mut ib)
+                    .map_err(io_err)?;
+                for s in 0..INDIRECT_SLOTS {
+                    let lba = u64::from(le_u32(&ib, s * 4));
+                    if lba != 0 && lba >= sb.data_start_lba && lba < sb.total_blocks {
+                        refs[(lba - sb.data_start_lba) as usize] = true;
+                    }
+                }
+            }
+        }
+        for idx in 0..bits as u64 {
+            let marked = Self::bit_test(dev, sb.data_bitmap_lba, idx)?;
+            if marked != refs[idx as usize] {
+                Self::bit_set(dev, sb.data_bitmap_lba, idx, refs[idx as usize])?;
+                rep.data_bitmap_fixed += 1;
+            }
+        }
+        // 4) 目录 next_cookie 抬升：≤ 最大历史 cookie → max+1（M17-②
+        //    「新项 cookie 严格大于全部历史值」契约的防御面；v0 布局下
+        //    size/next_cookie 同一次 inode 写落地，回退窗口实测不存在，
+        //    本修复为纯防御 + 手工腐坏修复面）。
+        for ino in 1..INODE_TOTAL {
+            let slot = ino as usize;
+            if !live[slot] || chain_bad[slot] {
+                continue;
+            }
+            let rec = tmp.read_inode(dev, ino)?;
+            if rec.kind != KIND_DIR {
+                continue;
+            }
+            let maxc = tmp
+                .scan_dir(dev, ino)?
+                .iter()
+                .map(|r| r.cookie)
+                .max()
+                .unwrap_or(0);
+            if u64::from(rec.next_cookie) <= maxc && maxc < u64::from(u32::MAX) {
+                let mut fixed = rec;
+                fixed.next_cookie = (maxc + 1) as u32;
+                tmp.write_inode(dev, ino, &fixed)?;
+                rep.cookies_repaired += 1;
+            }
+        }
+        // 5) 修复完成 → 清脏旗（此后挂载走快路径）。
+        Self::sb_set_dirty(dev, false)?;
+        Ok(rep)
+    }
+
+    /// 链释放的防御式变体（fsck 专用）：LBA 越出数据区界的项静默跳过
+    /// （不触发位图越界；介质腐坏面的安全释放）。
+    fn free_chain_guarded(
+        &self,
+        dev: &Arc<dyn BlockDevice>,
+        rec: &InodeRec,
+    ) -> Result<(), FsError> {
+        let in_range = |lba: u64| lba >= self.sb.data_start_lba && lba < self.sb.total_blocks;
+        for d in rec.direct {
+            let lba = u64::from(d);
+            if d != 0 && in_range(lba) {
+                self.free_data_block(dev, lba)?;
+            }
+        }
+        if rec.indirect != 0 {
+            let ib_lba = u64::from(rec.indirect);
+            if in_range(ib_lba) {
+                let mut ib = [0u8; BLOCK_SIZE];
+                dev.read_block(ib_lba, &mut ib).map_err(io_err)?;
+                for s in 0..INDIRECT_SLOTS {
+                    let lba = u64::from(le_u32(&ib, s * 4));
+                    if lba != 0 && in_range(lba) {
+                        self.free_data_block(dev, lba)?;
+                    }
+                }
+                self.free_data_block(dev, ib_lba)?;
+            }
+        }
         Ok(())
     }
 
@@ -702,20 +971,23 @@ impl FileSystem for Lfs {
         if new_end > FILE_MAX_BLOCKS * BLOCK_SIZE as u64 {
             return Err(FsError::NoSpace);
         }
-        for (pos, byte) in (offset..).zip(data.iter()) {
-            let bi = pos / BLOCK_SIZE as u64;
-            let rel = (pos % BLOCK_SIZE as u64) as usize;
-            let lba = self.ensure_block_lba(&self.dev, ino, &mut rec, bi)?;
-            let mut b = [0u8; BLOCK_SIZE];
-            self.dev.read_block(lba, &mut b).map_err(io_err)?;
-            b[rel] = *byte;
-            self.dev.write_block(lba, &b).map_err(io_err)?;
-        }
-        if new_end > rec.size {
-            rec.size = new_end;
-            self.write_inode(&self.dev, ino, &rec)?;
-        }
-        Ok(data.len())
+        // M18-②：脏旗包装（数据链分配与 inode 落账同窗）。
+        self.with_dirty(|| {
+            for (pos, byte) in (offset..).zip(data.iter()) {
+                let bi = pos / BLOCK_SIZE as u64;
+                let rel = (pos % BLOCK_SIZE as u64) as usize;
+                let lba = self.ensure_block_lba(&self.dev, ino, &mut rec, bi)?;
+                let mut b = [0u8; BLOCK_SIZE];
+                self.dev.read_block(lba, &mut b).map_err(io_err)?;
+                b[rel] = *byte;
+                self.dev.write_block(lba, &b).map_err(io_err)?;
+            }
+            if new_end > rec.size {
+                rec.size = new_end;
+                self.write_inode(&self.dev, ino, &rec)?;
+            }
+            Ok(data.len())
+        })
     }
 
     fn create(&self, dir: VnodeId, name: &str, kind: NodeKind) -> Result<VnodeId, FsError> {
@@ -725,23 +997,26 @@ impl FileSystem for Lfs {
             _ => return Err(FsError::NotSupported),
         }
         let _g = self.io.lock();
-        let din = Self::ino_of(dir)?;
-        let existing = self.scan_dir(&self.dev, din)?;
-        if existing.iter().any(|r| r.name == name) {
-            return Err(FsError::AlreadyExists);
-        }
-        let ino = self.alloc_inode(&self.dev)?;
-        let rec = InodeRec {
-            kind: if kind.is_dir() { KIND_DIR } else { KIND_FILE },
-            size: 0,
-            direct: [0u32; DIRECT_BLOCKS],
-            indirect: 0,
-            // cookie 从 1 起（0 保留为「未开始枚举」哨兵，与 format 根目录同款）。
-            next_cookie: 1,
-        };
-        self.write_inode(&self.dev, ino, &rec)?;
-        self.append_dir_rec(&self.dev, din, ino, name)?;
-        Ok(VnodeId(u64::from(ino)))
+        // M18-②：脏旗包装（拒收型错误留脏——保守方向，见 with_dirty 注记）
+        self.with_dirty(|| {
+            let din = Self::ino_of(dir)?;
+            let existing = self.scan_dir(&self.dev, din)?;
+            if existing.iter().any(|r| r.name == name) {
+                return Err(FsError::AlreadyExists);
+            }
+            let ino = self.alloc_inode(&self.dev)?;
+            let rec = InodeRec {
+                kind: if kind.is_dir() { KIND_DIR } else { KIND_FILE },
+                size: 0,
+                direct: [0u32; DIRECT_BLOCKS],
+                indirect: 0,
+                // cookie 从 1 起（0 保留为「未开始枚举」哨兵，与 format 根目录同款）。
+                next_cookie: 1,
+            };
+            self.write_inode(&self.dev, ino, &rec)?;
+            self.append_dir_rec(&self.dev, din, ino, name)?;
+            Ok(VnodeId(u64::from(ino)))
+        })
     }
 
     fn unlink(&self, dir: VnodeId, name: &str) -> Result<(), FsError> {
@@ -749,31 +1024,34 @@ impl FileSystem for Lfs {
         let din = Self::ino_of(dir)?;
         let _g = self.io.lock();
         // 先查子节点类型/空目录（拒绝路径零副作用），再墓碑化。
-        let recs = self.scan_dir(&self.dev, din)?;
-        let child = recs
-            .iter()
-            .find(|r| r.name == name)
-            .map(|r| r.ino)
-            .ok_or(FsError::NotFound)?;
-        let rec = self.read_inode(&self.dev, child)?;
-        if rec.kind == KIND_DIR {
-            let entries = self.scan_dir(&self.dev, child)?;
-            if !entries.is_empty() {
-                return Err(FsError::DirectoryNotEmpty);
+        // M18-②：脏旗包装（拒绝路径留脏——保守方向，见 with_dirty 注记）。
+        self.with_dirty(|| {
+            let recs = self.scan_dir(&self.dev, din)?;
+            let child = recs
+                .iter()
+                .find(|r| r.name == name)
+                .map(|r| r.ino)
+                .ok_or(FsError::NotFound)?;
+            let rec = self.read_inode(&self.dev, child)?;
+            if rec.kind == KIND_DIR {
+                let entries = self.scan_dir(&self.dev, child)?;
+                if !entries.is_empty() {
+                    return Err(FsError::DirectoryNotEmpty);
+                }
             }
-        }
-        self.tombstone_dir_rec(&self.dev, din, name)?;
-        if rec.kind != KIND_FREE {
-            self.free_data_chain(&self.dev, &rec)?;
-            let mut fresh = rec;
-            fresh.kind = KIND_FREE;
-            fresh.size = 0;
-            fresh.direct = [0u32; DIRECT_BLOCKS];
-            fresh.indirect = 0;
-            self.write_inode(&self.dev, child, &fresh)?;
-            Self::bit_set(&self.dev, self.sb.inode_bitmap_lba, u64::from(child), false)?;
-        }
-        Ok(())
+            self.tombstone_dir_rec(&self.dev, din, name)?;
+            if rec.kind != KIND_FREE {
+                self.free_data_chain(&self.dev, &rec)?;
+                let mut fresh = rec;
+                fresh.kind = KIND_FREE;
+                fresh.size = 0;
+                fresh.direct = [0u32; DIRECT_BLOCKS];
+                fresh.indirect = 0;
+                self.write_inode(&self.dev, child, &fresh)?;
+                Self::bit_set(&self.dev, self.sb.inode_bitmap_lba, u64::from(child), false)?;
+            }
+            Ok(())
+        })
     }
 
     fn truncate(&self, vnode: VnodeId) -> Result<(), FsError> {
@@ -786,11 +1064,13 @@ impl FileSystem for Lfs {
         if rec.kind != KIND_FILE {
             return Err(FsError::IsDirectory);
         }
-        self.free_data_chain(&self.dev, &rec)?;
-        rec.size = 0;
-        rec.direct = [0u32; DIRECT_BLOCKS];
-        rec.indirect = 0;
-        self.write_inode(&self.dev, ino, &rec)
+        self.with_dirty(|| {
+            self.free_data_chain(&self.dev, &rec)?;
+            rec.size = 0;
+            rec.direct = [0u32; DIRECT_BLOCKS];
+            rec.indirect = 0;
+            self.write_inode(&self.dev, ino, &rec)
+        })
     }
 
     fn readdir(&self, dir: VnodeId) -> Result<Vec<DirEntry>, FsError> {
@@ -836,9 +1116,9 @@ impl FileSystem for Lfs {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{FileSystem, Lfs, ROOT_INO};
-    use crate::block::{MemBlock, BLOCK_SIZE};
+    use crate::block::{BlockDevice, BlockError, MemBlock, BLOCK_SIZE};
     use crate::vfs::node::NodeKind;
-    use crate::vfs::FsError;
+    use crate::vfs::{FsError, VnodeId};
     use alloc::sync::Arc;
     use alloc::vec;
     use alloc::vec::Vec;
@@ -1094,5 +1374,382 @@ mod tests {
             Lfs::format_or_open(MemBlock::arced(8)),
             Err(FsError::NoSpace)
         ));
+    }
+
+    // ---- M18-② fsck-lite：脏旗 + 故障注入 + 手工腐坏修复族 ----
+
+    /// 断电模拟盘：第 `cut_after` 次写入后的全部写入**静默丢弃**
+    /// （介质冻结在截断点——与「操作进行到一半掉电」同构；读取不受
+    /// 影响，与块设备契约一致）。
+    struct FaultyBlock {
+        inner: Arc<MemBlock>,
+        cut_after: usize,
+        writes: core::sync::atomic::AtomicUsize,
+    }
+
+    impl FaultyBlock {
+        fn arced(inner: Arc<MemBlock>, cut_after: usize) -> Arc<Self> {
+            Arc::new(Self {
+                inner,
+                cut_after,
+                writes: core::sync::atomic::AtomicUsize::new(0),
+            })
+        }
+    }
+
+    impl BlockDevice for FaultyBlock {
+        fn read_block(&self, index: u64, dst: &mut [u8; BLOCK_SIZE]) -> Result<(), BlockError> {
+            self.inner.read_block(index, dst)
+        }
+
+        fn write_block(&self, index: u64, src: &[u8; BLOCK_SIZE]) -> Result<(), BlockError> {
+            let n = self
+                .writes
+                .fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+                + 1;
+            if n > self.cut_after {
+                Ok(()) // 断电：写入丢失
+            } else {
+                self.inner.write_block(index, src)
+            }
+        }
+
+        fn block_count(&self) -> u64 {
+            self.inner.block_count()
+        }
+    }
+
+    /// 修复后介质必须幂等收敛：修复挂载 → 报告；再挂一次必须零修复。
+    fn assert_idempotent(dev: &Arc<MemBlock>) -> super::FsckReport {
+        let fs = Lfs::format_or_open(dev.clone()).expect("remount after repair");
+        let rep = fs.last_fsck();
+        drop(fs);
+        let fs2 = Lfs::format_or_open(dev.clone()).expect("remount #2");
+        assert_eq!(
+            fs2.last_fsck(),
+            super::FsckReport::default(),
+            "repaired medium must converge to zero-repair"
+        );
+        rep
+    }
+
+    #[test]
+    fn dirty_flag_lifecycle_and_rejected_op_leaves_dirty() {
+        let dev: Arc<dyn BlockDevice> = MemBlock::arced(64);
+        let fs = Lfs::format_or_open(dev.clone()).expect("mount");
+        assert!(
+            !Lfs::sb_dirty(&dev).expect("dirty read"),
+            "clean after mount"
+        );
+        let root = fs.root_vnode();
+        fs.create(root, "a", NodeKind::File).expect("create");
+        assert!(
+            !Lfs::sb_dirty(&dev).expect("dirty read"),
+            "clean after ok op"
+        );
+        // 拒收型错误（重名）：介质未写，但脏旗**有意留存**（保守方向）。
+        assert_eq!(
+            fs.create(root, "a", NodeKind::File),
+            Err(FsError::AlreadyExists)
+        );
+        assert!(
+            Lfs::sb_dirty(&dev).expect("dirty read"),
+            "rejected op leaves dirty"
+        );
+        drop(fs);
+        // 挂载触发 fsck：介质一致 → 零修复 + 旗清。
+        let fs2 = Lfs::format_or_open(dev.clone()).expect("remount");
+        assert_eq!(fs2.last_fsck(), super::FsckReport::default());
+        assert!(
+            !Lfs::sb_dirty(&dev).expect("dirty read"),
+            "flag cleared by fsck"
+        );
+        assert_eq!(fs2.lookup(fs2.root_vnode(), "a").expect("a"), VnodeId(2));
+    }
+
+    #[test]
+    fn fsck_on_clean_medium_is_noop() {
+        let dev: Arc<dyn BlockDevice> = MemBlock::arced(64);
+        let fs = Lfs::format_or_open(dev.clone()).expect("mount");
+        fs.create(fs.root_vnode(), "f", NodeKind::File)
+            .expect("create");
+        drop(fs);
+        // 独立 fsck：干净介质零写零修复。
+        assert_eq!(
+            Lfs::fsck(dev.clone()).expect("fsck"),
+            super::FsckReport::default()
+        );
+        let fs2 = Lfs::format_or_open(dev).expect("remount");
+        assert_eq!(fs2.last_fsck(), super::FsckReport::default());
+    }
+
+    #[test]
+    fn fault_sweep_create_all_cut_points_converge() {
+        // create 的全部断电截断点（k = 第 k 次写后断电）：修复后介质
+        // 幂等收敛 + 文件面可用 + 项要么完整在、要么不在。
+        for k in 0..=10usize {
+            let mem = MemBlock::arced(64);
+            Lfs::format(mem.clone()).expect("pre-format");
+            let faulty = FaultyBlock::arced(mem.clone(), k);
+            let fs = Lfs::format_or_open(faulty as Arc<dyn BlockDevice>).expect("mount faulty");
+            let _ = fs.create(fs.root_vnode(), "f", NodeKind::File);
+            drop(fs);
+            let rep = assert_idempotent(&mem);
+            assert!(!rep.reformatted, "k={k}: create cut must not reformat");
+            let fs2 = Lfs::format_or_open(mem.clone()).expect("remount");
+            let root = fs2.root_vnode();
+            let found = fs2.lookup(root, "f");
+            if let Ok(v) = found {
+                // 完整创建路径：写读回必须成立
+                fs2.write_at(v, 0, b"ok").expect("write after repair");
+            }
+            // fs 可继续使用（新项创建 + 枚举稳定）
+            fs2.create(root, "g", NodeKind::File)
+                .expect("create after repair");
+            let names: Vec<_> = fs2
+                .readdir(root)
+                .expect("readdir")
+                .iter()
+                .map(|e| e.name.clone())
+                .collect();
+            assert!(names.contains(&alloc::string::String::from("g")), "k={k}");
+        }
+    }
+
+    #[test]
+    fn fault_sweep_mkdir_all_cut_points_converge() {
+        for k in 0..=10usize {
+            let mem = MemBlock::arced(64);
+            Lfs::format(mem.clone()).expect("pre-format");
+            let faulty = FaultyBlock::arced(mem.clone(), k);
+            let fs = Lfs::format_or_open(faulty as Arc<dyn BlockDevice>).expect("mount faulty");
+            let _ = fs.create(fs.root_vnode(), "d", NodeKind::Dir);
+            drop(fs);
+            let rep = assert_idempotent(&mem);
+            assert!(!rep.reformatted, "k={k}");
+            let fs2 = Lfs::format_or_open(mem.clone()).expect("remount");
+            let root = fs2.root_vnode();
+            if let Ok(d) = fs2.lookup(root, "d") {
+                fs2.create(d, "inner", NodeKind::File)
+                    .expect("create in repaired dir");
+            }
+            fs2.create(root, "z", NodeKind::File).expect("fs usable");
+        }
+    }
+
+    #[test]
+    fn fault_sweep_unlink_all_cut_points_converge() {
+        for k in 0..=9usize {
+            let mem = MemBlock::arced(64);
+            {
+                let fs = Lfs::format_or_open(mem.clone()).expect("setup mount");
+                let f = fs.create(fs.root_vnode(), "f", NodeKind::File).expect("f");
+                fs.write_at(f, 0, b"hello").expect("w1");
+                fs.write_at(f, BLOCK_SIZE as u64, b"world").expect("w2");
+            }
+            let faulty = FaultyBlock::arced(mem.clone(), k);
+            let fs = Lfs::format_or_open(faulty as Arc<dyn BlockDevice>).expect("mount faulty");
+            let _ = fs.unlink(fs.root_vnode(), "f");
+            drop(fs);
+            let rep = assert_idempotent(&mem);
+            assert!(!rep.reformatted, "k={k}");
+            // 修复后：f 要么不在（完整删除）、要么在且数据完好（删除未起步）
+            let fs2 = Lfs::format_or_open(mem.clone()).expect("remount");
+            let root = fs2.root_vnode();
+            if let Ok(v) = fs2.lookup(root, "f") {
+                let mut buf = [0u8; 5];
+                assert_eq!(fs2.read_at(v, 0, &mut buf).expect("read"), 5, "k={k}");
+                assert_eq!(&buf, b"hello", "k={k}");
+            }
+            // inode 槽位最终可复用（无泄漏态卡死）
+            fs2.create(root, "n", NodeKind::File)
+                .expect("create after repair");
+        }
+    }
+
+    #[test]
+    fn fault_sweep_write_alloc_leak_converges() {
+        // 跨块写（新块分配 = 位图置位 → 链落账 → 数据 → size）：全部
+        // 截断点修复后位图与活链一致（泄漏清除/缺标记补置）。
+        for k in 0..=9usize {
+            let mem = MemBlock::arced(64);
+            {
+                let fs = Lfs::format_or_open(mem.clone()).expect("setup mount");
+                let f = fs.create(fs.root_vnode(), "f", NodeKind::File).expect("f");
+                fs.write_at(f, 0, b"first").expect("w1");
+            }
+            let faulty = FaultyBlock::arced(mem.clone(), k);
+            let fs = Lfs::format_or_open(faulty as Arc<dyn BlockDevice>).expect("mount faulty");
+            let f = fs.lookup(fs.root_vnode(), "f").expect("f");
+            let _ = fs.write_at(f, BLOCK_SIZE as u64, b"second");
+            drop(fs);
+            let rep = assert_idempotent(&mem);
+            assert!(!rep.reformatted, "k={k}");
+            let fs2 = Lfs::format_or_open(mem.clone()).expect("remount");
+            let v = fs2.lookup(fs2.root_vnode(), "f").expect("f");
+            let mut buf = [0u8; 6];
+            let got = fs2.read_at(v, BLOCK_SIZE as u64, &mut buf).expect("read");
+            // 第二块要么完整在（写完成）、要么全零（块分配未起步/被回收清零）
+            assert!(got == 6 || got == 0, "k={k} got={got}");
+            if got == 6 {
+                assert_eq!(&buf, b"second", "k={k}");
+            }
+        }
+    }
+
+    #[test]
+    fn fault_sweep_truncate_all_cut_points_converge() {
+        for k in 0..=9usize {
+            let mem = MemBlock::arced(64);
+            {
+                let fs = Lfs::format_or_open(mem.clone()).expect("setup mount");
+                let f = fs.create(fs.root_vnode(), "f", NodeKind::File).expect("f");
+                fs.write_at(f, 0, b"one").expect("w1");
+                fs.write_at(f, BLOCK_SIZE as u64, b"two").expect("w2");
+            }
+            let faulty = FaultyBlock::arced(mem.clone(), k);
+            let fs = Lfs::format_or_open(faulty as Arc<dyn BlockDevice>).expect("mount faulty");
+            let f = fs.lookup(fs.root_vnode(), "f").expect("f");
+            let _ = fs.truncate(f);
+            drop(fs);
+            let rep = assert_idempotent(&mem);
+            assert!(!rep.reformatted, "k={k}");
+            let fs2 = Lfs::format_or_open(mem.clone()).expect("remount");
+            let v = fs2.lookup(fs2.root_vnode(), "f").expect("f");
+            // 合法崩溃结果二元：截断完成（size 0）或未发生（前态 515 完整保留）。
+            let size = fs2.metadata(v).expect("meta").size;
+            assert!(size == 0 || size == 515, "k={k} size={size}");
+        }
+    }
+
+    #[test]
+    fn manual_orphan_inode_with_data_reclaimed() {
+        let mem = MemBlock::arced(64);
+        let dev: Arc<dyn BlockDevice> = mem.clone();
+        {
+            let fs = Lfs::format_or_open(dev.clone()).expect("mount");
+            let f = fs.create(fs.root_vnode(), "a", NodeKind::File).expect("a");
+            fs.write_at(f, 0, b"payload").expect("write");
+        }
+        // 手工腐坏：墓碑化根目录记录（ino 域清零）→ inode 2 失去引用
+        // （位图仍置位 + 数据链在）→ 孤儿。
+        {
+            let tmp = Lfs::format_or_open(dev.clone()).expect("throwaway");
+            let root = tmp.read_inode(&dev, super::ROOT_INO).expect("root");
+            let lba = u64::from(root.direct[0]);
+            drop(tmp);
+            let mut b = [0u8; BLOCK_SIZE];
+            dev.read_block(lba, &mut b).expect("read rec");
+            assert_eq!(super::le_u32(&b, 0), 2, "record points at ino 2");
+            b[..4].fill(0);
+            dev.write_block(lba, &b).expect("tombstone");
+            Lfs::sb_set_dirty(&dev, true).expect("mark dirty");
+        }
+        let rep = assert_idempotent(&mem);
+        assert_eq!(rep.orphans_freed, 1, "orphan inode 2 reclaimed");
+        let fs = Lfs::format_or_open(dev.clone()).expect("remount");
+        assert_eq!(fs.lookup(fs.root_vnode(), "a"), Err(FsError::NotFound));
+        // 槽位回收：新建项复用 ino 2（first-fit 直证）。
+        let again = fs.create(fs.root_vnode(), "b", NodeKind::File).expect("b");
+        assert_eq!(again.0, 2, "orphan slot reused");
+    }
+
+    #[test]
+    fn manual_leaked_block_cleared_by_rebuild() {
+        let dev: Arc<dyn BlockDevice> = MemBlock::arced(64);
+        let sb;
+        {
+            let fs = Lfs::format_or_open(dev.clone()).expect("mount");
+            let f = fs.create(fs.root_vnode(), "a", NodeKind::File).expect("a");
+            fs.write_at(f, 0, b"x").expect("write");
+            sb = Lfs::probe(&dev).expect("probe");
+        }
+        // 手工泄漏：把一个**确实未使用**的数据块位图位置 1（idx 0/1 已被
+        // 根目录记录区与文件数据块合法引用，取 idx 5 —— 无任何链引用）。
+        Lfs::bit_set(&dev, sb.data_bitmap_lba, 5, true).expect("leak");
+        Lfs::sb_set_dirty(&dev, true).expect("dirty");
+        let fs = Lfs::format_or_open(dev.clone()).expect("remount+fsck");
+        assert!(fs.last_fsck().data_bitmap_fixed >= 1, "leak cleared");
+        assert_eq!(fs.last_fsck().orphans_freed, 0);
+    }
+
+    #[test]
+    fn manual_unmarked_live_block_restored() {
+        let dev: Arc<dyn BlockDevice> = MemBlock::arced(64);
+        {
+            let fs = Lfs::format_or_open(dev.clone()).expect("mount");
+            let f = fs.create(fs.root_vnode(), "a", NodeKind::File).expect("a");
+            fs.write_at(f, 0, b"keepme").expect("write");
+        }
+        let sb = Lfs::probe(&dev).expect("probe");
+        // 手工丢标记：文件数据块位图位清 0（链引用仍在）→ 补置位修复。
+        let tmp = Lfs::format_or_open(dev.clone()).expect("throwaway");
+        let rec = tmp.read_inode(&dev, 2).expect("ino2");
+        let idx = u64::from(rec.direct[0]) - sb.data_start_lba;
+        drop(tmp);
+        Lfs::bit_set(&dev, sb.data_bitmap_lba, idx, false).expect("unmark");
+        Lfs::sb_set_dirty(&dev, true).expect("dirty");
+        let fs = Lfs::format_or_open(dev.clone()).expect("remount+fsck");
+        assert!(
+            fs.last_fsck().data_bitmap_fixed >= 1,
+            "live block remarkeded"
+        );
+        // 数据完好直证。
+        let v = fs.lookup(fs.root_vnode(), "a").expect("a");
+        let mut buf = [0u8; 6];
+        assert_eq!(fs.read_at(v, 0, &mut buf).expect("read"), 6);
+        assert_eq!(&buf, b"keepme");
+    }
+
+    #[test]
+    fn manual_cookie_rollback_repaired() {
+        let dev: Arc<dyn BlockDevice> = MemBlock::arced(64);
+        {
+            let fs = Lfs::format_or_open(dev.clone()).expect("mount");
+            let d = fs.create(fs.root_vnode(), "d", NodeKind::Dir).expect("d");
+            fs.create(d, "x", NodeKind::File).expect("x"); // cookie 1
+        }
+        // 手工回退：d.next_cookie 抬回 1（≤ 最大历史 cookie）→ 修复面。
+        {
+            let tmp = Lfs::format_or_open(dev.clone()).expect("throwaway");
+            let mut rec = tmp.read_inode(&dev, 2).expect("dir ino");
+            rec.next_cookie = 1;
+            tmp.write_inode(&dev, 2, &rec).expect("rollback");
+            drop(tmp);
+            Lfs::sb_set_dirty(&dev, true).expect("dirty");
+        }
+        let fs = Lfs::format_or_open(dev.clone()).expect("remount+fsck");
+        assert_eq!(fs.last_fsck().cookies_repaired, 1, "cookie lifted");
+        let d = fs.lookup(fs.root_vnode(), "d").expect("d");
+        // 修复后新项 cookie 严格大于全部历史值（M17-② 契约保持）。
+        fs.create(d, "y", NodeKind::File).expect("y");
+        let items = fs.readdir_from(d, 1).expect("resume from x");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].entry.name, "y");
+        assert!(items[0].cookie > 1, "y cookie strictly after x");
+    }
+
+    #[test]
+    fn root_corrupt_reformats() {
+        let dev: Arc<dyn BlockDevice> = MemBlock::arced(64);
+        {
+            let fs = Lfs::format_or_open(dev.clone()).expect("mount");
+            fs.create(fs.root_vnode(), "a", NodeKind::File).expect("a");
+        }
+        // 手工腐坏：根 inode 记录 kind 清零（KIND_FREE）→ 不可信 → 重格式化。
+        let sb = Lfs::probe(&dev).expect("probe");
+        let mut itab = [0u8; BLOCK_SIZE];
+        dev.read_block(sb.inode_table_lba, &mut itab).expect("itab");
+        let off = super::ROOT_INO as usize * super::INODE_SIZE;
+        itab[off] = 0; // kind = KIND_FREE
+        dev.write_block(sb.inode_table_lba, &itab)
+            .expect("corrupt root");
+        Lfs::sb_set_dirty(&dev, true).expect("dirty");
+        let fs = Lfs::format_or_open(dev.clone()).expect("remount");
+        assert!(fs.last_fsck().reformatted, "root corrupt triggers reformat");
+        // 新根可用：枚举空、新建直证。
+        assert!(fs.readdir(fs.root_vnode()).expect("readdir").is_empty());
+        fs.create(fs.root_vnode(), "fresh", NodeKind::File)
+            .expect("create");
     }
 }

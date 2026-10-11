@@ -77,6 +77,15 @@ use ostd::task::{switch_deferred, SwitchPair, TaskContext};
 
 /// 任务内核栈大小：16 KiB。
 const STACK_BYTES: usize = 16 * 1024;
+/// 栈底 canary 魔数（M18-① 取证面：ASCII "LUMINACN"）。任务栈从高位
+/// 向下生长，栈底首四字永不入帧——溢出/越界写最先命中此处。盖章点 =
+/// 任务栈分配（Task::new，Kernel/User 同源）+ AP 引导栈（smp）；
+/// 校验点 = 派发咽喉（prepare_dispatch，五条派发路径唯一收口）+
+/// 全表审计（t59）。pub 供 smp 同源盖章。
+pub const STACK_CANARY: u64 = 0x4C55_4D49_4E41_434E;
+/// canary 破坏计数（自检 t59 断言 + 串口诊断；只增不减，日志去重由
+/// 调用侧负责任何场景下不刷屏——破坏本身即异常路径）。
+static CANARY_VIOLATIONS: AtomicU64 = AtomicU64::new(0);
 /// 抢占时间片（LAPIC 定时器节拍数）：3 拍 = 30 ms @100 Hz。
 pub const QUANTUM_TICKS: u64 = 3;
 /// 最大 CPU 槽位数（QEMU -smp 2；MADT 探测的上界契约）。
@@ -169,6 +178,9 @@ struct Task {
     stack: Vec<u128>,
     /// 内核栈顶绝对地址（用户任务派发时写入 TSS.RSP0）。
     stack_top: u64,
+    /// 内核栈底绝对地址（M18-① canary 盖章槽；0 = 无 canary——主任务
+    /// 引导栈无堆分配锚点，不纳入校验面，如实记档）。
+    stack_base: u64,
     /// 用户页表根物理地址（仅用户任务使用；内核任务恒为 0）。
     user_root: u64,
     /// 类别。
@@ -219,11 +231,16 @@ impl Task {
     /// 以入口创建新内核任务。
     fn new(name: &'static str, entry: Entry, trampoline: extern "C" fn() -> !) -> Self {
         let stack = alloc::vec![0u128; STACK_BYTES / size_of::<u128>()];
-        let top = stack.as_ptr() as u64 + STACK_BYTES as u64;
+        let base = stack.as_ptr() as u64;
+        let top = base + STACK_BYTES as u64;
+        // M18-①：栈底 canary 盖章（恒等映射低 1 GiB，write_u64 即写栈
+        // 首 qword 低 8 字节——该四字在栈向下生长语义下永不入帧）。
+        ostd::hw::phys::write_u64(base, STACK_CANARY);
         Self {
             name,
             stack,
             stack_top: top,
+            stack_base: base,
             user_root: 0,
             kind: Kind::Kernel,
             ctx: TaskContext::boot_new(top, trampoline),
@@ -287,6 +304,7 @@ impl Task {
             name: "main",
             stack: Vec::new(),
             stack_top: 0,
+            stack_base: 0,
             user_root: 0,
             kind: Kind::Kernel,
             ctx: TaskContext::stopped(),
@@ -873,6 +891,10 @@ pub fn resched_hits() -> u64 {
 /// 内核任务回归引导根（RSP0/PERCPU 留陈旧值无害：内核任务被中断时本就
 /// 在 ring0，不经 RSP0 切栈；入 ring3 前必有用户任务派发重写）。
 fn prepare_dispatch(t: &Task, boot_cr3: u64, cpu: usize) {
+    // M18-①：canary 校验（五条派发路径唯一收口；两次 volatile 读，
+    // 锁内无分配、无锁获取——中断语境可达）。旧任务的下一次派发即
+    // 校验其运行期/驻留期栈底完整性。
+    canary_check(t);
     match t.kind {
         Kind::User => {
             // TCG 双异常交付规避（S31 记档）：tick 交付进 ring3 为缺陷族
@@ -910,7 +932,32 @@ fn prepare_dispatch(t: &Task, boot_cr3: u64, cpu: usize) {
 }
 
 /// 取两互异槽位上下文的 SwitchPair（split_at_mut 证明互斥性）。
+/// **M18-① 专项取证点**：a == b（自切换）= 调度面竞态实锤——v0.18 观察期
+/// 即有本点 panic（len/idx 同值成对：2/2 与 0/0），此处升级为全现场
+/// 转储（双方状态 + 就绪队列在位性 + SWITCHING 旗 + 全队列内容）后再
+/// 触达既有的不可达断言（串口证据先于崩溃落盘，pf-hunt 全量留存）。
 fn slots_pair(s: &mut Scheduler, a: usize, b: usize) -> SwitchPair {
+    if a == b {
+        let mut serial = crate::console::SerialPort::com1();
+        serial.init();
+        let state_of = |id: usize| s.tasks.get(id).and_then(|t| t.as_ref().map(|t| t.state));
+        let in_ready = |id: usize| s.ready.iter().any(|q| q.contains(&id));
+        let _ = core::fmt::Write::write_fmt(
+            &mut serial,
+            format_args!(
+                "LUMINA-SCHED-BUG self-switch slot={} state-a={:?} in-ready-a={} switching-a={} state-b={:?}\n",
+                a,
+                state_of(a),
+                in_ready(a),
+                SWITCHING[a].load(Ordering::Acquire),
+                state_of(b),
+            ),
+        );
+        for (lvl, q) in s.ready.iter().enumerate() {
+            let _ =
+                core::fmt::Write::write_fmt(&mut serial, format_args!("  ready[{lvl}]={:?}\n", q));
+        }
+    }
     debug_assert_ne!(a, b, "scheduler never switches a task to itself");
     let (lo, hi) = if a < b { (a, b) } else { (b, a) };
     let (l, r) = s.tasks.split_at_mut(hi);
@@ -925,6 +972,49 @@ fn slots_pair(s: &mut Scheduler, a: usize, b: usize) -> SwitchPair {
             _ => unreachable!("both task slots must be occupied"),
         }
     }
+}
+
+/// 栈底 canary 校验（M18-①）：读栈底首 qword 与魔数对账；破坏则
+/// 计数 + 免分配串口直写取证行（LUMINA-CANARY-FAIL）。永不分配、
+/// 永不取锁——prepare_dispatch 在中断语境可达（抢占派发路径）。
+fn canary_check(t: &Task) {
+    if t.stack_base == 0 {
+        return; // 主任务引导栈：无盖章面（如实记档）
+    }
+    let got = ostd::hw::phys::read_u64(t.stack_base);
+    if got != STACK_CANARY {
+        CANARY_VIOLATIONS.fetch_add(1, Ordering::AcqRel);
+        let mut serial = crate::console::SerialPort::com1();
+        serial.init();
+        let _ = core::fmt::Write::write_fmt(
+            &mut serial,
+            format_args!(
+                "LUMINA-CANARY-FAIL base={:#x} top={:#x} got={got:#x} want={STACK_CANARY:#x}\n",
+                t.stack_base, t.stack_top
+            ),
+        );
+    }
+}
+
+/// canary 破坏计数快照（自检 t59 断言面）。
+pub fn canary_violations() -> u64 {
+    CANARY_VIOLATIONS.load(Ordering::Acquire)
+}
+
+/// 全任务栈 canary 审计（M18-① t59）：遍历槽位表逐栈校验，返回覆盖
+/// 数（有盖章面的任务数）。SCHED 锁内快照遍历——破坏即现场（驻留期
+/// 被越界写亦会在下一次派发/本审计中现形）。主任务引导栈无盖章面，
+/// 不计入覆盖数（如实记档）。
+pub fn canary_audit_all() -> usize {
+    let s = SCHED.lock();
+    let mut checked = 0usize;
+    for slot in s.tasks.iter().flatten() {
+        if slot.stack_base != 0 {
+            canary_check(slot);
+            checked += 1;
+        }
+    }
+    checked
 }
 
 /// 让出 CPU：协作切换（重排队 + 拾取下一可运行者）；无可让渡对象时空转返回。
