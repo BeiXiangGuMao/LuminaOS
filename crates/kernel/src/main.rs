@@ -33,6 +33,7 @@
 
 extern crate alloc;
 
+mod block;
 mod boot;
 mod caps;
 mod console;
@@ -71,8 +72,8 @@ use crate::multiboot1::BOOT_MAGIC;
 const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
 /// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项
-/// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M16 起 55）。
-const SELFTEST_TOTAL: usize = 55;
+/// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M17 起 58）。
+const SELFTEST_TOTAL: usize = 58;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐，链接进 .bss（NOLOAD）。
 #[repr(align(4096))]
@@ -655,17 +656,38 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         // 能力安装：父槽 1（SEND|RECV），派生子槽 2 随任务注入
         let caps_ok = ipc::install_echo_caps(1, 2);
         let mut ok = caps_ok;
-        let _ = task::spawn("ipc-echo", ipc::echo_worker_body);
         match user::build_user_space(&mut || frames.alloc()) {
             Ok(us) => {
                 // 代码帧覆写为 IPC 客户端映像（build_user_space 默认写入
                 // LOG/YIELD 演示程序；帧位置与布局完全一致）
                 ostd::hw::phys::write_bytes(us.code_frame, &user::USER_IPC_PROGRAM);
+                // M17 时序修复：client 先于 server 派发——SEND 先落环缓冲
+                //（SPSC 环本就支持此序），worker 后起首轮即消费；原序的
+                // 「server 先 poll、client 后到」窗口与内核代码布局漂移
+                // 耦合（v0.17 归档两轮 193 + M17 六连红实证），此序竞争面
+                // 消除。
                 let _id = task::spawn_user("ipc-client", user_noop, us.root, 2);
+                let _ = task::spawn("ipc-echo", ipc::echo_worker_body);
                 while !task::all_workers_finished() {
                     task::yield_now();
                 }
                 let exit_code = task::user_exit_code();
+                let (ds, dso, dr) = (
+                    ipc::DIAG_SENDS.load(Ordering::Acquire),
+                    ipc::DIAG_SEND_OK.load(Ordering::Acquire),
+                    ipc::DIAG_RECVS.load(Ordering::Acquire),
+                );
+                let (f1, f2, f3, f4, fu) = (
+                    ipc::DIAG_F1.load(Ordering::Acquire),
+                    ipc::DIAG_F2.load(Ordering::Acquire),
+                    ipc::DIAG_F3.load(Ordering::Acquire),
+                    ipc::DIAG_F4.load(Ordering::Acquire),
+                    ipc::DIAG_FULL.load(Ordering::Acquire),
+                );
+                let _ = writeln!(
+                    log,
+                    "  ipc-diag: sends={ds} ok={dso} recvs={dr} f1={f1} f2={f2} f3={f3} f4={f4} full={fu} exit={exit_code}"
+                );
                 // 接收缓冲取证：接收缓冲虚拟地址 → 栈帧内偏移（恒等映射直读）
                 let recv_off = user::USER_IPC_RECV_VA - user::USER_STACK_VIRT;
                 let echo_word = ostd::hw::phys::read_u32(us.stack_frame + recv_off);
@@ -1496,7 +1518,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                 // 子 pid 哨兵（spawn 后写入；P 侧轮询等待，无顺序假设）
                 let cpid_off = user::WAITPID_CPID_VA - user::USER_STACK_VIRT;
                 ostd::hw::phys::write_u64(usa.stack_frame + cpid_off, c_id as u64);
-                let deadline = ostd::time::now() + 600;
+                let deadline = ostd::time::now() + 3000;
                 while ostd::time::now() < deadline && !task::all_workers_finished() {
                     task::yield_now();
                 }
@@ -1557,7 +1579,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                     }
                     task::yield_now();
                 }
-                let deadline = ostd::time::now() + 600;
+                let deadline = ostd::time::now() + 3000;
                 while ostd::time::now() < deadline && !task::all_workers_finished() {
                     task::yield_now();
                 }
@@ -1622,7 +1644,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                 ok &= task::with_task_handles(tid, |h| h[2] = derived.ok()).is_some();
                 // 武装哨兵：句柄 2 就位后才放行探针（消除预装竞态）
                 ostd::hw::phys::write_u64(us.stack_frame + user::HQ_ARM_OFF, 1);
-                let deadline = ostd::time::now() + 600;
+                let deadline = ostd::time::now() + 3000;
                 while ostd::time::now() < deadline && !task::all_workers_finished() {
                     task::yield_now();
                 }
@@ -1680,13 +1702,14 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                 ostd::hw::phys::write_bytes(uss.code_frame, &user::USER_BLOCKSEND_PROGRAM);
                 let _r = task::spawn_user_pinned("block-recv", user_noop, usr.root, rs, 0);
                 // 确定性：等 R 真实进入阻塞点（登记前计数）后才派发送方
-                let deadline = ostd::time::now() + 600;
+                // M17 加固：600 → 3000 tick（同 t24 临界竞争加固纪律）
+                let deadline = ostd::time::now() + 3000;
                 while ostd::time::now() < deadline && ipc::recv_stamps().0 == 0 {
                     task::yield_now();
                 }
                 ok &= ipc::recv_stamps().0 > 0;
                 let _s = task::spawn_user_pinned("block-send", user_noop, uss.root, ss, 1);
-                let deadline = ostd::time::now() + 600;
+                let deadline = ostd::time::now() + 3000;
                 while ostd::time::now() < deadline && !task::all_workers_finished() {
                     task::yield_now();
                 }
@@ -1865,7 +1888,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
             Ok(us) => {
                 ostd::hw::phys::write_bytes(us.code_frame, &user::USER_EXEC_PROGRAM);
                 let _ = task::spawn_user_pinned("exec-probe", user_noop, us.root, 0, 0);
-                let deadline = ostd::time::now() + 600;
+                let deadline = ostd::time::now() + 3000;
                 while ostd::time::now() < deadline && !task::all_workers_finished() {
                     task::yield_now();
                 }
@@ -2081,6 +2104,15 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                 // 恒假——改按本检查的目标任务 Zombie 态轮询）
                 while task::task_debug_state(cid) != 4 && ostd::time::now() < deadline {
                     task::yield_now();
+                }
+                // M17 加固：超时退出与 client 完成竞速时，exit 落定与
+                // zombie 登记间存在跨核采样窗口（实测 exit=90 + state=0
+                // 翻转红）——补短窗收敛 zombie，断言不再竞速敏感。
+                if task::task_debug_state(cid) != 4 {
+                    let settle = ostd::time::now() + 300;
+                    while task::task_debug_state(cid) != 4 && ostd::time::now() < settle {
+                        task::yield_now();
+                    }
                 }
                 let code = task::user_exit_code();
                 let st = task::task_debug_state(cid);
@@ -2309,7 +2341,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         chk!(vfs::sys_mount(np, nl, 0), 2);
         chk!(vfs::sys_umount(np, nl), 2);
         chk!(vfs::sys_umount(rp, rl), 2);
-        chk!(vfs::sys_mount(fp, fl, 1), 22);
+        chk!(vfs::sys_mount(fp, fl, 2), 22);
         // ④ READDIR 分页：open /files → 首页 16B（deep.lxe+dir 恰 15B，
         //    第三项放不下 → 半项不落盘）→ 续页 512B 至 EOF → 全量积累
         let (dp, dl) = pa("/files");
@@ -2350,16 +2382,15 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         chk!(vfs::sys_readdir(wr & 0xFFFF_FFFF, dir_page_addr(), 64), 9);
         chk!(vfs::sys_close(wr & 0xFFFF_FFFF), 0);
         // ⑥ 挂载面枚举：/files/mnt（新 fs）恰 1 项 → 同句柄续读即尽；
-        //    卸载后已打开句柄经 Arc 存续（仍见挂载 fs 内容——SEEK 游标
-        //    复位重读实证）；新解析回落：重新 open → 原 fs 空目录 → EOF
+        //    M17-③ 占用复核：句柄存活卸载 → EBUSY(16)；关闭后卸载放行；
+        //    新解析回落：重新 open → 原 fs 空目录 → EOF（回落语义不变）
         let mr = vfs::sys_open(mp, ml, 1);
         let mh = mr & 0xFFFF_FFFF;
         let mnt1 = chk!(vfs::sys_readdir(mh, dir_page_addr(), 512), (1 << 32) | 1);
         chk!(vfs::sys_readdir(mh, dir_page_addr(), 512), 1 << 32);
-        let umt = chk!(vfs::sys_umount(mp, ml), 0);
-        chk!(vfs::sys_seek(mh, 0, 0), 1 << 32); // SET 0 重定位游标
-        chk!(vfs::sys_readdir(mh, dir_page_addr(), 512), (1 << 32) | 1); // Arc 存续
+        let umt = chk!(vfs::sys_umount(mp, ml), 16); // M17-③：句柄存活拒卸
         chk!(vfs::sys_close(mh), 0);
+        chk!(vfs::sys_umount(mp, ml), 0);
         let mr2 = vfs::sys_open(mp, ml, 1); // 新解析 → 回落原 fs
         ok &= mr2 >> 32 == 1;
         chk!(
@@ -2714,6 +2745,186 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     };
     report(&mut log, t55, "stack-growth-dynamic");
 
+    // M17-①：块设备接入（主通道从盘 IDENTIFY + 容量固化）——**惰性探测**
+    // 置于唯一消费方 t56 之前：启动期探测的自旋窗口（无盘时 ~2e7 轮询）
+    // 会拉开 t24 echo worker 轮询预算与 ring3 client 到达的竞争窗口
+    // （实测 served=0 稳定复现，挪后即回基线——时序敏感自检的前置纪律）。
+    block::init(&mut log);
+
+    // 56) 持久化存储面（M17-①）：fs_type=1 挂 LFS1 盘上 fs（主通道从盘
+    //     format-or-open）→ O_CREAT 写读回 → 关闭句柄 → 卸载 → 重挂
+    //     （超级块有效 → 原样打开）→ 数据存续直证（持久化闭环）→
+    //     EBUSY 负探针（存活句柄拒卸，M17-③ 盘上 fs 面）→ 关闭后卸载。
+    let t56 = {
+        let mut ok = true;
+        let mut fail_line = 0usize;
+        macro_rules! chk {
+            ($v:expr, $want:expr) => {{
+                let v = $v;
+                if v != $want {
+                    fail_line = line!() as usize;
+                }
+                ok &= v == $want;
+                v
+            }};
+        }
+        vfs::reset_evidence();
+        let pa = |s: &str| (s.as_ptr() as u64, s.len() as u64);
+        const FOK: u64 = 1 << 32;
+        let m_cw = bedrock::abi::O_CREAT | 0b10;
+        // ① 挂载点 + fs_type 域负探针 + 首挂（格式化路径）
+        let (dp, dl) = pa("/disk");
+        chk!(vfs::sys_mkdir(dp, dl), 0);
+        chk!(vfs::sys_mount(dp, dl, 2), 22); // fs_type 越域（域 0..=1）
+        chk!(vfs::sys_mount(dp, dl, 1), 0); // 首挂：空白盘 → 格式化
+                                            // ② 盘上文件 O_CREAT 写读回
+        let (fp, fl) = pa("/disk/persist.txt");
+        let o1 = vfs::sys_open(fp, fl, m_cw);
+        ok &= o1 >> 32 == 1;
+        let h1 = o1 & 0xFFFF_FFFF;
+        // SAFETY: 单核自检上下文串行访问（t53 OC_BUF 同款纪律）
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                b"LUMINA-PERSIST".as_ptr(),
+                m17_buf_addr() as *mut u8,
+                14,
+            );
+        }
+        chk!(vfs::sys_write(h1, m17_buf_addr(), 14), FOK | 14);
+        ok &= vfs::sys_close(h1) == 0;
+        // ③ 空闲卸载 → 重挂（原样打开路径）→ 数据存续读回
+        chk!(vfs::sys_umount(dp, dl), 0);
+        chk!(vfs::sys_mount(dp, dl, 1), 0);
+        let o2 = vfs::sys_open(fp, fl, 0b01);
+        ok &= o2 >> 32 == 1;
+        let h2 = o2 & 0xFFFF_FFFF;
+        // SAFETY: 同上（先清缓冲再读回对账）
+        unsafe {
+            core::ptr::write_bytes(m17_buf_addr() as *mut u8, 0, 32);
+        }
+        chk!(vfs::sys_read(h2, m17_buf_addr(), 32), FOK | 14);
+        // SAFETY: 同上（内容对账）
+        let got = unsafe { core::slice::from_raw_parts((&raw const M17_BUF) as *const u8, 14) };
+        ok &= got == b"LUMINA-PERSIST";
+        ok &= vfs::sys_close(h2) == 0;
+        // ④ EBUSY：句柄存活拒卸（M17-③ 盘上 fs 面）→ 关闭后放行
+        let o3 = vfs::sys_open(fp, fl, 0b01);
+        ok &= o3 >> 32 == 1;
+        let h3 = o3 & 0xFFFF_FFFF;
+        chk!(vfs::sys_umount(dp, dl), 16); // EBUSY
+        ok &= vfs::sys_close(h3) == 0;
+        chk!(vfs::sys_umount(dp, dl), 0);
+        let (open_st, _, read_st, write_st, close_st, _, _) = vfs::stamps();
+        let _ = writeln!(
+            log,
+            "  lfs: open={open_st:#x} read={read_st:#x} write={write_st:#x} close={close_st:#x}"
+        );
+        if fail_line != 0 {
+            let _ = writeln!(log, "  t56 first-fail line={fail_line}");
+        }
+        ok
+    };
+    report(&mut log, t56, "lfs-persist");
+
+    // 57) readdir 稳定 cookie（M17-②）：SYS_READDIR 游标 = 最后交付项
+    //     cookie——首读一页后中途变更目录（新建 c + 删除已交付的 a），
+    //     续读恰见新项（不重不漏不漂移；getdents64 同款语义域）。
+    //     独立目录 /files2（不扰动 t50 的 /files 名单）。
+    let t57 = {
+        let mut ok = true;
+        let mut fail_line = 0usize;
+        macro_rules! chk {
+            ($v:expr, $want:expr) => {{
+                let v = $v;
+                if v != $want {
+                    fail_line = line!() as usize;
+                }
+                ok &= v == $want;
+                v
+            }};
+        }
+        let pa = |s: &str| (s.as_ptr() as u64, s.len() as u64);
+        const FOK: u64 = 1 << 32;
+        let m_cw = bedrock::abi::O_CREAT | 0b10;
+        let (dp, dl) = pa("/files2");
+        chk!(vfs::sys_mkdir(dp, dl), 0);
+        // 首两项 a/b（O_CREAT）+ 目录句柄
+        for name in ["/files2/a", "/files2/b"] {
+            let (p, l) = pa(name);
+            let o = vfs::sys_open(p, l, m_cw);
+            ok &= o >> 32 == 1;
+            ok &= vfs::sys_close(o & 0xFFFF_FFFF) == 0;
+        }
+        let od = vfs::sys_open(dp, dl, 0b01);
+        ok &= od >> 32 == 1;
+        let hd = od & 0xFFFF_FFFF;
+        // 首读：16B 页（a 9B + b 5B = 14B ≤ 16，第三项装不下）
+        let r1 = chk!(vfs::sys_readdir(hd, dir_page_addr(), 16), FOK | 2);
+        let _ = r1;
+        // 中途变更：新建 c（cookie 递增）+ 删除已交付的 a（cookie 退役）
+        let (cp, cl) = pa("/files2/c");
+        chk!(vfs::sys_mkdir(cp, cl), 0);
+        let (ap, al) = pa("/files2/a");
+        chk!(vfs::sys_remove(ap, al), 0);
+        // 续读：恰 1 项 = c（Dir kind=1 len=1 名 c；a 不重出，b 不回灌）
+        let r2 = chk!(vfs::sys_readdir(hd, dir_page_addr(), 16), FOK | 1);
+        let _ = r2;
+        // SAFETY: 单核自检上下文串行走查（t50 acc_scan 同款纪律）
+        let page = unsafe { core::slice::from_raw_parts((&raw const DIR_PAGE) as *const u8, 3) };
+        // 续页仅写 3 字节（[kind=Dir][len=1]['c']）——DIR_PAGE 尾部为首页
+        // 残留（pack 半项纪律不整页清零），断言只对账新写入域。
+        ok &= page == [1, 1, b'c'];
+        // 续读 EOF
+        let r3 = chk!(vfs::sys_readdir(hd, dir_page_addr(), 512), FOK);
+        let _ = r3;
+        ok &= vfs::sys_close(hd) == 0;
+        if fail_line != 0 {
+            let _ = writeln!(log, "  t57 first-fail line={fail_line}");
+        }
+        ok
+    };
+    report(&mut log, t57, "dir-cookie-stable");
+
+    // 58) mount 占用检查（M17-③，fs_type=0 RamFs 面）：挂载 → 打开
+    //     子文件句柄 → 卸载 EBUSY(16) → dup 后关原句柄仍 EBUSY（副本
+    //     存续即占用）→ 全关后卸载放行。
+    let t58 = {
+        let mut ok = true;
+        let mut fail_line = 0usize;
+        macro_rules! chk {
+            ($v:expr, $want:expr) => {{
+                let v = $v;
+                if v != $want {
+                    fail_line = line!() as usize;
+                }
+                ok &= v == $want;
+                v
+            }};
+        }
+        let pa = |s: &str| (s.as_ptr() as u64, s.len() as u64);
+        let m_cw = bedrock::abi::O_CREAT | 0b10;
+        let (mp, ml) = pa("/mnt17");
+        chk!(vfs::sys_mkdir(mp, ml), 0);
+        chk!(vfs::sys_mount(mp, ml, 0), 0);
+        let (fp, fl) = pa("/mnt17/busy.txt");
+        let o = vfs::sys_open(fp, fl, m_cw);
+        ok &= o >> 32 == 1;
+        let h = o & 0xFFFF_FFFF;
+        chk!(vfs::sys_umount(mp, ml), 16); // EBUSY：句柄存活
+        let d = vfs::sys_dup(h);
+        ok &= d >> 32 == 1;
+        let d = d & 0xFFFF_FFFF;
+        ok &= vfs::sys_close(h) == 0;
+        chk!(vfs::sys_umount(mp, ml), 16); // dup 副本仍占（OFD 引用计数）
+        ok &= vfs::sys_close(d) == 0;
+        chk!(vfs::sys_umount(mp, ml), 0);
+        if fail_line != 0 {
+            let _ = writeln!(log, "  t58 first-fail line={fail_line}");
+        }
+        ok
+    };
+    report(&mut log, t58, "umount-busy");
+
     let _ = writeln!(log, "----");
     interrupts::disable();
     if pass == SELFTEST_TOTAL {
@@ -2737,10 +2948,17 @@ static mut DIR_PAGE: [u8; 512] = [0u8; 512];
 static mut DIR_ACC: [u8; 256] = [0u8; 256];
 /// t53 创建面写读缓冲（"LUMINA-OCREAT" 13B + 截断面写 + 对齐余量）。
 static mut OC_BUF: [u8; 64] = [0u8; 64];
+/// t56 持久化面写读缓冲（"LUMINA-PERSIST" 14B + 读回对账 + 对齐余量）。
+static mut M17_BUF: [u8; 64] = [0u8; 64];
 
 /// OC_BUF 缓冲地址（raw 指针形态，避开 static_mut_refs 语义）。
 fn oc_buf_addr() -> u64 {
     (&raw mut OC_BUF) as *mut u8 as u64
+}
+
+/// M17_BUF 缓冲地址（raw 指针形态，避开 static_mut_refs 语义）。
+fn m17_buf_addr() -> u64 {
+    (&raw mut M17_BUF) as *mut u8 as u64
 }
 
 /// DIR_PAGE 缓冲地址（raw 指针形态，避开 static_mut_refs 语义）。

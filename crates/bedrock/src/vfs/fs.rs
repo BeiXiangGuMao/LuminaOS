@@ -53,6 +53,39 @@ pub trait FileSystem: Send + Sync {
 
     /// 列举目录 `dir` 的全部目录项（骨架一次性返回全量；流式列举留待文件面块）。
     fn readdir(&self, dir: VnodeId) -> Result<Vec<DirEntry>, FsError>;
+
+    /// 稳定 cookie 目录枚举（M17-②）：返回 `after_cookie` 之后（不含）
+    /// 的目录项，每项附其**稳定 cookie**——同一文件系统实例内，项的
+    /// cookie 在创建后不变、不复用（删除项的 cookie 永久退役），枚举
+    /// 中途的目录变更不使已交付 cookie 漂移（getdents64 同款语义域）。
+    ///
+    /// `after_cookie = 0` 表示从头枚举（0 为起点哨兵，永不作为项
+    /// cookie 产出）。输出序为文件系统定义的稳定序（不承诺字典序）。
+    /// 默认实现：[`FileSystem::readdir`] 全量 + 位置 cookie（下标 +1）
+    /// ——未改造文件系统的兼容语义（与 M15-① 内核下标续传行为等价，
+    /// 中途变更仍漂移，如实记档）；有意稳定语义的实现方覆盖本方法
+    /// （RamFs：插入序 cookie；Lfs：盘上持久化 cookie）。
+    fn readdir_from(&self, dir: VnodeId, after_cookie: u64) -> Result<Vec<CookieEntry>, FsError> {
+        let entries = self.readdir(dir)?;
+        Ok(entries
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| u64::try_from(*i).map_or(true, |i| i + 1 > after_cookie))
+            .map(|(i, entry)| CookieEntry {
+                entry,
+                cookie: i as u64 + 1,
+            })
+            .collect())
+    }
+}
+
+/// 带稳定 cookie 的目录项（[`FileSystem::readdir_from`] 产出单元）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CookieEntry {
+    /// 目录项本体。
+    pub entry: DirEntry,
+    /// 稳定 cookie（枚举恢复锚；0 保留为起点哨兵）。
+    pub cookie: u64,
 }
 
 /// 便捷封装：路径组件逐段走查（从 `fs` 的根开始）。

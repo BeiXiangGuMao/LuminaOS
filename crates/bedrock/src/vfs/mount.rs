@@ -107,9 +107,25 @@ impl Namespace {
     /// 卸载 `path` 处的挂载（根挂载不可卸载，返回 [`FsError::NotFound`]）。
     /// 占用检查（卸载时有打开句柄）留待句柄面复核，骨架不阻塞卸载。
     pub fn unmount(&self, path: &PathBuf) -> Result<(), FsError> {
+        self.unmount_if_idle(path, |_| false)
+    }
+
+    /// 带占用复核的卸载（M17-③）：摘表前先以 `busy` 闭包复核挂载 fs
+    /// ——存活打开句柄等占用面返回 true 时以 [`FsError::Busy`] 拒卸。
+    /// 检查与摘表同锁原子（table 自旋锁内完成，检查后无插队窗口）；
+    /// `busy` 闭包在锁内执行——锁序约定：挂载表锁 → 闭包内取用的
+    /// 下层锁（内核面：NAMESPACE → FILES 单向嵌套，无反向边）。
+    pub fn unmount_if_idle(
+        &self,
+        path: &PathBuf,
+        busy: impl Fn(&Arc<dyn FileSystem>) -> bool,
+    ) -> Result<(), FsError> {
         let mut table = self.table.lock();
         match table.find_exact(path) {
             Some(idx) => {
+                if busy(&table.mounts[idx].fs) {
+                    return Err(FsError::Busy);
+                }
                 table.mounts.swap_remove(idx);
                 table.sort();
                 Ok(())
@@ -276,6 +292,43 @@ mod tests {
         assert_eq!(
             ns.resolve(&path("/etc/motd/child")).err(),
             Some(FsError::NotADirectory)
+        );
+    }
+
+    #[test]
+    fn unmount_if_idle_rejects_busy_fs_with_ebusy() {
+        let ns = setup();
+        // ① 占用闭包 true → EBUSY，挂载仍存（可继续解析子 fs 内容）。
+        assert_eq!(
+            ns.unmount_if_idle(&path("/mnt/data"), |_| true),
+            Err(FsError::Busy)
+        );
+        assert!(ns.resolve(&path("/mnt/data/deep.txt")).is_ok(), "survives");
+        // ② 闭包按实例精确判定：/mnt/data 挂 inner_fs——命中才拒。
+        let probe = ns.resolve(&path("/mnt/data")).expect("data").fs;
+        assert_eq!(
+            ns.unmount_if_idle(&path("/mnt/data"), |f| Arc::ptr_eq(f, &probe)),
+            Err(FsError::Busy)
+        );
+        // ③ 换用他实例（/mnt 的 fs）作闭包 → 不命中 → 卸载放行。
+        let other = ns.resolve(&path("/mnt")).expect("mnt").fs;
+        assert!(!Arc::ptr_eq(&probe, &other));
+        assert_eq!(
+            ns.unmount_if_idle(&path("/mnt/data"), |f| Arc::ptr_eq(f, &other)),
+            Ok(())
+        );
+        assert_eq!(
+            ns.resolve(&path("/mnt/data/deep.txt")).err(),
+            Some(FsError::NotFound)
+        );
+    }
+
+    #[test]
+    fn unmount_if_idle_not_found_passthrough() {
+        let ns = setup();
+        assert_eq!(
+            ns.unmount_if_idle(&path("/nowhere"), |_| true),
+            Err(FsError::NotFound)
         );
     }
 }

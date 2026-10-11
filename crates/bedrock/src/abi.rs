@@ -244,13 +244,15 @@ pub const OPEN_MODE_MASK: u64 = 0b1111;
 /// 无独立用户空间 → `ERR_CAP`；帧耗尽 → `ERR_NOMEM(9)`。
 pub const SYS_EXEC: u64 = 17;
 
-/// 系统调用 ABI 版本（v0.17 = M16：文件创建面 SYS_OPEN 模式域扩展
-/// O_CREAT/O_TRUNC + SYS_QUOTA kind 3 栈增长窗口 + EXEC Weave 包源
-/// 映像（ABI 寄存器面不变，映像表扩容）。
+/// 系统调用 ABI 版本（v0.18 = M17：SYS_MOUNT fs_type 域扩容 0..=1
+/// （1 = LFS1 盘上文件系统——块设备 + 盘上 fs，ABI 寄存器面不变）；
+/// v0.17 = M16：文件创建面 SYS_OPEN 模式域扩展 O_CREAT/O_TRUNC +
+/// SYS_QUOTA kind 3 栈增长窗口 + EXEC Weave 包源映像（ABI 寄存器面
+/// 不变，映像表扩容）。
 /// v0.16 = M15：目录面五落点 MKDIR/REMOVE/READDIR/MOUNT/UMOUNT +
 /// 句柄面深化 DUP/FCNTL（CLOEXEC）+ NANOSLEEP 参数语义升级为 TSC 纳秒。
 /// v0.8 = SYS_QUOTA；v0.7 = 文件面六落点 + NANOSLEEP + 统一句柄面）。
-pub const ABI_VERSION: (u16, u16) = (0, 10);
+pub const ABI_VERSION: (u16, u16) = (0, 11);
 
 /// 寄存器快照形式的系统调用请求。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -537,7 +539,7 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
             buf_len: a2,
         }),
         SYS_READDIR => Err(AbiError::BadArgs),
-        SYS_MOUNT if a1 <= 512 && a2 == 0 => Ok(Syscall::Mount {
+        SYS_MOUNT if a1 <= 512 && a2 <= 1 => Ok(Syscall::Mount {
             len: a1,
             fs_type: a2,
         }),
@@ -817,7 +819,7 @@ mod tests {
             Err(AbiError::BadArgs),
             "buf_len 越界"
         );
-        // MOUNT：len ≤ 512 且 fs_type 恒 0（v0 仅 RamFs；非 0 拒收）
+        // MOUNT：len ≤ 512 且 fs_type 域 0..=1（M17-①：1 = LFS1 盘上 fs）
         assert_eq!(
             super::parse(r(super::SYS_MOUNT, [0x2000, 10, 0, 0, 0])),
             Ok(Syscall::Mount {
@@ -827,8 +829,16 @@ mod tests {
         );
         assert_eq!(
             super::parse(r(super::SYS_MOUNT, [0x2000, 10, 1, 0, 0])),
+            Ok(Syscall::Mount {
+                len: 10,
+                fs_type: 1
+            }),
+            "fs_type 1 = 盘上 fs 新域"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_MOUNT, [0x2000, 10, 2, 0, 0])),
             Err(AbiError::BadArgs),
-            "fs_type 保留位拒收"
+            "fs_type 保留域拒收"
         );
         // UMOUNT：len ≤ 512
         assert_eq!(
@@ -890,7 +900,7 @@ mod tests {
         assert_eq!(super::SYS_UMOUNT, 30);
         assert_eq!(super::SYS_DUP, 31);
         assert_eq!(super::SYS_FCNTL, 32);
-        assert_eq!(super::ABI_VERSION, (0, 10));
+        assert_eq!(super::ABI_VERSION, (0, 11));
     }
 
     #[test]

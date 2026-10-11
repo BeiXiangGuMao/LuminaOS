@@ -76,8 +76,12 @@ pub enum FsError {
     AlreadyExists,
     /// 目录非空，拒绝删除。
     DirectoryNotEmpty,
-    /// 该文件系统不支持所请求的操作或节点类型。
+    /// 该文件系统不支持所请求的操作/节点类型。
     NotSupported,
+    /// 目标正被占用（M17-③：挂载 fs 上有存活打开句柄时拒卸）。
+    Busy,
+    /// 存储容量不足（分配失败：块/节点/目录区耗尽）。
+    NoSpace,
 }
 
 impl FsError {
@@ -103,6 +107,10 @@ impl FsError {
             FsError::DirectoryNotEmpty => 39, // ENOTEMPTY
             // 文件系统不支持该操作/节点类型
             FsError::NotSupported => 95, // EOPNOTSUPP
+            // 目标正被占用（卸载面 EBUSY）
+            FsError::Busy => 16, // EBUSY
+            // 存储容量不足
+            FsError::NoSpace => 28, // ENOSPC
         }
     }
 }
@@ -142,5 +150,7 @@ mod tests {
         assert_eq!(FsError::AlreadyExists.errno(), 17); // EEXIST
         assert_eq!(FsError::DirectoryNotEmpty.errno(), 39); // ENOTEMPTY
         assert_eq!(FsError::NotSupported.errno(), 95); // EOPNOTSUPP
+        assert_eq!(FsError::Busy.errno(), 16); // EBUSY
+        assert_eq!(FsError::NoSpace.errno(), 28); // ENOSPC
     }
 }

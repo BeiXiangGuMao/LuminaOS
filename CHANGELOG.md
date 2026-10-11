@@ -3,6 +3,74 @@
 版本语义：工作区里程碑版（0.x.y，x=里程碑，y=里程碑内迭代）。
 本文档记录源码树的对外可见变更；指标与规格变更见《指标与规范手册》修订记录。
 
+## v0.18.0（2026-10-11）—— M17-①：持久化存储面 + M17-②：readdir 稳定 cookie + M17-③：mount 占用检查
+
+### 新增
+- **块设备契约层（bedrock::block，M17-①）**：`BlockDevice` 特征
+  （512 B 定长块读写 + 容量查询；实现方内部自持同步原语，与
+  `FileSystem` 同款并发纪律）+ `MemBlock` 内存盘（宿主测试基座）。
+  块大小与 ATA 扇区同宽（512 B），硬件适配零转换。
+- **LFS1 盘上文件系统（bedrock::vfs::lfs，M17-①）**：RamFs 之外第二
+  文件系统实装——超级块（magic "LFS1"）+ 位图 + 定长 inode 表 +
+  数据块的盘上布局，跨卸载重挂（介质存续即数据存续）保持数据与
+  **目录项稳定 cookie 的持久性**（per-dir next_cookie 随项落盘）。
+  文件容量 = (10 直接 + 128 间接) 块 = 70 656 B；目录记录区变长紧排
+  （删除为墓碑）；`format_or_open`（magic 无效即格式化——v0「挂载
+  即接管」语义记档）。全操作粗粒度互斥（v0 确定性优先）；无日志
+  （崩溃一致性 v0 不设防，如实记档）。
+- **ATA 数据盘接入（kernel::block，M17-①）**：`AtaDisk` 扩展盘位
+  选择（drive 位，新增 PRIMARY_SLAVE/SECONDARY_SLAVE 常量）——数据盘
+  挂主通道从盘（QEMU index=1），与启动盘（index=0）同通道异盘、
+  与 swap 盘（从通道 index=2）物理并行零通道竞争；`DataBlock` 零
+  尺寸适配器（避免 impl 污染共享 AtaDisk 类型）；IDENTIFY 容量固化
+  + LBA28 域防御。**惰性探测**置于唯一消费方（t56）之前——启动期
+  探测的自旋窗口会拉开 t24 竞争（记档）。
+- **SYS_MOUNT fs_type 扩容（abi v0.10 → v0.11，M17-①）**：parse 域
+  0..=1——0 = RamFs（v0 语义不变）、1 = LFS1 盘上 fs（块设备未就绪
+  EINVAL；挂载点校验同 M15-① 面）。裸机 t56 持久化闭环直证：首挂
+  （格式化）→ O_CREAT 写 → 卸载 → 重挂（原样打开）→ 数据存续读回。
+- **readdir 稳定 cookie（M17-②，v0.17 候补转正）**：`FileSystem::
+  readdir_from(dir, after_cookie)` 新契约（默认实现 = 位置 cookie
+  兼容语义；RamFs 覆写为插入序稳定 cookie——DirSlot 双表：name 字
+  典序面不变 + cookie→(父目录, 名字) 序表；Lfs 覆写为盘上持久
+  cookie 序）。SYS_READDIR 游标从项序号升级为**最后交付项 cookie**
+  （OFD pos 域专用）——枚举中途增删不漂移（getdents64 同款语义域）。
+  RamFs/Lfs 宿主漂移测试族 + 裸机 t57（首读后中途新建+删除已交付
+  项 → 续读恰见新项）直证。
+- **mount 占用检查（M17-③，v0.17 候补转正）**：`FsError::Busy`
+  （EBUSY 16）+ `FsError::NoSpace`（ENOSPC 28）错误域扩展 +
+  `Namespace::unmount_if_idle(path, busy)`（检查与摘表同挂载表锁
+  原子）；SYS_UMOUNT 以文件注册表扫描复核（Arc 同源判定）——挂载
+  fs 上有存活打开句柄（含 dup 副本，OFD 引用计数语义）时 EBUSY 拒卸，
+  关闭后放行。裸机 t56（盘上 fs 面）/ t58（RamFs 面 + dup 深化）直证；
+  t50 的 M15 旧语义断言（带句柄卸载放行）同步升级为 EBUSY 正向断言。
+
+### 修复
+- **install_echo_caps 派生落点漂移（t24 根治）**：原实现断言
+  `derive(parent) == Ok(child_slot)`——而 `CapabilityTable::derive`
+  返回**动态首空闲槽号**，「恰好 == 2」是与前置自检槽占用状态耦合
+  的临界条件（v0.17 归档四轮两轮 193 即此漂移；M17 冒烟六连红为
+  布局漂移放大实证）。改为同权子能力**显式 install**（语义等价、
+  落点确定）；配套 SYS_SEND/RECV 诊断取证面（DIAG_* 计数 + 失败点
+  分立）落 t24 日志行。
+- **t45 zombie 采样竞速**：deadline 超时与 client 完成竞速时，
+  exit 落定与 zombie 登记间存在跨核采样窗口（exit=90 + state=0
+  翻转红实录）——补 300 tick 收敛窗。
+- **t50 fs_type 保留域探针**：fs_type=1 转正后，越域探针同步改用
+  fs_type=2（EINVAL 语义保持）。
+
+### 自检
+- 裸机 55 → **58**（t56 lfs-persist / t57 dir-cookie-stable /
+  t58 umount-busy）；xtask S8 增挂 LFS1 数据盘（1 MiB index=1，
+  每轮全零重建 = 格式化路径确定性覆盖）。
+- 宿主用例 146 → **168**（block 5 + Lfs 10 + RamFs cookie 5 +
+  unmount_if_idle 2）；abi parse 域测试同步扩容。
+
+### 观察记档（非本版缺陷，M18 候补）
+- **偶发 #PF（≈1/8 轮）**：t19→t20 间隙内核跳转 rip=-1 → fault_hook
+  链式故障（iretq 帧呈实模式 IVT 内容形态）。v0.17 时代已存在
+  （归档轮次即有非零退出），M17 未触碰该路径；M18 候补专项。
+
 ## v0.17.0（2026-10-11）—— M16-①：文件创建面 + M16-②：Weave 包源映像 + M16-③：栈增长动态扩容
 
 ### 新增

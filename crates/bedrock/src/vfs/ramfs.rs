@@ -5,6 +5,11 @@
 //! 块设备文件系统接入前的行为锚点。目录项以 `BTreeMap` 组织，readdir 天然
 //! 按名字典序输出；节点号单调递增不复用，避免 VNode 级 ABA。
 //!
+//! **M17-② 稳定 cookie**：目录子项升级为 [`DirSlot`]（节点号 + cookie），
+//! 另持 cookie → 名字序表（`order`）承载 [`FileSystem::readdir_from`]
+//! 的稳定枚举（插入序：已交付 cookie 不因中途增删漂移，getdents64
+//! 同款）；name 字典序面（`readdir`/`lookup`/`walk`）语义不变。
+//!
 //! 语义注记（骨架级简化，均由文件面块复核）：
 //! - unlink 直接摘除节点；已打开 fd 后续访问将得到 `NotFound`（无「最后
 //!   关闭者」延迟回收）；
@@ -16,7 +21,7 @@ use alloc::vec::Vec;
 
 use ostd::sync::SpinLock;
 
-use super::fs::FileSystem;
+use super::fs::{CookieEntry, FileSystem};
 use super::node::{DirEntry, Metadata, NodeKind, VnodeId};
 use super::path::validate_component;
 use super::FsError;
@@ -24,19 +29,32 @@ use super::FsError;
 /// RamFS 的根节点号（节点号从 1 起，0 永久空缺以便与「未初始化」区分）。
 pub const RAMFS_ROOT: VnodeId = VnodeId(1);
 
+/// 目录子项槽：名字到（节点号 + 稳定 cookie）的落位（M17-②）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DirSlot {
+    vnode: VnodeId,
+    /// 稳定 cookie（per-fs 单调铸造，创建后不变、删除即退役）。
+    cookie: u64,
+}
+
 #[derive(Debug)]
 struct RamNode {
     kind: NodeKind,
     /// 仅 `NodeKind::File` 使用。
     data: Vec<u8>,
-    /// 仅 `NodeKind::Dir` 使用：名字 → 子节点号（字典序）。
-    children: BTreeMap<String, VnodeId>,
+    /// 仅 `NodeKind::Dir` 使用：名字 → 子项槽（字典序）。
+    children: BTreeMap<String, DirSlot>,
 }
 
 #[derive(Debug)]
 struct RamFsInner {
     nodes: BTreeMap<VnodeId, RamNode>,
     next_id: u64,
+    /// 稳定 cookie 铸造计数（per-fs 单调；0 = 起点哨兵不产出）。
+    next_cookie: u64,
+    /// cookie → （父目录，名字）（枚举序表：readdir_from 按此序产出，
+    /// 插入序；带父目录归属——多目录共存一表，按 dir 过滤）。
+    order: BTreeMap<u64, (VnodeId, String)>,
 }
 
 /// 内存文件系统实例。
@@ -57,14 +75,19 @@ impl RamFs {
             },
         );
         Self {
-            inner: SpinLock::new(RamFsInner { nodes, next_id: 2 }),
+            inner: SpinLock::new(RamFsInner {
+                nodes,
+                next_id: 2,
+                next_cookie: 1,
+                order: BTreeMap::new(),
+            }),
         }
     }
 
     fn dir_children(
         inner: &RamFsInner,
         dir: VnodeId,
-    ) -> Result<&BTreeMap<String, VnodeId>, FsError> {
+    ) -> Result<&BTreeMap<String, DirSlot>, FsError> {
         let node = inner.nodes.get(&dir).ok_or(FsError::NotFound)?;
         if !node.kind.is_dir() {
             return Err(FsError::NotADirectory);
@@ -88,7 +111,7 @@ impl FileSystem for RamFs {
         validate_component(name)?;
         let inner = self.inner.lock();
         let children = Self::dir_children(&inner, dir)?;
-        children.get(name).copied().ok_or(FsError::NotFound)
+        children.get(name).map(|s| s.vnode).ok_or(FsError::NotFound)
     }
 
     fn metadata(&self, vnode: VnodeId) -> Result<Metadata, FsError> {
@@ -154,14 +177,20 @@ impl FileSystem for RamFs {
         if !Self::dir_children(&inner, dir)?.contains_key(name) {
             let id = VnodeId(inner.next_id);
             inner.next_id += 1;
+            // M17-②：稳定 cookie 铸造（per-fs 单调，0 哨兵不产出）。
+            let cookie = inner.next_cookie;
+            inner.next_cookie += 1;
             let fresh = RamNode {
                 kind,
                 data: Vec::new(),
                 children: BTreeMap::new(),
             };
             inner.nodes.insert(id, fresh);
+            let name_key = String::from(name);
+            inner.order.insert(cookie, (dir, name_key.clone()));
             // insert 对新键返回 None（旧值语义），此处恒为新键，直接落表。
-            Self::dir_children_mut(&mut inner, dir)?.insert(String::from(name), id);
+            Self::dir_children_mut(&mut inner, dir)?
+                .insert(name_key, DirSlot { vnode: id, cookie });
             return Ok(id);
         }
         Err(FsError::AlreadyExists)
@@ -174,7 +203,7 @@ impl FileSystem for RamFs {
             .get(name)
             .copied()
             .ok_or(FsError::NotFound)?;
-        if let Some(node) = inner.nodes.get(&child) {
+        if let Some(node) = inner.nodes.get(&child.vnode) {
             if node.kind.is_dir() && !node.children.is_empty() {
                 return Err(FsError::DirectoryNotEmpty);
             }
@@ -182,7 +211,9 @@ impl FileSystem for RamFs {
         Self::dir_children_mut(&mut inner, dir)?
             .remove(name)
             .ok_or(FsError::NotFound)?;
-        inner.nodes.remove(&child);
+        // M17-②：cookie 退役（序表同步摘除；cookie 不复用）。
+        inner.order.remove(&child.cookie);
+        inner.nodes.remove(&child.vnode);
         Ok(())
     }
 
@@ -190,19 +221,52 @@ impl FileSystem for RamFs {
         let inner = self.inner.lock();
         let children = Self::dir_children(&inner, dir)?;
         let mut entries = Vec::with_capacity(children.len());
-        for (name, vnode) in children {
+        for (name, slot) in children {
             let kind = inner
                 .nodes
-                .get(vnode)
+                .get(&slot.vnode)
                 .map(|n| n.kind)
                 .ok_or(FsError::NotFound)?;
             entries.push(DirEntry {
                 name: name.clone(),
-                vnode: *vnode,
+                vnode: slot.vnode,
                 kind,
             });
         }
         Ok(entries)
+    }
+
+    fn readdir_from(&self, dir: VnodeId, after_cookie: u64) -> Result<Vec<CookieEntry>, FsError> {
+        let inner = self.inner.lock();
+        // 目录存在性判定（与 readdir 同款：非目录/缺失同面拒绝）。
+        Self::dir_children(&inner, dir)?;
+        let mut items = Vec::new();
+        for (cookie, (parent, name)) in inner.order.range((
+            core::ops::Bound::Excluded(after_cookie),
+            core::ops::Bound::Unbounded,
+        )) {
+            if *parent != dir {
+                continue; // 序表跨目录共享：仅产出本目录子项
+            }
+            // 序表与目录映射同锁维护；孤儿序项为不变量违反，防御拒绝。
+            let slot = Self::dir_children(&inner, dir)?
+                .get(name)
+                .ok_or(FsError::NotFound)?;
+            let kind = inner
+                .nodes
+                .get(&slot.vnode)
+                .map(|n| n.kind)
+                .ok_or(FsError::NotFound)?;
+            items.push(CookieEntry {
+                entry: DirEntry {
+                    name: name.clone(),
+                    vnode: slot.vnode,
+                    kind,
+                },
+                cookie: *cookie,
+            });
+        }
+        Ok(items)
     }
 
     fn truncate(&self, vnode: VnodeId) -> Result<(), FsError> {
@@ -221,7 +285,7 @@ impl RamFs {
     fn dir_children_mut(
         inner: &mut RamFsInner,
         dir: VnodeId,
-    ) -> Result<&mut BTreeMap<String, VnodeId>, FsError> {
+    ) -> Result<&mut BTreeMap<String, DirSlot>, FsError> {
         let node = inner.nodes.get_mut(&dir).ok_or(FsError::NotFound)?;
         if !node.kind.is_dir() {
             return Err(FsError::NotADirectory);
@@ -428,5 +492,95 @@ mod tests {
             fs.create(ghost, "x", NodeKind::File),
             Err(FsError::NotFound)
         );
+    }
+
+    // ---- M17-② 稳定 cookie 枚举（getdents64 同款语义域） ----
+
+    /// 造目录 + n 个子文件，返回目录号。
+    fn seeded_dir(fs: &RamFs, name: &str, children: &[&str]) -> VnodeId {
+        let d = fs.create(RAMFS_ROOT, name, NodeKind::Dir).expect("mkdir");
+        for c in children {
+            fs.create(d, c, NodeKind::File).expect("touch");
+        }
+        d
+    }
+
+    #[test]
+    fn readdir_from_zero_lists_all_in_insertion_order() {
+        let fs = RamFs::new();
+        let d = seeded_dir(&fs, "d", &["a", "b", "c"]);
+        let items = fs.readdir_from(d, 0).expect("readdir_from 0");
+        let names: Vec<_> = items.iter().map(|c| c.entry.name.as_str()).collect();
+        assert_eq!(names, vec!["a", "b", "c"], "insertion order");
+        // cookie 单调递增、0 哨兵不产出。
+        let cookies: Vec<u64> = items.iter().map(|c| c.cookie).collect();
+        assert!(cookies.windows(2).all(|w| w[0] < w[1]));
+        assert!(!cookies.contains(&0));
+    }
+
+    #[test]
+    fn insertion_mid_enumeration_does_not_drift() {
+        let fs = RamFs::new();
+        let d = seeded_dir(&fs, "d", &["a", "b", "c"]);
+        // 首页：交付 a、b（取 b 的 cookie 为续枚举锚）。
+        let page1 = fs.readdir_from(d, 0).expect("page1");
+        assert_eq!(page1.len(), 3); // v0 内存面无分页——按 cookie 手工切片模拟
+        let anchor = page1[1].cookie; // b
+                                      // 中途变更：先插 x（在 b 之后）、删 a（在锚之前）。
+        fs.create(d, "x", NodeKind::File).expect("touch x");
+        fs.unlink(d, "a").expect("rm a");
+        // 续枚举：恰为 b 之后的项（c、x），无 a 复现、无漏项。
+        let rest = fs.readdir_from(d, anchor).expect("resume");
+        let names: Vec<_> = rest.iter().map(|c| c.entry.name.as_str()).collect();
+        assert_eq!(names, vec!["c", "x"]);
+    }
+
+    #[test]
+    fn boundary_deletion_resumes_without_gap() {
+        let fs = RamFs::new();
+        let d = seeded_dir(&fs, "d", &["a", "b", "c"]);
+        let page1 = fs.readdir_from(d, 0).expect("page1");
+        let anchor = page1[0].cookie; // a（交付后即被删）
+        fs.unlink(d, "a").expect("rm a");
+        // 边界项被删：续枚举不重（a 不再出）不漏（b/c 照常）。
+        let rest = fs.readdir_from(d, anchor).expect("resume");
+        let names: Vec<_> = rest.iter().map(|c| c.entry.name.as_str()).collect();
+        assert_eq!(names, vec!["b", "c"]);
+    }
+
+    #[test]
+    fn cookie_survives_sibling_deletion_and_stays_monotonic() {
+        let fs = RamFs::new();
+        let d = seeded_dir(&fs, "d", &["a", "b", "c"]);
+        let first = fs.readdir_from(d, 0).expect("first");
+        let c_cookie = first[2].cookie;
+        fs.unlink(d, "a").expect("rm a");
+        let second = fs.readdir_from(d, 0).expect("second");
+        let c2 = second.iter().find(|c| c.entry.name == "c").expect("c");
+        assert_eq!(c2.cookie, c_cookie, "cookie stable across sibling deletion");
+        // 已退役 cookie 不复用：新建项的 cookie 严格大于全部历史值。
+        fs.create(d, "z", NodeKind::File).expect("touch z");
+        let third = fs.readdir_from(d, 0).expect("third");
+        let z = third.iter().find(|c| c.entry.name == "z").expect("z");
+        assert!(z.cookie > c_cookie);
+    }
+
+    #[test]
+    fn readdir_from_edges_and_name_order_unchanged() {
+        let fs = RamFs::new();
+        let d = seeded_dir(&fs, "d", &["b", "a"]);
+        // after = u64::MAX → 空；after = 最后项 cookie → 空（枚举尽）。
+        assert!(fs.readdir_from(d, u64::MAX).expect("max").is_empty());
+        let all = fs.readdir_from(d, 0).expect("all");
+        let last = all.last().expect("nonempty").cookie;
+        assert!(fs.readdir_from(d, last).expect("exhausted").is_empty());
+        // name 序面（readdir）语义不变：字典序。
+        let entries = fs.readdir(d).expect("readdir");
+        let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["a", "b"]);
+        // 非目录 / 缺失同面拒绝（与 readdir 对齐）。
+        let f = fs.create(RAMFS_ROOT, "f", NodeKind::File).expect("touch");
+        assert_eq!(fs.readdir_from(f, 0), Err(FsError::NotADirectory));
+        assert_eq!(fs.readdir_from(VnodeId(999), 0), Err(FsError::NotFound));
     }
 }

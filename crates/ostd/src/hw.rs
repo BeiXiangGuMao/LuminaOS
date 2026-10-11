@@ -1017,13 +1017,20 @@ pub mod ata {
         NoDevice,
     }
 
-    /// 一个 ATA PIO 通道主盘端口组（QEMU IDE：PIIX3 双通道）。
+    /// 一个 ATA PIO 通道盘位端口组（QEMU IDE：PIIX3 双通道主/从盘）。
+    ///
+    /// M17-① 扩展：原仅主盘（drive 位 0）；新增从盘位（设备寄存器
+    /// bit4 = 0x10，LBA 模式下 0xE0|0xF0 高 nibble + drive 位 + LBA 高
+    /// 四位），支撑主通道从盘作数据盘（避开启动盘 index=0 与 swap 盘
+    /// index=2，双通道物理并行）。
     #[derive(Debug, Clone, Copy)]
     pub struct AtaDisk {
         /// 命令块寄存器基址（0x1F0 主通道 / 0x170 从通道）。
         base: u16,
         /// 控制块寄存器（ALT STATUS；0x3F6 / 0x376）。
         ctrl: u16,
+        /// 盘位选择位（0 = 主盘，0x10 = 从盘；并入设备寄存器高 nibble）。
+        drive: u8,
     }
 
     impl AtaDisk {
@@ -1031,11 +1038,26 @@ pub mod ata {
         pub const PRIMARY_MASTER: Self = Self {
             base: 0x1F0,
             ctrl: 0x3F6,
+            drive: 0x00,
+        };
+        /// 主通道从盘（M17-① 数据盘挂此：与启动盘同通道异盘，运行期
+        /// 启动盘静默无交叉；与 swap 盘（从通道）物理并行零冲突）。
+        pub const PRIMARY_SLAVE: Self = Self {
+            base: 0x1F0,
+            ctrl: 0x3F6,
+            drive: 0x10,
         };
         /// 从通道主盘（M7 冒烟 swap 盘挂此：避开任何启动设备序交互）。
         pub const SECONDARY_MASTER: Self = Self {
             base: 0x170,
             ctrl: 0x376,
+            drive: 0x00,
+        };
+        /// 从通道从盘（对称补全；当前无消费方，预留给双盘从通道布局）。
+        pub const SECONDARY_SLAVE: Self = Self {
+            base: 0x170,
+            ctrl: 0x376,
+            drive: 0x10,
         };
 
         /// 忙等上限（QEMU TCG 单次远小于 1 s；远超任何合法 PIO 延迟）。
@@ -1082,9 +1104,13 @@ pub mod ata {
             Err(AtaError::Timeout)
         }
 
-        /// 选择主盘 + 写入 LBA 高 4 位（设备寄存器 0xE0 | lba[27:24]）。
+        /// 选择盘位 + 写入 LBA 高 4 位（设备寄存器 0xE0 | drive | lba[27:24]）。
         fn select(&self, lba: u32) {
-            ports::write_u8(self.base + 6, 0xE0 | ((lba >> 24) & 0x0F) as u8);
+            // 0xE0 = LBA 模式 + 主盘位；| drive 位（0x10 = 从盘，M17-①）。
+            ports::write_u8(
+                self.base + 6,
+                0xE0 | self.drive | ((lba >> 24) & 0x0F) as u8,
+            );
             self.wait_400ns();
         }
 

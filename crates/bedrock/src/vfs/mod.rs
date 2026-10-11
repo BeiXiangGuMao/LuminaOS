@@ -8,9 +8,11 @@
 //! 分层（自底向上）：
 //! - [`path`]：绝对路径的词法规范化（组件化、`..` 消解）；
 //! - [`node`]：VNode 标识 / 类型 / 元数据 / 错误集；
-//! - [`fs`]：`FileSystem` 特征——文件系统侧最小完备契约；
+//! - [`fs`]：`FileSystem` 特征——文件系统侧最小完备契约（含 M17-②
+//!   稳定 cookie 枚举面 `readdir_from`）；
 //! - [`ramfs`]：内存文件系统（参照实现与测试基座）；
-//! - [`mount`]：挂载表与命名空间（最长前缀解析）；
+//! - [`lfs`]：LFS1 盘上文件系统（M17-① 持久化存储面，任意块设备底座）；
+//! - [`mount`]：挂载表与命名空间（最长前缀解析 + M17-③ 占用复核卸载）；
 //! - [`fd`]：fd 表——Crystal 代际槽承载的打开文件描述。
 //!
 //! 并发纪律：全部共享状态经由 OSTD `SpinLock`（[`ostd::sync::SpinLock`]），
@@ -18,13 +20,15 @@
 
 pub mod fd;
 pub mod fs;
+pub mod lfs;
 pub mod mount;
 pub mod node;
 pub mod path;
 pub mod ramfs;
 
 pub use fd::{Fd, FdError, FdTable, OpenFileDescription, OpenFlags, Whence};
-pub use fs::{dir_entry_abi_code, pack_dir_page, FileSystem};
+pub use fs::{dir_entry_abi_code, pack_dir_page, CookieEntry, FileSystem};
+pub use lfs::Lfs;
 pub use mount::{Namespace, ResolvedNode};
 pub use node::{DirEntry, FsError, Metadata, NodeKind, VnodeId};
 pub use path::PathBuf;

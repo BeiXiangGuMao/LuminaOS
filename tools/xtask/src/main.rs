@@ -188,8 +188,8 @@ const KERNEL_ELF: &str =
 const KERNEL_BIN: &str =
     "/home/z/my-project/lumina-build/target/x86_64-unknown-none/release/lumina-kernel.bin";
 
-/// 自检标记总数（与内核 SELFTEST_TOTAL 同步；M12 完成态 = 43，M13-② 起 46，M15 起 52，M16 起 55）。
-const SELFTEST_EXPECTED: &str = "55/55";
+/// 自检标记总数（与内核 SELFTEST_TOTAL 同步；M12 完成态 = 43，M13-② 起 46，M15 起 52，M16 起 55，M17 起 58）。
+const SELFTEST_EXPECTED: &str = "58/58";
 
 /// TLV 请求帧：tag 0x0007，value = b"lumina-m5"。
 const TLV_REQ: &[u8] = &[
@@ -204,6 +204,11 @@ const TLV_RESP_VALUE_LEN: usize = 13;
 /// 位于 lumina-build 产物区，不入源码树）。
 const SWAP_IMG: &str = "/home/z/my-project/lumina-build/runtime/swap.img";
 
+/// LFS1 数据盘（M17-①：1 MiB 全零，挂主通道从盘 index=1；空白盘首次
+/// 挂载即格式化，产物区纪律同 swap 盘）。全零重建 = 每轮冒烟从空白
+/// 介质起步（格式化路径确定性覆盖；持久化断言在盘内跨卸载重挂）。
+const DISK_IMG: &str = "/home/z/my-project/lumina-build/runtime/disk.img";
+
 /// S8 实体；返回是否全部断言通过。
 fn smoke_inner() -> bool {
     // 0) swap 盘就位（M7-B 自检 27 的 ATA PIO 探测/读写对象；每次重建）
@@ -212,6 +217,11 @@ fn smoke_inner() -> bool {
     }
     if std::fs::write(SWAP_IMG, vec![0u8; 1024 * 1024]).is_err() {
         eprintln!("[FAIL] S8-smoke：swap scratch 盘创建失败：{SWAP_IMG}");
+        return false;
+    }
+    // 0b) LFS1 数据盘就位（M17-① 自检 56 的 ATA PIO 挂载对象；每次重建）
+    if std::fs::write(DISK_IMG, vec![0u8; 1024 * 1024]).is_err() {
+        eprintln!("[FAIL] S8-smoke：LFS1 数据盘创建失败：{DISK_IMG}");
         return false;
     }
     // 1) objcopy 产出裸映像（QEMU multiboot1 仅接受 32 位可装载映像）
@@ -227,6 +237,7 @@ fn smoke_inner() -> bool {
     // 2) QEMU 无头启动：串口走 stdio（双向管道）+ isa-debug-exit 自动退出；
     //    超时由下方看门狗直接杀 QEMU 本体（timeout 包裹会漏杀孤儿进程）
     let swap_drive = format!("file={SWAP_IMG},format=raw,if=ide,index=2,media=disk");
+    let disk_drive = format!("file={DISK_IMG},format=raw,if=ide,index=1,media=disk");
     let mut child = match Command::new(QEMU_BIN)
         .args([
             "-L",
@@ -235,6 +246,8 @@ fn smoke_inner() -> bool {
             QEMU_BIOS_DATA,
             "-kernel",
             KERNEL_BIN,
+            "-drive",
+            disk_drive.as_str(),
             "-drive",
             swap_drive.as_str(),
             "-m",

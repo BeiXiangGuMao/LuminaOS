@@ -827,14 +827,16 @@ fn readdir_checked(handle: u64, buf: &mut [u8]) -> u64 {
         Some(f) => match f.fs.metadata(f.vnode) {
             Err(e) => e.errno(),
             Ok(meta) if !meta.kind.is_dir() => ENOTDIR,
-            Ok(_) => match f.fs.readdir(f.vnode) {
+            Ok(_) => match f.fs.readdir_from(f.vnode, f.pos) {
                 Err(e) => e.errno(),
-                Ok(entries) => {
-                    // 游标漂移防御：目录中途缩短 → clamp 后按枚举尽
-                    let cursor = (f.pos as usize).min(entries.len());
-                    let (_packed, consumed) = bedrock::vfs::pack_dir_page(&entries, cursor, buf);
+                Ok(items) => {
+                    // fs 侧已按稳定 cookie 序过滤余项；打包自 0 起
+                    //（半项不落盘纪律不变）。游标推进 = 最后交付项 cookie。
+                    let entries: Vec<bedrock::vfs::DirEntry> =
+                        items.iter().map(|c| c.entry.clone()).collect();
+                    let (_packed, consumed) = bedrock::vfs::pack_dir_page(&entries, 0, buf);
                     if consumed > 0 {
-                        f.pos += consumed as u64;
+                        f.pos = items[consumed - 1].cookie;
                     }
                     OK_BIT | consumed as u64
                 }
@@ -849,20 +851,34 @@ fn readdir_checked(handle: u64, buf: &mut [u8]) -> u64 {
 /// 非目录 → ENOTDIR、同路径重复 → EEXIST）。成功返回 0（最长前缀
 /// 解析即时生效，子 fs 遮蔽挂载点原内容）。
 pub fn sys_mount(path_ptr: u64, len: u64, fs_type: u64) -> u64 {
-    let code = if fs_type != 0 || len == 0 {
+    let code = if fs_type > 1 || len == 0 {
         EINVAL
     } else {
         match validate_user_slice(path_ptr, len) {
             None => EFAULT,
             Some(pb) => {
-                match normalize_user_path(pb).and_then(|path| {
-                    let fs: Arc<dyn FileSystem> = Arc::new(RamFs::new());
-                    let ns = NAMESPACE.lock();
-                    match ns.as_ref() {
-                        None => Err(EBADF), // 防御路径（自检序保证不达）
-                        Some(ns) => ns.mount(&path, fs).map_err(|e| e.errno()),
-                    }
-                }) {
+                let mounted = normalize_user_path(pb).and_then(|path| {
+                    let fs: Result<Arc<dyn FileSystem>, u64> = match fs_type {
+                        0 => Ok(Arc::new(RamFs::new())),
+                        _ => {
+                            if !crate::block::ready() {
+                                Err(EINVAL)
+                            } else {
+                                bedrock::vfs::Lfs::format_or_open(crate::block::DataBlock::arced())
+                                    .map(|l| Arc::new(l) as Arc<dyn FileSystem>)
+                                    .map_err(|e| e.errno())
+                            }
+                        }
+                    };
+                    fs.and_then(|fs| {
+                        let ns = NAMESPACE.lock();
+                        match ns.as_ref() {
+                            None => Err(EBADF), // 防御路径（自检序保证不达）
+                            Some(ns) => ns.mount(&path, fs).map_err(|e| e.errno()),
+                        }
+                    })
+                });
+                match mounted {
                     Ok(()) => 0,
                     Err(e) => e,
                 }
@@ -887,7 +903,14 @@ pub fn sys_umount(path_ptr: u64, len: u64) -> u64 {
                     let ns = NAMESPACE.lock();
                     match ns.as_ref() {
                         None => Err(EBADF),
-                        Some(ns) => ns.unmount(&path).map_err(|e| e.errno()),
+                        Some(ns) => ns
+                            .unmount_if_idle(&path, |fs| {
+                                let files = FILES.lock();
+                                files
+                                    .iter()
+                                    .any(|f| f.as_ref().is_some_and(|f| Arc::ptr_eq(&f.fs, fs)))
+                            })
+                            .map_err(|e| e.errno()),
                     }
                 }) {
                     Ok(()) => 0,

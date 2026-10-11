@@ -15,6 +15,7 @@
 extern crate alloc;
 
 pub mod abi;
+pub mod block;
 pub mod exec;
 pub mod ipc;
 pub mod tlv;

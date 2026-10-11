@@ -250,22 +250,44 @@ fn gate(cap: &Capability, need: Right) -> bool {
 ///
 /// 参数取自系统调用帧：endpoint = rdi（**调用方句柄**，M12-A），len =
 /// rsi，载荷指针 = rdx，tag = r10。
+/// M17 诊断取证面（t24 断言链）：SEND/RECV 调用计数 + 失败点分立
+/// （F1 = 句柄解析失败 / F2 = SEND 门禁 / F3 = 通道反查 / F4 = 用户
+/// 切片校验 / FULL = 环满）——定位「client 侧失败即 EXIT(53)」的
+/// 具体环节（derive 漂移修复的取证基础，保留为长期诊断面）。
+pub static DIAG_SENDS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub static DIAG_RECVS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub static DIAG_SEND_OK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub static DIAG_F1: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub static DIAG_F2: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub static DIAG_F3: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub static DIAG_F4: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub static DIAG_FULL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 pub fn sys_send(endpoint: u64, payload_ptr: u64, len: u64, tag: u64) -> u64 {
+    DIAG_SENDS.fetch_add(1, Ordering::AcqRel);
     // 解析 + 门禁：句柄 → 全局能力槽 → 能力（对象 id 随行）
     let Some((_, cap)) = resolve_cap(endpoint) else {
+        DIAG_F1.fetch_add(1, Ordering::AcqRel);
         return 1; // ERR_CAP：无效句柄与无授权对外同面
     };
     if !gate(&cap, Right::IPC_SEND) {
+        DIAG_F2.fetch_add(1, Ordering::AcqRel);
         return 1; // ERR_CAP
     }
     // 通道反查（按能力对象 id）
     let Some((chan_id, fast)) = channel_by_object(cap.object()) else {
+        DIAG_F3.fetch_add(1, Ordering::AcqRel);
         return 1; // ERR_CAP
     };
     let Some(payload) = super::syscall::validate_user_slice(payload_ptr, len) else {
+        DIAG_F4.fetch_add(1, Ordering::AcqRel);
         return 1; // 坏参数与无授权同面：v0 不区分（错误码 u64::MAX 系保留）
     };
-    match fast.send_frame(tag as u32, payload) {
+    let r = fast.send_frame(tag as u32, payload);
+    if r.is_ok() {
+        DIAG_SEND_OK.fetch_add(1, Ordering::AcqRel);
+    }
+    match r {
         Ok(()) => {
             // M11-C：推送成功后唤醒该通道上的阻塞接收者（按通道槽位定向；
             // 唤醒与接收方的锁内探针以 SCHED 锁串行化——丢失唤醒免疫成对
@@ -275,7 +297,10 @@ pub fn sys_send(endpoint: u64, payload_ptr: u64, len: u64, tag: u64) -> u64 {
             );
             0
         }
-        Err(_) => 4, // ERR_FULL
+        Err(_) => {
+            DIAG_FULL.fetch_add(1, Ordering::AcqRel);
+            4 // ERR_FULL
+        }
     }
 }
 
@@ -287,6 +312,7 @@ pub fn sys_send(endpoint: u64, payload_ptr: u64, len: u64, tag: u64) -> u64 {
 /// ——丢失唤醒免疫）；唤醒后重过门禁 + 重探消费（环为 SPSC 单消费者，
 /// 虚假唤醒/多接收者竞争由重探循环自然收敛）。
 pub fn sys_recv(endpoint: u64, buf_ptr: u64, buf_len: u64) -> u64 {
+    DIAG_RECVS.fetch_add(1, Ordering::AcqRel);
     let Some((_, cap)) = resolve_cap(endpoint) else {
         return 1;
     };
@@ -354,7 +380,10 @@ pub fn sys_cap_derive(parent_handle: u64, rights: u32) -> u64 {
 /// 收请求 → tag|0x80 原值回传 → 计数；服务满 [`ECHO_QUOTA`] 或轮询
 /// 超预算后退出（有界任务，绝不泄漏）。
 const ECHO_QUOTA: u64 = 1;
-const ECHO_MAX_POLLS: u64 = 20_000;
+/// 轮询预算（M17 加固 20_000 → 200_000）：t24 worker 轮询窗与 client
+/// 到达的既有时序竞争裕量放大（v0.17 归档四轮两轮 193 即临界态实证；
+/// 配合 t24 的 spawn 先序修复双保险）。成功路径 served 达标即提前退。
+const ECHO_MAX_POLLS: u64 = 200_000;
 
 pub fn echo_worker_body() {
     let Some(fast) = channel_by_id(0) else {
@@ -395,18 +424,25 @@ pub fn echo_served() -> u64 {
 }
 
 /// 为自检 24 安装回声通道能力：父能力（SEND|RECV）安装至 `parent_slot`，
-/// 派生同权子能力至 `child_slot` 并返回（任务经 `spawn_user` 携带）。
+/// 同权子能力**显式安装**至 `child_slot`（任务经 `spawn_user` 携带）。
 /// 安装失败返回 false（自检即 FAIL，不静默）。
+///
+/// **M17 确定性修复**：原实现以 `derive(parent, rights) == Ok(child_slot)`
+/// 断言派生落点——而 [`vanguard::CapabilityTable::derive`] 返回**动态
+/// 首空闲槽号**，"恰好 == child_slot" 是与前置自检槽占用状态耦合的
+/// 临界条件（v0.17 归档四轮两轮 193 即此漂移；M17 冒烟六连红为布局
+/// 漂移放大实证）。子能力 = 同 object 同 rights 的独立安装，显式
+/// install 语义等价且落点确定；前置状态若真占用目标槽则**稳定失败**
+/// （可诊断），不再随布局漂移翻转。
 pub fn install_echo_caps(parent_slot: usize, child_slot: usize) -> bool {
     let mut table = crate::caps::table().lock();
     let rights = Right::IPC_SEND.bits() | Right::IPC_RECV.bits();
-    if table
+    table
         .install(parent_slot, Capability::new(ECHO_OBJECT, rights))
-        .is_err()
-    {
-        return false;
-    }
-    table.derive(parent_slot, rights) == Ok(child_slot)
+        .is_ok()
+        && table
+            .install(child_slot, Capability::new(ECHO_OBJECT, rights))
+            .is_ok()
 }
 
 /// 自检 24 驱动（由 main 调用并断言；此处仅提供诊断输出与日志）。
