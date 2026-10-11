@@ -74,17 +74,24 @@ pub const SYS_HANDLE_ENUM: u64 = 15;
 /// 调用方句柄表满 → `ERR_TABLE(7)`。通道的跨任务分发复用
 /// [`SYS_CAP_GRANT`]（M9 父进程面——通道即能力对象，零新授权面）。
 pub const SYS_IPC_BIND: u64 = 16;
-/// 打开文件，返回统一句柄面句柄（v0.14 追加，M13-② 文件面）。
+/// 打开文件，返回统一句柄面句柄（v0.14 追加，M13-② 文件面；**v0.17 模式域
+/// 扩展 = 文件创建面**，M16-①）。
 ///
 /// 参数布局：路径指针 = rdi（调用方只读内存，UTF-8 绝对路径）、
 /// 路径长 = rsi（字节，上限 512，结构校验）、打开模式 = rdx
-/// （bit0 = 读、bit1 = 写，必须非零且 ≤ 0b11，结构校验）。
+/// （低 2 位 = 访问位：bit0 = 读、bit1 = 写，**必须非零**；bit2 =
+/// [`O_CREAT`]、bit3 = [`O_TRUNC`]；其余位保留拒收，结构校验）。
 /// 成功返回 `(1 << 32) | handle`：内核解析路径（挂载命名空间）→
 /// 铸文件对象 id + [`OpenFileDescription`] 语义入注册表 →
-/// [`Capability`](READ|WRITE 按模式子集) 装入调用方句柄表首空闲位。
-/// **fd ≡ 句柄**（统一句柄面）：文件与通道共享同一句柄命名空间，
-/// 靠对象 id 段位（0xF11E…）与权限位（READ/WRITE）区分；句柄表满 →
-/// `EMFILE(24)`，内核文件表满 → `ENFILE(23)`（Linux 语义正分）。
+/// [`Capability`](READ|WRITE 按访问位子集) 装入调用方句柄表首空闲位。
+/// **O_CREAT**（v0.17）：目标缺失时经父走查新建常规文件（POSIX 同款：
+/// 父必须已存在且为目录；中间缺失 → `ENOENT(2)`；目标已存在则直接
+/// 打开——v0 无 O_EXCL，如实记档）；**O_TRUNC**（v0.17）：以可写方式
+/// 打开成功后将文件截为零长（只读句柄不截——v0 简化，与 POSIX 未定
+/// 义域收敛，如实记档）；目录句柄不受影响。**fd ≡ 句柄**（统一句柄面）：
+/// 文件与通道共享同一句柄命名空间，靠对象 id 段位（0xF11E…）与权限位
+/// （READ/WRITE）区分；句柄表满 → `EMFILE(24)`，内核文件表满 →
+/// `ENFILE(23)`（Linux 语义正分）。
 /// 错误域 = Linux 5.15 errno（Conduit 口径，见 [`crate::vfs::FsError::errno`]）。
 pub const SYS_OPEN: u64 = 18;
 /// 从文件句柄读取（v0.14 追加，M13-② 文件面）。
@@ -118,10 +125,13 @@ pub const SYS_STAT: u64 = 22;
 /// 结构校验）、偏移 = rdx（i64 位型）。成功返回
 /// `(1 << 32) | new_offset`；结果为负 → `EINVAL(22)`。
 pub const SYS_SEEK: u64 = 23;
-/// 配额治理统计面（v0.15 追加，M14-②）：查询调用方/注册表用量。
+/// 配额治理统计面（v0.15 追加，M14-②；**v0.17 kind 3 扩容**，M16-③）：
+/// 查询调用方/注册表用量。
 ///
-/// 参数 = 类别（rdi，结构校验 0..=2）：0 = 调用方句柄表、
-/// 1 = 内核文件注册表、2 = 通道注册表。成功返回
+/// 参数 = 类别（rdi，结构校验 0..=3）：0 = 调用方句柄表、
+/// 1 = 内核文件注册表、2 = 通道注册表、3 = **栈增长窗口**（M16-③：
+/// used = 累计扩栈页数、cap = 当前窗口页数——全局口径，动态扩容
+/// 见 kernel vmm 面）。成功返回
 /// `(1 << 32) | (used << 16) | cap`（used/cap 各 16 位域）。
 /// 本面属进程面错误域（不属文件面 errno 域）。
 pub const SYS_QUOTA: u64 = 25;
@@ -218,6 +228,13 @@ pub const F_SETFD: u64 = 2;
 /// 描述符旗标 bit0：exec 时关闭（`close-on-exec`）。
 pub const FD_CLOEXEC: u64 = 1;
 
+/// [`SYS_OPEN`] 模式 bit2：目标缺失时创建常规文件（v0.17，M16-①）。
+pub const O_CREAT: u64 = 0b0100;
+/// [`SYS_OPEN`] 模式 bit3：可写打开成功后截断为零长（v0.17，M16-①）。
+pub const O_TRUNC: u64 = 0b1000;
+/// [`SYS_OPEN`] 模式合法域掩码（访问位 0b11 | O_CREAT(bit2) | O_TRUNC(bit3)）。
+pub const OPEN_MODE_MASK: u64 = 0b1111;
+
 /// 以内核内嵌映像重建调用方地址空间（v0.12 追加，M12-B 执行映像面）。
 ///
 /// 参数 = 映像号（[`EXEC_IMAGES`] 表索引，越界 → `ERR_IMAGE(10)`）。
@@ -227,11 +244,13 @@ pub const FD_CLOEXEC: u64 = 1;
 /// 无独立用户空间 → `ERR_CAP`；帧耗尽 → `ERR_NOMEM(9)`。
 pub const SYS_EXEC: u64 = 17;
 
-/// 系统调用 ABI 版本（v0.16 = M15：目录面五落点 MKDIR/REMOVE/READDIR/
-/// MOUNT/UMOUNT + 句柄面深化 DUP/FCNTL（CLOEXEC）+ NANOSLEEP 参数语义
-/// 升级为 TSC 纳秒（寄存器面不变，单位变更如实记档）。
+/// 系统调用 ABI 版本（v0.17 = M16：文件创建面 SYS_OPEN 模式域扩展
+/// O_CREAT/O_TRUNC + SYS_QUOTA kind 3 栈增长窗口 + EXEC Weave 包源
+/// 映像（ABI 寄存器面不变，映像表扩容）。
+/// v0.16 = M15：目录面五落点 MKDIR/REMOVE/READDIR/MOUNT/UMOUNT +
+/// 句柄面深化 DUP/FCNTL（CLOEXEC）+ NANOSLEEP 参数语义升级为 TSC 纳秒。
 /// v0.8 = SYS_QUOTA；v0.7 = 文件面六落点 + NANOSLEEP + 统一句柄面）。
-pub const ABI_VERSION: (u16, u16) = (0, 9);
+pub const ABI_VERSION: (u16, u16) = (0, 10);
 
 /// 寄存器快照形式的系统调用请求。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -347,11 +366,12 @@ pub enum Syscall {
         /// 内嵌映像表索引。
         image: u64,
     },
-    /// 打开文件（M13-②；指针 = rdi 慢路径语义，结构面见 [`SYS_OPEN`]）。
+    /// 打开文件（M13-②；v0.17 模式域扩展，指针 = rdi 慢路径语义，
+    /// 结构面见 [`SYS_OPEN`]）。
     Open {
         /// 路径长（字节，≤ 512）。
         len: u64,
-        /// 打开模式（bit0 读 / bit1 写，非零 ≤ 0b11）。
+        /// 打开模式（低 2 位访问位非零；bit2 = O_CREAT / bit3 = O_TRUNC）。
         mode: u8,
     },
     /// 读文件（M13-②；缓冲 = rsi 慢路径语义，见 [`SYS_READ`]）。
@@ -392,9 +412,10 @@ pub enum Syscall {
         /// 时长（**纳秒**，v0.16 TSC 纳秒语义；0 = 立即返回）。
         ticks: u64,
     },
-    /// 配额用量查询（M14-②；见 [`SYS_QUOTA`]）。
+    /// 配额用量查询（M14-②；v0.17 kind 3，见 [`SYS_QUOTA`]）。
     Quota {
-        /// 类别（0 = 句柄表 / 1 = 文件注册表 / 2 = 通道注册表）。
+        /// 类别（0 = 句柄表 / 1 = 文件注册表 / 2 = 通道注册表 /
+        /// 3 = 栈增长窗口）。
         kind: u64,
     },
     /// 创建目录（M15-①；指针 = rdi 慢路径语义，见 [`SYS_MKDIR`]）。
@@ -481,7 +502,7 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
         SYS_IPC_BIND if a0 == 0 => Ok(Syscall::IpcBind { reserved: a0 }),
         SYS_IPC_BIND => Err(AbiError::BadArgs),
         SYS_EXEC => Ok(Syscall::Exec { image: a0 }),
-        SYS_OPEN if a1 <= 512 && (1..=0b11).contains(&a2) => Ok(Syscall::Open {
+        SYS_OPEN if a1 <= 512 && a2 <= OPEN_MODE_MASK && a2 & 0b11 != 0 => Ok(Syscall::Open {
             len: a1,
             mode: a2 as u8,
         }),
@@ -505,7 +526,7 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
         }),
         SYS_SEEK => Err(AbiError::BadArgs),
         SYS_NANOSLEEP => Ok(Syscall::NanoSleep { ticks: a0 }),
-        SYS_QUOTA if a0 <= 2 => Ok(Syscall::Quota { kind: a0 }),
+        SYS_QUOTA if a0 <= 3 => Ok(Syscall::Quota { kind: a0 }),
         SYS_QUOTA => Err(AbiError::BadArgs),
         SYS_MKDIR if a1 <= 512 => Ok(Syscall::MkDir { len: a1 }),
         SYS_MKDIR => Err(AbiError::BadArgs),
@@ -659,7 +680,7 @@ mod tests {
     #[test]
     fn parses_file_face_calls() {
         let r = |num: u64, args: [u64; 5]| SyscallRegs { num, args };
-        // OPEN：len ≤ 512 且 mode ∈ 1..=0b11（0 模式拒收 → BadArgs）
+        // OPEN：len ≤ 512 且 mode ≤ OPEN_MODE_MASK 且访问位非零
         assert_eq!(
             super::parse(r(super::SYS_OPEN, [0x2000, 11, 0b11, 0, 0])),
             Ok(Syscall::Open {
@@ -672,8 +693,36 @@ mod tests {
             Err(AbiError::BadArgs),
             "len 越界"
         );
+        // v0.17 M16-①：O_CREAT/O_TRUNC 域（访问位非零前置）
+        assert_eq!(
+            super::parse(r(
+                super::SYS_OPEN,
+                [0x2000, 11, super::O_CREAT | 0b10, 0, 0]
+            )),
+            Ok(Syscall::Open {
+                len: 11,
+                mode: (super::O_CREAT | 0b10) as u8
+            }),
+            "O_CREAT|WRITES"
+        );
+        assert_eq!(
+            super::parse(r(
+                super::SYS_OPEN,
+                [0x2000, 11, super::O_TRUNC | 0b11, 0, 0]
+            )),
+            Ok(Syscall::Open {
+                len: 11,
+                mode: (super::O_TRUNC | 0b11) as u8
+            }),
+            "O_TRUNC|RDWR"
+        );
         assert_eq!(
             super::parse(r(super::SYS_OPEN, [0x2000, 11, 0b100, 0, 0])),
+            Err(AbiError::BadArgs),
+            "O_CREAT 无访问位拒收"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_OPEN, [0x2000, 11, 0b10100, 0, 0])),
             Err(AbiError::BadArgs),
             "mode 保留位拒收"
         );
@@ -841,21 +890,21 @@ mod tests {
         assert_eq!(super::SYS_UMOUNT, 30);
         assert_eq!(super::SYS_DUP, 31);
         assert_eq!(super::SYS_FCNTL, 32);
-        assert_eq!(super::ABI_VERSION, (0, 9));
+        assert_eq!(super::ABI_VERSION, (0, 10));
     }
 
     #[test]
     fn quota_parse_validates_kind_domain() {
         let r = |num: u64, args: [u64; 5]| SyscallRegs { num, args };
-        for kind in 0u64..=2 {
+        for kind in 0u64..=3 {
             assert_eq!(
                 super::parse(r(super::SYS_QUOTA, [kind, 0, 0, 0, 0])),
                 Ok(Syscall::Quota { kind })
             );
         }
-        // kind 越界（3+）= BadArgs（SEEK whence 先例同款结构校验）
+        // kind 越界（4+）= BadArgs（SEEK whence 先例同款结构校验）
         assert_eq!(
-            super::parse(r(super::SYS_QUOTA, [3, 0, 0, 0, 0])),
+            super::parse(r(super::SYS_QUOTA, [4, 0, 0, 0, 0])),
             Err(AbiError::BadArgs)
         );
         assert_eq!(

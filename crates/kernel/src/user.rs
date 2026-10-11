@@ -22,6 +22,8 @@ use ostd::mm::page::Entry;
 
 // M14-① 多段映像生成产物（勿手改：scripts/gen_m14_images.py 再生成）。
 include!("exec_images_gen.rs");
+// M16 探针包装与深触映像（勿手改：scripts/gen_m16_images.py 再生成）。
+include!("exec_images_m16_gen.rs");
 
 /// 用户代码段虚拟基址（PT[0]）。
 pub const USER_CODE_VIRT: u64 = 0x40_0000;
@@ -485,12 +487,20 @@ where
     })
 }
 
-/// SYS_EXEC 映像表（M14-① 扩容：内核内嵌字节表 → **VFS 路径表**）。
-/// 索引即 SYS_EXEC 参数；越界 → ERR_IMAGE(10)。装载器经命名空间
-/// 解析路径并整读映像（**VFS 第二消费者**——第一消费者为文件面
-/// syscall），LXE1 解析与放置策略见 [`build_user_space_lxe`]。
-/// 映像源随后续里程碑可扩展至其他挂载（Weave 包源预留）。
-pub const EXEC_IMAGES: [&str; 3] = ["/files/selftest.lxe", "/files/prog.lxe", "/files/grow.lxe"];
+/// SYS_EXEC 映像表（M14-① 扩容：内核内嵌字节表 → **VFS 路径表**；
+/// M16-② 再扩容：追加 Weave 包源映像 prog.lwp 与增长栈动态扩容映像
+/// deep.lxe）。索引即 SYS_EXEC 参数；越界 → ERR_IMAGE(10)。装载器经
+/// 命名空间解析路径并整读映像（**VFS 第二消费者**——第一消费者为
+/// 文件面 syscall），LXE1 解析与放置策略见 [`build_user_space_lxe`]。
+/// **Weave 包源映像**（M16-②，EXEC 第 2+ 消费者）：.lwp 载荷经
+/// `weave::pkg` 解包后进入同一 LXE1 装载链（直接 .lxe 为第一消费者）。
+pub const EXEC_IMAGES: [&str; 5] = [
+    "/files/selftest.lxe",
+    "/files/prog.lxe",
+    "/files/grow.lxe",
+    "/files/prog.lwp",
+    "/files/deep.lxe",
+];
 
 /// 多段映像装载结果（M14-①）：根、入口、栈顶 + 段帧取证表。
 pub struct ExecSpace {

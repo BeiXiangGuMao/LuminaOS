@@ -32,6 +32,17 @@ use crate::swap::{swap_in, swap_out};
 static STACK_GROWS: AtomicU64 = AtomicU64::new(0);
 /// 最近一次扩栈新帧（哨兵取证；0 = 尚无）。
 static LAST_GROW_FRAME: AtomicU64 = AtomicU64::new(0);
+/// 当前增长窗口页数（M16-③ 动态扩容：初值 = [`crate::user::
+/// STACK_GROW_WINDOW`]，扩展带触达时按 [`STACK_GROW_STEP`] 递增至
+/// [`STACK_GROW_MAX`] 封顶；全局口径，v0 如实记档）。
+static GROW_WINDOW_PAGES: AtomicUsize = AtomicUsize::new(0);
+/// 窗口动态扩容次数（M16-③ t55 断言面）。
+static GROW_EXTENSIONS: AtomicU64 = AtomicU64::new(0);
+/// 每次扩容递增页数（与初始窗口同档；2 次扩容 = 96 页终态）。
+pub const STACK_GROW_STEP: usize = 32;
+/// 窗口硬上限（耗尽探针域；超过即拒绝扩容，故障重递走上层致命路径
+/// ——与 M14「无分支空间自然致命」同款自保护）。
+pub const STACK_GROW_MAX: usize = 128;
 
 /// 栈增长取证快照：(扩栈次数, 最近新帧)。
 pub fn stack_growth_stamps() -> (u64, u64) {
@@ -41,19 +52,79 @@ pub fn stack_growth_stamps() -> (u64, u64) {
     )
 }
 
-/// 缺页驱动的 ring3 栈扩面（M14-①）：故障页落增长栈窗口且叶未映射
-/// → 分配新帧、清零、写 P|U|W、invlpg。
+/// 窗口扩容取证快照（M16-③）：(扩容次数, 当前窗口页数)。
+pub fn grow_window_stamps() -> (u64, usize) {
+    (
+        GROW_EXTENSIONS.load(Ordering::Acquire),
+        GROW_WINDOW_PAGES.load(Ordering::Acquire),
+    )
+}
+
+/// 栈增长配额快照（M16-③ SYS_QUOTA kind 3）：(累计扩栈页数, 当前
+/// 窗口页数)。全局口径（与 kind 1/2 注册表同域）。
+pub fn growth_usage() -> (usize, usize) {
+    (
+        STACK_GROWS.load(Ordering::Acquire) as usize,
+        GROW_WINDOW_PAGES.load(Ordering::Acquire),
+    )
+}
+
+/// 窗口初始化（vmm::init 调用；初值 = 静态窗口常量单点）。
+pub fn init_grow_window() {
+    GROW_WINDOW_PAGES.store(crate::user::STACK_GROW_WINDOW, Ordering::Release);
+}
+
+/// 窗口扩展策略（M16-③ 纯函数面；t55 策略探针直测，宿主不可达——
+/// kernel crate 仅裸机构建，策略面在自检内验算）。
 ///
-/// 窗口 = [STACK_TOP_GROW - 窗口页, STACK_TOP_GROW - 初始帧)（初始帧
-/// 预映射不参与；窗口上限 = 增长配额，与 M14-② 呼应）。仅 LXE
-/// stack_top≠0 的空间具备 PDPT[6] 分支——走表缺失/大页/已映射一律
-/// false（交后续路径，无分支空间自然致命，自保护）。
+/// 返回 `Some(new_window)` = 需扩窗（调用方落账后继续扩栈）；
+/// `None` = 无需扩窗（窗内）或越扩展带/硬顶耗尽（拒绝）。窗口域：
+/// `[top - (window + 1) 页, top - 1 页)`；扩展带 = 紧贴下界的
+/// [`STACK_GROW_STEP`] 页；硬顶 = [`STACK_GROW_MAX`]。
+pub fn grow_extension(va_page: u64, window: usize) -> Option<usize> {
+    let top = crate::user::STACK_TOP_GROW;
+    let init_base = top - FRAME_SIZE;
+    if va_page >= init_base {
+        return None; // 非窗口域（防御；初始帧不参与增长）
+    }
+    let floor = init_base - (window as u64) * FRAME_SIZE;
+    if va_page >= floor {
+        return None; // 窗内：直接扩栈，无需扩窗
+    }
+    let zone_low = floor - (STACK_GROW_STEP as u64) * FRAME_SIZE;
+    if va_page < zone_low {
+        return None; // 越扩展带：拒绝（致命域，自保护）
+    }
+    let next = window + STACK_GROW_STEP;
+    if next > STACK_GROW_MAX {
+        return None; // 耗尽探针：硬顶拒绝
+    }
+    Some(next)
+}
+
+/// 缺页驱动的 ring3 栈扩面（M14-① 立；**M16-③ 动态扩容**）：故障页
+/// 落增长栈窗口且叶未映射 → 分配新帧、清零、写 P|U|W、invlpg。
+///
+/// 窗口动态化（M16-③）：静态 32 页窗外触达经 [`grow_extension`] 判定
+/// ——扩展带内 → 窗口按步扩容落账（[`GROW_EXTENSIONS`] 取证）后继续
+/// 补帧；越带/硬顶（[`STACK_GROW_MAX`]）→ false（故障重递走上层
+/// 致命路径，自保护与 M14 同款）。扩窗记账先行、帧耗尽不回滚（v0
+/// 简化，如实记档）。仅 LXE stack_top≠0 的空间具备 PDPT[6] 分支——
+/// 走表缺失/大页/已映射一律 false（交后续路径）。
 fn stack_grow(va_page: u64) -> bool {
     let top = crate::user::STACK_TOP_GROW;
     let init_base = top - FRAME_SIZE;
-    let floor =
-        init_base - (u64::try_from(crate::user::STACK_GROW_WINDOW).unwrap_or(0)) * FRAME_SIZE;
-    if va_page < floor || va_page >= init_base {
+    if va_page >= init_base {
+        return false;
+    }
+    // M16-③：窗外触达 → 扩展带判定与扩窗落账（记账先行，帧耗尽不回滚）
+    let window = GROW_WINDOW_PAGES.load(Ordering::Acquire);
+    if let Some(next) = grow_extension(va_page, window) {
+        GROW_WINDOW_PAGES.store(next, Ordering::Release);
+        GROW_EXTENSIONS.fetch_add(1, Ordering::AcqRel);
+    }
+    let floor = init_base - (GROW_WINDOW_PAGES.load(Ordering::Acquire) as u64) * FRAME_SIZE;
+    if va_page < floor {
         return false;
     }
     let Some(frames) = *FRAMES.lock() else {
@@ -689,6 +760,8 @@ fn cow_break(va_page: u64) -> bool {
 pub fn init(frames: &'static FrameAllocator) {
     *FRAMES.lock() = Some(frames);
     ostd::interrupt::stubs::set_pf_rec_hook(pf_hook);
+    // M16-③：增长窗口动态化初值（静态常量单点装载）
+    init_grow_window();
 }
 
 /// 全局帧服务快照（M11-A：SYS_SPAWN 慢路径分配子空间；None = 未初始化）。

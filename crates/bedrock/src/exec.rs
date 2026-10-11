@@ -116,6 +116,13 @@ fn rd_u32(b: &[u8], off: usize) -> Option<u32> {
     Some(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
 
+/// 魔数探针（M16-② EXEC 分流面）：blob 是否以 LXE1 魔数开头。
+/// 只看魔数、不做全结构校验（后者归 [`parse`] / 内核装载器）——
+/// 供 Weave 包源映像分流：魔数命中走直装链，否则尝试 LWP1 解包。
+pub fn parse_probe(blob: &[u8]) -> bool {
+    blob.len() >= 4 && rd_u32(blob, 0) == Some(LXE_MAGIC)
+}
+
 fn rd_u64(b: &[u8], off: usize) -> Option<u64> {
     let s = b.get(off..off + 8)?;
     let mut a = [0u8; 8];

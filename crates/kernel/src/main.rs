@@ -71,8 +71,8 @@ use crate::multiboot1::BOOT_MAGIC;
 const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
 /// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项
-/// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加）。
-const SELFTEST_TOTAL: usize = 52;
+/// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M16 起 55）。
+const SELFTEST_TOTAL: usize = 55;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐，链接进 .bss（NOLOAD）。
 #[repr(align(4096))]
@@ -2259,7 +2259,8 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok &= f_used1 == f_used - 3;
         ok &= c_used1 == c_used; // 通道注册表占用不变（bind 存续语义）
                                  // kind 越界防御面（直调；parse 层已在 abi 单测钉死）+ 取证自洽
-        ok &= procs::sys_quota(3) == 1; // ERR_CAP
+                                 // （kind 3 自 v0.17 转正为栈增长窗口——M16-③，t55 对账）
+        ok &= procs::sys_quota(4) == 1; // ERR_CAP
         ok &= procs::quota_stamp() == 1;
         ok
     };
@@ -2309,7 +2310,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         chk!(vfs::sys_umount(np, nl), 2);
         chk!(vfs::sys_umount(rp, rl), 2);
         chk!(vfs::sys_mount(fp, fl, 1), 22);
-        // ④ READDIR 分页：open /files → 首页 16B（dir+echo 恰 11B，
+        // ④ READDIR 分页：open /files → 首页 16B（deep.lxe+dir 恰 15B，
         //    第三项放不下 → 半项不落盘）→ 续页 512B 至 EOF → 全量积累
         let (dp, dl) = pa("/files");
         let or = vfs::sys_open(dp, dl, 1);
@@ -2331,8 +2332,9 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
             total += n;
             acc_len = copy_page_to_acc(n, acc_len);
         }
-        ok &= total == 8; // dir/echo/grow.lxe/hello/mnt/prog.lxe/scratch/selftest.lxe
-                          // 名单 + kind 抽查（顺序无关：积累缓冲逐项走查，项编码自对齐）
+        ok &= total == 10; // deep.lxe/dir/echo/grow.lxe/hello/mnt/prog.lwp/
+                           // prog.lxe/scratch/selftest.lxe（M16 播种 +2）
+                           // 名单 + kind 抽查（顺序无关：积累缓冲逐项走查，项编码自对齐）
         let scan_ok = acc_scan(acc_len);
         ok &= scan_ok;
         // ⑤ READDIR 负探针：文件句柄 ENOTDIR(20)、坏句柄 EBADF(9)、
@@ -2513,6 +2515,205 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     // 依赖唤醒链存活，防泄漏任务）
     timer::shutdown();
 
+    // 53) 文件创建面（M16-①）：O_CREAT 缺失新建（写读回对账 + 已存在
+    //     重开）+ O_TRUNC 可写截零/只读不截 + 负探针族（父缺失 ENOENT/
+    //     保留位 EINVAL/无访问位 EINVAL/目录写 EISDIR）。
+    let t53 = {
+        let mut ok = true;
+        let mut fail_line = 0usize;
+        macro_rules! chk {
+            ($v:expr, $want:expr) => {{
+                let v = $v;
+                if v != $want {
+                    fail_line = line!() as usize;
+                }
+                ok &= v == $want;
+                v
+            }};
+        }
+        vfs::reset_evidence();
+        let pa = |s: &str| (s.as_ptr() as u64, s.len() as u64);
+        const FOK: u64 = 1 << 32;
+        let m_cw = bedrock::abi::O_CREAT | 0b10;
+        let m_cr = bedrock::abi::O_CREAT | 0b01;
+        let m_tr = bedrock::abi::O_TRUNC | 0b01;
+        // ① O_CREAT 新建 + 写读回
+        let (cp, cl) = pa("/files/ocreat.txt");
+        let o1 = vfs::sys_open(cp, cl, m_cw);
+        ok &= o1 >> 32 == 1;
+        let h1 = o1 & 0xFFFF_FFFF;
+        // SAFETY: 单核自检上下文串行访问（t50 DIR_PAGE 同款纪律）
+        unsafe {
+            core::ptr::copy_nonoverlapping(b"LUMINA-OCREAT".as_ptr(), oc_buf_addr() as *mut u8, 13);
+        }
+        chk!(vfs::sys_write(h1, oc_buf_addr(), 13), FOK | 13);
+        ok &= vfs::sys_close(h1) == 0;
+        let o2 = vfs::sys_open(cp, cl, 0b01);
+        ok &= o2 >> 32 == 1;
+        let h2 = o2 & 0xFFFF_FFFF;
+        chk!(vfs::sys_read(h2, oc_buf_addr(), 32), FOK | 13);
+        // SAFETY: 同上（读回内容对账）
+        let got = unsafe { core::slice::from_raw_parts((&raw const OC_BUF) as *const u8, 13) };
+        ok &= got == b"LUMINA-OCREAT";
+        ok &= vfs::sys_close(h2) == 0;
+        // ② O_CREAT 已存在：重开直开（v0 无 O_EXCL）
+        let o3 = vfs::sys_open(cp, cl, m_cr);
+        ok &= o3 >> 32 == 1;
+        ok &= vfs::sys_close(o3 & 0xFFFF_FFFF) == 0;
+        // ③ O_TRUNC：只读不截（尺寸保持 8）；可写截零（size 0 → 读 EOF）
+        let (tp, tl) = pa("/files/trunceme");
+        let o4 = vfs::sys_open(tp, tl, m_cw);
+        ok &= o4 >> 32 == 1;
+        let h4 = o4 & 0xFFFF_FFFF;
+        chk!(vfs::sys_write(h4, oc_buf_addr(), 8), FOK | 8);
+        ok &= vfs::sys_close(h4) == 0;
+        let o5 = vfs::sys_open(tp, tl, m_tr);
+        ok &= o5 >> 32 == 1;
+        let h5 = o5 & 0xFFFF_FFFF;
+        let st1 = vfs::sys_stat(h5);
+        ok &= (st1 >> 16) & 0xFFFF == 8;
+        ok &= vfs::sys_close(h5) == 0;
+        let o6 = vfs::sys_open(tp, tl, bedrock::abi::O_TRUNC | 0b11); // RW：截零后可读回 EOF
+        ok &= o6 >> 32 == 1;
+        let h6 = o6 & 0xFFFF_FFFF;
+        let st2 = vfs::sys_stat(h6);
+        ok &= (st2 >> 16) & 0xFFFF == 0;
+        chk!(vfs::sys_read(h6, oc_buf_addr(), 8), FOK); // EOF：OK_BIT|0
+        ok &= vfs::sys_close(h6) == 0;
+        // ④ 负探针：父缺失 ENOENT(2)；保留位/无访问位 EINVAL(22)（直调防御面）；
+        //    目录 O_CREAT|W 可开（v0 目录打开语义）但 write → EISDIR(21)
+        let (np, nl) = pa("/files/nope/leaf");
+        chk!(vfs::sys_open(np, nl, m_cw), 2);
+        chk!(vfs::sys_open(cp, cl, 0b10100), 22);
+        chk!(vfs::sys_open(cp, cl, 0b100), 22);
+        let (dp2, dl2) = pa("/files/dir");
+        let o7 = vfs::sys_open(dp2, dl2, m_cw);
+        ok &= o7 >> 32 == 1;
+        let h7 = o7 & 0xFFFF_FFFF;
+        chk!(vfs::sys_write(h7, oc_buf_addr(), 4), 21);
+        ok &= vfs::sys_close(h7) == 0;
+        if fail_line != 0 {
+            let _ = writeln!(log, "  t53 first-fail line={fail_line}");
+        }
+        ok
+    };
+    report(&mut log, t53, "file-create-o-creat");
+
+    // 54) Weave 包源映像（M16-② EXEC 第 2+ 消费者，v0.15 候补转正）：
+    //     探针任务运行 EXEC3_PROGRAM——EXEC(9) 负探针 → EXEC(3)
+    //     （/files/prog.lwp = LWP1 包装 prog.lxe）→ 解包装载 →
+    //     退出码 91。取证链：EXEC 戳（res=0/image=3）+ vfs_bytes =
+    //     LWP1 包长（32B 头 + 15B 名字 + 193B 载荷）+ segs=2 + 数据帧
+    //     哨兵 == PROG_RESULT_MAGIC（载荷与 t47 同一 prog.lxe——
+    //     双消费者行为等价直证）。
+    let t54 = {
+        let mut ok = true;
+        task::reset_user_evidence();
+        match user::build_user_space(&mut || frames.alloc()) {
+            Ok(us) => {
+                ostd::hw::phys::write_bytes(us.code_frame, &user::EXEC3_PROGRAM);
+                let _ = task::spawn_user_pinned("weave-exec-probe", user_noop, us.root, 0, 0);
+                let deadline = ostd::time::now() + 600;
+                let (mut e0, _) = task::user_exit_codes();
+                while ostd::time::now() < deadline && e0 == u64::MAX {
+                    task::yield_now();
+                    let (e, _) = task::user_exit_codes();
+                    e0 = e;
+                }
+                let (res, img) = procs::exec_stamps();
+                let (vfs_bytes, segs, data_frame) = procs::exec_loader_stamps();
+                let _ = writeln!(
+                    log,
+                    "  weave-exec: exit0={e0} res={res:#x} image={img} vfs={vfs_bytes} segs={segs}"
+                );
+                ok &= e0 == 91; // 包载荷跑完全程（prog.lxe 退出码）
+                ok &= res == 0 && img == 3; // EXEC(3) 成功落证
+                                            // 包长对账：LWP1 头 32B + 名字区 15B（org.lumina.prog）+ 载荷
+                let expect = (weave::pkg::HEADER_LEN
+                    + "org.lumina.prog".len()
+                    + user::PROG_LXE.len()) as u64;
+                ok &= vfs_bytes == expect;
+                ok &= segs == 2; // 双段装载（解包后同一 LXE1 链）
+                ok &= data_frame != 0;
+                let sentinel = ostd::hw::phys::read_u64(data_frame + 8);
+                ok &= sentinel == user::PROG_RESULT_MAGIC;
+            }
+            Err(e) => {
+                let _ = writeln!(log, "weave-exec: user space build failed: {e:?}");
+                ok = false;
+            }
+        }
+        ok
+    };
+    report(&mut log, t54, "weave-package-image");
+
+    // 55) 栈增长动态扩容（M16-③）：策略面直调（窗内 None / 扩展带 Some /
+    //     越带 None / 硬顶耗尽 None——耗尽探针）+ 探针任务运行
+    //     EXEC4_PROGRAM → /files/deep.lxe（触页 40/70：静态窗外扩展带）
+    //     → 两次扩窗（32→64→96）→ 写读回 → EXIT(93)。配额 kind 3 与
+    //     growth_usage 对账（cap == 扩窗终态）。
+    let t55 = {
+        let mut ok = true;
+        // ① 策略面直调（纯函数，不落账）
+        let top = user::STACK_TOP_GROW;
+        let va = |pages: u64| top - pages * FRAME_SIZE;
+        // 窗内（页 5 < 33 页下界之上）→ None
+        ok &= vmm::grow_extension(va(5), user::STACK_GROW_WINDOW).is_none();
+        // 扩展带（页 40：窗 32 的下界 33 之外、65 之内）→ Some(64)
+        ok &= vmm::grow_extension(va(40), user::STACK_GROW_WINDOW)
+            == Some(user::STACK_GROW_WINDOW + vmm::STACK_GROW_STEP);
+        // 扩展带二层（页 70：窗 64 的下界 65 之外、97 之内）→ Some(96)
+        ok &=
+            vmm::grow_extension(va(70), 2 * vmm::STACK_GROW_STEP) == Some(3 * vmm::STACK_GROW_STEP);
+        // 越扩展带（窗 96 下界 97 之外、扩展带下界 129 之外的页 200）→ None
+        ok &= vmm::grow_extension(va(200), 3 * vmm::STACK_GROW_STEP).is_none();
+        // 硬顶耗尽探针（窗 128 = MAX，页 140 ∈ 扩展带但 128+32 > 128）→ None
+        ok &= vmm::grow_extension(va(140), vmm::STACK_GROW_MAX).is_none();
+        // ② 运行面：deep.lxe 触页 40/70 → 两次扩窗 + 写读回
+        task::reset_user_evidence();
+        let (grows0, _) = vmm::stack_growth_stamps();
+        let (ext0, _) = vmm::grow_window_stamps();
+        match user::build_user_space(&mut || frames.alloc()) {
+            Ok(us) => {
+                ostd::hw::phys::write_bytes(us.code_frame, &user::EXEC4_PROGRAM);
+                let _ = task::spawn_user_pinned("deep-grow-probe", user_noop, us.root, 0, 0);
+                let deadline = ostd::time::now() + 600;
+                let (mut e0, _) = task::user_exit_codes();
+                while ostd::time::now() < deadline && e0 == u64::MAX {
+                    task::yield_now();
+                    let (e, _) = task::user_exit_codes();
+                    e0 = e;
+                }
+                let (res, img) = procs::exec_stamps();
+                let (grows, frame) = vmm::stack_growth_stamps();
+                let (ext, window) = vmm::grow_window_stamps();
+                let _ = writeln!(
+                    log,
+                    "  deep-grow: exit0={e0} res={res:#x} image={img} grows+={} ext+={} window={window}",
+                    grows - grows0,
+                    ext - ext0
+                );
+                ok &= e0 == 93; // 深触写读回成功
+                ok &= res == 0 && img == 4; // EXEC(4) 成功落证
+                ok &= grows >= grows0 + 2; // 页 40/70 两帧
+                ok &= ext == ext0 + 2; // 两次扩窗
+                ok &= window == 3 * vmm::STACK_GROW_STEP; // 32→64→96
+                ok &= frame != 0;
+                // ③ 配额 kind 3 对账：sys_quota(3) == pack(growth_usage)
+                let (used, cap) = vmm::growth_usage();
+                let q3 = procs::sys_quota(3);
+                ok &= q3 == (1u64 << 32) | ((used as u64 & 0xFFFF) << 16) | (cap as u64 & 0xFFFF);
+                ok &= cap == window;
+            }
+            Err(e) => {
+                let _ = writeln!(log, "deep-grow: user space build failed: {e:?}");
+                ok = false;
+            }
+        }
+        ok
+    };
+    report(&mut log, t55, "stack-growth-dynamic");
+
     let _ = writeln!(log, "----");
     interrupts::disable();
     if pass == SELFTEST_TOTAL {
@@ -2534,6 +2735,13 @@ fn user_noop() {}
 static mut DIR_PAGE: [u8; 512] = [0u8; 512];
 /// t50 目录项积累缓冲（跨页拼接；项编码自对齐，256B 足容 8 项）。
 static mut DIR_ACC: [u8; 256] = [0u8; 256];
+/// t53 创建面写读缓冲（"LUMINA-OCREAT" 13B + 截断面写 + 对齐余量）。
+static mut OC_BUF: [u8; 64] = [0u8; 64];
+
+/// OC_BUF 缓冲地址（raw 指针形态，避开 static_mut_refs 语义）。
+fn oc_buf_addr() -> u64 {
+    (&raw mut OC_BUF) as *mut u8 as u64
+}
 
 /// DIR_PAGE 缓冲地址（raw 指针形态，避开 static_mut_refs 语义）。
 fn dir_page_addr() -> u64 {
@@ -2557,8 +2765,8 @@ fn copy_page_to_acc(n: usize, acc_len: usize) -> usize {
     acc_len + p
 }
 
-/// t50 积累缓冲全量走查：项编码闭合（2+len 链走到底）+ 8 名单全在 +
-/// kind 抽查（lxe/hello/echo = File；dir/scratch/mnt = Dir）。
+/// t50 积累缓冲全量走查：项编码闭合（2+len 链走到底）+ 10 名单全在 +
+/// kind 抽查（lxe/hello/echo/prog.lwp = File；dir/scratch/mnt = Dir）。
 fn acc_scan(acc_len: usize) -> bool {
     let acc = (&raw const DIR_ACC) as *const u8;
     let mut hello = false;
@@ -2567,6 +2775,8 @@ fn acc_scan(acc_len: usize) -> bool {
     let mut selftest = false;
     let mut prog = false;
     let mut grow = false;
+    let mut deep = false;
+    let mut lwp = false;
     let mut scratch = false;
     let mut mnt = false;
     // SAFETY: 单核自检上下文串行访问；走查边界由 acc_len 与项编码链
@@ -2587,6 +2797,8 @@ fn acc_scan(acc_len: usize) -> bool {
                 (0, b"selftest.lxe") => selftest = true,
                 (0, b"prog.lxe") => prog = true,
                 (0, b"grow.lxe") => grow = true,
+                (0, b"deep.lxe") => deep = true,
+                (0, b"prog.lwp") => lwp = true,
                 (1, b"scratch") => scratch = true,
                 (1, b"mnt") => mnt = true,
                 _ => {}
@@ -2597,7 +2809,7 @@ fn acc_scan(acc_len: usize) -> bool {
             return false; // 走查未闭合（尾残）
         }
     }
-    hello && echo && dir && selftest && prog && grow && scratch && mnt
+    hello && echo && dir && selftest && prog && grow && deep && lwp && scratch && mnt
 }
 
 /// t46 sleeper 完成旗标（1 = nanosleep 返回后落证）。

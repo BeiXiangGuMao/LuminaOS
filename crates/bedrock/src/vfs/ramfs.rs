@@ -204,6 +204,16 @@ impl FileSystem for RamFs {
         }
         Ok(entries)
     }
+
+    fn truncate(&self, vnode: VnodeId) -> Result<(), FsError> {
+        let mut inner = self.inner.lock();
+        let node = inner.nodes.get_mut(&vnode).ok_or(FsError::NotFound)?;
+        if !matches!(node.kind, NodeKind::File) {
+            return Err(FsError::IsDirectory);
+        }
+        node.data.clear();
+        Ok(())
+    }
 }
 
 /// 可变版目录访问（与 [`RamFs::dir_children`] 对偶）。
@@ -365,6 +375,28 @@ mod tests {
             .expect("create");
         fs.unlink(RAMFS_ROOT, "tmp").expect("unlink");
         assert_eq!(fs.metadata(f), Err(FsError::NotFound));
+    }
+
+    #[test]
+    fn truncate_rules() {
+        let fs = RamFs::new();
+        let f = fs.create(RAMFS_ROOT, "f", NodeKind::File).expect("create");
+        fs.write_at(f, 0, b"lumina").expect("write");
+        assert_eq!(fs.metadata(f).unwrap().size, 6);
+        // 截断后尺寸归零、后续读为 EOF；pwrite 语义下再写仍从偏移落位
+        assert_eq!(fs.truncate(f), Ok(()));
+        assert_eq!(fs.metadata(f).unwrap().size, 0);
+        let mut buf = [0u8; 4];
+        assert_eq!(fs.read_at(f, 0, &mut buf), Ok(0));
+        fs.write_at(f, 0, b"ab").expect("rewrite");
+        assert_eq!(fs.metadata(f).unwrap().size, 2);
+        // 目录 → IsDirectory；缺失 → NotFound
+        let d = fs.create(RAMFS_ROOT, "d", NodeKind::Dir).expect("mkdir");
+        assert_eq!(fs.truncate(d), Err(FsError::IsDirectory));
+        assert_eq!(
+            fs.truncate(super::super::node::VnodeId(999)),
+            Err(FsError::NotFound)
+        );
     }
 
     #[test]

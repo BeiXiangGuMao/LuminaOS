@@ -3,8 +3,18 @@
 //! 依据《指标与规范手册》第 15 章：Weave 的安装/卸载一律走「代际事务」——事务
 //! 具备 Prepare/Commit/Rollback 三相，提交不可重复，回滚不残留。本 crate 提供
 //! 清单（manifest）解析与事务状态机的策略面；内容寻址存储与签名校验在服务侧。
+//!
+//! **no_std（M16-② 起）**：包容器格式（[`pkg`]）需随内核 EXEC 装载链运行，
+//! 本 crate 自 v0.17.0 起转为 `no_std + alloc`（宿主测试不受影响；原 std 面
+//! 仅用 `fmt`/`String`/`Vec`，均由 core/alloc 等价替代，如实记档）。
+#![no_std]
+extern crate alloc;
 
-use std::fmt;
+pub mod pkg;
+
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::fmt;
 
 /// 语义化版本（仅核心三段）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -177,6 +187,8 @@ impl Transaction {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{Dep, Manifest, Transaction, TxState, Version, VersionReq};
+    use alloc::string::ToString;
+    use alloc::vec;
 
     #[test]
     fn version_parse_order_and_display() {

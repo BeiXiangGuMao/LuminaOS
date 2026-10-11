@@ -41,6 +41,10 @@
 //! 落点**（v0 bind 存续语义补全：通道句柄可关——句柄/能力回收，
 //! 通道对象在注册表存续）。
 //!
+//! **M16-① 文件创建面**：SYS_OPEN 模式域扩展 O_CREAT（缺失经父走查
+//! 新建常规文件）+ O_TRUNC（可写打开后截零，[`FileSystem::truncate`]
+//! 承载）——文件面从「只读播种」走向 ring3 自主创建。
+//!
 //! unsafe 面：零（用户缓冲校验复用 `crate::syscall::validate_user_slice*`）。
 
 use alloc::sync::Arc;
@@ -216,6 +220,25 @@ pub fn init() {
         let _ = fs.create(dir, "grow.lxe", NodeKind::File).map(|h| {
             let _ = fs.write_at(h, 0, &crate::user::GROW_LXE);
         });
+        // M16-② Weave 包源映像播种：prog.lxe 载荷经 LWP1 包装
+        // （EXEC 第 2+ 消费者；解包策略归 sys_exec，结构面归 weave::pkg）
+        if let Ok(lwp) = weave::pkg::encode(
+            "org.lumina.prog",
+            weave::Version {
+                major: 1,
+                minor: 0,
+                patch: 0,
+            },
+            &crate::user::PROG_LXE,
+        ) {
+            let _ = fs.create(dir, "prog.lwp", NodeKind::File).map(|h| {
+                let _ = fs.write_at(h, 0, &lwp);
+            });
+        }
+        // M16-③ 增长栈动态扩容映像播种（触页 40/70 各触发扩窗一次）
+        let _ = fs.create(dir, "deep.lxe", NodeKind::File).map(|h| {
+            let _ = fs.write_at(h, 0, &crate::user::DEEP_LXE);
+        });
     });
     let mut ns = NAMESPACE.lock();
     *ns = Some(Namespace::new(fs));
@@ -325,22 +348,27 @@ fn resolve_file_object(handle: u64) -> Option<(usize, Capability, usize)> {
     Some((slot, cap, idx))
 }
 
-/// SYS_OPEN 主体（M13-②）：路径解析 → 文件对象铸造 → 统一句柄面安装。
+/// SYS_OPEN 主体（M13-② 立；**M16-① 文件创建面**）：路径解析 →
+/// 文件对象铸造 → 统一句柄面安装。
 ///
 /// 全链（调用方任务上下文，串行）：
-/// 1. 参数面：mode ∈ 1..=0b11（否则 EINVAL）；路径切片校验（EFAULT）；
+/// 1. 参数面：mode 访问位（低 2 位）非零且 ≤ [`bedrock::abi::
+///    OPEN_MODE_MASK`]（否则 EINVAL）；路径切片校验（EFAULT）；
 ///    UTF-8（EINVAL）；[`PathBuf::normalize`] + 命名空间解析（FsError
-///    → Conduit 口径 errno）；
-/// 2. 调用方句柄表首空闲位预检（满 → EMFILE，先验免泄漏）；
-/// 3. 注册表槽位 + 对象 id 铸造（满 → ENFILE）；
-/// 4. 能力铸造（READ|WRITE 按模式子集）入全局表（满 → 回滚注册表槽
-///    → ENOMEM）+ 安装调用方句柄表。
+///    → Conduit 口径 errno）；**O_CREAT**：目标缺失时经父走查新建
+///    常规文件（中间缺失 → ENOENT；已存在直接打开——v0 无 O_EXCL）；
+/// 2. **O_TRUNC**：以可写方式打开成功后将节点截零（只读不截——
+///    v0 简化语义，目录 → EISDIR）；
+/// 3. 调用方句柄表首空闲位预检（满 → EMFILE，先验免泄漏）；
+/// 4. 注册表槽位 + 对象 id 铸造（满 → ENFILE）；
+/// 5. 能力铸造（READ|WRITE 按访问位子集）入全局表（满 → 回滚注册
+///    表槽 → ENOMEM）+ 安装调用方句柄表。
 ///
 /// 成功返回 `(1 << 32) | handle`。目录可以打开（读目录 → EISDIR，
 /// M13-① fd 表同款语义）。取证面：OPEN_RESULT/OPEN_HANDLE。
 pub fn sys_open(path_ptr: u64, len: u64, mode: u64) -> u64 {
-    // 1) 参数面
-    if mode == 0 || mode > 0b11 || len == 0 {
+    // 1) 参数面：访问位非零 + 保留位拒收（结构域细节见 abi SYS_OPEN 文档）
+    if mode & 0b11 == 0 || mode & !bedrock::abi::OPEN_MODE_MASK != 0 || len == 0 {
         OPEN_RESULT.store(EINVAL, Ordering::Release);
         return EINVAL;
     }
@@ -358,7 +386,8 @@ pub fn sys_open(path_ptr: u64, len: u64, mode: u64) -> u64 {
     r
 }
 
-/// OPEN 内聚链（取证外的纯逻辑；错误域 = errno）。
+/// OPEN 内聚链（取证外的纯逻辑；错误域 = errno）。M16-①：O_CREAT
+/// 缺失创建 + O_TRUNC 可写截断。
 fn open_impl(path_bytes: &[u8], mode: u64) -> u64 {
     let Ok(path_str) = core::str::from_utf8(path_bytes) else {
         return FsError::InvalidPath.errno();
@@ -366,16 +395,49 @@ fn open_impl(path_bytes: &[u8], mode: u64) -> u64 {
     let Ok(path) = PathBuf::normalize(path_str) else {
         return FsError::InvalidPath.errno();
     };
-    let resolved = {
+    let o_creat = mode & bedrock::abi::O_CREAT != 0;
+    let o_trunc = mode & bedrock::abi::O_TRUNC != 0;
+    // 首次解析（守卫块内自持：锁不可重入，父走查前必须释放）
+    let pre = {
         let ns = NAMESPACE.lock();
         let Some(ns) = ns.as_ref() else {
             return EBADF; // 未初始化：防御路径（自检序保证不达）
         };
         match ns.resolve(&path) {
-            Ok(r) => r,
+            Ok(r) => Some(r),
+            Err(FsError::NotFound) if o_creat => None, // M16-①：走创建链
             Err(e) => return e.errno(),
         }
     };
+    let resolved = match pre {
+        Some(r) => r,
+        // M16-① O_CREAT：目标缺失 → 父走查新建常规文件后重解析
+        None => {
+            let (fs, dir, leaf) = match resolve_parent(&path) {
+                Ok(r) => r,
+                Err(e) => return e,
+            };
+            match fs.create(dir, &leaf, NodeKind::File) {
+                Ok(_) | Err(FsError::AlreadyExists) => {} // 已存在：直接打开（v0 无 O_EXCL）
+                Err(e) => return e.errno(),
+            }
+            let ns = NAMESPACE.lock();
+            let Some(ns) = ns.as_ref() else {
+                return EBADF;
+            };
+            match ns.resolve(&path) {
+                Ok(r) => r,
+                Err(e) => return e.errno(),
+            }
+        }
+    };
+    // M16-① O_TRUNC：可写打开成功后截零（只读不截；目录 → EISDIR）。
+    // 截断在对象安装前执行，失败路径不铸能力/不占注册表槽。
+    if o_trunc && mode & 0b10 != 0 {
+        if let Err(e) = resolved.fs.truncate(resolved.vnode) {
+            return e.errno();
+        }
+    }
     // 2) 调用方句柄表空闲位预检（满 → EMFILE，先验免泄漏）
     let caller = task::current_task_id();
     let free = task::with_task_handles(caller, |t| {
@@ -389,7 +451,9 @@ fn open_impl(path_bytes: &[u8], mode: u64) -> u64 {
     };
     // 3) 注册表槽位 + 对象 id
     let object = NEXT_OBJECT.fetch_add(1, Ordering::AcqRel);
-    let Some(flags) = OpenFlags::from_bits(mode as u8) else {
+    let Some(flags) = OpenFlags::from_bits((mode & 0b11) as u8) else {
+        // M16-① 模式域扩展：from_bits 只收访问位（低 2 位）；O_CREAT/
+        // O_TRUNC 修饰位不参与访问位判定（保留位已在参数面拒收）
         return FsError::InvalidPath.errno(); // 结构面已验；防御分支
     };
     let file = FileObject {

@@ -20,6 +20,7 @@ ostd.workspace = true
 harbor.workspace = true
 bedrock.workspace = true
 vanguard.workspace = true
+weave.workspace = true
 
 [[bin]]
 name = "lumina-kernel"

@@ -43,6 +43,14 @@ pub trait FileSystem: Send + Sync {
     /// 从目录 `dir` 中摘除名字 `name`。目录需为空（[`FsError::DirectoryNotEmpty`]）。
     fn unlink(&self, dir: VnodeId, name: &str) -> Result<(), FsError>;
 
+    /// 将节点内容截为零长（M16-① O_TRUNC 支撑；默认不支持）。仅常规
+    /// 文件有意义；目录实现应返回 [`FsError::IsDirectory`]，缺失节点
+    /// 返回 [`FsError::NotFound`]。
+    fn truncate(&self, vnode: VnodeId) -> Result<(), FsError> {
+        let _ = vnode;
+        Err(FsError::NotSupported)
+    }
+
     /// 列举目录 `dir` 的全部目录项（骨架一次性返回全量；流式列举留待文件面块）。
     fn readdir(&self, dir: VnodeId) -> Result<Vec<DirEntry>, FsError>;
 }

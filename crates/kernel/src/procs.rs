@@ -334,10 +334,18 @@ pub fn exec_loader_stamps() -> (u64, u64, u64) {
     )
 }
 
-/// SYS_EXEC 主体（M12-B 立，M14-① 重构）：调用方地址空间以 **VFS 取段
-/// 的 LXE1 多段映像**重建（[`crate::user::EXEC_IMAGES`] 路径表 →
-/// [`crate::vfs::read_image`] 整读 → [`crate::user::build_user_space_lxe`]
+/// SYS_EXEC 主体（M12-B 立，M14-① 重构；**M16-② Weave 包源映像**）：
+/// 调用方地址空间以 **VFS 取段的 LXE1 多段映像**重建
+/// （[`crate::user::EXEC_IMAGES`] 路径表 → [`crate::vfs::read_image`]
+/// 整读 → 直接 LXE1 或 Weave 包解包 → [`crate::user::build_user_space_lxe`]
 /// 装载）。
+///
+/// **Weave 包源映像（M16-②，EXEC 第 2+ 消费者，v0.15 候补转正）**：
+/// 取段 blob 非 LXE1 魔数时尝试 [`weave::pkg::parse`]（LWP1 结构面）
+/// ——合法包取其载荷进入同一 LXE1 装载链（载荷合法性仍由
+/// [`crate::user::build_user_space_lxe`] 的 parse 承担，单一事实源）；
+/// 双重失败 → ERR_IMAGE(10)。EXEC_VFS_BYTES 戳记录原始取段字节长
+/// （包体积含 LWP1 头 + 名字区）。
 ///
 /// 全链（调用方任务上下文，串行）：
 /// 1. 门禁：调用方必须持有独立用户空间（否则 ERR_CAP）；映像号越界
@@ -371,13 +379,31 @@ pub fn sys_exec(image: u64, frame: &mut crate::syscall::SyscallFrame) -> u64 {
         return ERR_IMAGE;
     };
     EXEC_VFS_BYTES.store(blob.len() as u64, Ordering::Release);
+    // M16-② Weave 包源映像解包（EXEC 第 2+ 消费者）：直接 LXE1 魔数
+    // 走原链；非 LXE1 → LWP1 结构面解包取载荷（载荷合法性仍由
+    // 装载器 parse 承担）；双重失败 → ERR_IMAGE
+    let lwp_payload;
+    let blob: &[u8] = if bedrock::exec::parse_probe(&blob) {
+        &blob
+    } else {
+        match weave::pkg::parse(&blob) {
+            Ok(pkg) => {
+                lwp_payload = pkg.payload().to_vec();
+                &lwp_payload
+            }
+            Err(_) => {
+                EXEC_RESULT.store(ERR_IMAGE, Ordering::Release);
+                return ERR_IMAGE;
+            }
+        }
+    };
     let Some(frames) = crate::vmm::global_frames() else {
         EXEC_RESULT.store(ERR_NOMEM, Ordering::Release);
         return ERR_NOMEM;
     };
     let es = {
         let mut alloc = || frames.alloc();
-        match crate::user::build_user_space_lxe(&blob, &mut alloc) {
+        match crate::user::build_user_space_lxe(blob, &mut alloc) {
             Ok(es) => es,
             Err(crate::user::UserSpaceError::BadImage) => {
                 EXEC_RESULT.store(ERR_IMAGE, Ordering::Release);
@@ -436,12 +462,15 @@ fn quota_pack(used: usize, cap: usize) -> u64 {
     (1u64 << 32) | ((used as u64 & 0xFFFF) << 16) | (cap as u64 & 0xFFFF)
 }
 
-/// SYS_QUOTA 主体（M14-② 配额治理统计面）：调用方/注册表用量查询。
+/// SYS_QUOTA 主体（M14-② 配额治理统计面；**M16-③ kind 3 扩容**）：
+/// 调用方/注册表用量查询。
 ///
-/// kind（结构校验在 abi parse 已限定 0..=2，此处防御性兜底）：
+/// kind（结构校验在 abi parse 已限定 0..=3，此处防御性兜底）：
 /// 0 = 调用方句柄表（[`crate::task::handle_usage`]）、1 = 内核文件
 /// 注册表（[`crate::vfs::files_usage`]）、2 = 通道注册表
-/// （[`crate::ipc::channels_usage`]）。成功 = [`quota_pack`] 编码；
+/// （[`crate::ipc::channels_usage`]）、3 = **栈增长窗口**（M16-③：
+/// [`crate::vmm::growth_usage`]——used = 累计扩栈页数、cap = 当前
+/// 窗口页数，全局口径）。成功 = [`quota_pack`] 编码；
 /// kind 越界（直调防御面）→ ERR_CAP(1)。
 pub fn sys_quota(kind: u64) -> u64 {
     let caller = task::current_task_id();
@@ -456,6 +485,10 @@ pub fn sys_quota(kind: u64) -> u64 {
         }
         2 => {
             let (used, cap) = crate::ipc::channels_usage();
+            quota_pack(used, cap)
+        }
+        3 => {
+            let (used, cap) = crate::vmm::growth_usage();
             quota_pack(used, cap)
         }
         _ => ERR_CAP,
