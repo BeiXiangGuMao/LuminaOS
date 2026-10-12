@@ -27,8 +27,11 @@ syscall 竞态消除）**、**页表级 swap 回收全链（A 位二次机会淘
 SYS_SET_PRIO/GET_PRIO + fn(usize) 定向门铃）**、**进程模型（SYS_CAP_GRANT/
 REVOKE/GET_PID 任务句柄表 + 父进程面授予门禁 + 槽位单属主生命周期）**、
 **换页异步化（swapd 分页任务 + 请求队列 + #PF 零 I/O 快路径 + 同步回退）**、
-**优先级老化（base/effective 分离 + 等待计账逐级提升 + 回队衰减）** 全部在环，
-三十三项自检全绿并自动验收。
+**优先级老化（base/effective 分离 + 等待计账逐级提升 + 回队衰减）**、
+**目录面与句柄深化 / TSC 纳秒化 / 持久化存储面（LFS1 + SYS_MOUNT fs_type）/
+fsck-lite 崩溃一致性 / 候补三条（O_EXCL、F_DUP2FD、SYS_IMAGE_ENUM）/ M19-①
+间歇性家族根因修复（调度锁纪律 + 幽灵对象自愈 + 内核堆恒等洞重放置）** 全部在环，
+六十二项自检全绿并自动验收。
 
 ## 文档体系（唯一事实源）
 
@@ -88,7 +91,7 @@ lumina-build/              ← 编译产物 + 日志 + 报告（源码树外）
 
 ```bash
 cargo build --workspace          # 全仓构建（17 crate）
-cargo test  --workspace          # 全仓测试（87 用例，宿主）+ 30 项裸机自检（S8）
+cargo test  --workspace          # 全仓测试（99 用例，宿主）+ 62 项裸机自检（S8）
 cargo run -p xtask -- ci         # 九阶段门禁（S1-S7 + S8 裸机冒烟 + S9 报告，fail-fast）
 cargo run -p xtask -- smoke      # 仅内核：lint + build + QEMU 裸机自检
 cargo run -p xtask -- check      # 仅宿主快速门禁（fmt + clippy）
@@ -106,7 +109,7 @@ objcopy -O binary \
   /home/z/my-project/lumina-build/target/x86_64-unknown-none/release/lumina-kernel \
   /home/z/my-project/lumina-build/target/x86_64-unknown-none/release/lumina-kernel.bin
 
-# 裸机启动（串口落盘 + isa-debug-exit 自动退出，退出码 33 = 自检全过[36 项]）
+# 裸机启动（串口落盘 + isa-debug-exit 自动退出，退出码 33 = 自检全过[62 项]）
 qemu-system-x86_64 -L <seabios> -L <qemu-data> \
   -kernel lumina-kernel.bin -m 256M -display none -no-reboot \
   -serial file:boot.log -device isa-debug-exit,iobase=0xf4,iosize=0x04

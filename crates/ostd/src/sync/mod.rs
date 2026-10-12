@@ -8,7 +8,22 @@ pub mod spsc;
 
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+/// 锁等待看门狗钩子（M19-① 取证面第二级）：`lock()` 自旋超过
+/// [`STALL_SPINS`] 阈值时以锁对象地址调用；`0` = 未注册（零成本路径，
+/// 分支极可预测，正常路径仅多一次自增）。注册方（kernel）保证指针
+/// 生命周期与函数体安全（ISR 语境可达：免分配、免再入锁）。
+static STALL_HOOK: AtomicUsize = AtomicUsize::new(0);
+/// 自旋阈值：2^22 次 PAUSE ≈ 数十 ms 量级（TCG 参考基线）——远超正常
+/// 临界区 μs 级持锁时长；命中即「等锁者饥饿」实锤（同核持锁被本核
+/// ISR 打断的死锁模式中，等锁者恰为本核 ISR，永不推进）。
+const STALL_SPINS: u64 = 1 << 22;
+
+/// 注册看门狗钩子（幂等覆盖；kernel 初始化早期调用一次）。
+pub fn set_lock_stall_hook(f: fn(usize)) {
+    STALL_HOOK.store(f as usize, Ordering::Release);
+}
 
 /// 自旋锁。持有 [`SpinGuard`] 期间临界区互斥；T 不必 Sync（锁提供同步）。
 pub struct SpinLock<T> {
@@ -39,11 +54,28 @@ impl<T> SpinLock<T> {
 impl<T> SpinLock<T> {
     /// 获取锁；忙等到 `test_and_set` 成功为止。
     pub fn lock(&self) -> SpinGuard<'_, T> {
+        let mut spins: u64 = 0;
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
+            // 锁等待看门狗（M19-①）：自旋计数超阈值即以锁地址回调注册方
+            // 钩子（幂等节流：同锁每 STALL_SPINS 次至多一报）。ISR 等锁
+            // 命中阈值 = 「持锁者被本核中断打断」死锁模式的直接证据。
+            spins = spins.wrapping_add(1);
+            if spins >= STALL_SPINS && spins & (STALL_SPINS - 1) == 0 {
+                let h = STALL_HOOK.load(Ordering::Acquire);
+                if h != 0 {
+                    // SAFETY: 前置条件 —— set_lock_stall_hook 注册方保证
+                    //          指针为 fn(usize) 且永不过期（kernel static）。
+                    // 不变式 —— 钩子体内免分配、免取锁（ISR 语境可达纪律）。
+                    // 并发 —— 原子读取；多核同时命中时各自回调（可接受）。
+                    // 违反后果 —— 钩子内取锁即递归死锁（注册纪律封死）。
+                    let f: fn(usize) = unsafe { core::mem::transmute(h) };
+                    f(self as *const Self as usize);
+                }
+            }
             // 提示 CPU 当前为自旋等待，降低超线程争用（x86 PAUSE / ARM YIELD 语义）。
             core::hint::spin_loop();
         }

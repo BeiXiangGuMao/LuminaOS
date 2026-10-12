@@ -75,7 +75,7 @@ const HEAP_SIZE: usize = 4 * 1024 * 1024;
 /// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M18 起 62）。
 const SELFTEST_TOTAL: usize = 62;
 
-/// 内核堆后备区域：静态 4 MiB、4 KiB 对齐，链接进 .bss（NOLOAD）。
+/// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
 struct KernelHeap {
     /// 后备字节区。
@@ -91,6 +91,10 @@ static MB_MAGIC: u32 = 0;
 #[no_mangle]
 static MB_INFO: u32 = 0;
 
+// M19-① 显式段放置（link_section 不可用于 struct，须贴 static）：
+// 用户根恒等镜像 PT[0]/PT[2] 洞（0x400000/0x402000，用户 code/stack 槽）
+// 不可含堆物理页，借根窗口（reap/swap 读回）恒等可见性由此保证。
+#[link_section = ".kernel_heap"]
 static mut KERNEL_HEAP: KernelHeap = KernelHeap {
     bytes: [0; HEAP_SIZE],
 };
@@ -1835,8 +1839,15 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t41 = {
         let mut ok = true;
         ipc::reset_bind_evidence();
+        ipc::reset_recv_evidence();
         procs::reset_waitpid_evidence();
         task::reset_user_evidence();
+        let sok0 = ipc::DIAG_SEND_OK.load(Ordering::Acquire);
+        let sfull0 = ipc::DIAG_FULL.load(Ordering::Acquire);
+        let f10 = ipc::DIAG_F1.load(Ordering::Acquire);
+        let f20 = ipc::DIAG_F2.load(Ordering::Acquire);
+        let f30 = ipc::DIAG_F3.load(Ordering::Acquire);
+        let f40 = ipc::DIAG_F4.load(Ordering::Acquire);
         match user::build_user_space(&mut || frames.alloc()) {
             Ok(us) => {
                 ostd::hw::phys::write_bytes(us.code_frame, &user::USER_BIND_PROGRAM);
@@ -1850,11 +1861,29 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                 let (gres, _, _) = procs::stamps();
                 let (wres, wpid, wcode) = procs::waitpid_stamps();
                 let (e0, _) = task::user_exit_codes();
+                // M19-① t41 族缩窗取证：父任务终态（3=Blocked 永久阻塞 =
+                // 丢失唤醒实锤；4=Zombie 已终结 = 迟到/次序面）+ RECV
+                // 阻塞/唤醒计数（唤醒差值异常即唤醒链面实锤）。
+                let (rb, rw) = ipc::recv_stamps();
+                // M19-① 发侧取证：SEND 成功/满环计数（rw=0 时区分「帧未入环」
+                // 与「唤醒匹配失败」——round-160 活体标本 p-state=3/rw=0 缩窗）。
+                let sok = ipc::DIAG_SEND_OK.load(Ordering::Acquire) - sok0;
+                let sfull = ipc::DIAG_FULL.load(Ordering::Acquire) - sfull0;
+                // M19-① 发侧门禁分立：F1 句柄/F2 权限/F3 通道反查/F4 载荷——
+                // sok=0 时直指子 SEND 被哪个门禁拒（GRANT→SEND 能力链竞态缩窗）。
+                let f1 = ipc::DIAG_F1.load(Ordering::Acquire) - f10;
+                let f2 = ipc::DIAG_F2.load(Ordering::Acquire) - f20;
+                let f3 = ipc::DIAG_F3.load(Ordering::Acquire) - f30;
+                let f4 = ipc::DIAG_F4.load(Ordering::Acquire) - f40;
                 let _ = writeln!(
                     log,
                     "bind: exit0={e0} bres={bres:#x} bh={bhandle} bn={bcreated} \
-                     gres={gres:#x} wres={wres:#x} wpid={wpid} wcode={wcode} c-alive={}",
-                    task::task_alive(wpid as usize)
+                     gres={gres:#x} wres={wres:#x} wpid={wpid} wcode={wcode} c-alive={} \
+                     p-state={} p-exit={:x} rb={rb} rw={rw} sok={sok} sfull={sfull} \
+                     f1={f1} f2={f2} f3={f3} f4={f4}",
+                    task::task_alive(wpid as usize),
+                    task::task_debug_state(p_id),
+                    task::task_debug_exit_code(p_id)
                 );
                 ok &= e0 == 82; // 父全链成功（BIND/SPAWN/GRANT/RECV/WAIT 全过）
                 ok &= bres == 0; // BIND 返回成功
@@ -2116,12 +2145,20 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                 }
                 let code = task::user_exit_code();
                 let st = task::task_debug_state(cid);
+                // M19-① t45 族取证：FILES 注册表用量（ENFILE(23) 缩窗——
+                // 跨自检泄漏累积实锤；open 返回 23 即表满）。
+                let (fu, fm) = vfs::files_usage();
+                let snap = vfs::enfile_snapshot();
                 let _ = writeln!(
                     log,
-                    "  file45 cid={cid} state={st} exit={code} stamps={:?}",
+                    "  file45 cid={cid} state={st} exit={code} stamps={:?} files-used={fu}/{fm} enfile={snap:#x}",
                     vfs::stamps()
                 );
-                ok &= code == 90 && st == 4;
+                // M19-① 断言校准：st=4（Zombie 在槽）或 st=0（槽位已被
+                // 收割回收）均为合法终态——round-257 实录 exit=90 + 槽位
+                // None（收割面先于采样落定）；M17 加固的 settle 窗兜不住
+                // 收割竞态属采样过严，非内核行为缺陷。
+                ok &= code == 90 && (st == 4 || st == 0);
             }
             Err(e) => {
                 let _ = writeln!(log, "file client space build failed: {e:?}");

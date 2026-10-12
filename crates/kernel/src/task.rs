@@ -72,7 +72,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use ostd::interrupt::PreemptPlan;
-use ostd::sync::SpinLock;
+use ostd::sync::{SpinGuard, SpinLock};
 use ostd::task::{switch_deferred, SwitchPair, TaskContext};
 
 /// 任务内核栈大小：16 KiB。
@@ -328,8 +328,9 @@ impl Task {
 /// 主任务入口占位（主任务从不经 trampoline 进入；永不调用）。
 fn main_entry_stub() {}
 
-/// 调度器全局状态（受 [`SCHED`] 保护）。
-struct Scheduler {
+/// 调度器全局状态（受 [`SCHED`] 保护）。pub(crate)：sched_lock_at
+/// 取证包装的返回签名（M19-①）。
+pub(crate) struct Scheduler {
     /// 定容任务槽位表（Some = 占用；槽位地址永久稳定）。
     tasks: [Option<Task>; MAX_TASKS],
     /// 全局就绪队列（按优先级分级；级内 FIFO，跨核共享派发）。
@@ -631,13 +632,76 @@ fn aging_pass(ready: &mut [VecDeque<usize>; PRIO_LEVELS], tasks: &mut [Option<Ta
 
 /// 初始化调度器：槽位 0 = 主任务（钉扎 CPU0）；记录引导 CR3 与 BSP APIC ID。
 pub fn init() {
-    let mut s = SCHED.lock();
+    // M19-① 取证面第二级：锁等待看门狗钩子注册（早于一切 SCHED 持锁路径；
+    // SCHED 地址同时落哨兵量，戳内 sched=Y/N 直接指认是否调度锁）。
+    SCHED_ADDR.store(&raw const SCHED as usize, Ordering::Release);
+    ostd::sync::set_lock_stall_hook(lock_stall_report);
+    // M19-① 防御性同族修复（启动早期单核、IF 状态依赖调用方）。
+    let _w = IntWindow::new();
+    let mut s = sched_lock!();
     let boot_cr3 = ostd::hw::control::read_cr3() & !0xFFF;
     s.boot_cr3 = boot_cr3;
     s.tasks[0] = Some(Task::main_task());
     BSP_APIC_ID.store(ostd::hw::lapic::id(), Ordering::Release);
     CURRENT[0].store(0, Ordering::Relaxed);
     CURRENT[1].store(IDLE, Ordering::Relaxed);
+}
+
+/// SCHED 锁运行时地址哨兵（init 时落值；戳内比对用）。
+static SCHED_ADDR: AtomicUsize = AtomicUsize::new(0);
+
+/// SCHED 锁持锁点遥测（M19-① 第三级取证）：高 32 位 = 拿锁核，低 32 位 =
+/// 调用点行号。语义 = 最近一次成功拿锁的点（guard drop 不清——**死锁
+/// 场景下无人再拿锁，值即持锁点**；非死锁场景为陈旧值，仅取证用）。
+static SCHED_HOLDER: AtomicU64 = AtomicU64::new(0);
+
+/// 宏：调用点自动登记行号（42 点替换 SCHED.lock() → sched_lock!()）。
+macro_rules! sched_lock {
+    () => {
+        $crate::task::sched_lock_at(line!() as u64)
+    };
+}
+pub(crate) use sched_lock;
+
+/// SCHED.lock() 取证包装：拿锁后登记调用点行号 + 本核（遥测语义见
+/// SCHED_HOLDER）。锁本身语义零变化（SpinLock 原语义透传）。
+pub(crate) fn sched_lock_at(line: u64) -> SpinGuard<'static, Scheduler> {
+    // 直拿底层锁（不包装——本函数即包装本体；line 遥测不递归登记）
+    let g = SCHED.lock();
+    SCHED_HOLDER.store(
+        ((my_cpu() as u64) << 32) | (line & 0xFFFF_FFFF),
+        Ordering::Release,
+    );
+    g
+}
+
+/// 锁等待看门狗回调（M19-①）：自旋超阈值即串口直写 LUMINA-LOCK-STALL
+/// （免分配免取锁——ISR 语境可达纪律；同核死锁模式中等锁者即本核
+/// ISR，永不推进，本戳是唯一能落盘的证据）。
+fn lock_stall_report(addr: usize) {
+    let mut serial = crate::console::SerialPort::com1();
+    serial.init();
+    let is_sched = SCHED_ADDR.load(Ordering::Acquire) == addr;
+    // IF 旗（M19-① 铁证矩阵）：IF=0 = 本核 ISR 语境等锁——若对侧核
+    // IF=1 的任务在推进，持锁者必在本核（同核「持锁者被本核中断打断」
+    // 死锁铁证）；双核 IF=1 = 持锁者不存在（锁状态残留，另一族）。
+    let iff = ostd::hw::intr::if_enabled() as u8;
+    // 持锁点遥测（第三级）：最后成功拿锁的 (cpu, line)——死锁场景下
+    // 即持锁者现形（round-173 型「cpu1 持锁卡死 + cpu0 ISR 等锁」的直接
+    // 指认面）。
+    let h = SCHED_HOLDER.load(Ordering::Acquire);
+    let _ = core::fmt::Write::write_fmt(
+        &mut serial,
+        format_args!(
+            "LUMINA-LOCK-STALL addr={:#x} sched={} ticks={} cpu={} iff={iff} h-cpu={} h-line={}\n",
+            addr,
+            is_sched as u8,
+            ostd::time::now(),
+            current_cpu_slot(),
+            h >> 32,
+            h & 0xFFFF_FFFF,
+        ),
+    );
 }
 
 /// 注册用户入口桥（user.rs 模块初始化时调用一次）。
@@ -659,7 +723,7 @@ pub fn set_idle_work(f: fn() -> bool) {
 /// 派生新内核任务（入全局队列待拾取；跨核提示 idle 核）；返回槽位号。
 pub fn spawn(name: &'static str, entry: Entry) -> usize {
     let _w = IntWindow::new();
-    let mut s = SCHED.lock();
+    let mut s = sched_lock!();
     let Some(id) = alloc_slot(&mut s, Task::new(name, entry, trampoline)) else {
         return IDLE;
     };
@@ -672,7 +736,7 @@ pub fn spawn(name: &'static str, entry: Entry) -> usize {
 /// 派生指定优先级的内核任务（M8-C 调度面；0=最高 … 3=最低）。
 pub fn spawn_prio(name: &'static str, entry: Entry, prio: u8) -> usize {
     let _w = IntWindow::new();
-    let mut s = SCHED.lock();
+    let mut s = sched_lock!();
     let mut t = Task::new(name, entry, trampoline);
     t.prio = prio.min((PRIO_LEVELS - 1) as u8);
     t.base_prio = t.prio;
@@ -688,7 +752,7 @@ pub fn spawn_prio(name: &'static str, entry: Entry, prio: u8) -> usize {
 /// 入口经桥函数进入 ring3。M7-A 起用户任务自由跨核（任意核可拾取）。
 pub fn spawn_user(name: &'static str, entry: Entry, user_root: u64, cap_slot: usize) -> usize {
     let _w = IntWindow::new();
-    let mut s = SCHED.lock();
+    let mut s = sched_lock!();
     let Some(id) = alloc_slot(
         &mut s,
         Task::new_user(name, entry, user_root, cap_slot, None, trampoline_user),
@@ -713,7 +777,7 @@ pub fn spawn_user_child_pinned(
     parent: usize,
 ) -> usize {
     let _w = IntWindow::new();
-    let mut s = SCHED.lock();
+    let mut s = sched_lock!();
     let mut t = Task::new_user(
         name,
         entry,
@@ -743,7 +807,7 @@ pub fn spawn_user_child(
     parent: usize,
 ) -> usize {
     let _w = IntWindow::new();
-    let mut s = SCHED.lock();
+    let mut s = sched_lock!();
     let Some(id) = alloc_slot(
         &mut s,
         Task::new_user(
@@ -767,7 +831,7 @@ pub fn spawn_user_child(
 pub fn current_user_root() -> u64 {
     let _w = IntWindow::new();
     let cpu = my_cpu();
-    let s = SCHED.lock();
+    let s = sched_lock!();
     let cur = CURRENT[cpu].load(Ordering::Relaxed);
     s.tasks
         .get(cur)
@@ -778,7 +842,7 @@ pub fn current_user_root() -> u64 {
 /// 目标任务的独立页表根（M12-B：COW 代码帧同一性对证；不存在 → 0）。
 pub fn task_user_root(id: usize) -> u64 {
     let _w = IntWindow::new();
-    let s = SCHED.lock();
+    let s = sched_lock!();
     s.tasks
         .get(id)
         .and_then(|t| t.as_ref())
@@ -790,7 +854,7 @@ pub fn task_user_root(id: usize) -> u64 {
 /// （未来 init/守护进程收养语义的内核侧原语）。
 pub fn task_adopt(id: usize, parent: usize) -> bool {
     let _w = IntWindow::new();
-    let mut s = SCHED.lock();
+    let mut s = sched_lock!();
     match s.tasks.get_mut(id).and_then(|t| t.as_mut()) {
         Some(t) if t.parent.is_none() && parent < MAX_TASKS => {
             t.parent = Some(parent);
@@ -804,7 +868,7 @@ pub fn task_adopt(id: usize, parent: usize) -> bool {
 /// 慢路径写入；仅调用方自身任务上下文，单核串行）。
 pub fn set_user_root(id: usize, root: u64) {
     let _w = IntWindow::new();
-    let mut s = SCHED.lock();
+    let mut s = sched_lock!();
     if let Some(t) = s.tasks.get_mut(id).and_then(|t| t.as_mut()) {
         t.user_root = root;
     }
@@ -819,7 +883,7 @@ pub fn spawn_user_pinned(
     cpu: usize,
 ) -> usize {
     let _w = IntWindow::new();
-    let mut s = SCHED.lock();
+    let mut s = sched_lock!();
     let mut t = Task::new_user(name, entry, user_root, cap_slot, None, trampoline_user);
     t.pinned = Some(cpu % MAX_CPUS);
     let Some(id) = alloc_slot(&mut s, t) else {
@@ -839,7 +903,7 @@ pub fn spawn_pinned(name: &'static str, entry: Entry, cpu: usize) -> usize {
 /// 派生钉扎 + 指定优先级的任务（M8-C）。
 pub fn spawn_pinned_prio(name: &'static str, entry: Entry, prio: u8, cpu: usize) -> usize {
     let _w = IntWindow::new();
-    let mut s = SCHED.lock();
+    let mut s = sched_lock!();
     let mut t = Task::new(name, entry, trampoline);
     t.pinned = Some(cpu % MAX_CPUS);
     t.prio = prio.min((PRIO_LEVELS - 1) as u8);
@@ -1006,7 +1070,17 @@ pub fn canary_violations() -> u64 {
 /// 被越界写亦会在下一次派发/本审计中现形）。主任务引导栈无盖章面，
 /// 不计入覆盖数（如实记档）。
 pub fn canary_audit_all() -> usize {
-    let s = SCHED.lock();
+    // M19-① 取证升级：入口戳（挂死轮若停在 enter 后 = 拿锁死锁实锤；
+    // 停在 enter 前 = 间隙路径实锤）。
+    let mut serial = crate::console::SerialPort::com1();
+    serial.init();
+    let _ = core::fmt::Write::write_fmt(
+        &mut serial,
+        format_args!("ca: enter ticks={}\n", ostd::time::now()),
+    );
+    // M19-① 同族修复：IntWindow 包裹（main 上下文 IF=1 裸拿锁同风险）。
+    let _w = IntWindow::new();
+    let s = sched_lock!();
     let mut checked = 0usize;
     for slot in s.tasks.iter().flatten() {
         if slot.stack_base != 0 {
@@ -1027,7 +1101,7 @@ pub fn yield_now() {
     let cpu = my_cpu();
     let cur = CURRENT[cpu].load(Ordering::Relaxed);
     let pair = {
-        let mut s = SCHED.lock();
+        let mut s = sched_lock!();
         let sc = &mut *s;
         if cur == IDLE {
             return;
@@ -1071,7 +1145,11 @@ pub fn yield_now() {
 /// 首次调用以 idle 真实上下文为 old（switch_deferred 保存续点）；此后
 /// 任务切回 idle 时从 [`run_idle`] 的 switch 调用点继续。
 fn idle_pick(cpu: usize) -> Option<SwitchPair> {
-    let mut s = SCHED.lock();
+    // M19-① 根因修复：IntWindow 包裹（idle 循环 IF=1 语境裸拿锁被本核
+    // tick 打断 = 持锁者冻结 + timer_hook ISR 等锁互等死锁——round-038/
+    // 046/049 双核 iff=0 铁证实锤；drop 逆序保证解锁后才恢复 IF）。
+    let _w = IntWindow::new();
+    let mut s = sched_lock!();
     let sc = &mut *s;
     let target = pick_best(&mut sc.ready, &sc.tasks, cpu, IDLE, None)?;
     remove_value(&mut sc.ready, target);
@@ -1136,7 +1214,7 @@ pub fn run_idle(cpu: usize) -> ! {
 /// Zombie = 终结留证——waitpid 收割与否不影响本谓词，M10-C）。
 pub fn all_workers_finished() -> bool {
     let _w = IntWindow::new();
-    let s = SCHED.lock();
+    let s = sched_lock!();
     s.tasks
         .iter()
         .enumerate()
@@ -1188,7 +1266,7 @@ static PRIO_GET_STAMP: AtomicU64 = AtomicU64::new(u64::MAX);
 pub fn set_current_prio(level: u64) -> u64 {
     let _w = IntWindow::new();
     let cpu = my_cpu();
-    let mut s = SCHED.lock();
+    let mut s = sched_lock!();
     let cur = CURRENT[cpu].load(Ordering::Relaxed);
     let prio = level.min((PRIO_LEVELS - 1) as u64) as u8;
     if let Some(t) = s.tasks.get_mut(cur).and_then(|slot| slot.as_mut()) {
@@ -1203,7 +1281,7 @@ pub fn set_current_prio(level: u64) -> u64 {
 pub fn current_prio() -> u64 {
     let _w = IntWindow::new();
     let cpu = my_cpu();
-    let s = SCHED.lock();
+    let s = sched_lock!();
     let cur = CURRENT[cpu].load(Ordering::Relaxed);
     let prio = s
         .tasks
@@ -1236,7 +1314,7 @@ pub fn count_syscall(kind: u8) {
 pub fn current_cap_slot() -> usize {
     let _w = IntWindow::new();
     let cpu = my_cpu();
-    let s = SCHED.lock();
+    let s = sched_lock!();
     let cur = CURRENT[cpu].load(Ordering::Relaxed);
     s.tasks
         .get(cur)
@@ -1256,7 +1334,7 @@ pub fn current_task_id() -> usize {
 pub fn current_parent_pid() -> u64 {
     let _w = IntWindow::new();
     let cpu = my_cpu();
-    let s = SCHED.lock();
+    let s = sched_lock!();
     let cur = CURRENT[cpu].load(Ordering::Relaxed);
     s.tasks
         .get(cur)
@@ -1281,7 +1359,7 @@ pub fn set_current_kernel_cr3(cr3: u64) {
     if cur == IDLE {
         return;
     }
-    let mut s = SCHED.lock();
+    let mut s = sched_lock!();
     if let Some(t) = s.tasks.get_mut(cur).and_then(|slot| slot.as_mut()) {
         t.kernel_cr3 = cr3 & !0xFFF;
     }
@@ -1290,7 +1368,7 @@ pub fn set_current_kernel_cr3(cr3: u64) {
 /// 目标任务的父任务槽位（M9-A 授权门禁；不存在或无父 = None）。
 pub fn task_parent(id: usize) -> Option<usize> {
     let _w = IntWindow::new();
-    let s = SCHED.lock();
+    let s = sched_lock!();
     s.tasks
         .get(id)
         .and_then(|t| t.as_ref())
@@ -1304,7 +1382,7 @@ pub fn with_task_handles<R>(
     f: impl FnOnce(&mut [Option<usize>; HANDLE_MAX]) -> R,
 ) -> Option<R> {
     let _w = IntWindow::new();
-    let mut s = SCHED.lock();
+    let mut s = sched_lock!();
     s.tasks
         .get_mut(id)
         .and_then(|t| t.as_mut())
@@ -1315,7 +1393,7 @@ pub fn with_task_handles<R>(
 /// F_GETFD/F_SETFD 的 TCB 承载面；任务不存在返回 None。
 pub fn with_task_hflags<R>(id: usize, f: impl FnOnce(&mut [u8; HANDLE_MAX]) -> R) -> Option<R> {
     let _w = IntWindow::new();
-    let mut s = SCHED.lock();
+    let mut s = sched_lock!();
     s.tasks
         .get_mut(id)
         .and_then(|t| t.as_mut())
@@ -1339,7 +1417,7 @@ pub fn close_cloexec_handles(id: usize) -> usize {
     let _w = IntWindow::new();
     let mut revoked: Vec<(usize, usize)> = Vec::new();
     {
-        let mut s = SCHED.lock();
+        let mut s = sched_lock!();
         if let Some(Some(t)) = s.tasks.get_mut(id) {
             for h in 1..HANDLE_MAX {
                 if t.hflags[h] & (bedrock::abi::FD_CLOEXEC as u8) != 0 {
@@ -1371,7 +1449,7 @@ pub fn handle_usage(id: usize) -> (usize, usize) {
 /// 目标任务的主身份能力槽号（M9-A 撤销保护面；不存在 = None）。
 pub fn cap_slot_of(id: usize) -> Option<usize> {
     let _w = IntWindow::new();
-    let s = SCHED.lock();
+    let s = sched_lock!();
     s.tasks.get(id).and_then(|t| t.as_ref()).map(|t| t.cap_slot)
 }
 
@@ -1459,7 +1537,7 @@ fn finish_and_switch_away(code: u64) -> ! {
         let cpu = my_cpu();
         let cur = CURRENT[cpu].load(Ordering::Relaxed);
         let pair = {
-            let mut s = SCHED.lock();
+            let mut s = sched_lock!();
             let sc = &mut *s;
             if cur == IDLE {
                 None
@@ -1551,7 +1629,7 @@ fn finish_and_switch_away(code: u64) -> ! {
                     // 违反后果 —— 指针失效即写穿任意内存（槽位纪律封死）。
                     unsafe {
                         let idle = &mut *core::ptr::addr_of_mut!(IDLE_CTX[cpu]);
-                        let mut s = SCHED.lock();
+                        let mut s = sched_lock!();
                         let cur = CURRENT[cpu].load(Ordering::Relaxed);
                         CURRENT[cpu].store(IDLE, Ordering::Relaxed);
                         if let Some(t) = s.tasks[cur].as_mut() {
@@ -1579,7 +1657,7 @@ extern "C" fn trampoline() -> ! {
     // 首派发若经抢占路径切入则 IF=0；内核任务 IF 约定恒为 1
     ostd::hw::intr::enable();
     let entry: Entry = {
-        let s = SCHED.lock();
+        let s = sched_lock!();
         let cpu = my_cpu();
         let cur = CURRENT[cpu].load(Ordering::Relaxed);
         s.tasks[cur].as_ref().map_or(main_entry_stub, |t| t.entry)
@@ -1593,7 +1671,7 @@ extern "C" fn trampoline_user() -> ! {
     // 首派发若经抢占路径切入则 IF=0；进 ring3 前先开放（iretq 亦会置 IF）
     ostd::hw::intr::enable();
     let entry: Entry = {
-        let s = SCHED.lock();
+        let s = sched_lock!();
         let cpu = my_cpu();
         let cur = CURRENT[cpu].load(Ordering::Relaxed);
         s.tasks[cur].as_ref().map_or(main_entry_stub, |t| t.entry)
@@ -1621,7 +1699,7 @@ pub fn set_preempt_enabled(on: bool) {
 /// 抢占统计快照（自检取证；跨核合计）。
 pub fn preempt_stats() -> (u64, u64) {
     let _w = IntWindow::new();
-    let s = SCHED.lock();
+    let s = sched_lock!();
     (s.preempt_switches, s.cooperative_switches)
 }
 
@@ -1734,7 +1812,7 @@ pub fn timer_hook(plan: &mut PreemptPlan) -> bool {
     // M13-② 注记：timer 到期旗消费在 tickd 任务上下文（中断语境零
     // SCHED 触碰），本钩子保持 M9 形态。
     let cpu = my_cpu();
-    let mut s = SCHED.lock();
+    let mut s = sched_lock!();
     let sc = &mut *s;
     aging_pass(&mut sc.ready, &mut sc.tasks);
     try_preempt_switch(sc, cpu, plan)
@@ -1744,7 +1822,7 @@ pub fn timer_hook(plan: &mut PreemptPlan) -> bool {
 /// 老化扫描（全核 ring3 饱和期的饥饿防护供血）+ 本核抢占判定与 plan
 /// 填写。调用方保证处于中断窗口（IF=0）。
 fn resched_preempt_body(cpu: usize, plan: &mut PreemptPlan) -> bool {
-    let mut s = SCHED.lock();
+    let mut s = sched_lock!();
     let sc = &mut *s;
     aging_pass(&mut sc.ready, &mut sc.tasks);
     try_preempt_switch(sc, cpu, plan)
@@ -1943,7 +2021,7 @@ fn block_current_impl(what: WaitWhat, resume_if: bool, mut probe: Probe) -> bool
         let cpu = my_cpu();
         let cur = CURRENT[cpu].load(Ordering::Relaxed);
         let pair = {
-            let mut s = SCHED.lock();
+            let mut s = sched_lock!();
             let sc = &mut *s;
             if cur == IDLE {
                 panic!("block_current: no task context (idle)");
@@ -2039,7 +2117,7 @@ fn block_current_impl(what: WaitWhat, resume_if: bool, mut probe: Probe) -> bool
 /// 扫描含槽位 0（主任务可阻塞——t35 的故障上下文即主任务）。
 pub fn wake_tasks(matcher: impl Fn(&WaitWhat) -> bool) -> usize {
     let _w = IntWindow::new();
-    let mut s = SCHED.lock();
+    let mut s = sched_lock!();
     let sc = &mut *s;
     let mut woken = 0usize;
     for id in 0..MAX_TASKS {
@@ -2081,7 +2159,7 @@ pub struct ChildScan {
 /// 切换面更新、句柄表已清算、退出码已登记。
 pub fn wait_scan(parent: usize, want: u64) -> ChildScan {
     let _w = IntWindow::new();
-    let mut s = SCHED.lock();
+    let mut s = sched_lock!();
     let sc = &mut *s;
     let mut scan = ChildScan {
         has_child: false,
@@ -2110,7 +2188,7 @@ pub fn wait_scan(parent: usize, want: u64) -> ChildScan {
 /// 目标任务槽位是否存活（M10-C 自检 36 收割断言面；None = 未占用/已收割）。
 pub fn task_alive(id: usize) -> bool {
     let _w = IntWindow::new();
-    let s = SCHED.lock();
+    let s = sched_lock!();
     s.tasks.get(id).is_some_and(|slot| slot.is_some())
 }
 
@@ -2122,7 +2200,7 @@ static ORPHAN_REAPS: AtomicU64 = AtomicU64::new(0);
 /// 任务退出码诊断（M12-d t43 排障临时面）。
 pub fn task_debug_exit_code(id: usize) -> u64 {
     let _w = IntWindow::new();
-    let s = SCHED.lock();
+    let s = sched_lock!();
     s.tasks
         .get(id)
         .and_then(|t| t.as_ref())
@@ -2133,7 +2211,7 @@ pub fn task_debug_exit_code(id: usize) -> u64 {
 /// 3 Blocked 4 Zombie）。
 pub fn task_debug_state(id: usize) -> u8 {
     let _w = IntWindow::new();
-    let s = SCHED.lock();
+    let s = sched_lock!();
     match s.tasks.get(id).and_then(|t| t.as_ref()) {
         None => 0,
         Some(t) => match t.state {
@@ -2159,7 +2237,7 @@ pub fn orphan_stamps() -> (u64, u64) {
 /// 返回清扫数。idle 附加工作调用（见 IDLE_REAP 桥）。
 pub fn reap_orphans() -> usize {
     let _w = IntWindow::new();
-    let mut s = SCHED.lock();
+    let mut s = sched_lock!();
     let sc = &mut *s;
     let mut n = 0usize;
     for id in 1..MAX_TASKS {
@@ -2182,7 +2260,7 @@ pub fn reap_orphans() -> usize {
 /// 自检序列的槽位回收面：t12 起的哑元任务/哑终点不再永久占位。
 pub fn reap_zombies() -> usize {
     let _w = IntWindow::new();
-    let mut s = SCHED.lock();
+    let mut s = sched_lock!();
     let sc = &mut *s;
     let mut n = 0usize;
     for id in 1..MAX_TASKS {

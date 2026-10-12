@@ -29,6 +29,17 @@ SECTIONS {
         *(.data .data.* .gnu.linkonce.d.*)
     }
 
+    /* M19-① 内核堆显式放置 @0x600000：用户根恒等镜像在 PD[2]
+     * （0x400000..0x600000）展开为 PT，PT[0]/PT[2] 留空给用户
+     * code/stack（程序基址 0x400000 硬编码）——内核堆物理页若落在
+     * 该 2 MiB 区间，借根窗口（任务终结 reap / swap 读回）访问堆即
+     * 恒等槽缺失 not-present #PF（round-243 实锤：FILES Vec 缓冲
+     * 0x4004b8 ∈ PT[0] 洞）。0x600000 起为 PD[3] 2 MiB 大页恒等区，
+     * 借根窗口可见性恒成立。 */
+    .kernel_heap 0x600000 (NOLOAD) : ALIGN(4096) {
+        *(.kernel_heap)
+    }
+
     .bss (NOLOAD) : ALIGN(4096) {
         *(.boot.bss)
         *(COMMON)

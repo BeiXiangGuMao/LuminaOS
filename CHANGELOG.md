@@ -3,6 +3,62 @@
 版本语义：工作区里程碑版（0.x.y，x=里程碑，y=里程碑内迭代）。
 本文档记录源码树的对外可见变更；指标与规格变更见《指标与规范手册》修订记录。
 
+## v0.20.0（2026-10-12）—— M19-①：间歇性家族根因定位与修复（复跑即捕 → 铁证 → 三根因收口）
+
+### 定位（取证面五级升级，306 轮复跑证据池）
+- **一级（fp: 阶段戳）**：fastpath_bench 五点戳（enter/req0/kicked/
+  waiting×8/exit，全带 TICKS 值）+ AP 侧首次服务戳（免分配串口直写）
+  ——挂死轮指认 t19 完整跑通（served=1000），排除 FastPath 本体。
+- **二级（LOCK-STALL 锁等待看门狗）**：`ostd::sync::SpinLock` 自旋
+  2^22 次（PAUSE 计）阈值回调钩子（位与节流，正常路径零成本）；
+  kernel 侧注册 `lock_stall_report`（锁地址 / SCHED 哨兵比对 / ticks /
+  核号 / IF 旗）——round-038/046/049 铁证：双核同时自旋等 SCHED 锁
+  （addr=0x17f1e8 sched=1）、双核 iff=0（ISR 语境）、ticks 冻结。
+- **三级（HOLDER 行号遥测）**：`sched_lock!()` 宏 43 点替换
+  （`sched_lock_at(line!())` 登记拿锁核 + 行号）——LOCK-STALL 戳
+  直读最后持锁点。
+- **四/五级（t41 族全套 + ENFILE 现场快照）**：父任务终态 / 退出码 /
+  RECV 阻塞唤醒计数 / SEND 成败与四门禁分立计数；ENFILE 返回点
+  锁内采样（seq/used/caps_alive）。
+- **五形态画像（306 轮）**：静默挂死 ×6（8.1%，与 v0.19 NOTES 1/8
+  吻合）+ 193 簇败 ×11（t29/t32/t41/t45/t52 漂移——失败项随布局
+  漂移，M17「布局漂移放大」机制同源复证）+ #PF ×2（rip=-1 跳野 +
+  堆恒等洞形态各一）。
+
+### 根因与修复
+- **根因一（挂死族，铁证闭环）**：`idle_pick` 在 idle 循环（IF=1）
+  裸拿 SCHED 锁——持锁者被本核 LAPIC tick 打断，`timer_hook` ISR 等
+  同锁互等死锁（同核永不推进）；对侧核 tick ISR 等全局被持锁亦冻结
+  ——双核 iff=0、ticks 冻结、LOCK-STALL 交替刷屏。修复：
+  `idle_pick` / `canary_audit_all` / `task::init` 三处 IntWindow
+  包裹（Drop 逆序保证解锁后才恢复 IF）。回归：修复后 59 轮挂死 0
+  （修复前 8.1%；统计显著）。
+- **根因二（t45 ENFILE 族）**：注册表贴线泄漏——轮内 open 面任务
+  终结 reap 时机竞态残留幽灵文件对象（round-239 指纹：used=32 /
+  caps_alive=2，30 枚无能力引用占槽）。修复：open_impl ENFILE 分支
+  就地 `reap_orphaned_files` + 重试一次（幽灵自愈）。
+- **根因三（#PF 堆恒等洞，round-243 实锤）**：内核堆物理页撞用户根
+  恒等镜像洞——用户根 PD[2]（0x400000..0x600000）展开为 PT 且
+  PT[0]/PT[2] 留空给用户 code/stack（程序基址 0x400000 硬编码），
+  堆物理 0x400000..0x401000 在借根窗口（任务终结 reap / swap 读回）
+  恒等槽缺失 → not-present #PF（cr2=0x4004e1 = FILES Vec 缓冲 ∈
+  PT[0] 洞；源码 442 行「PD[2] 恒等镜像不可拆位」注释为同坑开发期
+  预警）。修复：`KERNEL_HEAP` 显式段放置 @0x600000（linker.ld 新增
+  `.kernel_heap` 段 + `#[link_section]`；PD[3] 大页恒等区借根可见性
+  恒成立），kern_end 随之抬升、帧池自新界起。
+- **断言校准（t45）**：st=4（Zombie 在槽）或 st=0（槽位已收割）均
+  合法终态——round-257 exit=90 + 槽位 None 实录（M17 加固 settle 窗
+  兜不住收割竞态属采样过严，非内核行为缺陷）。
+
+### 验收
+- 九阶段 CI 全绿三连（CI-OK 8/8）。
+- pf-hunt 回归 59 轮：挂死 0（修复前 8.1%）+ t45 全过；总失败率
+  15% → 3.4%。
+- **残余族（M20 候补，诚实记档）**：①#PF rip=-1 ×1/59（栈含
+  driftsort readdir 帧，嫌疑 readdir 排序面；取证面全就位）
+  ②t32 served=0 星化 ×1/59（echo=PING 帧实际送达但 served 计数 0，
+  计数/实例错配面）。
+
 ## v0.19.0（2026-10-11）—— M18-①：#PF 专项取证面 + M18-②：fsck-lite 崩溃一致性 + M18-③：候补三条转正
 
 ### 新增

@@ -147,6 +147,10 @@ static FP_SERVED: AtomicUsize = AtomicUsize::new(0);
 /// 通道注册表（BSP 泄漏全局通道后写入，AP 读取）。
 static FP_REQ: AtomicUsize = AtomicUsize::new(0);
 static FP_RESP: AtomicUsize = AtomicUsize::new(0);
+/// M19-① 取证升级：等待期周期戳计数（上限封顶防串口风暴）。
+static FP_WAIT_PROBES: AtomicU64 = AtomicU64::new(0);
+/// M19-① 取证升级：AP 侧首次服务戳旗（每轮 t19 重置）。
+static FP_AP_STAMP: AtomicBool = AtomicBool::new(false);
 
 /// AP 独立内核栈（常驻锚点；与 task.rs 栈同纪律）。
 static AP_STACK: SpinLock<Vec<u128>> = SpinLock::new(Vec::new());
@@ -338,6 +342,20 @@ fn idle_work() -> bool {
                     core::hint::spin_loop();
                 }
                 FP_SERVED.fetch_add(1, Ordering::AcqRel);
+                // M19-① 取证升级：AP 侧首次服务戳（免分配串口直写，与
+                // SCHED-BUG 转储同模式；每轮 t19 仅首条，零噪声增量）。
+                if !FP_AP_STAMP.swap(true, Ordering::AcqRel) {
+                    let mut serial = crate::console::SerialPort::com1();
+                    serial.init();
+                    let _ = core::fmt::Write::write_fmt(
+                        &mut serial,
+                        format_args!(
+                            "fp: ap-first-served cpu={} ticks={}\n",
+                            crate::task::current_cpu_slot(),
+                            ostd::time::now()
+                        ),
+                    );
+                }
                 return true;
             }
         }
@@ -794,6 +812,12 @@ pub fn tlb_shootdown_check(log: &mut DualLog, frames: &FrameAllocator, ap_id: u8
 /// FastPath 双机基准（自检 19）：BSP↔AP 两条 SPSC 环往返 [`FP_ROUNDS`] 轮，
 /// TSC 计时（TCG 参考基线；B-P01 0.6 μs 预算对比留环境 B 实测）。
 pub fn fastpath_bench(log: &mut DualLog) -> bool {
+    // M19-① 取证升级（静默挂死缩窗）：阶段戳逐点落盘（enter/req0/kicked/
+    // waiting/exit，全部并打 TICKS 值——若等待期 ticks 停走即全核节拍面
+    // 冻结实锤；served=0 即 AP 未服务实锤）。挂死轮最后一行直接指认卡点。
+    FP_WAIT_PROBES.store(0, Ordering::Release);
+    FP_AP_STAMP.store(false, Ordering::Release);
+    let _ = writeln!(log, "fp: enter ticks={}", ostd::time::now());
     let req: &'static FastPath = Box::leak(Box::new(FastPath::new()));
     let resp: &'static FastPath = Box::leak(Box::new(FastPath::new()));
     FP_RESP.store(resp as *const _ as usize, Ordering::Release);
@@ -803,13 +827,20 @@ pub fn fastpath_bench(log: &mut DualLog) -> bool {
     let t0 = ostd::time::tsc_now();
     FP_MODE.store(true, Ordering::Release);
     let mut ok = true;
+    let mut last_probe = ostd::time::now();
     for i in 0..FP_ROUNDS as u32 {
         while req.send_frame(0x20, &i.to_le_bytes()).is_err() {
             core::hint::spin_loop();
         }
+        if i == 0 {
+            let _ = writeln!(log, "fp: req0 sent ticks={}", ostd::time::now());
+        }
         // 生产者门铃（M6 缺陷五修复）：AP idle 为 halt 模型，请求投递后
         // 必须 IPI 唤醒，否则服务延迟退化为 LAPIC 定时器节拍（10 ms/轮）
         resched_kick(1 - crate::task::current_cpu_slot());
+        if i == 0 {
+            let _ = writeln!(log, "fp: kicked ticks={}", ostd::time::now());
+        }
         let mut got = false;
         let deadline = ostd::time::now() + 200;
         while ostd::time::now() < deadline {
@@ -818,7 +849,19 @@ pub fn fastpath_bench(log: &mut DualLog) -> bool {
                     got = u32::from_le_bytes(out[..4].try_into().unwrap_or([0; 4])) == i;
                     break;
                 }
-                _ => core::hint::spin_loop(),
+                _ => {
+                    // 等待期周期戳：每 50 tick 一条，全函数上限 8 条防风暴
+                    let n = ostd::time::now();
+                    if n >= last_probe + 50 && FP_WAIT_PROBES.fetch_add(1, Ordering::AcqRel) < 8 {
+                        last_probe = n;
+                        let _ = writeln!(
+                            log,
+                            "fp: waiting i={i} served={} ticks={n}",
+                            FP_SERVED.load(Ordering::Acquire)
+                        );
+                    }
+                    core::hint::spin_loop();
+                }
             }
         }
         ok &= got;
@@ -827,6 +870,12 @@ pub fn fastpath_bench(log: &mut DualLog) -> bool {
         }
     }
     FP_MODE.store(false, Ordering::Release);
+    let _ = writeln!(
+        log,
+        "fp: exit ok={ok} served={} ticks={}",
+        FP_SERVED.load(Ordering::Acquire),
+        ostd::time::now()
+    );
     let t1 = ostd::time::tsc_now();
     let total_ns = ostd::time::tsc_clock::elapsed_ns(t1 - t0);
     let per_round = total_ns.and_then(|n| n.checked_div(FP_ROUNDS as u64));

@@ -17,6 +17,9 @@ TLV_REQ_FMT='\x07\x00\x09\x00lumina-m5'
 set -u
 
 ROUNDS="${1:-25}"
+# M19：批间编号接续——ROUND_BASE=已跑轮数（批1 缺省 0 → round-001 起，
+# 批2 ROUND_BASE=20 → round-021 起）。B3 基线 11 轮已归档 batch-b3/。
+ROUND_BASE="${ROUND_BASE:-0}"
 BUILD=/home/z/my-project/lumina-build
 EV="$BUILD/pf-evidence"
 QEMU="$BUILD/runtime/qemu-root/extracted/usr/bin/qemu-system-x86_64"
@@ -40,7 +43,8 @@ objcopy -O binary "$ELF" "$BIN" || { echo "objcopy 失败：先构建内核"; ex
 pass=0
 fail=0
 for i in $(seq 1 "$ROUNDS"); do
-  log="$EV/round-$(printf '%03d' "$i").log"
+  n=$((ROUND_BASE + i))
+  log="$EV/round-$(printf '%03d' "$n").log"
   # 注帧器 = 进程替换（与 QEMU 并发生成，无 FIFO 阻塞死锁——初版 FIFO
   # 方案实测主 shell open(<) 与注帧器等 READY 互等死锁，每轮空转 100 s）：
   # 先轮询串口日志等 READY（最长 100 s）→ 写 TLV 请求帧 → 保持 stdin

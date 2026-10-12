@@ -77,6 +77,15 @@ const EINVAL: u64 = 22;
 const ENFILE: u64 = 23;
 /// 调用方句柄表满。
 const EMFILE: u64 = 24;
+
+/// M19-① ENFILE 现场快照：bit63..40 = FILES used，bit15..8 = CAPS 存活
+/// 槽数，bit0 = 有效旗。ENFILE 返回点锁内采样（reap 补扫会修复现场，
+/// 调用方侧事后采样恒 0——round-223 files-used=0/32 教训）。
+static ENFILE_SNAP: AtomicU64 = AtomicU64::new(0);
+/// M19-① ENFILE 快照读取（t45 取证面；v2 位段见 ENFILE_SNAP 文档）。
+pub fn enfile_snapshot() -> u64 {
+    ENFILE_SNAP.load(Ordering::Acquire)
+}
 /// 对非目录句柄请求目录语义（READDIR on 文件）。
 const ENOTDIR: u64 = 20;
 /// STAT 尺寸域（31 位）溢出（ramfs 不可达，防御性）。
@@ -478,16 +487,39 @@ fn open_impl(path_bytes: &[u8], mode: u64) -> u64 {
         readable: flags.readable(),
         writable: flags.writable(),
     };
+    // 3b) 注册表槽位占用（ENFILE 自愈重试：幽灵对象补扫——M19-① 根因
+    // 修复。轮内 open 的任务终结面 reap 竞态残留幽灵槽（32 槽贴线泄漏，
+    // round-239 快照 used=32/caps_alive=2 实锤），补扫回收后重试一次；
+    // 自愈失败才真正 ENFILE）。
     let mut slot_idx = None;
-    {
+    for attempt in 0..2 {
         let mut files = FILES.lock();
-        if let Some(i) = files
+        match files
             .iter_mut()
             .enumerate()
             .find_map(|(i, f)| f.is_none().then_some(i))
         {
-            files[i] = Some(file);
-            slot_idx = Some(i);
+            Some(i) => {
+                files[i] = Some(file);
+                slot_idx = Some(i);
+                break;
+            }
+            None if attempt == 0 => {
+                // 现场指纹（seq 区分多轮；reap 前采样）
+                static SNAP_SEQ: AtomicU64 = AtomicU64::new(0);
+                let used = files.iter().filter(|f| f.is_some()).count();
+                let caps_alive = (0..vanguard::CAPACITY)
+                    .filter(|&s| crate::caps::table().lock().get(s).is_ok())
+                    .count();
+                let seq = SNAP_SEQ.fetch_add(1, Ordering::AcqRel) + 1;
+                ENFILE_SNAP.store(
+                    (seq & 0xF) << 56 | (used as u64) << 40 | (caps_alive as u64) << 24,
+                    Ordering::Release,
+                );
+                drop(files);
+                reap_orphaned_files();
+            }
+            None => break,
         }
     }
     let Some(idx) = slot_idx else {
