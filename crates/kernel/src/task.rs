@@ -1657,6 +1657,11 @@ extern "C" fn trampoline() -> ! {
     // 首派发若经抢占路径切入则 IF=0；内核任务 IF 约定恒为 1
     ostd::hw::intr::enable();
     let entry: Entry = {
+        // M20-①：SCHED 锁中断纪律——enable() 后 IF=1，此处临界区必须包
+        // 中断窗口（round-417 铁证：持锁@1660 被本核 LAPIC tick 打断 →
+        // timer_hook ISR 等同锁互等死锁，与 idle_pick 同族）；块内 drop
+        // 逆序保证解锁后才恢复 IF（M19 同款）。
+        let _w = IntWindow::new();
         let s = sched_lock!();
         let cpu = my_cpu();
         let cur = CURRENT[cpu].load(Ordering::Relaxed);
@@ -1671,6 +1676,8 @@ extern "C" fn trampoline_user() -> ! {
     // 首派发若经抢占路径切入则 IF=0；进 ring3 前先开放（iretq 亦会置 IF）
     ostd::hw::intr::enable();
     let entry: Entry = {
+        // M20-①：与 trampoline 同族裸拿点——同款 IntWindow 纪律封死。
+        let _w = IntWindow::new();
         let s = sched_lock!();
         let cpu = my_cpu();
         let cur = CURRENT[cpu].load(Ordering::Relaxed);
