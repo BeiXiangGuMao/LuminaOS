@@ -3,6 +3,50 @@
 版本语义：工作区里程碑版（0.x.y，x=里程碑，y=里程碑内迭代）。
 本文档记录源码树的对外可见变更；指标与规格变更见《指标与规范手册》修订记录。
 
+## v0.21.0（2026-10-15）—— M20-①：挂死第 4/5 裸拿点封口 + #PF rip=-1 活体标本取证
+
+### 定位（M19 三根因修复后的稳定性深挖，113+30 轮复跑证据池）
+- **pf-hunt 大批次复跑**：批 1（round-305..354，50 轮）41 PASS + 9 簇败；
+  批 2（round-355..417，63 轮）57 PASS + 5 簇败 + 1 挂死；挂死 1/113
+  （M19 修复后基线 8.1% → 约 0.9%，未绝迹）。簇败全 exit=193：ipc-bind
+  ×5（Type A 发侧门禁拒绝）、exec-image ×3、tsc ×2、timer-block ×1、
+  ipc-syscall-caps ×1 + **Type B 新型**（round-404 四连簇败：block-recv
+  blocks=1 wakes=0 收侧永久阻塞 + bind 完成态败 sok=1 rw=1 exit0=82）。
+- **round-417 挂死复现**：200 连发 LOCK-STALL addr=0x1811e8 sched=1
+  ticks=86 cpu=0 iff=0 **h-line=1660**——M19 根因一同指纹但持锁点为新面。
+
+### 根因与修复
+- **根因（挂死族第 4/5 裸拿点，LOCK-STALL 铁证闭环）**：
+  `trampoline()` / `trampoline_user()`（task.rs:1660/1674）双跳板
+  `intr::enable()`（IF=1）后裸拿 SCHED 锁——本核 LAPIC tick 命中持锁
+  瞬间 → `timer_hook`（ISR IF=0 语境）等同锁 → 同核互等死锁。42 个
+  `sched_lock!()` 调用点逐一比对，唯二无 IntWindow 点即双跳板
+  （timer_hook/resched 为 ISR 语境物理遮蔽豁免，合法）。修复：双跳板
+  临界区 IntWindow 包裹（M19 同款纪律，Drop 逆序保证解锁后恢复 IF）。
+- **回归**：修复后 30 轮（round-418..447）29 PASS + 1 #PF，**挂死 0**
+  ——LOCK-STALL 未再现。
+- **★ #PF rip=-1 活体标本捕获（round-432，回归第 15 轮——复跑即捕兑现）**：
+  vector=14 rip=0xffffffffffffffff cr2=0xffffffffffffffff err=0x0，
+  iretq 帧 cs=0x8 rflags=0x10446 rsp=0xa12430 ss=0x10；挂位 =
+  ipc-fastpath-bench PASS 后（与 round-295 同位）。判读：①S69"readdir
+  帧"修订为 rflags 残值误读（0x10446 = iretq rflags 非代码地址）；
+  ②本质 = ring0 取指 @u64::MAX——切换机器 `push [new.cont]; ret` 语义
+  与异常帧逐位吻合，**new.cont == -1 在切换时已被写入**；③栈域归属
+  （v0.21.0 收口期补判读）：0xa12430 ∈ .bss 启动栈域（linker.ld：
+  .kernel_heap 0x600000..0xA00000 之后 .bss 起，boot 栈在 .boot.bss），
+  故障任务 = boot 栈上的主/init 上下文；④嫌疑机制（M21 首席块输入）：
+  SwitchPair 指针稳定性论证为单核协作式表述，SMP 下锁释放后他核可
+  拾取/收割任务槽——新侧 ctx 无钉扎（M11-D 握手旗仅护旧侧重排队）。
+- **残余族（M21 输入，诚实记档）**：①#PF rip=-1 ×1/30（round-432）
+  ②t32 served=0 星化（round-298 计数/实例错配）③Type B 收侧永久阻塞
+  （round-404 族）④簇败率随布局漂移（M17 机制复证）。
+
+### 验收
+- 九阶段 CI 全绿（CI-OK 8/8，新工具链 1.99.0 b940084d7 重建后复验）。
+- pf-hunt 修复后回归 30 轮：挂死 0 + LOCK-STALL 0。
+- 证据归档：pf-evidence/batch-m20-p1/（九簇败轮 + 汇总）、
+  batch-m20-p2/（批 2 + round-432 标本 + 回归汇总）。
+
 ## v0.20.0（2026-10-12）—— M19-①：间歇性家族根因定位与修复（复跑即捕 → 铁证 → 三根因收口）
 
 ### 定位（取证面五级升级，306 轮复跑证据池）
