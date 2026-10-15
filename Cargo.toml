@@ -1,0 +1,70 @@
+# Lumina OS —— workspace 根清单
+# 依据《Lumina OS 系统开发指南》(LUM-DEV-002) 第二章：monorepo 结构与依赖规则。
+# 依赖方向（低 → 高）：ostd → {harbor, vanguard} → bedrock；用户态服务与 UI crate 不反向依赖内核。
+[workspace]
+resolver = "2"
+members = [
+    "crates/ostd",
+    "crates/harbor",
+    "crates/vanguard",
+    "crates/bedrock",
+    "crates/conduit",
+    "crates/meridian",
+    "crates/crystal",
+    "crates/pulse",
+    "crates/weave",
+    "crates/prism",
+    "crates/loom",
+    "crates/ripple",
+    "crates/glyph",
+    "crates/mirror",
+    "crates/cascade",
+    "crates/aurora",
+    "crates/kernel",
+    "tools/xtask",
+]
+
+[workspace.package]
+version = "0.22.0"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+authors = ["Lumina OS Project"]
+
+[workspace.dependencies]
+# 内部 crate 集中声明（DEV-002 第二章：依赖方向 ostd → {harbor, vanguard} → bedrock）
+ostd = { path = "crates/ostd" }
+harbor = { path = "crates/harbor" }
+vanguard = { path = "crates/vanguard" }
+bedrock = { path = "crates/bedrock" }
+conduit = { path = "crates/conduit" }
+meridian = { path = "crates/meridian" }
+crystal = { path = "crates/crystal" }
+pulse = { path = "crates/pulse" }
+weave = { path = "crates/weave" }
+prism = { path = "crates/prism" }
+loom = { path = "crates/loom" }
+ripple = { path = "crates/ripple" }
+glyph = { path = "crates/glyph" }
+mirror = { path = "crates/mirror" }
+cascade = { path = "crates/cascade" }
+aurora = { path = "crates/aurora" }
+# 内核映像二进制（不被其他 crate 依赖；仅 S6 内核构建阶段单独编译）
+kernel = { path = "crates/kernel" }
+
+[workspace.lints.rust]
+# 内核纪律：unsafe 块内的 unsafe 操作必须显式（SPEC 第十七章）
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+# 全仓基线（DEV-002 第四章）：默认 lint 集合全开，警告视为缺陷；
+# unwrap/expect 禁令（生产路径零 panic 载体）——测试模块须显式豁免。
+all = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+
+[profile.release]
+# 依据 DEV-002 第四章：panic 策略为 abort，禁止 unwinding 穿越内核边界
+panic = "abort"
+lto = "thin"
+codegen-units = 1
