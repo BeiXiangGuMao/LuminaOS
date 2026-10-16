@@ -41,6 +41,8 @@ pub fn init_and_enable(log: &mut DualLog) -> u32 {
         let mut idt = IDT.lock();
         idt.set_raw(32, timer_addr);
         idt.set_raw(0, ostd::interrupt::stub_addr(Stub::FaultDe));
+        // 向量 1：#DB 透明探针（M22-③ DR0 写监视点——cont 槽第二写者追捕）
+        idt.set_raw(1, ostd::interrupt::stub_addr(Stub::FaultDb));
         idt.set_raw(6, ostd::interrupt::stub_addr(Stub::FaultUd));
         idt.set_raw(13, ostd::interrupt::stub_addr(Stub::FaultGp));
         // 向量 14：可恢复 #PF 桩（M5）。未注册恢复钩子时与致命版行为

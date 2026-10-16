@@ -138,6 +138,16 @@ unsafe extern "C" {
     fn lumina_context_switch(old: *mut TaskContext, new: *mut TaskContext, handoff: *mut u64);
 }
 
+/// M22-③：切换机器符号地址（哨兵合法续点全集的 ktext 扫描目标）。
+///
+/// 协作保存的 `ctx.cont` 恒为 `call lumina_context_switch` 站点 +5
+/// ——内核 init 期以本地址为目标扫描 `.text` 即得协作 cont 全集。
+pub fn context_switch_addr() -> usize {
+    // fn item → 指针 → usize 为 safe 转换（不调用不 deref；unsafe 包裹
+    // 冗余——clippy 指认后移除）。
+    lumina_context_switch as *const () as usize
+}
+
 /// 锁外交换的上下文指针对（可携带 M11-D 握手旗）。
 ///
 /// 调度器的正确姿势：互斥窗口内完成全部元数据变更并经

@@ -175,6 +175,9 @@ pub enum Stub {
     FaultTs,
     /// 向量 8：#DF 双重故障（向量化失败的最后一道防线）。
     FaultDf,
+    /// 向量 1：#DB 调试异常（M22-③ DR0 写监视点透明探针——命中转储后
+    /// 原指令流继续，永不致命）。
+    FaultDb,
     /// 向量 0x40：LAPIC IPI（TLB 击落等核间命令，M5）。
     Ipi,
     /// 向量 14：可恢复 #PF（同 FaultPf 向量号；钩子可补映射后重执行）。
@@ -197,6 +200,7 @@ pub fn stub_addr(stub: Stub) -> u64 {
         fn isr_fault_pf();
         fn isr_fault_ts();
         fn isr_fault_df();
+        fn isr_fault_db();
         fn isr_ipi();
         fn isrf_pf_rec();
         fn isr_lapic_timer();
@@ -210,6 +214,7 @@ pub fn stub_addr(stub: Stub) -> u64 {
         Stub::FaultPf => isr_fault_pf,
         Stub::FaultTs => isr_fault_ts,
         Stub::FaultDf => isr_fault_df,
+        Stub::FaultDb => isr_fault_db,
         Stub::Ipi => isr_ipi,
         Stub::FaultPfRec => isrf_pf_rec,
         Stub::LapicTimer => isr_lapic_timer,
@@ -343,7 +348,10 @@ pub mod stubs {
         "    push QWORD PTR [rsi + 0x00]",
         "    ret",
         // 9: = .resume（被抢占任务的续点，语义同 LAPIC 定时器桩）
+        // M22-③：全局符号导出——哨兵合法续点全集（白名单）构件
         "9:",
+        ".globl lumina_resume_timer",
+        "lumina_resume_timer:",
         "    mov rsp, rbp",
         "    pop r11",
         "    pop r10",
@@ -421,7 +429,10 @@ pub mod stubs {
         "    push QWORD PTR [rsi + 0x00]",
         "    ret",
         // 7: = .resume（被抢占任务的续点，语义同 M4 设计）
+        // M22-③：全局符号导出（同上）
         "7:",
+        ".globl lumina_resume_lapic",
+        "lumina_resume_lapic:",
         "    mov rsp, rbp",
         "    pop r11",
         "    pop r10",
@@ -500,6 +511,46 @@ pub mod stubs {
         "    push QWORD PTR [rsi + 0x00]",
         "    ret",
         "11:",
+        // M22-③：全局符号导出（同上）
+        ".globl lumina_resume_resched",
+        "lumina_resume_resched:",
+        "    mov rsp, rbp",
+        "    pop r11",
+        "    pop r10",
+        "    pop r9",
+        "    pop r8",
+        "    pop rdi",
+        "    pop rsi",
+        "    pop rdx",
+        "    pop rcx",
+        "    pop rax",
+        "    pop rbp",
+        "    iretq",
+        // ---- 向量 1：#DB 调试异常（M22-③ DR0 写监视点透明探针）----
+        // 契约：命中 → 转储写者 rip → 原指令流继续（永不致命）。与定时
+        // 器桩同构的对称保存/恢复；无分支无标签（同一 global_asm 块内
+        // 标签零冲突）。cli 防嵌套（trap 语境 IF 不自动清）；iretq 按
+        // 帧恢复原 IF。数据断点为后置陷阱：命中时写入已完成，转储读
+        // 到的即新值（取证语义恰好所需）。
+        ".globl isr_fault_db",
+        "isr_fault_db:",
+        "    cli",
+        "    push rbp",
+        "    push rax",
+        "    push rcx",
+        "    push rdx",
+        "    push rsi",
+        "    push rdi",
+        "    push r8",
+        "    push r9",
+        "    push r10",
+        "    push r11",
+        "    mov rbp, rsp",
+        "    and rsp, -16",
+        "    sub rsp, 16",
+        "    mov rdi, [rbp + 80]",
+        "    mov rsi, rbp",
+        "    call isr_fault_db_body",
         "    mov rsp, rbp",
         "    pop r11",
         "    pop r10",
@@ -659,9 +710,69 @@ pub mod stubs {
     /// （桩随即从栈上 plan 取指针执行抢占交换）。
     static TIMER_HOOK: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
+    /// M22-③：三抢占桩 `.resume` 续点的符号地址（哨兵合法续点全集构件）。
+    ///
+    /// 抢占保存的 `ctx.cont` 恒为本桩 `.resume` 标签（asm `lea rax,[rip+Xf]`
+    /// 写入面）——三地址与协作站点返回址、trampoline 一起构成 cont 白名单。
+    pub fn preempt_resume_labels() -> [usize; 3] {
+        extern "C" {
+            static lumina_resume_timer: u8;
+            static lumina_resume_lapic: u8;
+            static lumina_resume_resched: u8;
+        }
+        // SAFETY: 前置条件 —— 三符号由本文件 global_asm .globl 导出，链接期定址。
+        // 不变式 —— 仅取地址不读取本体（零尺寸符号约定；addr_of 建
+        //           指针本身为 safe 操作，unsafe 包裹冗余——clippy 指认后移除）。
+        // 并发 —— 链接期常量，只读无竞争。
+        // 违反后果 —— 符号缺失即链接期报错（无运行期风险）。
+        [
+            core::ptr::addr_of!(lumina_resume_timer) as usize,
+            core::ptr::addr_of!(lumina_resume_lapic) as usize,
+            core::ptr::addr_of!(lumina_resume_resched) as usize,
+        ]
+    }
+
     /// 注册定时器钩子（M6：仅 LAPIC 定时器主体消费；PIT 主体不再调用）。
     pub fn set_timer_hook(hook: fn(&mut super::PreemptPlan) -> bool) {
         TIMER_HOOK.store(hook as usize, core::sync::atomic::Ordering::Release);
+    }
+
+    /// M22-③：#DB 写监视点取证钩子（DR0 命中面）。
+    static DB_HOOK: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+    /// 注册 #DB 取证钩子（内核 init 布防时调用；未注册时命中即静默返回）。
+    pub fn set_db_hook(hook: fn(trap_rip: u64, anchor: u64)) {
+        DB_HOOK.store(hook as usize, core::sync::atomic::Ordering::Release);
+    }
+
+    /// DR0 写监视点布防（64 位模式下数据断点长度固定 8 字节）。
+    /// DR7 = L0|G0 使能 + R/W0=01（写）+ 保留位 10 置 1。DR 每核一套——
+    /// 双核各布一次（同一目标地址，幂等）。
+    pub fn arm_write_watchpoint(addr: u64) {
+        // SAFETY: 前置条件 —— 内核特权语境调用（ring0 专属指令）。
+        // 不变式 —— DR0/DR7 每核独立；重复布防同值幂等。
+        // 并发 —— 每 CPU 各自写自身 DR，无交叉。
+        // 违反后果 —— 用户态调用即 #GP（权限面自封）。
+        unsafe {
+            core::arch::asm!("mov dr0, {0}", in(reg) addr, options(nostack, nomem));
+            core::arch::asm!("mov dr7, {0}", in(reg) 0x1_0403u64, options(nostack, nomem));
+        }
+    }
+
+    /// #DB 主体（isr_fault_db 调入；rdi = 写者 rip，rsi = 桩锚点）。
+    /// 透明探针：钩子转储后返回，原指令流 iretq 继续——永不致命。
+    /// （asm 唯一引用面 → #[no_mangle] 保符号，同 isr_timer_body 惯例。）
+    #[no_mangle]
+    extern "C" fn isr_fault_db_body(trap_rip: u64, anchor: u64) {
+        let h = DB_HOOK.load(core::sync::atomic::Ordering::Acquire);
+        if h != 0 {
+            // SAFETY: 前置条件 —— 地址来自 set_db_hook 存入的 fn(u64,u64)。
+            // 不变式 —— Release/Acquire 配对；注册先于布防。
+            // 并发 —— 每 CPU 独立命中，钩子自身无共享可变态（串口写）。
+            // 违反后果 —— 跳转伪造地址即任意代码执行（注册纪律封死）。
+            let f: fn(u64, u64) = unsafe { core::mem::transmute(h) };
+            f(trap_rip, anchor);
+        }
     }
 
     /// 墙钟钩子（M10-A）：IRQ0 主体消费——per-CPU tick 账户 + 老化扫描

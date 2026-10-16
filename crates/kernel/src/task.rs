@@ -475,7 +475,82 @@ fn ktext_bounds() -> (u64, u64) {
     )
 }
 
-/// M21-② 切换目标上下文哨兵（cont 写者追捕——哨兵在网）。
+// ---- M22-③ 合法续点全集（cont 写者追捕 v2：白名单哨兵）----
+/// 合法 `ctx.cont` 仅三类：①协作保存 = `call lumina_context_switch`
+/// 站点 +5（直呼站点有限，init 期逐字节扫描 ktext 自动收集）；
+/// ②抢占保存 = 三桩 `.resume` 全局标签（ostd 导出）；③新建 =
+/// 双 trampoline（boot_new 写入面）。
+/// 0x135c6c #GP@kmain 族（round-582/647 三重同指纹）实证：cont 可被
+/// 写成 ktext 界内的栈残渣（translate 中段陈旧中断帧 RIP），M21-②
+/// 区间校验必然放行——白名单在网后此类腐坏于拾取瞬间落网。
+static RESUME_CONTS: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
+static RESUME_CONT_N: AtomicUsize = AtomicUsize::new(0);
+
+/// init 期收集合法续点全集（单核启动早期调用，先于任何拾取）。
+fn init_resume_set() {
+    let lcs = ostd::task::context_switch_addr() as i64;
+    let (ts, te) = ktext_bounds();
+    let mut n = 0usize;
+    // ① 协作站点扫描：E8/E9 rel32 → 目标 == lumina_context_switch
+    let mut a = ts;
+    while a + 5 <= te {
+        // SAFETY: 前置条件 —— ktext 恒等映射代码段，启动后只读。
+        // 不变式 —— 界来自 linker PROVIDE；逐字节读无副作用。
+        // 并发 —— init 单核早期，无并发写者。
+        // 违反后果 —— 界错即读自身映像，无越权面（fail-safe）。
+        let op = unsafe { core::ptr::read(a as *const u8) };
+        if op == 0xE8 || op == 0xE9 {
+            let rel = unsafe { core::ptr::read((a + 1) as *const i32) } as i64;
+            if a as i64 + 5 + rel == lcs && n < RESUME_CONTS.len() {
+                RESUME_CONTS[n].store(a + 5, Ordering::Release);
+                n += 1;
+            }
+        }
+        a += 1;
+    }
+    // ② 三桩 .resume + ③ 双 trampoline
+    for l in ostd::interrupt::stubs::preempt_resume_labels() {
+        if n < RESUME_CONTS.len() {
+            RESUME_CONTS[n].store(l as u64, Ordering::Release);
+            n += 1;
+        }
+    }
+    for t in [trampoline as *const () as usize, trampoline_user as *const () as usize] {
+        if n < RESUME_CONTS.len() {
+            RESUME_CONTS[n].store(t as u64, Ordering::Release);
+            n += 1;
+        }
+    }
+    RESUME_CONT_N.store(n, Ordering::Release);
+    // init 记档：集合规模与成员（ktext 扫描自证，与 ELF 反汇编对账面）
+    let mut serial = crate::console::SerialPort::com1();
+    serial.init();
+    let _ = core::fmt::Write::write_fmt(&mut serial, format_args!("sched: resume-set n={n}"));
+    let mut i = 0;
+    while i < n {
+        let _ = core::fmt::Write::write_fmt(
+            &mut serial,
+            format_args!(" {:#x}", RESUME_CONTS[i].load(Ordering::Acquire)),
+        );
+        i += 1;
+    }
+    let _ = core::fmt::Write::write_fmt(&mut serial, format_args!("\n"));
+}
+
+/// cont 是否属于合法续点全集（线性扫 16 槽，拾取面热路径可承受）。
+fn cont_in_resume_set(cont: u64) -> bool {
+    let n = RESUME_CONT_N.load(Ordering::Acquire);
+    let mut i = 0;
+    while i < n {
+        if RESUME_CONTS[i].load(Ordering::Acquire) == cont {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// M21-② 切换目标上下文哨兵（cont 写者追捕——哨兵在网；M22-③ 白名单升级）。
 ///
 /// 拾取面在构建切换对/抢占计划**之前**校验目标 `ctx` 合法性：
 /// ① `cont` 必须落在内核 `.text` 界内（`ktext_start..ktext_end`）——
@@ -483,24 +558,34 @@ fn ktext_bounds() -> (u64, u64) {
 ///    地址一律违例；
 /// ② `rsp` 必须落在本任务**自有**内核栈界内（`stack_base != 0` 时强制，
 ///    闭区间 `stack_base..=stack_top`——boot_new 初值恰为栈顶；主任务
-///    引导栈无堆锚点（stack_base=0）跳过，与 M18-① canary 面同款记档）。
+///    引导栈无堆锚点（stack_base=0）跳过，与 M18-① canary 面同款记档）；
+/// ③ **M22-③ 白名单**：`cont` 必须属于合法续点全集
+///    （[`RESUME_CONTS`]——协作站点/桩 .resume/trampoline 三类来源，
+///    init 期收集）。界内≠合法：0x135c6c 族实证 cont 可被写成 ktext
+///    界内的栈残渣，区间校验放行、白名单必捕。
 ///
 /// 任何违例 = 存在切换机器之外的非法 TaskContext 写者（S72 次级窗口
-/// 鬼影保存族 / cont 槽腐坏族的活体取证面）——SCHED-BUG 全现场转储后
-/// panic（活体标本优先于静默继续；pf-hunt 串口全量留存）。
+/// 鬼影保存族 / cont 槽腐坏族的活体取证面）——SCHED-BUG 全现场转储
+/// （含 ctx 全 8 槽深取证行）后 panic（活体标本优先于静默继续；
+/// pf-hunt 串口全量留存）。
 fn pickup_sentinel(id: usize, t: &Task) {
     let cont = t.ctx.cont;
     let rsp = t.ctx.rsp;
     let (ts, te) = ktext_bounds();
     let cont_ok = cont >= ts && cont < te;
     let rsp_ok = t.stack_base == 0 || (rsp >= t.stack_base && rsp <= t.stack_top);
-    if !cont_ok || !rsp_ok {
+    // M22-③ 白名单：ktext 界内 ≠ 合法——cont 必须属于合法续点全集。
+    // 集合未武装（n=0，扫描异常面）时退化为纯区间校验（fail-safe，
+    // 扫描缺陷不阻断调度）。
+    let armed = RESUME_CONT_N.load(Ordering::Acquire) != 0;
+    let whitelist_ok = !armed || cont_in_resume_set(cont);
+    if !cont_ok || !rsp_ok || !whitelist_ok {
         let mut serial = crate::console::SerialPort::com1();
         serial.init();
         let _ = core::fmt::Write::write_fmt(
             &mut serial,
             format_args!(
-                "LUMINA-SCHED-BUG pickup-sentinel slot={} name={} state={:?} cont={:#x} rsp={:#x} stack=[{:#x},{:#x}] ktext=[{ts:#x},{te:#x}) pinned={:?} switching={} cont-ok={} rsp-ok={}\n",
+                "LUMINA-SCHED-BUG pickup-sentinel slot={} name={} state={:?} cont={:#x} rsp={:#x} stack=[{:#x},{:#x}] ktext=[{ts:#x},{te:#x}) pinned={:?} switching={} cont-ok={} rsp-ok={} whitelist-ok={armed}\n",
                 id,
                 t.name,
                 t.state,
@@ -514,7 +599,24 @@ fn pickup_sentinel(id: usize, t: &Task) {
                 rsp_ok,
             ),
         );
-        panic!("pickup-sentinel: illegitimate TaskContext writer (M21-2)");
+        // M22-③ 深取证：ctx 全 8 槽 + 白名单规模——第二写者指纹面
+        let _ = core::fmt::Write::write_fmt(
+            &mut serial,
+            format_args!(
+                "LUMINA-SCHED-BUG ctx slot={} cont={:#x} rbx={:#x} rbp={:#x} r12={:#x} r13={:#x} r14={:#x} r15={:#x} rsp={:#x} resume-set-n={}\n",
+                id,
+                t.ctx.cont,
+                t.ctx.rbx,
+                t.ctx.rbp,
+                t.ctx.r12,
+                t.ctx.r13,
+                t.ctx.r14,
+                t.ctx.r15,
+                t.ctx.rsp,
+                RESUME_CONT_N.load(Ordering::Acquire),
+            ),
+        );
+        panic!("pickup-sentinel: illegitimate TaskContext writer (M21-2/M22-3)");
     }
 }
 
@@ -703,13 +805,72 @@ pub fn init() {
     let boot_cr3 = ostd::hw::control::read_cr3() & !0xFFF;
     s.boot_cr3 = boot_cr3;
     s.tasks[0] = Some(Task::main_task());
+    // M22-③ 写者蹲守坐标：主任务 ctx 槽绝对地址（DR0 写监视点目标——
+    // cont 槽腐坏族的第二写者活捉面；幂等诊断行，零行为变更）。
+    let main_ctx_addr = &s.tasks[0].as_mut().unwrap().ctx as *const _ as usize;
+    MAIN_CTX_ADDR.store(main_ctx_addr, Ordering::Release);
     BSP_APIC_ID.store(ostd::hw::lapic::id(), Ordering::Release);
     CURRENT[0].store(0, Ordering::Relaxed);
     CURRENT[1].store(IDLE, Ordering::Relaxed);
+    // M22-③：合法续点全集收集（先于任何拾取；ktext 逐字节扫描 +
+    // 三桩 .resume + 双 trampoline，init 记档 n 与成员）。
+    init_resume_set();
+    // M22-③ DR0 写监视点布防：钩子先行 → 双核各自 mov dr0/dr7
+    // （AP 侧在 ap_main 内同址补布；此后主任务 cont 槽任意写者均落
+    // LUMINA-DRDB 取证行——写者 rip 域外即第二写者实锤）。
+    ostd::interrupt::stubs::set_db_hook(db_writer_trap);
+    ostd::interrupt::stubs::arm_write_watchpoint(main_ctx_addr as u64);
+    // 蹲点坐标行（resume-set 行之后，同一诊断序列）
+    {
+        let mut serial = crate::console::SerialPort::com1();
+        serial.init();
+        let _ = core::fmt::Write::write_fmt(
+            &mut serial,
+            format_args!("sched: main-ctx @ {main_ctx_addr:#x} dr0-armed\n"),
+        );
+    }
+}
+
+/// M22-③ DR0 命中取证行：写者 rip + 写入值 + 桩锚点。
+/// 合法写者仅两类 pc 域：协作保存（lumina_context_switch 内存储指令）
+/// 与抢占保存（三桩存储指令）；init 期结构铺设在布防前已完成。
+/// pc 域外或写入值 ∉ 合法续点全集 = 第二写者实锤（活体标本教义：
+/// 透明探针不阻断——原指令流继续，系统带伤前行供后续取证）。
+fn db_writer_trap(trap_rip: u64, anchor: u64) {
+    let slot = MAIN_CTX_ADDR.load(Ordering::Acquire);
+    if slot == 0 {
+        return;
+    }
+    // SAFETY: 前置条件 —— slot 为 init 登记 的 ctx 槽地址（恒等映射域内）。
+    // 不变式 —— 只读不写（写监视点零递归）；volatile 防优化重排。
+    // 并发 —— 命中可来自任一核；本函数无共享可变态（串口写幂等）。
+    // 违反后果 —— 槽址错误即误报（地址来自同一 init 登记面，自洽）。
+    let val = unsafe { core::ptr::read_volatile(slot as *const u64) };
+    // M22-③ 降噪门：写入值 ∈ 合法续点全集 = 合法保存（协作站点/桩
+    // .resume）——静默直返。实测全量转储 5596 行/轮的串口轰击扰动
+    // 时敏面（t52 族误伤 62/63）；域外值才落取证行，第二写者信号
+    // 面零丢失（cont=0 属域外，照转储——布防后 stopped 陈值即异象）。
+    if cont_in_resume_set(val) {
+        return;
+    }
+    let mut serial = crate::console::SerialPort::com1();
+    serial.init();
+    let _ = core::fmt::Write::write_fmt(
+        &mut serial,
+        format_args!("LUMINA-DRDB pc={trap_rip:#x} val={val:#x} anchor={anchor:#x}\n"),
+    );
 }
 
 /// SCHED 锁运行时地址哨兵（init 时落值；戳内比对用）。
 static SCHED_ADDR: AtomicUsize = AtomicUsize::new(0);
+
+/// M22-③：主任务 ctx 槽地址（DR0 布防目标；init 登记，AP 布防面共用）。
+static MAIN_CTX_ADDR: AtomicUsize = AtomicUsize::new(0);
+
+/// 主任务 ctx 槽地址读取（AP 布防面；未 init 时 0）。
+pub fn main_ctx_addr() -> usize {
+    MAIN_CTX_ADDR.load(Ordering::Acquire)
+}
 
 /// SCHED 锁持锁点遥测（M19-① 第三级取证）：高 32 位 = 拿锁核，低 32 位 =
 /// 调用点行号。语义 = 最近一次成功拿锁的点（guard drop 不清——**死锁

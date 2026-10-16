@@ -500,6 +500,12 @@ extern "C" fn ap_main() -> ! {
     unsafe { crate::syscall::init() };
     let id = ostd::hw::lapic::id();
     AP_ONLINE.store(u64::from(id) | 0x8000_0000_0000_0000, Ordering::Release);
+    // M22-③：AP 侧 DR0 补布（DR 每核一套；与 BSP 同址幂等）——主任务
+    // cont 槽的写者可能在任一核执行，双核布防方能全域取证。
+    let watch = crate::task::main_ctx_addr();
+    if watch != 0 {
+        ostd::interrupt::stubs::arm_write_watchpoint(watch as u64);
+    }
     // IPI 需要 IDT + IF=1（IDT 已由 trampoline lidt；表与 BSP 共享）
     ostd::hw::intr::enable();
     // 统一调度接入（M6-A）：启动本核 LAPIC 定时器（复用 BSP 校准），
