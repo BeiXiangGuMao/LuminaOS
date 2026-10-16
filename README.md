@@ -1,37 +1,43 @@
-# Lumina OS（曜光系统）· 开发工作区
+# Lumina OS（曜光系统）
 
-100% Rust framekernel 桌面操作系统。本工作区已完成 **M1（策略核心）+ M2（裸机启动自检闭环）
-+ M3（内存 / 中断 / 任务）+ M4（抢占 / TSC / 用户态 / 系统调用 / 双机联测）
-+ M5（SMP：AP 启动 / TLB 击落 / IPC 快速路径 / 按需分页 + 能力化映射）
-+ M6（per-CPU 统一调度器 / IPC 系统调用面能力化 / TLB 击落批量化 / swap 预留位）
-+ M7（per-CPU TSS 与用户任务跨核 / swap 换页 I/O 与驻留位图）
-+ M8（swapgs 纪律定版与 per-CPU syscall 栈接线 / 页表级 swap 回收全链 /
-  优先级调度面与定向门铃）+ M9（进程模型：跨任务能力授予与句柄生命周期 /
-  换页异步化：swapd 分页任务与零 I/O 快路径 / 优先级老化与饥饿防护）
-+ M10（per-CPU tick 账户：ring3 时间面冻结解除 / 任务阻塞态与调度点切换 /
-  waitpid 语义雏形）**：内核可在
-QEMU（`-smp 2`）上经 multiboot1 裸机启动至 x86_64 长模式，物理帧管理、四级页表
-（MMU 实机往返）、中断链、**抢占式调度**、**TSC 校准计时与基准**、**ring3 用户进程**、
-**SYSCALL/SYSRET 系统调用**、**TLV 宿主-客户机双向联测**、**双核 SMP
-（LAPIC + ACPI MADT 探测 + INIT-SIPI 启动 AP + 跨核工作池 + IPI TLB 击落）**、
-**无锁 SPSC IPC 快速路径（BSP↔AP 双环基准）**、**#PF 驱动按需分页
-（Vanguard 能力门禁）**、**per-CPU 统一调度（全局队列跨核派发 + LAPIC 定时器
-统一抢占源 + 栈上 PreemptPlan + AP idle 循环）**、**能力化 IPC 系统调用面
-（SYS_IPC_SEND/RECV + 回声服务 + ring3 客户端负探针）**、**批量 TLB 击落
-（多页批量 + 全量 CR3 重写 two-shot）**、**per-CPU TSS/RSP0 与用户任务跨核
-（每核 GDT/TSS + AP 侧 TR 补装 + SYSCALL MSR per-CPU 补装 + 门铃对称化）**、
-**swap 换页 I/O（ATA PIO HW-15 + 驻留位图 + vmm 坐标面协同）**、
-**swapgs 纪律定版（无状态 LAPIC 索引入口桩 + per-CPU syscall 栈——双核并发
-syscall 竞态消除）**、**页表级 swap 回收全链（A 位二次机会淘汰 + unmap/击落/
-坐标释放 + 内核态换入重映射）**、**优先级调度面（四级就绪队列 + 高优先抢前 +
-SYS_SET_PRIO/GET_PRIO + fn(usize) 定向门铃）**、**进程模型（SYS_CAP_GRANT/
-REVOKE/GET_PID 任务句柄表 + 父进程面授予门禁 + 槽位单属主生命周期）**、
-**换页异步化（swapd 分页任务 + 请求队列 + #PF 零 I/O 快路径 + 同步回退）**、
-**优先级老化（base/effective 分离 + 等待计账逐级提升 + 回队衰减）**、
-**目录面与句柄深化 / TSC 纳秒化 / 持久化存储面（LFS1 + SYS_MOUNT fs_type）/
-fsck-lite 崩溃一致性 / 候补三条（O_EXCL、F_DUP2FD、SYS_IMAGE_ENUM）/ M19-①
-间歇性家族根因修复（调度锁纪律 + 幽灵对象自愈 + 内核堆恒等洞重放置）** 全部在环，
-六十二项自检全绿并自动验收。
+**100% Rust framekernel 桌面操作系统**——x86_64 长模式裸机内核 + 17 组件 crate
+workspace。内核可经 multiboot1 在 QEMU（`-smp 2`）上裸机启动，物理帧管理、四级
+页表（MMU 实机往返）、双核 SMP、抢占式调度、ring3 用户进程、SYSCALL/SYSRET
+系统调用、能力化 IPC、swap 换页、持久化存储面全部在环；**63 项裸机自检全绿并
+自动验收**（QEMU 退出码 33）。
+
+当前状态：**v0.22.0（M21 收口）+ M22-① census 面** · pf-hunt 大批次守候在网 ·
+取证证据链全程落账（devlog S0–S77）。
+
+## 特性一览
+
+**内核基础（ostd / kernel）**
+- multiboot1 裸机启动 → x86_64 长模式；VGA/串口双通道早期控制台
+- 物理帧管理 + 四级页表 + #PF 驱动按需分页（Vanguard 能力门禁）
+- SMP 双核：LAPIC + ACPI MADT 探测 + INIT-SIPI 启动 AP + IPI TLB 批量击落
+- 抢占式调度：LAPIC 定时器统一抢占源 + per-CPU tick 账户 + 三抢占源分层
+- ring3 用户进程 + SYSCALL/SYSRET + swapgs 纪律（per-CPU syscall 栈）
+
+**进程 · 调度 · 存储**
+- per-CPU 统一调度（全局队列跨核派发）+ 四级就绪队列 + 优先级老化与饥饿防护
+- 进程模型：SYS_CAP_GRANT/REVOKE/GET_PID 任务句柄表 + waitpid 僵尸收割
+- 换页异步化：swapd 分页任务 + 零 I/O 快路径 + 页表级 swap 回收全链
+- VFS：目录面 + 文件创建面 + 持久化存储面（LFS1 盘上格式）+ 稳定 cookie readdir
+- fsck-lite 崩溃一致性 + mount 占用检查 + Weave 包源映像（LWP1）
+
+**可靠性 · 取证（本项目特色）**
+- #PF 专项取证面（五级现场分级）+ pf-hunt 大批次守候（断点续跑 + 时间预算收批）
+- census 败点名内化：无锁原子计数 + 首败签名/rip，串口丢线盲区闭环（遗言面）
+- pickup_sentinel 切换目标哨兵（cont/栈界校验，活体标本 > 静默继续）
+- IntWindow 调度锁纪律：42 调用点全量审计，同核 tick↔锁互等死锁族根因封死
+- 钉扎拾取护槽三件：Type A/B 簇败族（死者鬼影槽复用）结构性根因收口
+
+**IPC · 能力 · 组件策略（15 册 crate）**
+- 无锁 SPSC IPC 快速路径（BSP↔AP 双环基准）+ 能力化 IPC 系统调用面 + 定向门铃
+- bedrock 磐基（ABI/TLV/VFS/LXE1）· harbor 港湾分配器（free-list 回收）·
+  vanguard 能力模型 · meridian 监管者 · conduit ABI 快照 · crystal 代际槽表 ·
+  pulse 网络 · weave 包管理 · prism 电源 · loom 网格 · ripple 弹簧 ·
+  glyph 图标 · mirror 合成 · cascade 外壳 · aurora 应用框架
 
 ## 文档体系（唯一事实源）
 
@@ -49,49 +55,49 @@ fsck-lite 崩溃一致性 / 候补三条（O_EXCL、F_DUP2FD、SYS_IMAGE_ENUM）
 
 ```
 lumina-os/                 ← 源码树（保持干爽，永不出现编译产物）
-├── Cargo.toml             workspace：17 组件 crate + xtask（版本 0.8.0）
-├── CHANGELOG.md           版本变更记录
+├── Cargo.toml             workspace：17 组件 crate + xtask
+├── CHANGELOG.md           版本变更记录（v0.16.0 起详条目 + 早期沿革回溯补记）
+├── LICENSE                MIT
+├── releases/              各版本发布说明（RELEASE_NOTES-v0.18.0 ~ v0.22.0）
 ├── .cargo/config.toml     target-dir → 源码树之外；内核目标 rustflags
 ├── rust-toolchain.toml    锁定 stable 1.99.0 + rustfmt/clippy
 ├── rustfmt.toml           行宽 100（DEV-002 4.1）
-├── targets/               x86_64-lumina.json 自定义目标规范（待门控稳定启用）
+├── targets/               x86_64-lumina.json 自定义目标规范
 ├── crates/
-│   ├── ostd/        unsafe 基元层（自旋锁/引导信息/控制台、hw 硬件基元 HW-01…08、
-│   │                mm 物理帧+四级页表、time 节拍、task 上下文切换、interrupt IDT；
-│   │                SAFETY 四行模板）
-│   ├── kernel/      内核映像（multiboot1 启动汇编 + VGA/串口控制台 + 中断子系统
-│   │                + 协作式任务调度 + 十一项自检）
-│   ├── bedrock/     磐基内核（syscall ABI v0.12、TLV 编帧、IPC 端点信箱、VFS 目录面 + 文件创建面 + 持久化存储面（BlockDevice/LFS1 盘上 fs/稳定 cookie readdir/占用复核卸载）、LXE1 映像格式）
-│   ├── harbor/      港湾分配器（Bump + 统计 + 启动期 rebind，GlobalAlloc 契约）
+│   ├── ostd/        unsafe 基元层（hw 基元 / mm / sync / time / task / IDT；
+│   │                SAFETY 四行模板，unsafe_op_in_unsafe_fn = deny）
+│   ├── kernel/      内核映像（启动汇编 + 中断子系统 + 调度 + 进程 + VFS 接线
+│   │                + census 败点名面 + 63 项自检）
+│   ├── bedrock/     磐基内核（syscall ABI、TLV、IPC 端点信箱、VFS、LFS1、LXE1）
+│   ├── harbor/      港湾分配器（Bump + free-list 回收 + 取证面，GlobalAlloc）
 │   ├── vanguard/    前卫能力模型（权限位、派生收窄、撤销）
 │   ├── meridian/    经纬监管者（幂等恢复、指数退避封顶 30s）
 │   ├── conduit/     通衢 ABI 快照（Linux 5.15 errno/syscall 常量表）
-│   ├── crystal/     晶簇代际槽表（ABA 防护，双代际根槽思想）
+│   ├── crystal/     晶簇代际槽表（ABA 防护）
 │   ├── pulse/       脉冲网络（IPv4 解析、零拷贝 SPSC 环）
-│   ├── weave/       织流包管理（语义版本、^/= 依赖、一次性事务、LWP1 包容器——EXEC 包源映像，no_std）
-│   ├── prism/       棱镜电源（三阶段策略、低电量回退、迁移表）
-│   ├── loom/        织机 token（8px 网格、字号公式、Panel 48/Dock 72）
-│   ├── ripple/      涟漪弹簧（170/26 与 300/30，半隐式欧拉，可打断）
-│   ├── glyph/       曜纹图标（24/48/96 同源缩放、悬停 1.05×/120ms）
-│   ├── mirror/      映境合成（矩形几何、损伤包围盒、跳帧快速通道）
+│   ├── weave/       织流包管理（语义版本、事务、LWP1 包容器，no_std）
+│   ├── prism/       棱镜电源（三阶段策略、低电量回退）
+│   ├── loom/        织机 token（8px 网格、字号公式）
+│   ├── ripple/      涟漪弹簧（170/26 与 300/30，半隐式欧拉）
+│   ├── glyph/       曜纹图标（24/48/96 同源缩放）
+│   ├── mirror/      映境合成（损伤包围盒、跳帧快速通道）
 │   ├── cascade/     流域外壳（状态机、窗口焦点序 LRU）
-│   └── aurora/      极光应用框架（.luapp 校验、六态生命周期、AF-P03 拦截）
+│   └── aurora/      极光应用框架（.luapp 校验、六态生命周期）
 ├── tools/xtask/           九阶段 CI 编排（宿主五阶段 + 内核 lint/build/冒烟 + 报告）
 ├── docs/METRICS.md        指标 → 代码位置映射
-└── README.md
+└── scripts/               pf-hunt 守候、QEMU 运行时重建、报告图生成
 
-lumina-build/              ← 编译产物 + 日志 + 报告（源码树外）
+lumina-build/              ← 编译产物 + 日志 + 报告（源码树外，不入库）
 ├── target/                cargo 产物（.cargo/config.toml 重定向至此）
-├── logs/                  devlog.md + 每步命令日志（step*.log、S1-S8 阶段日志、boot-smoke.log）
-├── reports/               xtask CI 汇总报告
-└── runtime/qemu-root/     用户态解包的 QEMU 运行时（无 root 冒烟环境）
+├── pf-evidence/           pf-hunt 逐轮证据（标本 / 批次 SUMMARY / BATCH 台账）
+└── logs/                  devlog.md + 每步命令日志（S1–S77）
 ```
 
 ## 构建与门禁
 
 ```bash
 cargo build --workspace          # 全仓构建（17 crate）
-cargo test  --workspace          # 全仓测试（99 用例，宿主）+ 62 项裸机自检（S8）
+cargo test  --workspace          # 全仓测试（宿主）+ 63 项裸机自检（S8）
 cargo run -p xtask -- ci         # 九阶段门禁（S1-S7 + S8 裸机冒烟 + S9 报告，fail-fast）
 cargo run -p xtask -- smoke      # 仅内核：lint + build + QEMU 裸机自检
 cargo run -p xtask -- check      # 仅宿主快速门禁（fmt + clippy）
@@ -106,10 +112,10 @@ cargo build -p lumina-kernel --features boot --release --target x86_64-unknown-n
 
 # 产出 32 位可装载裸映像（QEMU multiboot1 要求）
 objcopy -O binary \
-  /home/z/my-project/lumina-build/target/x86_64-unknown-none/release/lumina-kernel \
-  /home/z/my-project/lumina-build/target/x86_64-unknown-none/release/lumina-kernel.bin
+  <target-dir>/x86_64-unknown-none/release/lumina-kernel \
+  <target-dir>/x86_64-unknown-none/release/lumina-kernel.bin
 
-# 裸机启动（串口落盘 + isa-debug-exit 自动退出，退出码 33 = 自检全过[62 项]）
+# 裸机启动（串口落盘 + isa-debug-exit 自动退出，退出码 33 = 自检全过[63 项]）
 qemu-system-x86_64 -L <seabios> -L <qemu-data> \
   -kernel lumina-kernel.bin -m 256M -display none -no-reboot \
   -serial file:boot.log -device isa-debug-exit,iobase=0xf4,iosize=0x04
@@ -117,40 +123,43 @@ qemu-system-x86_64 -L <seabios> -L <qemu-data> \
 
 或者直接：`cargo run -p xtask -- smoke`（自动完成上述全部步骤并断言结果）。
 
+## 版本谱系（v0.2.0 → v0.22.0 全谱 tag）
+
+git 历史按版本序自云盘 src 包逐字节展开重建（树内容与云盘包一致，作者统一
+BeiXiangGuMao）；M20-① / M22-① 两个开发提交按原时刻 cherry-pick 归位。
+
+| 版本 | 里程碑 | 要点 |
+|---|---|---|
+| v0.2.0 | M2（回溯过程记录版） | multiboot1 裸机启动闭环，七项自检全绿（定版 devlog S7） |
+| v0.3.0–v0.8.0 | M3–M8 | 内存/中断/任务 → SMP → per-CPU 调度 → swap → syscall 栈（云盘包佚失，沿革见 CHANGELOG 回溯补记） |
+| v0.9.0 | M9 | 进程模型 + 换页异步化 + 优先级老化 |
+| v0.10.0 / v0.10.1 | M10 + hotfix | tick 账户 / 阻塞态 / waitpid 雏形；hotfix 直发版 |
+| v0.11.0–v0.12.0 | 真链早期定版 | 云盘包（2026-10-09 打包） |
+| v0.13.0 | M13 | VFS 骨架移植入真链 |
+| v0.14.0–v0.15.0 | 真链定版 | 云盘包（2026-10-10 打包） |
+| v0.16.0 | M15 | 目录面 + 句柄面深化 + TSC 纳秒面 |
+| v0.17.0 | M16 | 文件创建面 + Weave 包源映像 + 栈增长动态扩容 |
+| v0.18.0 | M17 | 持久化存储面 + readdir 稳定 cookie + mount 占用检查 |
+| v0.19.0 | M18 | #PF 专项取证面 + fsck-lite + 候补三条转正 |
+| v0.20.0 | M19 | 间歇性家族三根因修复 + 取证面五级 + 回归 59 轮 |
+| v0.21.0 | M20 | #PF 根因闭环（取证 → 标本 → ELF 对号 → 切换机器契约修复） |
+| v0.22.0 | M21 | 钉扎拾取护槽 + pickup_sentinel + Harbor free-list |
+| main（M22-①） | M22 | census 败点名内化 + pf-hunt 大批次守候 |
+
+最新发布：**[Release v0.22.0](../../releases)**——src / artifacts（devlog S0–S74 +
+pf-hunt 证据）/ RELEASE_NOTES / SHA256SUMS 四资产。
+
 ## 工程纪律（对指南的承接）
 
-- **unsafe 收口**：全仓 unsafe 仅存在于 `ostd`（hw 硬件基元 + 同步/引导/控制台基元）、
+- **unsafe 收口**：全仓 unsafe 仅存在于 `ostd`（硬件基元 + 同步/引导/控制台）、
   `harbor` 分配器契约与 `kernel::boot` 启动汇编（框架内核白名单模块）内，
-  逐处携带 SAFETY 四行注释（前置条件/不变式/并发/违反后果）；
-  `unsafe_op_in_unsafe_fn = deny` 全仓生效。
+  逐处携带 SAFETY 四行注释；`unsafe_op_in_unsafe_fn = deny` 全仓生效。
 - **生产路径零 unwrap/expect**：workspace clippy `unwrap_used/expect_used = deny`，
   测试模块显式豁免（DEV-002 第四章）。
-- **panic = abort**：release 配置全局生效（DEV-002 第四章）。
+- **panic = abort**：release 配置全局生效。
 - **依赖方向**：ostd → {harbor, vanguard} → bedrock；用户态 crate 零内核依赖。
 - **可复现数值**：Ripple 弹簧、Loom 网格、Glyph 档位与美术指南逐项一致，改动须联合评审。
 
-## 当前里程碑
+## License
 
-- **M1（已完成）**：16 组件策略核心与内核栈骨架在宿主机全绿。
-- **M2（已完成，v0.2.0）**：multiboot1 裸机启动 → x86_64 长模式；VGA/串口双通道
-  早期控制台；内核堆（Harbor）启动期绑定；七项自检全绿；QEMU 退出码 33 自动验收
-  （SPEC 表 19-1 P0「裸机可启动内核」达成）。
-- **M3–M7（已完成，v0.3.0–v0.7.0）**：内存/中断/任务、抢占/TSC/用户态/系统
-  调用/双机联测、SMP（AP 启动/TLB 击落/IPC 快速路径/按需分页）、per-CPU 统一
-  调度/IPC 能力化/TLB 批量击落/swap 预留位、per-CPU TSS/用户任务跨核/swap 换页
-  I/O——详见 CHANGELOG 各版条目。
-- **M8（已完成，v0.8.0）**：swapgs 纪律定版与 per-CPU syscall 栈接线（无状态
-  LAPIC 索引入口桩，双核并发 syscall 竞态消除，自检 28）；页表级 swap 回收全链
-  （A 位二次机会淘汰 + unmap/击落/坐标释放 + 内核态换入重映射，自检 29）；
-  优先级调度面与定向门铃（四级就绪队列 + 高优先抢前 + SYS_SET_PRIO/GET_PRIO，
-  自检 30）；宿主测试 86 → 87 用例。
-- **M10（已完成，v0.10.0）**：per-CPU tick 账户（时间面迁 PIT 全上下文：
-  忙时账/量子/老化在 ring3 驻留期不再冻结；三抢占源分层——LAPIC 内核态 /
-  PIT 量子检测 / RESCHED-plan 执行，自检 34）；任务阻塞态与调度点切换
-  （State::Blocked + block_current/wake_tasks；#PF 换入阻塞化补齐单核/
-  饱和场景，自检 35；Task.kernel_cr3 借根窗口抢占安全）；waitpid 语义
-  雏形（SYS_WAIT_PID + Zombie 收割 + 槽位释放，自检 36）；宿主测试
-  88 → 89 用例；裸机自检 33 → 36 项。
-- **下一里程碑 M11（候选）**：句柄枚举与进程面补全（SYS_SPAWN 进程创建、
-  句柄查询）、IPC 阻塞接收阻塞化、调度切换握手（根除「锁释放 → 物理切换」
-  跨核拾取理论窗口）。
+以 [MIT License](LICENSE) 发布。Copyright (c) 2026 BeiXiangGuMao（Lumina OS 项目）。
