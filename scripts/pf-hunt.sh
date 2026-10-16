@@ -12,6 +12,14 @@
 # 超时 FAIL 8/8——内核侧自检等宿主请求帧，pf-hunt 必须同帧注入）：
 # tag 0x0007 + len 9 + "lumina-m5"。注帧器 = 后台进程：轮询串口日志
 # 等 READY 标记 → 经 FIFO 写入请求帧。
+#
+# M22-① 大批次守候（环境清理杀批教训：nohup/setsid 后台批两度腰斩）：
+#   PF_BATCH_TAG=xxx   批模式：台账落 pf-evidence/batch-xxx/BATCH.log，逐轮
+#                      即时 append（杀后不失忆）；重入自动跳过台账 PASS 轮
+#                      （断点续跑）。
+#   PF_TIME_BUDGET=S   时间预算秒（默认 540，仅批模式生效）：预算将尽时
+#                      跑完当前轮优雅收批，输出续跑命令后 exit 0——适配
+#                      前台单次 600s 工具上限，大批次 = 同一命令反复续跑。
 TLV_REQ_FMT='\x07\x00\x09\x00lumina-m5'
 
 set -u
@@ -31,7 +39,24 @@ BIN="$BUILD/target/x86_64-unknown-none/release/lumina-kernel.bin"
 SWAP="$BUILD/runtime/swap.img"
 DISK="$BUILD/runtime/disk.img"
 
+# ---- M22-① 大批次守候参数 ----
+BATCH_TAG="${PF_BATCH_TAG:-}"
+TIME_BUDGET="${PF_TIME_BUDGET:-540}"
+T0=$(date +%s)
+
 mkdir -p "$EV"
+
+SKIP_PASS=""
+BATCH_LOG=""
+if [ -n "$BATCH_TAG" ]; then
+  BDIR="$EV/batch-$BATCH_TAG"
+  mkdir -p "$BDIR"
+  BATCH_LOG="$BDIR/BATCH.log"
+  touch "$BATCH_LOG"
+  # 断点续跑：台账已 PASS 轮号集合（" N1 N2 ... " 形态）
+  SKIP_PASS=" $(awk '$2=="PASS"{print substr($1,7)}' "$BATCH_LOG" | tr '\n' ' ')"
+  echo "== batch resume: tag=$BATCH_TAG 台账PASS数=$(awk '$2=="PASS"' "$BATCH_LOG" | wc -l) 预算=${TIME_BUDGET}s =="
+fi
 
 # 内核裸映像（与 xtask S8 同款 objcopy）
 objcopy -O binary "$ELF" "$BIN" || { echo "objcopy 失败：先构建内核"; exit 2; }
@@ -44,6 +69,19 @@ pass=0
 fail=0
 for i in $(seq 1 "$ROUNDS"); do
   n=$((ROUND_BASE + i))
+  num=$(printf '%d' "$n")
+  # M22-① 守候：预算将尽 → 跑完本轮前优雅收批（每轮 ~20-25s，提前 45s
+  # 刹车保证末轮不越工具 600s 上限）
+  if [ -n "$BATCH_TAG" ] && [ $(( $(date +%s) - T0 )) -gt $((TIME_BUDGET - 45)) ]; then
+    echo "== batch graceful-stop: 预算 ${TIME_BUDGET}s 将尽，本段 pass=$pass fail=$fail =="
+    echo "== 续跑: ROUND_BASE=$((n - 1)) PF_BATCH_TAG=$BATCH_TAG bash $0 $ROUNDS =="
+    break
+  fi
+  # M22-① 断点续跑：台账已 PASS 轮直接跳过（FAIL 轮重跑并覆盖证据）
+  if [ -n "$BATCH_TAG" ] && echo "$SKIP_PASS" | grep -q " $num "; then
+    echo "round $num: SKIP (台账已 PASS)"
+    continue
+  fi
   log="$EV/round-$(printf '%03d' "$n").log"
   # 注帧器 = 进程替换（与 QEMU 并发生成，无 FIFO 阻塞死锁——初版 FIFO
   # 方案实测主 shell open(<) 与注帧器等 READY 互等死锁，每轮空转 100 s）：
@@ -68,12 +106,17 @@ for i in $(seq 1 "$ROUNDS"); do
   if [ "$code" -eq 33 ] && ! grep -q "LUMINA-FAULT\|LUMINA-CANARY-FAIL" "$log"; then
     pass=$((pass + 1))
     echo "round $i: PASS (exit 33)"
+    [ -n "$BATCH_TAG" ] && echo "round-$num PASS exit=$code" >> "$BATCH_LOG"
   else
     fail=$((fail + 1))
     echo "round $i: FAIL (exit $code) — 证据: $log"
-    grep -n "LUMINA-FAULT\|LUMINA-CANARY-FAIL\|LUMINA-SELFTEST\|first-fail" "$log" | head -6
+    grep -n "LUMINA-FAULT\|LUMINA-CANARY-FAIL\|LUMINA-SELFTEST\|first-fail\|LUMINA-CENSUS" "$log" | head -8
+    [ -n "$BATCH_TAG" ] && echo "round-$num FAIL exit=$code" >> "$BATCH_LOG"
   fi
 done
 
 echo "== pf-hunt summary: rounds=$ROUNDS pass=$pass fail=$fail =="
+if [ -n "$BATCH_TAG" ]; then
+  echo "== batch $BATCH_TAG 段终：pass=$pass fail=$fail（台账 $BATCH_LOG）=="
+fi
 [ "$fail" -eq 0 ]

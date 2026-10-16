@@ -36,6 +36,7 @@ extern crate alloc;
 mod block;
 mod boot;
 mod caps;
+mod census;
 mod console;
 mod hostlink;
 mod interrupts;
@@ -3240,6 +3241,11 @@ pub(crate) fn fail_exit(_vector: u64) -> ! {
 
 /// 经 isa-debug-exit（端口 0xF4）请求 QEMU 退出；裸机上写调试口后停机。
 fn kernel_exit(code: u32) -> ! {
+    // M22-① 终局 census：任何退出路径（成功/失败/fail_exit/panic）在
+    // 写调试口之前必落一行单行 census——pf-hunt 尸检的保底定位行。
+    let mut serial = console::SerialPort::com1();
+    serial.init();
+    census::write_to(&mut serial);
     ostd::hw::ports::write_u32(0xF4, code);
     loop {
         core::hint::spin_loop();

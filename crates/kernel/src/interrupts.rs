@@ -120,7 +120,12 @@ fn fault_hook(vector: u64, rip: u64, aux: u64) -> ! {
     // 不得分配（异常现场不可信）：使用免分配串口直写
     let mut serial = crate::console::SerialPort::com1();
     serial.init();
+    // M22-① census 首发短行：先于一切长转储落盘——转储多行在串口
+    // 交叠/进程清理下最易丢失，census 短行保住项号+vector+rip 定位
+    // 信息（败点名内化进内核计数行）。
+    crate::census::fault_mark(vector, rip);
     let _ = writeln!(serial, "LUMINA-FAULT vector={vector} rip={rip:#x}");
+    crate::census::write_to(&mut serial);
     if vector == 14 {
         // #PF 取证：CR2 = 故障线性地址（HW-04 扩展面；定位桩/表路径缺页）
         let _ = writeln!(serial, "  cr2={:#x}", ostd::hw::control::read_cr2());
