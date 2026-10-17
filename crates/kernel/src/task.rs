@@ -807,7 +807,10 @@ pub fn init() {
     s.tasks[0] = Some(Task::main_task());
     // M22-③ 写者蹲守坐标：主任务 ctx 槽绝对地址（DR0 写监视点目标——
     // cont 槽腐坏族的第二写者活捉面；幂等诊断行，零行为变更）。
-    let main_ctx_addr = &s.tasks[0].as_mut().unwrap().ctx as *const _ as usize;
+    // （刚写入的槽位，get_or 0 兜底——unwrap 纪律）
+    let main_ctx_addr = s.tasks[0]
+        .as_ref()
+        .map_or(0, |t| &t.ctx as *const _ as usize);
     MAIN_CTX_ADDR.store(main_ctx_addr, Ordering::Release);
     BSP_APIC_ID.store(ostd::hw::lapic::id(), Ordering::Release);
     CURRENT[0].store(0, Ordering::Relaxed);

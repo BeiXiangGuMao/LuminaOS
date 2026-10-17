@@ -183,7 +183,24 @@ impl<A: PhysAccess, F: FnMut() -> Option<u64>> Walker<'_, A, F> {
 
     /// 翻译虚拟地址 → 物理地址（4 KiB 页与 2 MiB 大页皆可）；未映射返回
     /// `None`。不经过 MMU，纯表遍历。
+    ///
+    /// M22-③ #GP@kmain 族根治防线（round-582/647 实录）：walk 链上任一
+    /// 帧地址若非规范（≥ 2^47），`IdentityAccess` 物理直读即成非规范线性
+    /// 访问 → #GP err=0（ faults 于第一级 load 0x135c6c）。三层校验全
+    /// fail-closed：
+    /// 1. 根帧合法面：0 / 错位 / 超 canonical 可读域（≥ 2^47）的 root
+    ///    直接 `None`；
+    /// 2. 中间层帧 canonical 校验：`addr()` 位域提取（bit 12–51）不保证
+    ///    canonical（bit 47–51 非零即 ≥ 2^47，如毒化表项）；
+    /// 3. 物理零页免疫：root=0（未捕获根逃逸的最常见形态）被第 1 层
+    ///    拦截——物理 0 处 IVT 残留可拼出 present=1 的假表项。
     pub fn translate(&self, root: u64, virt: u64) -> Option<u64> {
+        // 根帧合法面：4 KiB 对齐 + canonical 可读域内——IdentityAccess 将
+        // 物理地址当线性地址直读，root ≥ 2^47 即非规范线性访问（#GP），故
+        // 域界取 canonical 边界而非物理域上界（M22-③ round-582/647）
+        if root == 0 || root & 0xFFF != 0 || root >= (1 << 47) {
+            return None;
+        }
         let mut table = root;
         // PML4 / PDPT / PD
         for shift in [39u64, 30, 21] {
@@ -197,6 +214,11 @@ impl<A: PhysAccess, F: FnMut() -> Option<u64>> Walker<'_, A, F> {
                 return Some(entry.addr() + (virt & 0x1F_FFFF));
             }
             table = entry.addr();
+            // 中间层 canonical 防线：帧号域 bit 47–51 置位即非规范
+            // （正常帧池物理地址 ≤ 256 MiB，bit 28 后恒零）
+            if table >= (1 << 47) {
+                return None;
+            }
         }
         let idx = ((virt >> 12) & 0x1FF) as usize;
         let leaf = Entry::from_bits(self.mem.read(table + (idx as u64) * 8));

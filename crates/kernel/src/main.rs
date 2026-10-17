@@ -1595,7 +1595,16 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                 let (e0, _) = task::user_exit_codes();
                 let cow = vmm::cow_breaks() - cow0;
                 let pcode = user::translate(us.root, user::USER_CODE_VIRT);
-                let ccode = user::translate(child_root, user::USER_CODE_VIRT);
+                // M22-③ #GP@kmain 族防线（round-582/647 实录）：arm 窗口
+                // 超时后 child_root 可能为 0（spawn 链未完成 / 槽位提前
+                // 收割归零）——translate(0) 入口读物理 0（IVT 区残留
+                // 0xF000FF56F000FF53 形态：present=1 且帧字段非规范）→
+                // #GP err=0。fail-closed：根未捕获即 None，不再裸走。
+                let ccode = if child_root != 0 {
+                    user::translate(child_root, user::USER_CODE_VIRT)
+                } else {
+                    None
+                };
                 let _ = writeln!(
                     log,
                     "spawn: exit0={e0} res={res:#x} pid={spid} cell={cell} \
