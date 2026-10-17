@@ -37,6 +37,7 @@ pub fn init_and_enable(log: &mut DualLog) -> u32 {
     let ipi_addr = ostd::interrupt::stub_addr(Stub::Ipi);
     let lapic_timer_addr = ostd::interrupt::stub_addr(Stub::LapicTimer);
     let resched_addr = ostd::interrupt::stub_addr(Stub::Resched);
+    let kbd_addr = ostd::interrupt::stub_addr(Stub::Irq1);
     let gate_ok = {
         let mut idt = IDT.lock();
         idt.set_raw(32, timer_addr);
@@ -56,9 +57,12 @@ pub fn init_and_enable(log: &mut DualLog) -> u32 {
         idt.set_raw(usize::from(ostd::hw::lapic::TIMER_VECTOR), lapic_timer_addr);
         // 向量 0x42：跨核重调度提示 IPI（M6-A）
         idt.set_raw(usize::from(ostd::hw::lapic::RESCHED_VECTOR), resched_addr);
+        // 向量 33：IRQ1 PS/2 键盘（M23-①；PIC 主片，桩内 EOI）
+        idt.set_raw(33, kbd_addr);
         let ok = idt.entry_points_to(32, timer_addr)
             && idt.entry_points_to(0, ostd::interrupt::stub_addr(Stub::FaultDe))
             && idt.entry_points_to(14, pf_rec_addr)
+            && idt.entry_points_to(33, kbd_addr)
             && idt.entry_points_to(usize::from(ostd::hw::lapic::IPI_VECTOR), ipi_addr)
             && idt.entry_points_to(usize::from(ostd::hw::lapic::TIMER_VECTOR), lapic_timer_addr)
             && idt.entry_points_to(usize::from(ostd::hw::lapic::RESCHED_VECTOR), resched_addr);
@@ -71,7 +75,10 @@ pub fn init_and_enable(log: &mut DualLog) -> u32 {
 
     let actual_hz = ostd::hw::pit::init_channel0(TIMER_HZ);
     ostd::hw::pic::remap_timer_only();
-    let _ = writeln!(log, "pic remapped (irq0 only), pit {actual_hz} Hz");
+    // M23-①：IRQ1 解 mask + 键盘钩子注册（t64 前就位；批跑无键入无副作用）
+    ostd::hw::pic::unmask_irq1();
+    crate::kbd::init();
+    let _ = writeln!(log, "pic remapped (irq0+irq1), pit {actual_hz} Hz");
 
     // 抢占钩子（M6-A）：LAPIC 定时器主体消费（向量 0x41）；M10-A 起本钩子
     // 为纯抢占判定（内核上下文源；计账/老化已迁墙钟钩子）。

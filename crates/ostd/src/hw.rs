@@ -433,6 +433,60 @@ pub mod pic {
     pub fn masks() -> (u8, u8) {
         (ports::read_u8(DATA_MASTER), ports::read_u8(DATA_SLAVE))
     }
+
+    /// 解除 IRQ1（PS/2 键盘）屏蔽——M23-①：IMR bit1 清零写回（读改写
+    /// 保留其余屏蔽位；remap_timer_only 后主片 IMR=0xFE，清 bit1 → 0xFC）。
+    pub fn unmask_irq1() {
+        let imr = ports::read_u8(DATA_MASTER) & !0x02;
+        ports::write_u8(DATA_MASTER, imr);
+    }
+}
+
+/// PS/2 键盘控制器（i8042）——M23-①。第一 PS/2 口（0x60 数据）布线
+/// IRQ1；QEMU `isa-debug-exit` 机默认挂 i8042（-machine pc 标配）。
+pub mod ps2 {
+    use super::ports;
+
+    const DATA: u16 = 0x60;
+    const STATUS: u16 = 0x64;
+    const CMD: u16 = 0x64;
+
+    /// 输出缓冲状态位（STATUS bit0：1 = DATA 可读）。
+    pub const ST_OUT_FULL: u8 = 0x01;
+
+    /// 读状态寄存器。
+    #[inline]
+    pub fn status() -> u8 {
+        ports::read_u8(STATUS)
+    }
+
+    /// 读数据口（调用方须先确认 status() & ST_OUT_FULL）。
+    #[inline]
+    pub fn data_read() -> u8 {
+        ports::read_u8(DATA)
+    }
+
+    /// 控制器自测（命令 0xAA）：通过返回 Some(0x55)。忙等预算 10 万轮
+    /// （QEMU TCG 下毫秒级；超限返回 None——控制器缺失/挂死由自检报败）。
+    /// **IRQ1 自屏蔽**：i8042 输出缓冲非空即拉 IRQ1（QEMU 实测活体），
+    /// ISR 抢读响应字节会饿死本测试——入口存 IMR、临时 mask bit1、
+    /// 出口恢复（自包含，任何调用点均安全）。
+    pub fn controller_self_test() -> Option<u8> {
+        const IMR_MASTER: u16 = 0x21;
+        let saved = ports::read_u8(IMR_MASTER);
+        ports::write_u8(IMR_MASTER, saved | 0x02);
+        ports::write_u8(CMD, 0xAA);
+        let mut got = None;
+        for _ in 0..100_000 {
+            if status() & ST_OUT_FULL != 0 {
+                got = Some(data_read());
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        ports::write_u8(IMR_MASTER, saved);
+        got.filter(|&b| b == 0x55)
+    }
 }
 
 /// 8253/8254 可编程间隔定时器（PIT）——HW-07。通道 0 接 PIC IRQ0。

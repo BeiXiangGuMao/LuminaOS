@@ -186,6 +186,8 @@ pub enum Stub {
     LapicTimer,
     /// 向量 0x42：跨核重调度提示 IPI（唤醒 idle 核，M6-A）。
     Resched,
+    /// 向量 33：IRQ1 PS/2 键盘（M23-①；PIC 主片，EOI 在桩主体内发）。
+    Irq1,
 }
 
 /// 桩符号地址（供 [`Idt::set_raw`] 注册）。
@@ -205,6 +207,7 @@ pub fn stub_addr(stub: Stub) -> u64 {
         fn isrf_pf_rec();
         fn isr_lapic_timer();
         fn isr_resched();
+        fn isr_kbd();
     }
     let f: unsafe extern "C" fn() = match stub {
         Stub::Timer => isr_timer,
@@ -219,6 +222,7 @@ pub fn stub_addr(stub: Stub) -> u64 {
         Stub::FaultPfRec => isrf_pf_rec,
         Stub::LapicTimer => isr_lapic_timer,
         Stub::Resched => isr_resched,
+        Stub::Irq1 => isr_kbd,
     };
     f as usize as u64
 }
@@ -704,6 +708,36 @@ pub mod stubs {
         "    pop rbp",
         "    add rsp, 8",
         "    iretq",
+        // ---- PS/2 键盘桩（向量 33 = IRQ1，M23-①）----
+        // IPI 桩同构：对称保存 caller-saved + rbp → 主体 → 对称恢复 → iretq。
+        // scancode 读取与 EOI 全在主体（PIC 主片归属确定，非钩子策略）。
+        ".globl isr_kbd",
+        "isr_kbd:",
+        "    push rbp",
+        "    push rax",
+        "    push rcx",
+        "    push rdx",
+        "    push rsi",
+        "    push rdi",
+        "    push r8",
+        "    push r9",
+        "    push r10",
+        "    push r11",
+        "    mov rbp, rsp",
+        "    and rsp, -16",
+        "    call isr_kbd_body",
+        "    mov rsp, rbp",
+        "    pop r11",
+        "    pop r10",
+        "    pop r9",
+        "    pop r8",
+        "    pop rdi",
+        "    pop rsi",
+        "    pop rdx",
+        "    pop rcx",
+        "    pop rax",
+        "    pop rbp",
+        "    iretq",
     }
 
     /// 定时器钩子：返回 true 表示已填写 plan 并完成切换目标布置
@@ -937,6 +971,31 @@ pub mod stubs {
             let f: fn() = unsafe { core::mem::transmute(hook) };
             f();
         }
+    }
+
+    /// 键盘钩子（M23-①：入参 = 原始 scancode；翻译/入环属内核 tty 策略）。
+    static KBD_HOOK: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+    /// 注册键盘钩子（内核 kbd 初始化时调用；PIC IRQ1 解 mask 先于此）。
+    pub fn set_kbd_hook(hook: fn(u8)) {
+        KBD_HOOK.store(hook as usize, core::sync::atomic::Ordering::Release);
+    }
+
+    /// 键盘主体（向量 33 = IRQ1）：读 scancode → 转交钩子 → 主片 EOI。
+    /// IRQ1 恒落 PIC 主片（BSP 布线），EOI 归属确定故在桩内完成
+    /// （与 IPI 桩「钩子负责 EOI」不同——那里 LAPIC/PIC 两可）。
+    #[no_mangle]
+    extern "C" fn isr_kbd_body() {
+        // SAFETY: IRQ1 触发即输出缓冲满（控制器保证），直读 0x60。
+        let sc = crate::hw::ports::read_u8(0x60);
+        let hook = KBD_HOOK.load(core::sync::atomic::Ordering::Acquire);
+        if hook != 0 {
+            // SAFETY: 前置条件 —— 地址来自 set_kbd_hook 存入的 fn(u8)。
+            // 并发 —— IRQ1 仅 BSP 布线触发（PIC 单一投递），串行。
+            let f: fn(u8) = unsafe { core::mem::transmute(hook) };
+            f(sc);
+        }
+        crate::hw::pic::eoi_master();
     }
 
     /// 可恢复 #PF 钩子（M5：按需分页；参数 = CR2 故障地址 + 错误码，

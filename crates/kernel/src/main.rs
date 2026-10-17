@@ -41,6 +41,7 @@ mod console;
 mod hostlink;
 mod interrupts;
 mod ipc;
+mod kbd;
 mod multiboot1;
 mod procs;
 mod selftest;
@@ -49,6 +50,7 @@ mod swap;
 mod syscall;
 mod task;
 mod timer;
+mod tty;
 mod user;
 mod vfs;
 mod vmm;
@@ -73,8 +75,8 @@ use crate::multiboot1::BOOT_MAGIC;
 const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
 /// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项
-/// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M18 起 62）。
-const SELFTEST_TOTAL: usize = 63;
+/// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23 起 64）。
+const SELFTEST_TOTAL: usize = 64;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -424,10 +426,11 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t10 = {
         let hz = interrupts::init_and_enable(&mut log);
         let (m, s) = ostd::hw::pic::masks();
-        // PIT 分频为整数：实际频率允许 ±1 Hz 舍入差
+        // PIT 分频为整数：实际频率允许 ±1 Hz 舍入差；M23-① 起 IRQ1
+        // 同开（0xFC：IRQ0+IRQ1，键盘面），从片仍全屏
         let mut ok = hz.abs_diff(interrupts::TIMER_HZ) <= 1
             && interrupts::timer_gate_ok()
-            && m == 0xFE
+            && m == 0xFC
             && s == 0xFF;
         let t0 = ostd::time::now();
         ok &= ostd::time::sleep_ticks(3, 500);
@@ -3136,6 +3139,53 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t63, "heap-freelist-reuse");
+
+    // 64) M23-① 键盘驱动 + TTY 行规程（控制器自测 + 注册面哨兵 + 驱动全链活体）
+    let t64 = {
+        // 面A：i8042 控制器自测（0xAA → 0x55，真实电气面）
+        let ctrl_ok = ostd::hw::ps2::controller_self_test() == Some(0x55);
+        // 面B：PIC IMR IRQ1 已解 mask
+        let (imr_m, _) = ostd::hw::pic::masks();
+        let imr_ok = imr_m & 0x02 == 0;
+        // 面C：驱动全链活体（inject 与 IRQ1 桩同路径：翻译→环→行规程→读侧）
+        let mut buf = [0u8; 64];
+        // C1 基本行：h i enter → "hi"
+        for sc in [0x23u8, 0x17, 0x1C] {
+            kbd::inject(sc);
+        }
+        tty::pump();
+        let l1 = tty::read_line(&mut buf);
+        let c1 = l1 == Some(2) && &buf[..2] == b"hi";
+        // C2 退格编辑：h i bs o enter → "ho"
+        for sc in [0x23u8, 0x17, 0x0E, 0x18, 0x1C] {
+            kbd::inject(sc);
+        }
+        tty::pump();
+        let l2 = tty::read_line(&mut buf);
+        let c2 = l2 == Some(2) && &buf[..2] == b"ho";
+        // C3 Shift 大写：shift i 释放 enter → "I"
+        for sc in [0x2Au8, 0x17, 0xAA, 0x1C] {
+            kbd::inject(sc);
+        }
+        tty::pump();
+        let l3 = tty::read_line(&mut buf);
+        let c3 = l3 == Some(1) && buf[0] == b'I';
+        let ok = ctrl_ok
+            && imr_ok
+            && c1
+            && c2
+            && c3
+            && kbd::KBD_DROP.load(Ordering::Relaxed) == 0
+            && tty::LINES_SUBMITTED.load(Ordering::Relaxed) == 3;
+        let _ = writeln!(
+            log,
+            "kbd-tty: ctrl={ctrl_ok} imr-ok={imr_ok} irq={} lines=[{c1},{c2},{c3}] drop={}",
+            kbd::KBD_IRQ_COUNT.load(Ordering::Relaxed),
+            kbd::KBD_DROP.load(Ordering::Relaxed)
+        );
+        ok
+    };
+    report(&mut log, t64, "keyboard-tty-line");
 
     let _ = writeln!(log, "----");
     interrupts::disable();
