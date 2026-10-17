@@ -3271,19 +3271,41 @@ pub const EXIT_SUCCESS: u32 = 0x10;
 /// isa-debug-exit 失败码：QEMU 退出码 = (值 << 1) | 1 = 193。
 pub const EXIT_FAILURE: u32 = 0x60;
 
+/// M22-③ [X] 终局出口互斥闸（标本 865 定案）：出口权 CAS——`false→true`
+/// 的唯一赢家获得写口权。QEMU isa-debug-exit 每次写都请求退场且退出码
+/// 取实际落入值：双核并发出口（BSP 成功 0x10 / AP 故障 0x60）交织时后写
+/// 者改码 → exit193 假败（865：63/63 全过 + census f0 + exit193）。闸后
+/// 写口者唯一，竞争结构性封死；输家原地自旋（赢家写口后 QEMU 立即退场，
+/// 无需二次出口；裸机语义与既有停机环一致）。
+static EXIT_GATE: AtomicBool = AtomicBool::new(false);
+
 /// 致命异常出口（interrupts.rs 故障钩子调用）：以失败码停机。
-pub(crate) fn fail_exit(_vector: u64) -> ! {
+/// [X] 取证显形：故障钩子已有 LUMINA-FAULT 短行，此处保底行覆盖钩子
+/// 长转储串口交叠丢行（865 痛点：AP 静默 0x60 无从对证）与钩子之外
+/// 的未来入口；行落出口闸之前，闸输家亦可见。
+pub(crate) fn fail_exit(vector: u64) -> ! {
+    let mut serial = console::SerialPort::com1();
+    serial.init();
+    let _ = writeln!(serial, "LUMINA-FAIL-EXIT vec={vector}");
     kernel_exit(EXIT_FAILURE)
 }
 
 /// 经 isa-debug-exit（端口 0xF4）请求 QEMU 退出；裸机上写调试口后停机。
 fn kernel_exit(code: u32) -> ! {
-    // M22-① 终局 census：任何退出路径（成功/失败/fail_exit/panic）在
-    // 写调试口之前必落一行单行 census——pf-hunt 尸检的保底定位行。
-    let mut serial = console::SerialPort::com1();
-    serial.init();
-    census::write_to(&mut serial);
-    ostd::hw::ports::write_u32(0xF4, code);
+    // M22-③ [X] 出口仲裁：中断先关（出口路径不受抢占/时钟重入干扰），
+    // 再 CAS 抢出口权——唯一赢家落取证行 + census + 写口；输家原地停机。
+    interrupts::disable();
+    if !EXIT_GATE.swap(true, Ordering::AcqRel) {
+        let mut serial = console::SerialPort::com1();
+        serial.init();
+        // M22-① 终局 census：任何退出路径（成功/失败/fail_exit/panic）在
+        // 写调试口之前必落一行单行 census——pf-hunt 尸检的保底定位行。
+        // [X] 增 LUMINA-EXIT 行：码值显形 + 铺在 census 前（交叠下短行
+        // 存活率高），双核仲裁后尸检可对证「谁写的口、写的什么码」。
+        let _ = writeln!(serial, "LUMINA-EXIT code={code:#x}");
+        census::write_to(&mut serial);
+        ostd::hw::ports::write_u32(0xF4, code);
+    }
     loop {
         core::hint::spin_loop();
     }
