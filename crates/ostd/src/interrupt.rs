@@ -759,6 +759,45 @@ pub mod stubs {
         }
     }
 
+    /// M22-③ [B] 猎场扩网 v2：DR1 写监视点布防（恢复帧 RIP 槽动态蹲守）。
+    /// DR7 = DR0 基态 | L1|G1(0xC) | R/W1=01（写，bit20=0x10_0000）——
+    /// DR0 目标（主任务 ctx 槽）保持原布防不动，DR1 叠加蹲守。
+    pub fn arm_write_watchpoint_dr1(addr: u64) {
+        // SAFETY: 前置条件 —— 内核特权语境调用（ring0 专属指令）。
+        // 不变式 —— DR1 目标与 DR7 位域编码互不干扰 DR0 基态（位或叠加）。
+        // 并发 —— 每 CPU 各自写自身 DR（拾取核自布，无交叉）。
+        // 违反后果 —— 用户态调用即 #GP（权限面自封）。
+        unsafe {
+            core::arch::asm!("mov dr1, {0}", in(reg) addr, options(nostack, nomem));
+            core::arch::asm!("mov dr7, {0}", in(reg) 0x11_040Fu64, options(nostack, nomem));
+        }
+    }
+
+    /// DR1 撤防（回 DR0 单桩基态；换目标前清陈值防野监视）。
+    pub fn disarm_watchpoint_dr1() {
+        // SAFETY: 前置条件 —— 同上（ring0 专属指令）。
+        // 不变式 —— DR7 回 0x1_0403（DR0 基态）+ DR1 清零，幂等。
+        // 并发 —— 每 CPU 独立。
+        // 违反后果 —— 无（撤防只降监视面，不增权）。
+        unsafe {
+            core::arch::asm!("mov dr1, {0}", in(reg) 0u64, options(nostack, nomem));
+            core::arch::asm!("mov dr7, {0}", in(reg) 0x1_0403u64, options(nostack, nomem));
+        }
+    }
+
+    /// 读 DR1 当前监视目标（#DB 钩子值签名判别用；本核现场直读）。
+    pub fn read_dr1() -> u64 {
+        let v: u64;
+        // SAFETY: 前置条件 —— ring0 语境（#DB 桩内/内核态）。
+        // 不变式 —— 只读不写，零副作用。
+        // 并发 —— DR 每核一套，本核读本核。
+        // 违反后果 —— 用户态调用即 #GP（权限面自封）。
+        unsafe {
+            core::arch::asm!("mov {0}, dr1", out(reg) v, options(nostack, nomem));
+        }
+        v
+    }
+
     /// #DB 主体（isr_fault_db 调入；rdi = 写者 rip，rsi = 桩锚点）。
     /// 透明探针：钩子转储后返回，原指令流 iretq 继续——永不致命。
     /// （asm 唯一引用面 → #[no_mangle] 保符号，同 isr_timer_body 惯例。）

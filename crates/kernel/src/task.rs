@@ -491,6 +491,9 @@ fn ktext_bounds() -> (u64, u64) {
 /// 区间校验必然放行——白名单在网后此类腐坏于拾取瞬间落网。
 static RESUME_CONTS: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
 static RESUME_CONT_N: AtomicUsize = AtomicUsize::new(0);
+/// M22-③ [B] 猎场扩网 v2：三桩 .resume 单独记档（恢复面帧哨兵布防判据
+/// ——仅桩 .resume 走保存帧 iretq 消费链；协作站点/trampoline 不适用）。
+static STUB_RESUMES: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 
 /// init 期收集合法续点全集（单核启动早期调用，先于任何拾取）。
 fn init_resume_set() {
@@ -514,11 +517,16 @@ fn init_resume_set() {
         }
         a += 1;
     }
-    // ② 三桩 .resume + ③ 双 trampoline
+    // ② 三桩 .resume + ③ 双 trampoline（[B] 猎场：桩续点同步入 STUB_RESUMES）
+    let mut sn = 0usize;
     for l in ostd::interrupt::stubs::preempt_resume_labels() {
         if n < RESUME_CONTS.len() {
             RESUME_CONTS[n].store(l as u64, Ordering::Release);
             n += 1;
+        }
+        if sn < STUB_RESUMES.len() {
+            STUB_RESUMES[sn].store(l as u64, Ordering::Release);
+            sn += 1;
         }
     }
     for t in [trampoline as *const () as usize, trampoline_user as *const () as usize] {
@@ -554,6 +562,12 @@ fn cont_in_resume_set(cont: u64) -> bool {
         i += 1;
     }
     false
+}
+
+/// cont 是否为三桩 .resume 之一（任务将走保存帧 iretq 消费链——
+/// 恢复面帧哨兵的唯一适用面）。
+fn cont_is_stub_resume(cont: u64) -> bool {
+    STUB_RESUMES.iter().any(|s| s.load(Ordering::Acquire) == cont)
 }
 
 /// M21-② 切换目标上下文哨兵（cont 写者追捕——哨兵在网；M22-③ 白名单升级）。
@@ -623,6 +637,89 @@ fn pickup_sentinel(id: usize, t: &Task) {
             ),
         );
         panic!("pickup-sentinel: illegitimate TaskContext writer (M21-2/M22-3)");
+    }
+    // ---- M22-③ [B] 猎场扩网 v2.2：恢复面保存帧哨兵（四标本定案落网点）----
+    // 667/705/951/1005 四标本逐槽同形（rip=-1 @ 帧 RIP 槽，cs=0x8，cr2=-1）；
+    // ELF 对号：毒化帧址 0xa122f8/0xa12308 均落引导栈 boot_stack
+    // [0xa03000,0xa13000) 界内 —— 毒化目标 = **引导栈上主任务/启动语境**
+    // 的保存中断帧 RIP 槽。消费链 `mov rsp,[ctx+0x38] → ret → .resume 弹
+    // 10 寄存器 → iretq` 最终从此槽弹出。v2.1 盲区 = stack_base==0 跳过
+    // 分支（主任务无栈锚）——本版补引导栈锚，主任务帧纳入同网。
+    // 注：DR1 动态蹲守栈槽方案已撤——TCG 对热地址数据监视点的命中路径
+    // 触发 QEMU 10.0.13 MTTCG BQL 重入断言（bql_lock_impl !bql_locked，
+    // smoke-bnet 971/972 双轮实证，首个抢占即 abort）；栈槽写者归因
+    // 改由帧哨兵转储面承担（毒化轮帧内容 + 槽位 + rsp 区段）。
+    // 栈锚双源：自有栈任务用自身界；主任务（stack_base=0，启动语境）
+    // 用引导栈界（boot.rs 符号导出，链接期定址）。
+    let (sb, st) = if t.stack_base != 0 {
+        (t.stack_base, t.stack_top)
+    } else {
+        // 主任务栈锚 = 引导栈界（boot.rs 符号导出；usize → u64 同域扩展）
+        let (b, tp) = crate::boot::boot_stack_bounds();
+        (b as u64, tp as u64)
+    };
+    if sb != 0 && cont_is_stub_resume(cont) {
+        // 帧布局（与三桩同构，serial 证据对账）：ctx.rsp = R0-120，
+        // RIP@+0x50 CS@+0x58 RFLAGS@+0x60 RSP@+0x68 SS@+0x70。
+        let f = t.ctx.rsp;
+        if f < sb || f + 0x70 > st || f & 7 != 0 {
+            let mut serial = crate::console::SerialPort::com1();
+            serial.init();
+            let _ = core::fmt::Write::write_fmt(
+                &mut serial,
+                format_args!(
+                    "LUMINA-FRAME-POISON slot={} name={} kind=frame-outside-stack frsp={f:#x} cont={cont:#x} stack=[{sb:#x},{st:#x}]\n",
+                    id,
+                    t.name,
+                ),
+            );
+            panic!("pickup-sentinel: saved frame outside own stack (M22-3 resume-face net)");
+        }
+        // SAFETY: 前置条件 —— f 经栈界全包校验（f..f+0x70 ⊆ 自有内核栈，
+        // 内核半区全局映射，任一 CR3 下可读）。不变式 —— 只读不写，零副作用。
+        // 并发 —— 拾取面持 SCHED 锁 + M11-D 握手门（保存完成后方可拾取），
+        //         帧稳定无并发写者。
+        // 违反后果 —— 界错即读自身栈区，无越权面（fail-safe）。
+        let rip = unsafe { core::ptr::read_volatile((f + 0x50) as *const u64) };
+        let cs = unsafe { core::ptr::read_volatile((f + 0x58) as *const u64) };
+        let rfl = unsafe { core::ptr::read_volatile((f + 0x60) as *const u64) };
+        // 判据：内核帧（cs=0x8）→ RIP ∈ ktext 且 DF=0（Rust/asm ABI 不变式，
+        // 951 帧 rfl=0x10446 含 DF 即毒化指纹）；用户帧（cs=0x1b）→ 查毒化
+        // 签名（0/-1）；其余 cs = 已腐坏。
+        let frame_ok = match cs {
+            0x8 => rip >= ts && rip < te && rfl & 0x400 == 0,
+            0x1b => rip != 0 && rip != u64::MAX,
+            _ => false,
+        };
+        if !frame_ok {
+            let mut serial = crate::console::SerialPort::com1();
+            serial.init();
+            let _ = core::fmt::Write::write_fmt(
+                &mut serial,
+                format_args!(
+                    "LUMINA-FRAME-POISON slot={} name={} cont={cont:#x} frsp={f:#x} rip={rip:#x} cs={cs:#x} rfl={rfl:#x} ktext=[{ts:#x},{te:#x})\n",
+                    id,
+                    t.name,
+                ),
+            );
+            let _ = core::fmt::Write::write_fmt(
+                &mut serial,
+                format_args!(
+                    "LUMINA-FRAME-POISON ctx slot={} cont={:#x} rbx={:#x} rbp={:#x} r12={:#x} r13={:#x} r14={:#x} r15={:#x} rsp={:#x}\n",
+                    id,
+                    t.ctx.cont,
+                    t.ctx.rbx,
+                    t.ctx.rbp,
+                    t.ctx.r12,
+                    t.ctx.r13,
+                    t.ctx.r14,
+                    t.ctx.r15,
+                    t.ctx.rsp,
+                ),
+            );
+            panic!("pickup-sentinel: poisoned saved frame (M22-3 resume-face net)");
+        }
+        // 帧合法 → 恢复面收口完成（拾取后即消费，哨兵即最后闸门）。
     }
 }
 
@@ -838,14 +935,59 @@ pub fn init() {
             format_args!("sched: main-ctx @ {main_ctx_addr:#x} dr0-armed\n"),
         );
     }
+    // [B] 猎场 v2.2 记档：引导栈界（主任务帧哨兵锚；与 nm 符号表对账面，
+    // 667/705/951/1005 四标本毒化帧址皆落此界内）
+    {
+        let (bsb, bst) = crate::boot::boot_stack_bounds();
+        let mut serial = crate::console::SerialPort::com1();
+        serial.init();
+        let _ = core::fmt::Write::write_fmt(
+            &mut serial,
+            format_args!("sched: boot-stack [{bsb:#x},{bst:#x}) frame-net-armed\n"),
+        );
+    }
 }
 
-/// M22-③ DR0 命中取证行：写者 rip + 写入值 + 桩锚点。
+/// M22-③ [B] 猎场：透明探针转储预算（t52 族教训——全量转储 5596 行/轮
+/// 串口轰击扰动时敏面）。预算尽后静默（首个取证行已落盘，毒化复现轮次
+/// 由 pf-hunt 批守候续捕）。
+static DRDB_BUDGET: AtomicUsize = AtomicUsize::new(8);
+
+/// M22-③ DR0/DR1 命中取证行：写者 rip + 写入值 + 桩锚点。
 /// 合法写者仅两类 pc 域：协作保存（lumina_context_switch 内存储指令）
 /// 与抢占保存（三桩存储指令）；init 期结构铺设在布防前已完成。
 /// pc 域外或写入值 ∉ 合法续点全集 = 第二写者实锤（活体标本教义：
 /// 透明探针不阻断——原指令流继续，系统带伤前行供后续取证）。
 fn db_writer_trap(trap_rip: u64, anchor: u64) {
+    // ---- [B] 猎场扩网 v2：DR1 面（恢复帧 RIP 槽）值签名判别 ----
+    // 写监视点为后置陷阱：命中时写入已完成，回读即新值。值 = -1
+    // （0xFFFF_FFFF_FFFF_FFFF，951/667/705 三标本同签名）= 毒化写者
+    // 实锤 → LUMINA-DRDB1 落证；非毒值 = 布防窗后该栈位被合法复用
+    // （寄存器保存/更深调用帧）→ 静默。DR1 未布防（=0）直接走 DR0 面。
+    let d1 = ostd::interrupt::stubs::read_dr1();
+    if d1 != 0 {
+        // SAFETY: 前置条件 —— d1 = 拾取哨兵布防的帧 RIP 槽地址（自有内核
+        //          栈界内，内核半区全局映射）。不变式 —— 只读不写（写监视
+        //          点后置陷阱零递归）；volatile 防优化重排。
+        // 并发 —— DR 每核一套，命中核读本核；帧槽写者唯一性由拾取门
+        //         （M11-D 握手）与调度状态机保证。
+        // 违反后果 —— 地址来自布防面自洽；野蹲已被撤防面封死。
+        let v1 = unsafe { core::ptr::read_volatile(d1 as *const u64) };
+        if v1 == u64::MAX {
+            if DRDB_BUDGET.load(Ordering::Acquire) > 0 {
+                DRDB_BUDGET.fetch_sub(1, Ordering::AcqRel);
+                let mut serial = crate::console::SerialPort::com1();
+                serial.init();
+                let _ = core::fmt::Write::write_fmt(
+                    &mut serial,
+                    format_args!(
+                        "LUMINA-DRDB1 pc={trap_rip:#x} val={v1:#x} slot={d1:#x} anchor={anchor:#x}\n"
+                    ),
+                );
+            }
+            return;
+        }
+    }
     let slot = MAIN_CTX_ADDR.load(Ordering::Acquire);
     if slot == 0 {
         return;

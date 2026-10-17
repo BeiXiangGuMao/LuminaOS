@@ -38,6 +38,11 @@ global_asm! {
     "boot_stack_bottom:",
     ".skip 65536",
     "boot_stack_top:",
+    // M22-③ [B] 猎场 v2.2：引导栈界符号全局导出（帧哨兵主任务锚——
+    // 667/705/951/1005 四标本毒化目标 = 引导栈上主任务保存帧 RIP 槽，
+    // Rust 侧读取栈界作哨兵界桩）。
+    ".globl boot_stack_bottom",
+    ".globl boot_stack_top",
 
     // ---- 32 位入口 ----
     ".section .boot.text, \"ax\", @progbits",
@@ -111,4 +116,23 @@ global_asm! {
     "    .quad gdt64",
 
     options(att_syntax)  // rustc 1.99 起 global_asm! 默认 Intel 语法；本模块按 AT&T 书写
+}
+
+// M22-③ [B] 猎场 v2.2：引导栈界读取（帧哨兵主任务锚）。
+// SAFETY: 前置条件 —— 两符号由本文件 global_asm .globl 导出（.boot.bss
+//          NOLOAD 段，链接期定址，nm 可对账：bottom=0xa03000/top=0xa13000
+//          量级随链接布局浮动）。不变式 —— 仅取地址不读本体（零尺寸符号
+//          约定）。并发 —— 链接期常量，只读无竞争。
+// 违反后果 —— 符号缺失即链接期报错（无运行期风险）。
+extern "C" {
+    static boot_stack_bottom: u8;
+    static boot_stack_top: u8;
+}
+
+/// 引导栈界 `(bottom, top)`（frame 哨兵主任务/启动语境的栈锚）。
+pub fn boot_stack_bounds() -> (usize, usize) {
+    (
+        core::ptr::addr_of!(boot_stack_bottom) as usize,
+        core::ptr::addr_of!(boot_stack_top) as usize,
+    )
 }
