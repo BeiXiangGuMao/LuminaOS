@@ -2453,6 +2453,14 @@ enum Probe<'a> {
 }
 fn block_current_impl(what: WaitWhat, resume_if: bool, mut probe: Probe) -> bool {
     let mut w = IntWindow::new();
+    // M22-③ [C] 收口（ff46/ff52 家族根治）：halt 停机经历旗。None 分支
+    // 的停机等待 = **真实阻塞**（任务已登记 Blocked、时钟真实推进、到期
+    // 链真实点火）；停机被中断打断后循环重入的探针重判若逢条件已达成，
+    // 语义是「阻塞期间条件满足」= 唤醒，而非「从未阻塞」的探针命中——
+    // 旧码一律降格为探针命中返回 false，nanosleep 唤醒计数（TIMER_WAKES）
+    // 被 halt 重入路径吞掉（t46 `wakes>=1` / t52 `blocks>=1&&wakes>=1`
+    // 隐形击发根因，闲置核上阻塞必现）。
+    let mut halted = false;
     loop {
         let cpu = my_cpu();
         let cur = CURRENT[cpu].load(Ordering::Relaxed);
@@ -2510,6 +2518,16 @@ fn block_current_impl(what: WaitWhat, resume_if: bool, mut probe: Probe) -> bool
                 }
                 drop(s);
                 drop(w);
+                if halted {
+                    // 停机经历后的「命中」= 真实阻塞期间条件达成，按唤醒
+                    // 分类返回（调用方唤醒计数如实落账）。探针闭包可能已
+                    // 再武装陈值哨兵（nanosleep fetch_min 旧 deadline）——
+                    // 到期链「陈值只致多一次空检」无害收敛，语义不变。
+                    if resume_if {
+                        ostd::hw::intr::enable();
+                    }
+                    return true;
+                }
                 return false; // 探针命中：未阻塞，调用方直接重试消费
             }
             match pick_best(&mut sc.ready, &sc.tasks, cpu, IDLE, None) {
@@ -2541,6 +2559,7 @@ fn block_current_impl(what: WaitWhat, resume_if: bool, mut probe: Probe) -> bool
                 ostd::hw::intr::enable();
                 ostd::hw::intr::halt();
                 w = IntWindow::new();
+                halted = true; // 停机 = 真实阻塞面（重入探针命中按唤醒分类）
             }
         }
     }

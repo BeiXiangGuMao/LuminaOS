@@ -49,9 +49,20 @@ pub const ECHO_TAG: u32 = 0x21;
 /// 运行时对象 id 铸造基（与预设 0xC0DE_0000_0000_000X 段隔离）。
 const RUNTIME_OBJECT_BASE: u64 = 0xC0DE_0000_0001_0000;
 
-/// 一个通道：快速路径环对 + 授权对象。
+/// 一个通道：快速路径环 + 授权对象。
+///
+/// M22-③ [C] 收口（ff24 家族根治）：`resp` = 应答向环。FastPath 为
+/// **单向** SPSC 环（bedrock 契约：「双向 = 两条实例」）；此前双向共
+/// 用单环，client 的首个 RECV 在 SEND 落环后、worker 首轮消费前弹到
+/// **自己刚发的请求帧**（自弹自收窗：exit 52 假成功 + worker 预算耗
+/// 尽 served=0，round-1014 形态，ipc-diag 与健康轮逐字节同形）。
+/// `resp = Some`：SEND 推 `fast`（请求向）、RECV 弹 `resp`（应答向），
+/// 每环恢复真 SPSC 单生产单消费；`None` = 单向通道（既有语义不变：
+/// t39 阻塞接收 / t41 bind 运行时通道）。
 struct Channel {
     fast: &'static FastPath,
+    /// 应答向环（None = 单向通道）。
+    resp: Option<&'static FastPath>,
     object: u64,
 }
 
@@ -81,6 +92,7 @@ static RECV_WAKES: AtomicU64 = AtomicU64::new(0);
 /// 注册表扩至定容（其余槽位空闲，等待运行时 BIND）。
 pub fn init() {
     let echo: &'static FastPath = Box::leak(Box::new(FastPath::new()));
+    let echo_resp: &'static FastPath = Box::leak(Box::new(FastPath::new()));
     let block: &'static FastPath = Box::leak(Box::new(FastPath::new()));
     let mut chans = CHANNELS.lock();
     chans.clear();
@@ -89,10 +101,12 @@ pub fn init() {
     }
     chans[0] = Some(Channel {
         fast: echo,
+        resp: Some(echo_resp),
         object: ECHO_OBJECT,
     });
     chans[1] = Some(Channel {
         fast: block,
+        resp: None,
         object: BLOCK_OBJECT,
     });
 }
@@ -144,10 +158,14 @@ pub fn bind_stamps() -> (u64, u64, u64) {
     )
 }
 
-/// 按通道槽位查找（内核服务面专用：回声 worker；容量外/未登记 → None）。
-fn channel_by_id(id: usize) -> Option<&'static FastPath> {
+/// 回声服务通道解析（worker 专用）：(请求向环, 应答向环)。
+/// 槽 0 未登记或应答环缺位 → None（worker 即刻退出，不产生副作用）。
+fn echo_channel_pair() -> Option<(&'static FastPath, &'static FastPath)> {
     let chans = CHANNELS.lock();
-    chans.get(id).and_then(|c| c.as_ref()).map(|c| c.fast)
+    chans
+        .first()
+        .and_then(|c| c.as_ref())
+        .and_then(|c| c.resp.map(|r| (c.fast, r)))
 }
 
 /// 句柄解析共用切片（M12-A 寻址面）：调用方句柄 → (全局槽, 能力)。
@@ -163,14 +181,16 @@ fn resolve_cap(handle: u64) -> Option<(usize, Capability)> {
     Some((slot, cap))
 }
 
-/// 通道反查（M12-A）：对象 id → (通道槽位, 环对)。任一时刻至多一个
-/// 通道持有同一对象 id（铸造面单调 + 槽位互斥保证）。
-fn channel_by_object(object: u64) -> Option<(usize, &'static FastPath)> {
+/// 通道反查（M12-A）：对象 id → (通道槽位, 请求向环, 应答向环)。任一
+/// 时刻至多一个通道持有同一对象 id（铸造面单调 + 槽位互斥保证）。
+fn channel_by_object(
+    object: u64,
+) -> Option<(usize, &'static FastPath, Option<&'static FastPath>)> {
     let chans = CHANNELS.lock();
     chans.iter().enumerate().find_map(|(id, c)| {
         c.as_ref()
             .filter(|c| c.object == object)
-            .map(|c| (id, c.fast))
+            .map(|c| (id, c.fast, c.resp))
     })
 }
 
@@ -211,7 +231,7 @@ pub fn sys_bind(reserved: u64) -> u64 {
             .skip(2)
             .find_map(|(id, c)| c.is_none().then_some(id))
         {
-            chans[id] = Some(Channel { fast, object });
+            chans[id] = Some(Channel { fast, resp: None, object });
             chan_id = Some(id);
         }
     }
@@ -274,8 +294,8 @@ pub fn sys_send(endpoint: u64, payload_ptr: u64, len: u64, tag: u64) -> u64 {
         DIAG_F2.fetch_add(1, Ordering::AcqRel);
         return 1; // ERR_CAP
     }
-    // 通道反查（按能力对象 id）
-    let Some((chan_id, fast)) = channel_by_object(cap.object()) else {
+    // 通道反查（按能力对象 id）；SEND 恒推请求向环
+    let Some((chan_id, fast, _resp)) = channel_by_object(cap.object()) else {
         DIAG_F3.fetch_add(1, Ordering::AcqRel);
         return 1; // ERR_CAP
     };
@@ -319,15 +339,17 @@ pub fn sys_recv(endpoint: u64, buf_ptr: u64, buf_len: u64) -> u64 {
     if !gate(&cap, Right::IPC_RECV) {
         return 1;
     }
-    let Some((chan_id, fast)) = channel_by_object(cap.object()) else {
+    let Some((chan_id, req, resp)) = channel_by_object(cap.object()) else {
         return 1;
     };
+    // 应答向环优先（环对通道）；单向通道维持弹请求向环的既有语义
+    let recv_ring = resp.unwrap_or(req);
     if buf_len == 0 || buf_len as usize > FastPath::PAYLOAD {
         return 1;
     }
     loop {
         let mut frame = [0u8; FastPath::PAYLOAD];
-        if let Some((tag, n)) = fast.recv_frame(&mut frame) {
+        if let Some((tag, n)) = recv_ring.recv_frame(&mut frame) {
             // 可写校验：复用 LOG 路径的区间纪律（限低 1 GiB 恒等区、限长）
             let Some(dst) = super::syscall::validate_user_slice_mut(buf_ptr, n as u64) else {
                 return 1;
@@ -341,7 +363,7 @@ pub fn sys_recv(endpoint: u64, buf_ptr: u64, buf_len: u64) -> u64 {
         if task::block_current_unless(
             task::WaitWhat::IpcRecv { endpoint: chan_id },
             true,
-            || fast.pending() == 0, // 环仍空 = 仍需阻塞（探针语义：true = 继续等）
+            || recv_ring.pending() == 0, // 应答环仍空 = 仍需阻塞（探针语义：true = 继续等）
         ) {
             RECV_WAKES.fetch_add(1, Ordering::AcqRel);
         }
@@ -386,17 +408,17 @@ const ECHO_QUOTA: u64 = 1;
 const ECHO_MAX_POLLS: u64 = 200_000;
 
 pub fn echo_worker_body() {
-    let Some(fast) = channel_by_id(0) else {
+    let Some((req, resp)) = echo_channel_pair() else {
         return;
     };
     let mut buf = [0u8; FastPath::PAYLOAD];
     let mut polls: u64 = 0;
     loop {
-        if let Some((tag, n)) = fast.recv_frame(&mut buf).filter(|(t, _)| *t == ECHO_TAG) {
+        if let Some((tag, n)) = req.recv_frame(&mut buf).filter(|(t, _)| *t == ECHO_TAG) {
             // 让步重试纪律：resp 环由对端消费，慢则让出而非期望直发
             let mut sent = false;
             for _ in 0..4096 {
-                if fast.send_frame(tag | 0x80, &buf[..n]).is_ok() {
+                if resp.send_frame(tag | 0x80, &buf[..n]).is_ok() {
                     sent = true;
                     break;
                 }
@@ -404,6 +426,11 @@ pub fn echo_worker_body() {
             }
             if sent {
                 ECHO_SERVED.fetch_add(1, Ordering::AcqRel);
+                // 应答落环即定向唤醒（M11-C 丢失唤醒免疫同款）：阻塞在
+                // 应答环的接收者不依赖 halt 重探兜底
+                task::wake_tasks(
+                    |w| matches!(w, task::WaitWhat::IpcRecv { endpoint: e } if *e == 0),
+                );
             }
         }
         if ECHO_SERVED.load(Ordering::Acquire) >= ECHO_QUOTA || ECHO_STOP.load(Ordering::Acquire) {

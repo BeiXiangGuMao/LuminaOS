@@ -2218,6 +2218,14 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok &= timer::sys_nanosleep(0) == 0;
         let (_, _, hits1) = timer::stamps();
         ok &= hits1 == hits + 1;
+        // M22-③ [C] 取证面（ff46 显形）：全量中间量落日志——休眠完成旗、
+        // 实测耗时、三计数（阻塞/唤醒/探针命中）与探针增量
+        let _ = writeln!(
+            log,
+            "  timer-block: done={} elapsed_ns={} blocks={blocks} wakes={wakes} hits={hits} hits1={hits1}",
+            SLEEPER_DONE.load(Ordering::Acquire),
+            SLEEPER_ELAPSED_NS.load(Ordering::Acquire),
+        );
         ok
     };
     report(&mut log, t46, "timer-block-nanosleep");
@@ -2590,7 +2598,8 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok &= ostd::time::tsc_clock::hz() > 0;
         let n0 = ostd::time::tsc_clock::now_ns();
         ok &= n0.is_some();
-        ok &= timer::sys_nanosleep(20_000_000) == 0; // 20ms
+        let rc0 = timer::sys_nanosleep(20_000_000); // 20ms
+        ok &= rc0 == 0;
         let elapsed = ostd::time::tsc_clock::now_ns()
             .unwrap_or(0)
             .saturating_sub(n0.unwrap_or(0));
@@ -2600,9 +2609,10 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok &= timer::sys_nanosleep(0) == 0; // 探针命中
         let (_, _, hits) = timer::stamps();
         ok &= hits >= 1;
+        // M22-③ [C] 取证面（ff52 显形）：返回码 + 三计数随诊断行落日志
         let _ = writeln!(
             log,
-            "  tsc: hz={} elapsed_ns={elapsed}",
+            "  tsc: hz={} elapsed_ns={elapsed} rc0={rc0} blocks={blocks} wakes={wakes} hits={hits}",
             ostd::time::tsc_clock::hz()
         );
         ok

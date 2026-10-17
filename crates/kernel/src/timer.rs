@@ -43,12 +43,27 @@ static TIMER_WAKES: AtomicU64 = AtomicU64::new(0);
 /// 探针命中计数（deadline 已过即返回的路径）。
 static TIMER_PROBE_HITS: AtomicU64 = AtomicU64::new(0);
 
+/// 单调域地板（跨自检全局）：读数倒退/塌 0 时钳到历史最大值。
+///
+/// M22-③ [C] 收口加固面：rdtsc 的跨核单调性在契约外（hw::tsc SAFETY
+/// 注释「跨核不做同步比较（M4 单核）」——该不变式是单核时代立下的），
+/// SMP 任务迁移语境下探针（`mononow < deadline` 两次相邻读数）与到期
+/// 判定必须立于真正单调的时间面上。地板经 fetch_max 全局推进：任何核
+/// 上的任一读数只升不降，None 塌 0 亦被既有地板挡住。
+static MONO_FLOOR: AtomicU64 = AtomicU64::new(0);
+
 /// 单调纳秒当前时刻（M15-③）：TSC 校准后 = `now_ns()`；未校准（防御
 /// 面）读 0 —— 0 < 任何非零 deadline 恒真 → 探针判「仍待」、到期扫描
 /// 判「未到期」，全链保守（不产生虚假唤醒；sleeper 只会睡到校准后首次
 /// 到期扫描，自检序下不可达）。
 fn mononow_ns() -> u64 {
-    ostd::time::tsc_clock::now_ns().unwrap_or(0)
+    let raw = ostd::time::tsc_clock::now_ns().unwrap_or(0);
+    let prev = MONO_FLOOR.fetch_max(raw, Ordering::AcqRel);
+    if raw > prev {
+        raw
+    } else {
+        prev
+    }
 }
 
 /// timer 取证复位（跨自检隔离）。
@@ -78,7 +93,8 @@ pub fn stamps() -> (u64, u64, u64) {
 /// 语义对齐。参数语义演进：v0.14–v0.15 为全局节拍数，v0.16（abi v0.9
 /// 文档面）升级为纳秒——寄存器面不变，单位变更如实记档。
 pub fn sys_nanosleep(ns: u64) -> u64 {
-    let deadline = mononow_ns().saturating_add(ns);
+    let t0 = mononow_ns();
+    let deadline = t0.saturating_add(ns);
     TIMER_NEXT.fetch_min(deadline, Ordering::AcqRel);
     // 进入阻塞点即落证（swap 族同款：探针命中回滚亦计入尝试面）
     TIMER_BLOCKS.fetch_add(1, Ordering::AcqRel);
@@ -88,6 +104,13 @@ pub fn sys_nanosleep(ns: u64) -> u64 {
         TIMER_NEXT.fetch_min(deadline, Ordering::AcqRel);
         mononow_ns() < deadline
     }) {
+        TIMER_WAKES.fetch_add(1, Ordering::AcqRel);
+    } else if ns > 0 && mononow_ns().saturating_sub(t0) >= ns {
+        // M22-③ [C] 残余面（ff52，round-1151 实证：rc0=0 blocks=1
+        // wakes=0 hits=2）：探针「命中」但**整个睡眠时长已在入口→探针
+        // 窗内真实流逝**（宿主级 vCPU 抢占 / 时钟前跳落在相邻指令窗）。
+        // 语义 = 完整睡满 = 唤醒，不得降格为探针命中。ns=0 排除（其
+        // 探针命中语义是 t46 hits1==hits+1 / t52 hits>=1 的断言面）。
         TIMER_WAKES.fetch_add(1, Ordering::AcqRel);
     } else {
         TIMER_PROBE_HITS.fetch_add(1, Ordering::AcqRel);
