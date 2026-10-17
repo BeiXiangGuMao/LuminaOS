@@ -26,6 +26,75 @@
 - **v0.13.0（M13）**：VFS 骨架移植入真链。
 - **v0.14.0–v0.15.0（真链定版）**：云盘包（打包时刻 2026-10-10）。
 
+## v0.23.0（2026-10-17）—— M22：稳定性收口季（六族根因收口 + [B] 猎场 v2.2 取证网常态化）
+
+### M22-① census 败点名内化 + pf-hunt 大批次守候
+- **census 无锁原子计数面**：SEQ/PASS_N/FAIL_N/首败签名（ff_vec/ff_rip）
+  单行短格式（≤64B），三发射点（每 8 项进度 / fault 首发 / 退出终局）
+  ——串口丢线盲区闭环（遗言面：QEMU 退出前保底一行定位项号/vector/rip）。
+- **pf-hunt 大批次守候**：批模式台账（BATCH.log 逐轮即时 append）+
+  断点续跑（PASS 轮跳过）+ 时间预算优雅收批（540s 预算 45s 刹车）——
+  环境清理杀批不再失忆，数百轮级回归常态化。
+
+### M22-② #GP@kmain 族根因根治（双闸 fail-closed）
+- **根因定案（addr2line 三步法）**：t37 spawn 面.arm 窗口超时 child_root==0
+  逃逸 → translate(0) 读物理 0（IVT 残留 0xF000FF56F000FF53）→ Walker
+  第一级 load（PML4e→PDPTe，rip=0x135c6c）帧字段非规范 → #GP err=0。
+- **双闸修复**：闸1 kernel t37（child_root==0 → ccode=None 早退）；闸2
+  ostd Walker::translate（根帧合法面 + 中间层 canonical，全 fail-closed）。
+- 回归 71 轮：#GP 硬崩 0/71 归零、零挂死。
+
+### M22-③ t37 spawn 面时序收口（三族三修）
+- **FIX-A r14 注入竞态**（585/664 定案）：子代 ctx.r14 创建时点焊接
+  （parent pid 锁窗直取）+ trampoline_user 入口窗同窗双读 + 桥面免读
+  （current_parent_pid/task_user_root 退役）。
+- **FIX-B arm 捕获窗**（739/755/758/761/771 定案）：SPAWN_CHILD_ROOT
+  内核侧原子戳（x86 TSO 存序保序）替代事后重读 + 窗 600→3000ms +
+  spawn 行取证拆分（child_root/ccode 独立落证）。
+- **FIX-C workers 收敛**（727 定案）：all_workers_finished 检查时刻竞态
+  → 收敛预算 5000ms + stuck_workers() 点名直读（非 Zombie 任务逐槽
+  报（pid, name, state）——814 首功取证）。
+
+### [B+] waitpid 阻塞唤醒面收口（gated 补钉去 Timer 依赖）
+- **814 标本定案**：M21-① gated 补钉挂 1ms Timer × tickd 派生点晚于
+  t36 × S31 ISR 纪律下 TIMER_PENDING 无人消费——唤醒机制结构性缺位。
+- **修复**：gated 分支 nanosleep → 单次 yield_now + 重扫（保存窗死者侧
+  切换机无条件闭合，Timer 依赖移除）+ WAITPID_GATED 计数 + t36 行
+  gated= 取证字段。回归 99 轮：814 形态 0/99（对照 1/70）。
+
+### [B] 猎场扩网 v2.2（rip=-1 第二写者：恢复面帧哨兵 + 引导栈锚）
+- **667/705/951/1005 四标本定案**：毒化帧 RIP@R0-0x28（fault_hook aux
+  语义破译），毒化值 = -1 本体；nm 对号毒化帧址落 boot_stack
+  [0xa03000,0xa13000) = 主任务引导栈保存帧盲区。
+- **v2.2 布防**：ctx 白名单哨兵 + 恢复面保存帧逐字节毒化扫描（帧哨兵）
+  + boot.rs 导出栈界符号双源化栈锚；DR1 动态栈蹲守撤案（TCG 热地址
+  数据监视点 BQL 重入铁律，971/972 双轮实证）。在岗 52 轮零误伤零穿透。
+
+### [C] 隐形断言族三面收口（ff24 环对分向 + ff46/ff52 唤醒误分类）
+- **ff24（ipc-syscall-caps）**：FastPath 单向 SPSC 环被 channel 0 双向
+  共用 → client 首个 RECV 弹到自发请求帧（自弹自收假成功）——FIX-I1
+  环对分向（Channel.resp + echo_channel_pair + 应答落环定向唤醒）。
+- **ff46/ff52（timer/tsc-nanosleep）**：block_current_impl halt 停机分支
+  真实阻塞被重入探针按「探针命中」降格 → 唤醒计数被吞——FIX-T1 halt
+  停机经历旗 + FIX-T1b sys_nanosleep 入口窗全时长流逝唤醒分类 +
+  FIX-T2 MONO_FLOOR 全局单调地板（rdtsc 跨核契约外加固）。
+- 回归双批 76+121 轮：**[C] 三面 0/121 结构性归零**（对照 ~2-6%/轮）。
+
+### [X] 终局出口互斥（EXIT_GATE CAS 闸）
+- **865 标本定案**：BSP 成功 0x10 与 AP 故障 0x60 双核并发写
+  isa-debug-exit，后写者改码 → exit193 假败（63/63 全过 + census f0
+  与 AP 窄窗不矛盾）。
+- **修复**：kernel_exit 出口权 CAS（唯一赢家落 LUMINA-EXIT code= 取证行
+  + census + 写口，输家原地停机）+ fail_exit 保底显形行
+  （LUMINA-FAIL-EXIT vec=）+ 出口路径中断先关。冒烟 8/8 EXIT 行落证。
+
+### 工程面
+- 裸机自检 63 项保持全绿（QEMU 退出码 33 自动验收）；宿主测试套件
+  全绿；clippy 双段（宿主 workspace / kernel 裸机 boot 面）-D warnings。
+- pf-hunt 累计批次：m22p3-regress 71 / m22p3s2 70 / bplus-wake 99 /
+  bnet-v2 100 / cclose 76 / cclose2 121——六族（#GP/r14/B1/[B+]/[C]/[X]）
+  全部结构性归零；[B] rip=-1 毒化率 ~2%/轮带网发布（v2.2 哨兵在岗蹲守）。
+
 ## v0.22.0（2026-10-15）—— M21：钉扎拾取缺陷根因收口 + cont 哨兵在网 + Harbor free-list
 
 ### M21-① 钉扎拾取缺陷（首席：Type A/B 簇败族根因结构性封死）
