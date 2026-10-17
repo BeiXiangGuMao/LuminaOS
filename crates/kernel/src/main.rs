@@ -1533,8 +1533,9 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                 let (res, rpid, rcode) = procs::waitpid_stamps();
                 let _ = writeln!(
                     log,
-                    "waitpid: exit=({e0},{e1}) res={res:#x} pid={rpid} code={rcode} c-slot-alive={}",
-                    task::task_alive(c_id)
+                    "waitpid: exit=({e0},{e1}) res={res:#x} pid={rpid} code={rcode} c-slot-alive={} gated={}",
+                    task::task_alive(c_id),
+                    procs::waitpid_gated_hits()
                 );
                 ok &= e0 == 59 && e1 == 42; // P 全链成功 / C 原版退出码
                 ok &= res == 0; // WAIT_PID(0) 成功

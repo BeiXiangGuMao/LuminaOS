@@ -67,6 +67,10 @@ static REVOKE_RESULT: AtomicU64 = AtomicU64::new(u64::MAX);
 static WAITPID_RESULT: AtomicU64 = AtomicU64::new(u64::MAX);
 static WAITPID_PID: AtomicU64 = AtomicU64::new(u64::MAX);
 static WAITPID_CODE: AtomicU64 = AtomicU64::new(u64::MAX);
+/// SYS_WAIT_PID gated 重扫计数（M21-① 补钉勘误取证面）：护槽命中
+/// 次数（匹配 Zombie 全处锁外现场保存窗）。round-814 定案后本路径
+/// 改 yield 重扫——计数面供批判读验证命中/收敛（t36 行输出）。
+static WAITPID_GATED: AtomicU64 = AtomicU64::new(0);
 /// SYS_SPAWN 取证（t37 断言面）：最近一次返回码 + 成功时的子 pid
 /// + 子栈遗传细胞回读（父 pid，克隆面自证）。
 static SPAWN_RESULT: AtomicU64 = AtomicU64::new(u64::MAX);
@@ -96,6 +100,7 @@ pub fn reset_waitpid_evidence() {
     WAITPID_RESULT.store(u64::MAX, Ordering::Release);
     WAITPID_PID.store(u64::MAX, Ordering::Release);
     WAITPID_CODE.store(u64::MAX, Ordering::Release);
+    WAITPID_GATED.store(0, Ordering::Release);
 }
 
 /// SYS_WAIT_PID 取证快照：(返回码, 收割子 pid, 收割退出码)。
@@ -105,6 +110,11 @@ pub fn waitpid_stamps() -> (u64, u64, u64) {
         WAITPID_PID.load(Ordering::Acquire),
         WAITPID_CODE.load(Ordering::Acquire),
     )
+}
+
+/// SYS_WAIT_PID gated 重扫计数快照（护槽命中面；0 = 本窗口未踩）。
+pub fn waitpid_gated_hits() -> u64 {
+    WAITPID_GATED.load(Ordering::Acquire)
 }
 
 /// SYS_SPAWN 取证快照：(返回码, 子 pid, 遗传细胞回读)。
@@ -243,12 +253,19 @@ pub fn sys_wait_pid(pid: u64) -> u64 {
         if !scan.has_child {
             return ERR_CHILD;
         }
-        // M21-① 护槽联动：匹配 Zombie 全部处于锁外现场保存窗（握手旗未
-        // 清）。其 Child 等待唤醒已在终结窗发射完毕——此处再挂 Child 等
-        // 待将永失唤醒。改挂 1 ms Timer 短等待（墙钟钩子必唤醒，语义同
-        // nanosleep）后重扫：保存窗为微秒级，至多一个重试周期完成收割。
+        // M21-① 护槽联动（round-814 标本勘误定案）：匹配 Zombie 全部
+        // 处于锁外现场保存窗（握手旗未清）。其 Child 等待唤醒已在终结
+        // 窗发射完毕——此处再挂 Child 等待将永失唤醒。原补钉改挂 1 ms
+        // Timer 短等待，但到期旗唯一消费者 tickd 派生点在套件中段
+        // （t44 文件面，main.rs）——t36 期 TIMER_PENDING 置位后无人消
+        // 费，等待方永眠 Timer 等待（814 实录：wait-parent 永眠 blocked
+        // + exit124 连坐终局）。保存窗由死者侧切换机无条件闭合（微秒
+        // 级、与等待方无关）——单次让出 + 重扫结构性移除 Timer 依赖；
+        // 病理不收敛面（旗永不清 = 切换机死亡）与原补钉的 nanosleep
+        // 重试环等价，无回归。
         if scan.gated {
-            crate::timer::sys_nanosleep(1_000_000);
+            WAITPID_GATED.fetch_add(1, Ordering::AcqRel);
+            crate::task::yield_now();
             continue;
         }
         // 有子未终结：条件阻塞（锁窗口内重扫 Zombie——M10-C 的
