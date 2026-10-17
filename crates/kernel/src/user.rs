@@ -107,11 +107,14 @@ pub const USER_IPC_PROGRAM: [u8; 171] = [
     0x00, 0x00, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x0F, 0x05, 0xEB, 0xFE,
 ];
 
-// ring3 进入桩（USER-01 白名单，M7-A 扩展；M12 扩：rdx = 父 pid → r14）：
+// ring3 进入桩（USER-01 白名单，M7-A 扩展；M12 扩：rdx = 遗传细胞 → r14）：
 // 载用户数据段后 iretq 降权。
 //
-// M12 遗传细胞寄存器协议：父 pid 由第三参数传入，桩首指令 `mov r14,
+// M12 遗传细胞寄存器协议：细胞值由第三参数传入，桩首指令 `mov r14,
 // rdx` 后方进入环——子进程凭非零 r14 自证被派生身份（根父恒 0）。
+// M22-③ 第二项：rdx 来源改跳板入口窗传参（trampoline_user 与入口点
+// 同窗取任务父链）+ 任务创建时点 ctx.r14 焊接同源交叉自证——桥面
+// 不再读 CURRENT（round-585/664 首派发窗口二次读竞态根治）。
 // 置于 asm 内是为了避开 Rust 中间函数的 r14 使用（callee-saved 寄存器
 // 对编译器自由可用，只有桩自身能保证入口前的取值存续到 iretq）。
 // iretq 不触碰 GPR，r14 直达用户首指令。
@@ -145,17 +148,18 @@ global_asm! {
 }
 
 unsafe extern "C" {
-    /// 见上方 global_asm 契约（rdi=入口 rip，rsi=用户栈顶，rdx=父 pid）。
-    fn lumina_enter_user(entry: u64, stack_top: u64, parent_pid: u64) -> !;
+    /// 见上方 global_asm 契约（rdi=入口 rip，rsi=用户栈顶，rdx=遗传细胞）。
+    fn lumina_enter_user(entry: u64, stack_top: u64, cell: u64) -> !;
 }
 
 /// 用户入口桥：task.rs 的 `trampoline_user` 经此进入 ring3。
-pub extern "C" fn enter_user_bridge() -> ! {
+/// M22-③ 第二项：遗传细胞改参数传入（跳板入口窗与入口点同窗取值，
+/// 桥面免读 CURRENT——round-585/664 r14 注入竞态根治）。
+pub extern "C" fn enter_user_bridge(cell: u64) -> ! {
     let (entry, stack) = (USER_CODE_VIRT, USER_STACK_TOP);
-    let parent = crate::task::current_parent_pid();
     // SAFETY: 桩契约（见 global_asm 文档）：CR3/GDT 由调度器与内核
     //         初始化路径保证；本调用永不返回。
-    unsafe { lumina_enter_user(entry, stack, parent) }
+    unsafe { lumina_enter_user(entry, stack, cell) }
 }
 
 /// 用户地址空间构造结果。

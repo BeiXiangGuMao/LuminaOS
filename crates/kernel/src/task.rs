@@ -281,6 +281,12 @@ impl Task {
             t.handles[1] = Some(cap_slot);
         }
         t.parent = parent;
+        // M22-③ 第二项：遗传细胞 ctx 焊接（r14 注入竞态根治——round-585/664
+        // 实录：旧形态首派发窗口桥面读 CURRENT 定细胞，任一微窗读偏 →
+        // r14=0 → 子代走根父分支级联派生）。细胞值在任务创建时点（锁窗内、
+        // 入队前）焊入 ctx；首次派发切换机器按 callee-saved 语义自然装载
+        // 进 CPU r14，trampoline 与入口点同窗取值传参——派发侧读面单一。
+        t.ctx.r14 = parent.map_or(0, |p| p as u64);
         t
     }
 
@@ -929,8 +935,9 @@ fn lock_stall_report(addr: usize) {
     );
 }
 
-/// 注册用户入口桥（user.rs 模块初始化时调用一次）。
-pub fn set_user_entry_bridge(f: extern "C" fn() -> !) {
+/// 注册用户入口桥（user.rs 模块初始化时调用一次；M22-③ 第二项起
+/// 桥取遗传细胞参数——跳板入口窗同窗取值传参，桥面免读 CURRENT）。
+pub fn set_user_entry_bridge(f: extern "C" fn(u64) -> !) {
     USER_ENTRY_BRIDGE.store(f as usize, Ordering::Relaxed);
 }
 
@@ -1064,19 +1071,12 @@ pub fn current_user_root() -> u64 {
         .map_or(0, |t| t.user_root)
 }
 
-/// 目标任务的独立页表根（M12-B：COW 代码帧同一性对证；不存在 → 0）。
-pub fn task_user_root(id: usize) -> u64 {
-    let _w = IntWindow::new();
-    let s = sched_lock!();
-    s.tasks
-        .get(id)
-        .and_then(|t| t.as_ref())
-        .map_or(0, |t| t.user_root)
-}
-
 /// 任务认领（M12-d t43 取证面）：内核侧把目标任务父链登记为指定
 /// 父任务——内核直接派生任务（parent = None）经此挂靠存活的等待方
 /// （未来 init/守护进程收养语义的内核侧原语）。
+/// M22-③ 第二项注记：原相邻面 task_user_root（arm 窗事后重读源）已
+/// 退役——消费面改内核侧 SPAWN_CHILD_ROOT 戳（procs），收割时序脱靶
+/// 结构性消失，见 procs::spawn_child_root_stamp。
 pub fn task_adopt(id: usize, parent: usize) -> bool {
     let _w = IntWindow::new();
     let mut s = sched_lock!();
@@ -1463,6 +1463,31 @@ pub fn run_idle(cpu: usize) -> ! {
     }
 }
 
+/// 收敛失败点名（M22-③ 第二项，census 纪律）：非 Zombie 占用槽位
+/// （id, 任务名, 状态短串）快照——t37 收敛失败取证面（round-727 形态：
+/// 健康链尾超期快照），点名直读，下批零盲区。
+pub fn stuck_workers() -> alloc::vec::Vec<(usize, &'static str, &'static str)> {
+    let _w = IntWindow::new();
+    let s = sched_lock!();
+    s.tasks
+        .iter()
+        .enumerate()
+        .filter_map(|(id, slot)| {
+            let t = slot.as_ref()?;
+            if t.state == State::Zombie {
+                return None;
+            }
+            let st = match t.state {
+                State::Ready => "ready",
+                State::Running => "running",
+                State::Blocked => "blocked",
+                State::Zombie => "zombie",
+            };
+            Some((id, t.name, st))
+        })
+        .collect()
+}
+
 /// 除主任务外是否全部终结（主循环的等待谓词；Blocked = 存活继续等待，
 /// Zombie = 终结留证——waitpid 收割与否不影响本谓词，M10-C）。
 pub fn all_workers_finished() -> bool {
@@ -1582,22 +1607,11 @@ pub fn current_task_id() -> usize {
     CURRENT[cpu].load(Ordering::Relaxed)
 }
 
-/// 当前用户任务的父 pid（M12 遗传细胞寄存器协议：进入环前置 r14 =
-/// 父 pid；根父 / 内核任务恒 0。仅用户任务首派发窗口调用）。
-pub fn current_parent_pid() -> u64 {
-    let _w = IntWindow::new();
-    let cpu = my_cpu();
-    let s = sched_lock!();
-    let cur = CURRENT[cpu].load(Ordering::Relaxed);
-    s.tasks
-        .get(cur)
-        .and_then(|t| t.as_ref())
-        .and_then(|t| t.parent)
-        .map_or(0, |p| p as u64)
-}
-
 /// 本核是否运行在任务上下文（非 idle；M10-B 阻塞面调用前置检查——
 /// idle 无 Task 上下文与内核栈续点，不可阻塞）。
+/// M22-③ 第二项注记：原相邻面 current_parent_pid（M12 细胞桥面读）
+/// 已退役——首派发窗口二次 CURRENT 读即 round-585/664 r14 注入竞态
+/// 根因，消费面改跳板入口窗传参（trampoline_user → cell），结构性移除。
 pub fn on_task_context() -> bool {
     current_task_id() != IDLE
 }
@@ -1934,17 +1948,24 @@ extern "C" fn trampoline() -> ! {
     finish_and_switch_away(u64::MAX) // 入口返回 = 无码终结（防御路径）
 }
 
-/// 用户任务跳板：读桥函数 → 进 ring3（永不返回；终结经 EXIT 系统调用）。
+/// 用户任务跳板：入口点与遗传细胞同窗取值 → 桥传参 → 进 ring3
+/// （永不返回；终结经 EXIT 系统调用）。
 extern "C" fn trampoline_user() -> ! {
     // 首派发若经抢占路径切入则 IF=0；进 ring3 前先开放（iretq 亦会置 IF）
     ostd::hw::intr::enable();
-    let entry: Entry = {
-        // M20-①：与 trampoline 同族裸拿点——同款 IntWindow 纪律封死。
+    // M22-③ 第二项：遗传细胞与入口点同窗读取（M20-① IntWindow 纪律）。
+    // cell = 任务创建时登记的父链（ctx.r14 焊接同源）；根父/内核面
+    // None → 0。桥面不再二次读 CURRENT（round-585/664 竞态根治：
+    // 派发侧读面单一，两次读之间的额外裸窗不复存在）。
+    let (entry, cell): (Entry, u64) = {
         let _w = IntWindow::new();
         let s = sched_lock!();
         let cpu = my_cpu();
         let cur = CURRENT[cpu].load(Ordering::Relaxed);
-        s.tasks[cur].as_ref().map_or(main_entry_stub, |t| t.entry)
+        match s.tasks[cur].as_ref() {
+            Some(t) => (t.entry, t.parent.map_or(0, |p| p as u64)),
+            None => (main_entry_stub, 0),
+        }
     };
     let _ = entry;
     let bridge = USER_ENTRY_BRIDGE.load(Ordering::Acquire);
@@ -1953,12 +1974,12 @@ extern "C" fn trampoline_user() -> ! {
         finish_and_switch_away(u64::MAX);
     }
     // SAFETY: 前置条件 —— 地址来自 set_user_entry_bridge 存入的
-    //          extern "C" fn() -> !；注册先于任何用户任务派发。
+    //          extern "C" fn(u64) -> !；注册先于任何用户任务派发。
     // 不变式 —— Release/Acquire 配对；注册只发生一次。
-    // 并发 —— 用户任务钉扎 CPU0（M6 契约）；首次派发前完成注册。
+    // 并发 —— 用户任务自由跨核（M7-A）；首次派发前完成注册。
     // 违反后果 —— 跳转伪造地址即任意代码执行（初始化纪律封死）。
-    let f: extern "C" fn() -> ! = unsafe { core::mem::transmute(bridge) };
-    f()
+    let f: extern "C" fn(u64) -> ! = unsafe { core::mem::transmute(bridge) };
+    f(cell)
 }
 
 /// 抢占使能开关（自检 12 开启；协作演示窗口临时关闭）。

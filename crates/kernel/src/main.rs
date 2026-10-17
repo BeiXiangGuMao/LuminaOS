@@ -1571,35 +1571,52 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
             Ok(us) => {
                 ostd::hw::phys::write_bytes(us.code_frame, &user::USER_SPAWN_PROGRAM);
                 let p_id = task::spawn_user_pinned("spawn-parent", user_noop, us.root, 0, 0);
-                // 子根捕获必须先于等待：waitpid 收割即释放子槽位，
-                // task_user_root 归零后 translate(0) 走垃圾表项（#GP 实录）
+                // M22-③ 第二项 arm 捕获窗重构：改读内核侧子根戳（procs
+                // 派生成功即登记 cs.root），捕获免疫收割时序——旧形态
+                // （round-739/755/758/761/771 五标本判读）：子代全生命
+                // 周期 + 收割挤进单轮询间隙，事后 task_user_root 重读恒
+                // 0 → child_root 逃逸。窗预算同步 600→3000ms（与主等待
+                // 同量级，正常轮微秒级捕获零开销）+ 已定败/整链完成双
+                // 早退面。
                 let mut child_root = 0u64;
-                let arm_deadline = ostd::time::now() + 600;
+                let arm_deadline = ostd::time::now() + 3000;
                 while ostd::time::now() < arm_deadline {
-                    let (res0, spid0, _) = procs::spawn_stamps();
-                    if res0 == 0 && spid0 != u64::MAX {
-                        child_root = task::task_user_root(spid0 as usize);
-                        if child_root != 0 {
-                            break;
-                        }
+                    let (res0, _, _) = procs::spawn_stamps();
+                    let stamped = procs::spawn_child_root_stamp();
+                    if res0 == 0 && stamped != 0 {
+                        child_root = stamped;
+                        break;
+                    }
+                    if res0 != u64::MAX && res0 != 0 {
+                        break; // SPAWN 已定败（fail-closed 观测面）
+                    }
+                    if task::all_workers_finished() {
+                        break; // 链整链完成（理论不可达；观测面兜底）
                     }
                     task::yield_now();
                 }
-                let deadline = ostd::time::now() + 3000;
+                // M22-③ 第二项：收敛预算 3000→5000ms（round-727 判读：
+                // 健康链尾超期快照——检查时刻竞态，非卡死。加裕度）。
+                let deadline = ostd::time::now() + 5000;
                 while ostd::time::now() < deadline && !task::all_workers_finished() {
                     task::yield_now();
                 }
                 ok &= task::all_workers_finished();
+                if !task::all_workers_finished() {
+                    // M22-③ 第二项：收敛失败点名（census 纪律——非 Zombie
+                    // 槽位逐一点名 id:name:state，下批直读零盲区）。
+                    let _ = writeln!(log, "spawn: stuck={:?}", task::stuck_workers());
+                }
                 let (res, spid, cell) = procs::spawn_stamps();
                 let (wres, wpid, wcode) = procs::waitpid_stamps();
                 let (e0, _) = task::user_exit_codes();
                 let cow = vmm::cow_breaks() - cow0;
                 let pcode = user::translate(us.root, user::USER_CODE_VIRT);
-                // M22-③ #GP@kmain 族防线（round-582/647 实录）：arm 窗口
-                // 超时后 child_root 可能为 0（spawn 链未完成 / 槽位提前
-                // 收割归零）——translate(0) 入口读物理 0（IVT 区残留
-                // 0xF000FF56F000FF53 形态：present=1 且帧字段非规范）→
-                // #GP err=0。fail-closed：根未捕获即 None，不再裸走。
+                // M22-③ 防线语义升级（第二项）：child_root 改内核戳源
+                // （真子根，v0 存续期语义表帧不回收——translate 收割后仍
+                // 有效）；闸 1（根未捕获即 None）+ 闸 2（Walker canonical
+                // fail-closed，round-501 同族）双闸保持。translate(0)
+                // 形态（round-582/647 #GP 实录）随戳面结构性消失。
                 let ccode = if child_root != 0 {
                     user::translate(child_root, user::USER_CODE_VIRT)
                 } else {
@@ -1609,7 +1626,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                     log,
                     "spawn: exit0={e0} res={res:#x} pid={spid} cell={cell} \
                      wres={wres:#x} wpid={wpid} wcode={wcode} c-alive={} cow={cow} \
-                     code-share={}",
+                     code-share={} child_root={child_root:#x} ccode={ccode:?}",
                     task::task_alive(spid as usize),
                     pcode.is_some() && pcode == ccode,
                 );

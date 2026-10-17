@@ -72,6 +72,12 @@ static WAITPID_CODE: AtomicU64 = AtomicU64::new(u64::MAX);
 static SPAWN_RESULT: AtomicU64 = AtomicU64::new(u64::MAX);
 static SPAWN_PID: AtomicU64 = AtomicU64::new(u64::MAX);
 static SPAWN_CELL: AtomicU64 = AtomicU64::new(u64::MAX);
+/// SPAWN 子根戳（M22-③ 第二项）：派生成功时内核侧登记子页表根
+/// （`cs.root`，晚于 SPAWN_PID 落证）——arm 捕获窗改读本戳，收割时序
+/// 脱靶结构性消失（round-739/755/758/761/771 五标本判读：子代全生命
+/// 周期 + 收割挤进单轮询间隙，事后 task_user_root 重读恒 0）。v0 存续
+/// 期语义用户表帧不回收，戳根 translate 后收割仍有效。
+static SPAWN_CHILD_ROOT: AtomicU64 = AtomicU64::new(0);
 /// SPAWN 调用单调序号（M12-d t43 排障面：区分「本窗口真有 ring3
 /// SPAWN」与「戳为陈值」）。
 pub static SPAWN_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -108,6 +114,11 @@ pub fn spawn_stamps() -> (u64, u64, u64) {
         SPAWN_PID.load(Ordering::Acquire),
         SPAWN_CELL.load(Ordering::Acquire),
     )
+}
+
+/// SPAWN 子根戳快照（M22-③ 第二项；0 = 尚无成功派生）。
+pub fn spawn_child_root_stamp() -> u64 {
+    SPAWN_CHILD_ROOT.load(Ordering::Acquire)
 }
 
 /// SYS_GET_PID 主体：调用方任务槽位号。
@@ -307,6 +318,9 @@ pub fn sys_spawn(reserved: u64) -> u64 {
     // 遗传细胞自证（内核侧）：父子链由 spawn_user_child 登记，caller
     // 即子任务父链；ring3 侧凭 r14 协议回证（t37 v2 退出码链）
     SPAWN_CELL.store(caller as u64, Ordering::Release);
+    // M22-③ 第二项：子根内核侧登记（x86 TSO 存序对观察核保序，arm 面
+    // 见根即捕，免疫收割时序——见 SPAWN_CHILD_ROOT 文档）。
+    SPAWN_CHILD_ROOT.store(cs.root, Ordering::Release);
     SPAWN_OK_BIT | id as u64
 }
 
