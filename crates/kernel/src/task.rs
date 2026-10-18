@@ -529,7 +529,10 @@ fn init_resume_set() {
             sn += 1;
         }
     }
-    for t in [trampoline as *const () as usize, trampoline_user as *const () as usize] {
+    for t in [
+        trampoline as *const () as usize,
+        trampoline_user as *const () as usize,
+    ] {
         if n < RESUME_CONTS.len() {
             RESUME_CONTS[n].store(t as u64, Ordering::Release);
             n += 1;
@@ -567,7 +570,9 @@ fn cont_in_resume_set(cont: u64) -> bool {
 /// cont 是否为三桩 .resume 之一（任务将走保存帧 iretq 消费链——
 /// 恢复面帧哨兵的唯一适用面）。
 fn cont_is_stub_resume(cont: u64) -> bool {
-    STUB_RESUMES.iter().any(|s| s.load(Ordering::Acquire) == cont)
+    STUB_RESUMES
+        .iter()
+        .any(|s| s.load(Ordering::Acquire) == cont)
 }
 
 /// M21-② 切换目标上下文哨兵（cont 写者追捕——哨兵在网；M22-③ 白名单升级）。

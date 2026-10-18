@@ -183,9 +183,7 @@ fn resolve_cap(handle: u64) -> Option<(usize, Capability)> {
 
 /// 通道反查（M12-A）：对象 id → (通道槽位, 请求向环, 应答向环)。任一
 /// 时刻至多一个通道持有同一对象 id（铸造面单调 + 槽位互斥保证）。
-fn channel_by_object(
-    object: u64,
-) -> Option<(usize, &'static FastPath, Option<&'static FastPath>)> {
+fn channel_by_object(object: u64) -> Option<(usize, &'static FastPath, Option<&'static FastPath>)> {
     let chans = CHANNELS.lock();
     chans.iter().enumerate().find_map(|(id, c)| {
         c.as_ref()
@@ -231,7 +229,11 @@ pub fn sys_bind(reserved: u64) -> u64 {
             .skip(2)
             .find_map(|(id, c)| c.is_none().then_some(id))
         {
-            chans[id] = Some(Channel { fast, resp: None, object });
+            chans[id] = Some(Channel {
+                fast,
+                resp: None,
+                object,
+            });
             chan_id = Some(id);
         }
     }

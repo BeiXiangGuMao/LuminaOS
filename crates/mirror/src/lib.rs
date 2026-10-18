@@ -6,6 +6,13 @@
 //!
 //! Surface 表在服务进程内使用 Crystal 的代际槽表实现（句柄外泄安全），此处
 //! 提供几何原语。
+//!
+//! M23-B 起 no_std + alloc（对照 Crystal 惯例）：内核首帧合成面直接依赖本
+//! crate 的几何与损伤跟踪；宿主测试经 test 模块 `extern crate std` 照常运行。
+#![no_std]
+extern crate alloc;
+
+use alloc::vec::Vec;
 
 /// 轴对齐矩形（逻辑像素；y 向下为正）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +106,8 @@ impl DamageTracker {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    extern crate std;
+
     use super::{DamageTracker, Rect};
 
     #[test]

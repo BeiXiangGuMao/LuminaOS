@@ -48,6 +48,7 @@ version = "0.23.0"
 dependencies = [
  "bedrock",
  "harbor",
+ "mirror",
  "ostd",
  "vanguard",
  "weave",

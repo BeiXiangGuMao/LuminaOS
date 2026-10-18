@@ -18,15 +18,13 @@ const KBD_CAP: usize = 64;
 static KBD_RING: SpscRing<u8, KBD_CAP> = SpscRing::new();
 
 /// 环满丢弃计数（取证面：消费者侧读取，溢出可观测）。
-pub static KBD_DROP: core::sync::atomic::AtomicUsize =
-    core::sync::atomic::AtomicUsize::new(0);
+pub static KBD_DROP: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 /// 当前 Shift 按下态（0x2A 左 / 0x36 右；释放位 bit7=1 清除）。
 static SHIFT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// t64 取证：中断驱动入环计数（IRQ1 活体触发面，批跑环境通常为 0）。
-pub static KBD_IRQ_COUNT: core::sync::atomic::AtomicUsize =
-    core::sync::atomic::AtomicUsize::new(0);
+pub static KBD_IRQ_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 /// 初始化：注册 IRQ1 桩钩子（PIC 解 mask 由 interrupts 初始化序负责）。
 pub fn init() {
@@ -82,31 +80,157 @@ pub fn pop() -> Option<u8> {
 fn translate(sc: u8, shift: bool) -> Option<u8> {
     let c = match sc {
         // 数字行（Shift = 符号最小集）
-        0x02 => if shift { b'!' } else { b'1' },
-        0x03 => if shift { b'@' } else { b'2' },
-        0x04 => if shift { b'#' } else { b'3' },
-        0x05 => if shift { b'$' } else { b'4' },
-        0x06 => if shift { b'%' } else { b'5' },
-        0x07 => if shift { b'^' } else { b'6' },
-        0x08 => if shift { b'&' } else { b'7' },
-        0x09 => if shift { b'*' } else { b'8' },
-        0x0A => if shift { b'(' } else { b'9' },
-        0x0B => if shift { b')' } else { b'0' },
-        0x0C => if shift { b'_' } else { b'-' },
-        0x0D => if shift { b'+' } else { b'=' },
-        0x0E => 0x08,                                    // Backspace
-        0x0F => b'\t',                                   // Tab
-        0x1C => b'\n',                                   // Enter
-        0x39 => b' ',                                    // Space
-        0x33 => if shift { b'<' } else { b',' },
-        0x34 => if shift { b'>' } else { b'.' },
-        0x35 => if shift { b'?' } else { b'/' },
-        0x27 => if shift { b':' } else { b';' },
-        0x28 => if shift { b'"' } else { b'\'' },
-        0x29 => if shift { b'~' } else { b'`' },
-        0x2B => if shift { b'|' } else { b'\\' },
-        0x1A => if shift { b'{' } else { b'[' },
-        0x1B => if shift { b'}' } else { b']' },
+        0x02 => {
+            if shift {
+                b'!'
+            } else {
+                b'1'
+            }
+        }
+        0x03 => {
+            if shift {
+                b'@'
+            } else {
+                b'2'
+            }
+        }
+        0x04 => {
+            if shift {
+                b'#'
+            } else {
+                b'3'
+            }
+        }
+        0x05 => {
+            if shift {
+                b'$'
+            } else {
+                b'4'
+            }
+        }
+        0x06 => {
+            if shift {
+                b'%'
+            } else {
+                b'5'
+            }
+        }
+        0x07 => {
+            if shift {
+                b'^'
+            } else {
+                b'6'
+            }
+        }
+        0x08 => {
+            if shift {
+                b'&'
+            } else {
+                b'7'
+            }
+        }
+        0x09 => {
+            if shift {
+                b'*'
+            } else {
+                b'8'
+            }
+        }
+        0x0A => {
+            if shift {
+                b'('
+            } else {
+                b'9'
+            }
+        }
+        0x0B => {
+            if shift {
+                b')'
+            } else {
+                b'0'
+            }
+        }
+        0x0C => {
+            if shift {
+                b'_'
+            } else {
+                b'-'
+            }
+        }
+        0x0D => {
+            if shift {
+                b'+'
+            } else {
+                b'='
+            }
+        }
+        0x0E => 0x08,  // Backspace
+        0x0F => b'\t', // Tab
+        0x1C => b'\n', // Enter
+        0x39 => b' ',  // Space
+        0x33 => {
+            if shift {
+                b'<'
+            } else {
+                b','
+            }
+        }
+        0x34 => {
+            if shift {
+                b'>'
+            } else {
+                b'.'
+            }
+        }
+        0x35 => {
+            if shift {
+                b'?'
+            } else {
+                b'/'
+            }
+        }
+        0x27 => {
+            if shift {
+                b':'
+            } else {
+                b';'
+            }
+        }
+        0x28 => {
+            if shift {
+                b'"'
+            } else {
+                b'\''
+            }
+        }
+        0x29 => {
+            if shift {
+                b'~'
+            } else {
+                b'`'
+            }
+        }
+        0x2B => {
+            if shift {
+                b'|'
+            } else {
+                b'\\'
+            }
+        }
+        0x1A => {
+            if shift {
+                b'{'
+            } else {
+                b'['
+            }
+        }
+        0x1B => {
+            if shift {
+                b'}'
+            } else {
+                b']'
+            }
+        }
         // QWERTY 三行（Shift = 大写；0x27/0x28/0x29 已在符号行先匹配）
         0x10..=0x19 | 0x1E..=0x26 | 0x2C..=0x32 => {
             let base = match sc {
@@ -114,7 +238,11 @@ fn translate(sc: u8, shift: bool) -> Option<u8> {
                 0x1E..=0x26 => b"asdfghjkl"[(sc - 0x1E) as usize],
                 _ => b"zxcvbnm"[(sc - 0x2C) as usize],
             };
-            if shift { base - 32 } else { base }
+            if shift {
+                base - 32
+            } else {
+                base
+            }
         }
         _ => return None,
     };

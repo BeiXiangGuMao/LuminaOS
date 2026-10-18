@@ -38,6 +38,7 @@ mod boot;
 mod caps;
 mod census;
 mod console;
+mod fb;
 mod hostlink;
 mod interrupts;
 mod ipc;
@@ -75,8 +76,8 @@ use crate::multiboot1::BOOT_MAGIC;
 const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
 /// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项
-/// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23 起 64）。
-const SELFTEST_TOTAL: usize = 65;
+/// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-B 起 67）。
+const SELFTEST_TOTAL: usize = 67;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -3214,6 +3215,120 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t65, "tty-getch-face");
+
+    // 66) M23-B stdvga LFB 面（PCI/dispi 探测 → 32bpp 线性模式 → 恒等
+    //     映射 → VRAM 写读回双角点）。fail-closed：非 QEMU stdvga 环境
+    //     bring-up 返回 None → 本项 FAIL（回归批恒为 QEMU pc 机器）。
+    let brought = vmm::global_frames().and_then(fb::bring_up);
+    let t66 = match &brought {
+        Some((s, id)) => {
+            s.px(0, 0, 0x00FF_00AA);
+            s.px(s.w as i32 - 1, s.h as i32 - 1, 0x0000_11FF);
+            let rb1 = s.px_read(0, 0);
+            let rb2 = s.px_read(s.w as i32 - 1, s.h as i32 - 1);
+            let _ = writeln!(
+                log,
+                "fb: bar={:#x} id={:#06x} {}x{} stride={} rb1={:#010x} rb2={:#010x}",
+                s.base, id, s.w, s.h, s.stride, rb1, rb2
+            );
+            rb1 == 0x00FF_00AA && rb2 == 0x0000_11FF
+        }
+        None => {
+            let _ = writeln!(log, "fb: bring-up fail（无 stdvga?）");
+            false
+        }
+    };
+    report(&mut log, t66, "fb-vbe-lfb");
+
+    // 67) M23-B mirror 首帧（损伤合成三帧面）：帧1 全量损伤 → 全幅上屏
+    //     （1024×768×4 = 3145728 B）；帧2 窗 A→B 挪位，旧∪新包围盒局部
+    //     重绘（≈21% 字节）；帧3 零损伤 → bounding_box None → 跳帧 0 字节。
+    //     四点读回断言：背景渐变 / 窗 B 主体 / 旧窗位已还原背景 / 窗 B 边框。
+    let t67 = match &brought {
+        Some((s, _)) => {
+            let win_a = mirror::Rect {
+                x: 220,
+                y: 140,
+                w: 320,
+                h: 200,
+            };
+            let win_b = mirror::Rect {
+                x: 420,
+                y: 260,
+                w: 320,
+                h: 200,
+            };
+            // 背景：双线性渐变测试卡 + 64px 网格线（网格加蓝）。
+            let bg = |x: i32, y: i32| -> u32 {
+                let grid = if x % 64 == 0 || y % 64 == 0 { 0x18 } else { 0 };
+                ((x as u32 >> 2) << 16) | ((y as u32 >> 2) << 8) | grid
+            };
+            // 前景窗：2px 亮边框 + 28px 标题条 + 面板主体。
+            let panel = |x: i32, y: i32, r: &mirror::Rect| -> u32 {
+                let rx = x - r.x;
+                let ry = y - r.y;
+                if rx < 2 || ry < 2 || rx >= r.w as i32 - 2 || ry >= r.h as i32 - 2 {
+                    0x00F0_F0F0
+                } else if ry < 28 {
+                    0x0010_2038
+                } else {
+                    0x0020_4068
+                }
+            };
+            // 合成一步：损伤包围盒 → 裁剪上屏；无损伤 → 0 字节（跳帧）。
+            let compose = |dmg: &mirror::DamageTracker, win: Option<&mirror::Rect>| -> u64 {
+                match dmg.bounding_box() {
+                    Some(b) => s.fill(b, |x, y| match win {
+                        Some(r) if r.contains(x, y) => panel(x, y, r),
+                        _ => bg(x, y),
+                    }),
+                    None => 0,
+                }
+            };
+            // 帧1：全量损伤
+            let mut dmg = mirror::DamageTracker::default();
+            dmg.mark(mirror::Rect {
+                x: 0,
+                y: 0,
+                w: s.w,
+                h: s.h,
+            });
+            let f1 = compose(&dmg, Some(&win_a));
+            // 帧2：窗挪位 A→B（旧∪新两块损伤）
+            dmg.clear();
+            dmg.mark(win_a);
+            dmg.mark(win_b);
+            let f2 = compose(&dmg, Some(&win_b));
+            // 帧3：零损伤跳帧
+            dmg.clear();
+            let f3 = compose(&dmg, None);
+            // 读回四点断言
+            let p_bg = s.px_read(8, 8); // 背景渐变（窗域外）
+            let p_body = s.px_read(580, 360); // 窗 B 主体
+            let p_old = s.px_read(320, 240); // 旧窗 A 中心 → 应还原为背景
+            let p_edge = s.px_read(420, 260); // 窗 B 左上边框
+            let px_ok = p_bg == 0x0002_0200
+                && p_body == 0x0020_4068
+                && p_old == bg(320, 240)
+                && p_edge == 0x00F0_F0F0;
+            let _ = writeln!(
+                log,
+                "LUMINA-FIRST-FRAME f1={} f2={} f3={} permille={}",
+                f1,
+                f2,
+                f3,
+                f2 * 1000 / f1
+            );
+            let _ = writeln!(
+                log,
+                "LUMINA-MIRROR-OK px=[{:#010x},{:#010x},{:#010x},{:#010x}]",
+                p_bg, p_body, p_old, p_edge
+            );
+            f1 == 3_145_728 && f2 == 665_600 && f3 == 0 && px_ok
+        }
+        None => false,
+    };
+    report(&mut log, t67, "mirror-first-frame");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {

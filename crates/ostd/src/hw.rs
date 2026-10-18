@@ -63,6 +63,25 @@ pub mod ports {
         value
     }
 
+    /// 读 32 位 I/O 端口（PCI 配置空间 0xCFC 等，M23-B 扩展）。
+    #[inline]
+    pub fn read_u32(port: u16) -> u32 {
+        let value: u32;
+        // SAFETY: 前置条件 —— `port` 为内核白名单双字端口（0xCFC 配置数据）。
+        // 不变式 —— `in` 指令只访问 DX 指定端口，不触碰其他内存。
+        // 并发 —— 单端口读为原子总线事务。
+        // 违反后果 —— 误读非白名单端口可能触发未定义设备行为。
+        unsafe {
+            core::arch::asm!(
+                "in eax, dx",
+                in("dx") port,
+                out("eax") value,
+                options(nostack, preserves_flags)
+            );
+        }
+        value
+    }
+
     /// 写 16 位 I/O 端口（fw_cfg 选择子寄存器等，HW-01 扩展）。
     #[inline]
     pub fn write_u16(port: u16, value: u16) {
