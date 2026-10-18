@@ -26,9 +26,24 @@ static READY: AtomicBool = AtomicBool::new(false);
 /// t64 取证：行提交计数。
 pub static LINES_SUBMITTED: AtomicUsize = AtomicUsize::new(0);
 
-/// 串口回显（免分配逐字节；控制字节过滤复用 serial_log_bytes 语义）。
+/// GETCH 消费缓冲容量（= 行缓冲容量；就绪行整体接管后逐字节消费）。
+const GETCH_CAP: usize = LINE_CAP;
+
+/// GETCH 消费态：活动行缓冲 + 行长 + 消费游标。
+///
+/// 游标语义 = [`SYS_TTY_GETCH`]（abi v0.20）：`usize::MAX` = 无活动行；
+/// `0..=len` = 消费位（`cur == len` 为 `\n` 终结虚位——消费即复位）。
+/// 单消费者契约：init shell（M23-②）为唯一长期消费方，t65 自检在
+/// init 派生前完成（串行无并发；多消费者竞争面属后续里程碑）。
+static mut GETCH_BUF: [u8; GETCH_CAP] = [0; GETCH_CAP];
+static GETCH_LEN: AtomicUsize = AtomicUsize::new(0);
+static GETCH_CURSOR: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+/// 串口回显（M23-② 改 raw 直写：serial_log_bytes 每调用追加 CRLF +
+/// 控制字节换 '.'，会把逐键回显撕成多行并抹掉退格三连——终端可读性
+/// 与行编辑体验双杀；serial_send_raw 零翻译逐字节保真，TLV 同款路径）。
 fn echo(bytes: &[u8]) {
-    crate::console::serial_log_bytes(bytes);
+    crate::console::serial_send_raw(bytes);
 }
 
 /// 行规程喂入口：单字节处理（编辑态推进 + 回显）。
@@ -91,4 +106,51 @@ pub fn pump() {
     while let Some(b) = crate::kbd::pop() {
         feed(b);
     }
+}
+
+/// SYS_TTY_GETCH 主体（M23-②）：泵一轮后按消费游标取下一字节。
+///
+/// 返回域见 abi [`bedrock::abi::SYS_TTY_GETCH`] 文档：`0` = 暂无数据；
+/// `0x01..=0xFF` = 行内字节或行终结 `\n`（虚位）。行提交由 IRQ1 异步
+/// 推进，本函数全非阻塞——交互方（init shell）以 `0 → SYS_YIELD →
+/// 重试` 轮询推进。
+pub fn getch() -> u64 {
+    // 先泵：键盘环残余字节入行规程（IRQ1 与消费方异步，泵点收敛）。
+    pump();
+    // 无活动行 → 尝试接管新就绪行（READY 旗握手，与 read_line 同纪律）。
+    if GETCH_CURSOR.load(Ordering::Acquire) == usize::MAX {
+        if !READY.swap(false, Ordering::AcqRel) {
+            return 0; // 暂无数据（非阻塞轮询语义）
+        }
+        let len = READY_LEN.load(Ordering::Acquire);
+        // SAFETY: READY 旗握手保证提交面写毕且本侧独占（单消费者契约：
+        // init shell / t65 串行消费，与 read_line 的单线程契约同源）。
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                (&raw const READY_BUF) as *const u8,
+                (&raw mut GETCH_BUF) as *mut u8,
+                len,
+            );
+        }
+        GETCH_LEN.store(len, Ordering::Release);
+        GETCH_CURSOR.store(0, Ordering::Release);
+        if len == 0 {
+            // 空行（裸回车）：行体零字节，本取即终结符。
+            GETCH_CURSOR.store(usize::MAX, Ordering::Release);
+            return u64::from(b'\n');
+        }
+    }
+    // 活动行消费位域 [0, len]：cur < len 取缓冲字节；cur == len 取
+    // `\n` 终结虚位（消费即复位游标——下一取重走接管面）。
+    let cur = GETCH_CURSOR.load(Ordering::Acquire);
+    let len = GETCH_LEN.load(Ordering::Acquire);
+    let b = if cur < len {
+        // SAFETY: cur < len ≤ GETCH_CAP；游标由本函数单消费者推进。
+        unsafe { *(&raw const GETCH_BUF as *const u8).add(cur) }
+    } else {
+        b'\n'
+    };
+    let next = if cur < len { cur + 1 } else { usize::MAX };
+    GETCH_CURSOR.store(next, Ordering::Release);
+    u64::from(b)
 }

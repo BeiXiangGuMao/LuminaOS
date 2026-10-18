@@ -14,6 +14,10 @@ workspace = true
 # 宿主 CI（S1–S5）不构建本 crate（required-features 未满足时 bin 被跳过）；
 # 仅 S6 内核构建阶段以 --features boot + 自定义目标 x86_64-lumina 启用。
 boot = []
+# M23-② interactive 面：自检通过后不关机，派 init（PID 1 ring3 shell）
+# 进入交互面（halt 命令终结 → INIT_EXIT 透传 kernel_exit）。批跑/回归
+# 构建不用本特性（默认路径自检后立即退出，pf-hunt 判定面零扰动）。
+interactive = []
 
 [dependencies]
 ostd.workspace = true

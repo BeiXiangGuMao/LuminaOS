@@ -230,6 +230,22 @@ pub const SYS_FCNTL: u64 = 32;
 /// 长度校验先行）。ring3 自此免硬编码映像表。
 pub const SYS_IMAGE_ENUM: u64 = 33;
 
+/// 从 TTY 行规程取下一字节（v0.20 追加，M23-② 交互面）。
+///
+/// **非阻塞轮询语义**：内核侧先泵键盘环（kbd → 行规程），再按单消费
+/// 者游标消费当前就绪行；返回域：
+/// - `0` = 暂无数据（调用方 yield 后重试；行提交由 IRQ1 异步推进）；
+/// - `0x01..=0xFF` = 行内字节（行规程只存可打印 `0x20..=0x7E`，
+///   NUL 不在域内）或行终结符 `0x0A`（`\n`，虚位——不落行缓冲，
+///   由消费游标在行尾虚拟给出，与 POSIX 行缓冲洗出语义同构）。
+///
+/// **单消费者契约（v0）**：消费游标全局唯一——init shell 是唯一
+/// 长期消费者（t65 自检在 init 派生前完成，串行无并发）；多消费者
+/// 竞争面属后续里程碑（M23 如实记档）。
+///
+/// 回显/退格编辑由内核行规程完成（M23-①），消费方只见提交后行。
+pub const SYS_TTY_GETCH: u64 = 34;
+
 /// [`SYS_FCNTL`] 命令：复制句柄（rdx = 新句柄号下界）。
 pub const F_DUPFD: u64 = 0;
 /// [`SYS_FCNTL`] 命令：读描述符旗标。
@@ -265,7 +281,8 @@ pub const OPEN_MODE_MASK: u64 = 0b1_1111;
 /// 无独立用户空间 → `ERR_CAP`；帧耗尽 → `ERR_NOMEM(9)`。
 pub const SYS_EXEC: u64 = 17;
 
-/// 系统调用 ABI 版本（v0.19 = M18：SYS_OPEN 模式域扩容 O_EXCL（bit4）、
+/// 系统调用 ABI 版本（v0.20 = M23：新增 SYS_TTY_GETCH(34) TTY 取字
+/// 轮询面——init shell 交互基座；v0.19 = M18：SYS_OPEN 模式域扩容 O_EXCL（bit4）、
 /// SYS_FCNTL 命令域扩容 F_DUP2FD（0..=3）、新增 SYS_IMAGE_ENUM(33)
 /// ring3 映像表查询面；v0.18 = M17：SYS_MOUNT fs_type 域扩容 0..=1
 /// （1 = LFS1 盘上文件系统——块设备 + 盘上 fs，ABI 寄存器面不变）；
@@ -275,7 +292,7 @@ pub const SYS_EXEC: u64 = 17;
 /// v0.16 = M15：目录面五落点 MKDIR/REMOVE/READDIR/MOUNT/UMOUNT +
 /// 句柄面深化 DUP/FCNTL（CLOEXEC）+ NANOSLEEP 参数语义升级为 TSC 纳秒。
 /// v0.8 = SYS_QUOTA；v0.7 = 文件面六落点 + NANOSLEEP + 统一句柄面）。
-pub const ABI_VERSION: (u16, u16) = (0, 12);
+pub const ABI_VERSION: (u16, u16) = (0, 13);
 
 /// 寄存器快照形式的系统调用请求。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -495,6 +512,8 @@ pub enum Syscall {
         /// 缓冲长（字节，≤ 512）。
         buf_len: u64,
     },
+    /// TTY 取字（v0.20，M23-②；见 [`SYS_TTY_GETCH`]）。
+    TtyGetCh,
 }
 
 /// 从寄存器快照解析调用意图。只做结构校验，不做内存访问（由慢路径完成）。
@@ -591,6 +610,7 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
             buf_len: a2,
         }),
         SYS_IMAGE_ENUM => Err(AbiError::BadArgs),
+        SYS_TTY_GETCH => Ok(Syscall::TtyGetCh),
         _ => Err(AbiError::UnknownSyscall),
     }
 }
@@ -961,7 +981,16 @@ mod tests {
         assert_eq!(super::SYS_DUP, 31);
         assert_eq!(super::SYS_FCNTL, 32);
         assert_eq!(super::SYS_IMAGE_ENUM, 33);
-        assert_eq!(super::ABI_VERSION, (0, 12));
+        assert_eq!(super::ABI_VERSION, (0, 13));
+        assert_eq!(super::SYS_TTY_GETCH, 34);
+        assert_eq!(
+            super::parse(super::SyscallRegs {
+                num: super::SYS_TTY_GETCH,
+                args: [0; 5]
+            }),
+            Ok(Syscall::TtyGetCh),
+            "TTY 取字：零参轮询面（Yield 同款零参范式）"
+        );
     }
 
     #[test]

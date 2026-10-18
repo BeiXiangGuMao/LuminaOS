@@ -24,6 +24,8 @@ use ostd::mm::page::Entry;
 include!("exec_images_gen.rs");
 // M16 探针包装与深触映像（勿手改：scripts/gen_m16_images.py 再生成）。
 include!("exec_images_m16_gen.rs");
+// M23-②③ init（PID 1 ring3 shell）映像（勿手改：scripts/gen_m23_images.py 再生成）。
+include!("exec_images_gen_m23.rs");
 
 /// 用户代码段虚拟基址（PT[0]）。
 pub const USER_CODE_VIRT: u64 = 0x40_0000;

@@ -392,6 +392,12 @@ extern "C" fn lumina_syscall_dispatch(frame: &mut SyscallFrame) -> u64 {
             // M18-③：EXEC_IMAGES ring3 查询面（免硬编码映像表）
             crate::user::sys_image_enum(index, buf, buf_len)
         }
+        Syscall::TtyGetCh => {
+            task::count_syscall(2);
+            // M23-② TTY 取字面：内核侧泵键盘环 → 行规程后非阻塞取字节
+            //（单消费者游标语义见 tty::getch；init shell 交互基座）
+            crate::tty::getch()
+        }
     }
 }
 

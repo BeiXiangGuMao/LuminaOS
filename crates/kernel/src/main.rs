@@ -76,7 +76,7 @@ const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
 /// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项
 /// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23 起 64）。
-const SELFTEST_TOTAL: usize = 64;
+const SELFTEST_TOTAL: usize = 65;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -3187,14 +3187,78 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     };
     report(&mut log, t64, "keyboard-tty-line");
 
+    // 65) M23-② SYS_TTY_GETCH 面（inject → 行规程 → GETCH 消费游标域）。
+    //     断言：①正常行 "ok\n" → 'o','k','\n' 逐字节消费后空转 0；②空行
+    //     （裸回车）→ 单字节 '\n' 即终结；③行间空转面（无注入 → 0）。
+    //     单消费者契约：t65 在 init 派生前完成（interactive 面），串行无并发。
+    let t65 = {
+        let mut ok = true;
+        // A 正常行：o k enter → 'o','k','\n'，随后空转
+        for sc in [0x18u8, 0x25, 0x1C] {
+            kbd::inject(sc);
+        }
+        ok &= tty::getch() == u64::from(b'o');
+        ok &= tty::getch() == u64::from(b'k');
+        ok &= tty::getch() == u64::from(b'\n');
+        ok &= tty::getch() == 0;
+        // B 空行：裸回车 → '\n' 单字节终结，随后空转
+        kbd::inject(0x1C);
+        ok &= tty::getch() == u64::from(b'\n');
+        ok &= tty::getch() == 0;
+        let _ = writeln!(
+            log,
+            "tty-getch: lines={} drop={}",
+            tty::LINES_SUBMITTED.load(Ordering::Relaxed),
+            kbd::KBD_DROP.load(Ordering::Relaxed)
+        );
+        ok
+    };
+    report(&mut log, t65, "tty-getch-face");
+
     let _ = writeln!(log, "----");
-    interrupts::disable();
     if pass == SELFTEST_TOTAL {
         let _ = writeln!(log, "LUMINA-SELFTEST-PASS {pass}/{SELFTEST_TOTAL}");
         let _ = writeln!(log, "LUMINA-BOOT-OK");
-        kernel_exit(EXIT_SUCCESS);
+        // ---- M23-②：interactive 面（--features interactive）----
+        // 自检通过后不关机：构建 init 用户空间（INIT_IMAGE 单帧）→ 无父
+        // 派生（r14=0 → shell 分支）→ kmain 守候 all_workers_finished；
+        // init 终结（halt 命令 SYS_EXIT(0x10) → 僵尸转型点 INIT_EXIT 点名
+        // 登记）→ 读回透传 kernel_exit（0x10 → QEMU 码 33 = 批跑成功域
+        // 同源）。批跑面（默认特性）零扰动：立即成功码退出，回归网照旧。
+        #[cfg(feature = "interactive")]
+        {
+            // 帧服务不可达 = 引导面已破（防御拒绝，t 系同款 Some-else 面）
+            let Some(frames) = vmm::global_frames() else {
+                kernel_exit(EXIT_FAILURE);
+            };
+            let init_us = {
+                let mut alloc = || frames.alloc();
+                match crate::user::build_user_space_with(&crate::user::INIT_IMAGE, &mut alloc) {
+                    Ok(us) => us,
+                    Err(_) => kernel_exit(EXIT_FAILURE),
+                }
+            };
+            let init_id = task::spawn_user("init", user_noop, init_us.root, 0);
+            let _ = writeln!(log, "LUMINA-INTERACTIVE-ON init-slot={init_id}");
+            // 守候：轮询 INIT_EXIT（僵尸转型点按名登记）——只等 init 本尊。
+            // 初版全表谓词 all_workers_finished 实测永眠：批跑面遗留长活
+            // 任务（timer-sleeper）在批模式由 kernel_exit 直接带过、从不
+            // 终结；interactive 面只等 init（halt → 0x10 → 透传 kernel_exit）。
+            while task::INIT_EXIT.load(Ordering::Acquire) == u64::MAX {
+                core::hint::spin_loop();
+            }
+            let code = task::INIT_EXIT.load(Ordering::Acquire);
+            let _ = writeln!(log, "LUMINA-INIT-EXIT code={code:#x}");
+            kernel_exit(code as u32);
+        }
+        #[cfg(not(feature = "interactive"))]
+        {
+            interrupts::disable();
+            kernel_exit(EXIT_SUCCESS);
+        }
     } else {
         let _ = writeln!(log, "LUMINA-SELFTEST-FAIL {pass}/{SELFTEST_TOTAL}");
+        interrupts::disable();
         kernel_exit(EXIT_FAILURE);
     }
 }

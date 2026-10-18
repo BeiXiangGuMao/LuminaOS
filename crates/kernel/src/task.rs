@@ -1644,6 +1644,15 @@ pub fn all_workers_finished() -> bool {
 /// 用户任务退出码（EXIT 系统调用写入；自检 14 断言）。
 static USER_EXIT_CODE: AtomicU64 = AtomicU64::new(u64::MAX);
 
+/// init（PID 1）终结码（M23-② interactive 面）：僵尸转型点按任务名
+/// 点名登记——kmain 自检通过后派 init 并**轮询本面守候**（初版全表
+/// 谓词 all_workers_finished 实测永眠：批跑面遗留长活任务 timer-sleeper
+/// 在批模式由 kernel_exit 直接带过、从不终结——HANG-DUMP 点名 id=2
+/// 定案，改只等 init 本尊）。读到非 MAX 即 init 终结，码值透传
+/// `kernel_exit`（halt 命令 → SYS_EXIT(0x10) → QEMU 码 33 = 批跑
+/// 成功域同源）。
+pub static INIT_EXIT: AtomicU64 = AtomicU64::new(u64::MAX);
+
 /// 每核用户任务退出码（M8-A 自检 28：双核并发任务各自落证；
 /// 以终结时所在核槽位索引——确定性自检钉扎派发，槽位即任务身份）。
 static USER_EXIT_CODES: [AtomicU64; MAX_CPUS] =
@@ -1957,6 +1966,11 @@ fn finish_and_switch_away(code: u64) -> ! {
                 if let Some(t) = sc.tasks[cur].as_mut() {
                     t.revoke_all_handles();
                     t.exit_code = code;
+                    // M23-② init 点名登记（interactive 守候读回面；锁窗口
+                    // 内 Release 落账，kmain 见 finished 后 Acquire 读回）。
+                    if t.name == "init" {
+                        INIT_EXIT.store(code, Ordering::Release);
+                    }
                     t.state = State::Zombie;
                 }
                 // M21-① 护槽握手（S72 次级窗口正式转正收口）：Zombie 登记
