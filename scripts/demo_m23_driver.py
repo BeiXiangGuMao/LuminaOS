@@ -14,6 +14,8 @@ SPAWN/WAITPID → 串口断言。全电气键路（自检注入面之外的独�
      USER-OK + exit=42（EXEC(0) selftest.lxe）；grow → exit=92（增长栈）；
   4b) A2 深化：help → 命令清单（自省面）；ver → 版本行；echo m23x9 →
      参数回显（参数面首证）；echo 裸命令 → (void)（负探针）；
+  4c) S1 显示面：fb → LUMINA-FB-SURFACE + LUMINA-FB-SYNC + fb-ok，
+     screendump 像素五点断言（底栏三色带：红/绿/蓝 + 带界边缘）；
   5) halt → LUMINA-INIT-EXIT code=0x10 + LUMINA-EXIT code=0x10 +
      QEMU 退出码 33（interactive 尾透传面）。
 
@@ -31,7 +33,45 @@ EXT = f"{BUILD}/runtime/qemu-root/extracted"
 BIN = f"{BUILD}/target/x86_64-unknown-none/release/lumina-kernel.bin"
 LOG = f"{BUILD}/pf-evidence/demo-m23.log"
 MON = f"{BUILD}/runtime/qmon-m23.sock"
+PPM = f"{BUILD}/pf-evidence/m23a-fb-bar.ppm"
 TLV_REQ = b"\x07\x00\x09\x00lumina-m5"
+
+
+def screendump(mon, path):
+    """HMP screendump（PPM；与 demo_m23b_driver 同款）——写毕后短暂等待。"""
+    mon.sendall(f"screendump {path}\n".encode())
+    time.sleep(0.5)
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def parse_ppm(data):
+    """P6 PPM 头解析（白空格分隔，# 注释容忍）+ 像素域切片。"""
+    fields = []
+    i = 0
+    while len(fields) < 4:
+        while i < len(data) and data[i : i + 1].isspace():
+            i += 1
+        if data[i : i + 1] == b"#":
+            while i < len(data) and data[i] != 0x0A:
+                i += 1
+            continue
+        j = i
+        while j < len(data) and not data[j : j + 1].isspace():
+            j += 1
+        fields.append(data[i:j])
+        i = j
+    i += 1  # 单个白空格（maxval 后的西文空格）
+    w, h, maxval = int(fields[1]), int(fields[2]), int(fields[3])
+    px = data[i : i + w * h * 3]
+    if len(px) < w * h * 3:
+        raise ValueError(f"short pixel data {len(px)}")
+    return w, h, px
+
+
+def px_at(px, x, y, w):
+    o = (y * w + x) * 3
+    return (px[o], px[o + 1], px[o + 2])
 
 
 def log_bytes():
@@ -134,6 +174,29 @@ def main():
             mark = wait_log("(void)", since=mark)
             print("[demo] echo 裸命令 -> (void)  OK（负探针）")
 
+            # 4c) S1 显示面：fb 映射 → 三色带直画 → 损伤屏障 → 抓屏断言
+            sendkey(mon, "f b ret")
+            mark = wait_log("LUMINA-FB-SURFACE pid=", since=mark)
+            mark = wait_log("LUMINA-FB-SYNC x=0 y=704 w=1024 bytes=262144", since=mark)
+            mark = wait_log("fb-ok", since=mark)
+            print("[demo] fb -> SURFACE + SYNC(262144) + fb-ok  OK（S1 直画面）")
+
+            data = screendump(mon, PPM)
+            w, h, px = parse_ppm(data)
+            probes = {
+                "red(512,710)": (512, 710, (0xFF, 0x00, 0x00)),
+                "green(512,735)": (512, 735, (0x00, 0xFF, 0x00)),
+                "blue(512,760)": (512, 760, (0x00, 0x00, 0xFF)),
+                "edge-r(0,704)": (0, 704, (0xFF, 0x00, 0x00)),
+                "edge-b(1023,767)": (1023, 767, (0x00, 0x00, 0xFF)),
+            }
+            for name, (x, y, want) in probes.items():
+                got = px_at(px, x, y, w)
+                if got != want:
+                    raise AssertionError(f"{name}: got {got} want {want}")
+                print(f"[demo] {name} = {got}  OK（ring3 直画活体）")
+            print(f"[demo] screendump {w}x{h} 三色带像素五点全对（S1 壳直画 framebuffer 铁证）")
+
             # 5) halt：init SYS_EXIT(0x10) → INIT_EXIT 透传 → QEMU 33
             sendkey(mon, "h a l t ret")
             wait_log("LUMINA-INIT-EXIT code=0x10")
@@ -144,7 +207,7 @@ def main():
             print(f"[demo] QEMU_EXIT={rc}（期望 33 = (0x10<<1)|1）")
             if rc != 33:
                 sys.exit(1)
-        except (TimeoutError, subprocess.TimeoutExpired) as e:
+        except (TimeoutError, subprocess.TimeoutExpired, AssertionError, ValueError, OSError) as e:
             print(f"[demo] FAIL: {e}", file=sys.stderr)
             qemu.kill()
             sys.exit(1)

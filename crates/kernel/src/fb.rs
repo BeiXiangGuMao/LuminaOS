@@ -18,6 +18,7 @@
 //! 端口 IO 一律经 [`ostd::hw::ports`] 白名单原语，VRAM 访问逐处携带
 //! SAFETY 注释并做界内断言（像素坐标先钳制后寻址，无越界写路径）。
 
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use mirror::Rect;
 use ostd::hw::control::read_cr3;
 use ostd::hw::ports;
@@ -162,11 +163,16 @@ pub fn map_lfb(frames: &FrameAllocator, phys: u64, bytes: u64) -> Result<(), Pag
 /// 上电三步：PCI/dispi 探测 → 32bpp 线性模式 → LFB 恒等映射。
 /// 任一步失败返回 `None`（fail-closed；QEMU 参考环境恒有 stdvga）。
 /// 成功返回（帧缓冲句柄，dispi 实现版本）——版本号供证据行取证。
+/// 成功同时登记显示服务句柄（[`FB_BASE`] 族 statics）——Surface 表
+/// 与 [`sys_fb_map`] 的数据源（M23-S1）。
 pub fn bring_up(frames: &FrameAllocator) -> Option<(Framebuffer, u16)> {
     let p = probe()?;
     set_mode(WIDTH as u16, HEIGHT as u16);
     let bytes = u64::from(WIDTH) * u64::from(HEIGHT) * 4;
     map_lfb(frames, p.vram_base, bytes).ok()?;
+    FB_BASE.store(p.vram_base, Ordering::Release);
+    FB_W.store(WIDTH, Ordering::Release);
+    FB_H.store(HEIGHT, Ordering::Release);
     Some((
         Framebuffer {
             base: p.vram_base,
@@ -176,6 +182,208 @@ pub fn bring_up(frames: &FrameAllocator) -> Option<(Framebuffer, u16)> {
         },
         p.dispi_id,
     ))
+}
+
+// ---- M23-S1 显示服务面：Surface 表 + 任务根 LFB 映射 + 损伤屏障 ----
+
+/// LFB 字节数（WIDTH × HEIGHT × 4 = 3 MiB；映射域与证据行共用）。
+pub const LFB_BYTES: u64 = (WIDTH as u64) * (HEIGHT as u64) * 4;
+
+/// 帧缓冲物理基址（0 = 未上电；bring_up 登记后只读）。
+static FB_BASE: AtomicU64 = AtomicU64::new(0);
+/// 屏宽/屏高（bring_up 登记后只读；sys_fb_sync 求交域）。
+static FB_W: AtomicU32 = AtomicU32::new(0);
+static FB_H: AtomicU32 = AtomicU32::new(0);
+/// Surface 表（v0 单面）：owner pid（`u64::MAX` = 未占用）。首请求者
+/// 独占（CAS 登记），二次请求 → `EEXIST`——多任务 Surface 复用属
+/// 后续里程碑（abi [`bedrock::abi::SYS_FB_MAP`] 契约同源）。
+static SURFACE_OWNER: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// Surface 表占用哨兵（空闲域）。
+const SURFACE_FREE: u64 = u64::MAX;
+
+/// SYS_FB_MAP 主体（M23-S1）：把 LFB 映射进调用方任务根并登记 Surface。
+///
+/// - `va` 已由 abi parse 层预检（页对齐 + [`bedrock::abi::FB_VA_BASE`]
+///   域内），此处只做登记/映射（纵深防御：越域双检）；
+/// - 逐页 4 KiB 映射 P|W|U（无 NX——EFER.NXE 未启用，bit63 属保留位
+///   语义，置位将致保留位 #PF，如实记档）；用户根 PDPT[1] 全新分支
+///   （用户态既有域均在 PDPT[0] 低 1 GiB 区），中间表由帧分配器现配；
+/// - 内核证据行 `LUMINA-FB-SURFACE` 落串口（demo 取证锚点）。
+pub fn sys_fb_map(va: u64) -> u64 {
+    const EFAULT: u64 = 14;
+    const EEXIST: u64 = 17;
+    const ENODEV: u64 = 19;
+    const ENOMEM: u64 = 9;
+    let base = FB_BASE.load(Ordering::Acquire);
+    if base == 0 {
+        return ENODEV;
+    }
+    // 纵深防御：abi parse 层已检域，此处双检（防未来绕过 parse 的路径）
+    if !(bedrock::abi::FB_VA_BASE..bedrock::abi::FB_VA_LIMIT).contains(&va)
+        || va & 0xFFF != 0
+        || va.checked_add(LFB_BYTES).is_none_or(|end| end > bedrock::abi::FB_VA_LIMIT)
+    {
+        return EFAULT;
+    }
+    // Surface 单面登记（CAS：首请求者独占）
+    if SURFACE_OWNER
+        .compare_exchange(SURFACE_FREE, crate::procs::current_pid(), Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return EEXIST;
+    }
+    let Some(frames) = crate::vmm::global_frames() else {
+        SURFACE_OWNER.store(SURFACE_FREE, Ordering::Release);
+        return ENODEV;
+    };
+    let user_root = crate::task::current_user_root();
+    if user_root == 0 {
+        SURFACE_OWNER.store(SURFACE_FREE, Ordering::Release);
+        return EFAULT;
+    }
+    let pages = LFB_BYTES / 4096;
+    let mut walker = Walker {
+        mem: &mut IdentityAccess,
+        alloc_table: || frames.alloc(),
+    };
+    let mut mapped = 0u64;
+    for i in 0..pages {
+        let phys = base + i * 4096;
+        match walker.map(user_root, va + i * 4096, phys, Entry::PRESENT | Entry::WRITABLE | Entry::USER) {
+            Ok(()) => mapped += 1,
+            Err(_) => break,
+        }
+    }
+    if mapped != pages {
+        // 半程映射不回滚（任务根私有分支，页表留存无全局副作用）；
+        // Surface 释放允许重试（ENOMEM 语义）。
+        SURFACE_OWNER.store(SURFACE_FREE, Ordering::Release);
+        crate::console::serial_log_bytes(b"LUMINA-FB-MAP-ERR");
+        return ENOMEM;
+    }
+    // ring3 走查链 USER 补齐：Walker.map 中间层走 [`Entry::table`]
+    // （P|W 内核表语义，无 U 位）——x86 要求走查链**每级** U=1 才放行
+    // ring3，缺位即用户态首像素写 #PF（vec=14，demo 实录）。对本次
+    // 新建分支逐级 OR USER：PML4[0]（用户空间既有链，构建器已带 U，
+    // 幂等再 OR）→ PDPT[va>>30] → 窗口覆盖的全部 PD 槽。叶子已带
+    // USER（本函数映射 flags）；补齐后无需 INVLPG（新建项无陈旧译作）。
+    or_user_chain(user_root, va, va + LFB_BYTES);
+    let mut buf = [0u8; 96];
+    let mut n = put(&mut buf, 0, b"LUMINA-FB-SURFACE pid=");
+    n = put_udec(&mut buf, n, crate::procs::current_pid());
+    n = put(&mut buf, n, b" va=");
+    n = put_udec(&mut buf, n, va);
+    n = put(&mut buf, n, b" bytes=");
+    n = put_udec(&mut buf, n, LFB_BYTES);
+    crate::console::serial_log_bytes(&buf[..n]);
+    0
+}
+
+/// SYS_FB_SYNC 主体（M23-S1）：损伤盒与全屏求交，返回交盒字节数。
+/// 纯量化面（无 VRAM 访问——直写映射下像素已实时上屏）；证据行
+/// `LUMINA-FB-SYNC` 落串口（demo 取证锚点）。
+pub fn sys_fb_sync(x: u64, y: u64, w: u64, h: u64) -> u64 {
+    const ENODEV: u64 = 19;
+    let (sw, sh) = (
+        FB_W.load(Ordering::Acquire) as i64,
+        FB_H.load(Ordering::Acquire) as i64,
+    );
+    if sw == 0 {
+        return ENODEV;
+    }
+    // i64 语义（abi 约定可负）：负坐标/负尺寸经饱和裁剪入界
+    let (x, y) = (x as i64, y as i64);
+    let (w, h) = (w as i64, h as i64);
+    let (w, h) = (w.max(0), h.max(0));
+    let x0 = x.clamp(0, sw);
+    let y0 = y.clamp(0, sh);
+    let x1 = (x.checked_add(w).unwrap_or(sw)).clamp(0, sw);
+    let y1 = (y.checked_add(h).unwrap_or(sh)).clamp(0, sh);
+    let bytes = (x1 - x0).max(0) as u64 * (y1 - y0).max(0) as u64 * 4;
+    // 证据行单调用交付（serial_log_bytes 每调用追加 CRLF——分次会撕行）
+    let mut buf = [0u8; 96];
+    let mut n = put(&mut buf, 0, b"LUMINA-FB-SYNC x=");
+    n = put_i64(&mut buf, n, x0);
+    n = put(&mut buf, n, b" y=");
+    n = put_i64(&mut buf, n, y0);
+    n = put(&mut buf, n, b" w=");
+    n = put_udec(&mut buf, n, (x1 - x0).max(0) as u64);
+    n = put(&mut buf, n, b" bytes=");
+    n = put_udec(&mut buf, n, bytes);
+    crate::console::serial_log_bytes(&buf[..n]);
+    bytes
+}
+
+/// 片段拷入栈缓冲（界内截断；证据行组装专用）。
+fn put(buf: &mut [u8; 96], at: usize, src: &[u8]) -> usize {
+    let m = src.len().min(buf.len() - at);
+    buf[at..at + m].copy_from_slice(&src[..m]);
+    at + m
+}
+
+/// u64 十进制追加（无堆；0 特例先行）。
+fn put_udec(buf: &mut [u8; 96], at: usize, mut v: u64) -> usize {
+    if v == 0 {
+        return put(buf, at, b"0");
+    }
+    let mut digits = [0u8; 20];
+    let mut n = 0;
+    while v > 0 {
+        digits[n] = b'0' + (v % 10) as u8;
+        v /= 10;
+        n += 1;
+    }
+    let mut at = at;
+    for i in (0..n).rev() {
+        at = put(buf, at, &[digits[i]]);
+    }
+    at
+}
+
+/// i64 十进制追加（负号前置；坐标可负语义面）。
+fn put_i64(buf: &mut [u8; 96], at: usize, v: i64) -> usize {
+    if v < 0 {
+        let at = put(buf, at, b"-");
+        return put_udec(buf, at, v.unsigned_abs());
+    }
+    put_udec(buf, at, v as u64)
+}
+
+/// 走查链 USER 位补齐（ring3 可达面）：对 `[va_start, va_end)` 窗口
+/// 的 PML4/PDPT/PD 中间层逐槽 OR `Entry::USER`（幂等；叶子由映射方
+/// 自带）。经 `ostd::hw::phys` 恒等直读直写——页表帧均在低 1 GiB
+/// 恒等区（帧分配器域），与 [`IdentityAccess`] 同一物理语义。
+fn or_user_chain(root: u64, va_start: u64, va_end: u64) {
+    use ostd::hw::phys;
+    use ostd::mm::page::Entry;
+    // PML4 层（窗口 < 1 GiB → 单槽）
+    let slot = root + ((va_start >> 39) & 0x1FF) * 8;
+    let cur = Entry::from_bits(phys::read_u64(slot));
+    if !cur.is_present() {
+        return; // fail-closed：链断即返（映射已完成，此处不该发生）
+    }
+    phys::write_u64(slot, cur.bits() | Entry::USER);
+    // PDPT 层（单槽）
+    let slot = cur.addr() + ((va_start >> 30) & 0x1FF) * 8;
+    let cur = Entry::from_bits(phys::read_u64(slot));
+    if !cur.is_present() {
+        return;
+    }
+    phys::write_u64(slot, cur.bits() | Entry::USER);
+    // PD 层（逐 2 MiB 槽；窗口可跨多槽，越 512 槽截断）
+    let pd = cur.addr();
+    let mut pdi = (va_start >> 21) & 0x1FF;
+    let pd_end = ((va_end - 1) >> 21) & 0x1FF;
+    while pdi <= pd_end {
+        let slot = pd + pdi * 8;
+        let cur = Entry::from_bits(phys::read_u64(slot));
+        if !cur.is_present() {
+            return;
+        }
+        phys::write_u64(slot, cur.bits() | Entry::USER);
+        pdi += 1;
+    }
 }
 
 /// 线性帧缓冲句柄（XRGB32 像素：`0x00RRGGBB`，内存字节序 B-G-R-X）。

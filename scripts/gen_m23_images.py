@@ -23,6 +23,10 @@
     echo  → 参数域原样回显（A2 深化：参数面首次引入；r12 = 行长自
             parse 透传，r12 < 5 或参数域空 → "(void)" 占位——
             validate_user_slice 拒 len=0，空回显不可达，占位即负探针）
+    fb    → S1 显示面：SYS_FB_MAP(0x40000000) → 底部 64 行三色带
+            直画（y 704..724 红 / 725..745 绿 / 746..767 蓝，行带
+            分色——字节码最短路径）→ SYS_FB_SYNC(0,704,1024,64) →
+            "fb-ok"；MAP 失败（非零返码）→ "fb-err"
     其余  → "err?\r\n"
   派生命令共用臂：信箱写 1 基映像号 → SYS_SPAWN → WAITPID 阻塞收割 →
   itoa 倒写 @NUM 区 → "exit=" + <dec> + "\r\n" 三段 SYS_LOG → 重打提示。
@@ -62,10 +66,16 @@ EXEC_BAIL = 76
 SYS_LOG, SYS_EXIT, SYS_YIELD = 0, 1, 2
 SYS_WAIT_PID, SYS_SPAWN, SYS_EXEC, SYS_TTY_GETCH = 12, 13, 17, 34
 
-# A2 深化直答文本（长度由 len() 现算——免手数错）
+# A2/S1 直答文本（长度由 len() 现算——免手数错）
 HELP_TEXT = b"cmds: halt st prog grow deep ping echo ver help"
 VER_TEXT = b"LuminaOS v0.23.0+dev"
 EVOID_TEXT = b"(void)"
+FBOK_TEXT = b"fb-ok"
+FBERR_TEXT = b"fb-err"
+
+# S1 显示面常量（与 bedrock abi FB_VA_BASE 双向对账）
+FB_VA = 0x40_000000
+SYS_FB_MAP, SYS_FB_SYNC = 35, 36
 
 OUT = Path(__file__).resolve().parent.parent / "crates/kernel/src/exec_images_gen_m23.rs"
 
@@ -141,6 +151,8 @@ STRINGS = [
     ("s_help", HELP_TEXT),
     ("s_ver", VER_TEXT),
     ("s_evoid", EVOID_TEXT),
+    ("s_fbok", FBOK_TEXT),
+    ("s_fberr", FBERR_TEXT),
 ]
 
 JE, JNE, JNZ = 0x84, 0x85, 0x85
@@ -206,6 +218,7 @@ def build_init_image():
         (b"echo", "do_echo"),
         (b"ver\x00", "do_ver"),
         (b"help", "do_help"),
+        (b"fb\x00\x00", "do_fb"),
     ]:
         a.db(b"\x3D", le32(cmd_word(cmd)))  # cmp eax, imm32
         a.jcc(JE, target)
@@ -258,6 +271,62 @@ def build_init_image():
     a.jmp("prompt")
     a.label("echo_void")
     log_call(a, "s_evoid", len(EVOID_TEXT))
+    a.jmp("prompt")
+
+    # ---- S1 显示面：fb（映射 → 直画三色带 → 损伤屏障）----
+    # 寄存器窗口（无 syscall 持有态）：r12 = 行 y 游标 / r13 = 列 x 游标 /
+    # r14 = LFB 用户基址 / r15 = 当前写指针；rbx = 当前色。行带分色
+    # （y<725 红 / y<746 绿 / 余蓝）——逐行选色一次，内环纯写。
+    a.label("do_fb")
+    # SYS_FB_MAP(rdi=0, rsi=FB_VA, rdx=0)
+    a.db(b"\x31\xFF")                    # xor edi, edi
+    a.db(b"\xBE", le32(FB_VA))            # mov esi, 0x40000000
+    a.db(b"\x31\xD2")                    # xor edx, edx
+    a.db(b"\xB8", le32(SYS_FB_MAP))       # mov eax, 35
+    a.db(b"\x0F\x05")                    # syscall
+    a.db(b"\x85\xC0")                    # test eax, eax
+    a.jcc(JNE, "fb_fail")                 # 非零返码 → fb-err
+    a.db(b"\x41\xBE", le32(FB_VA))        # mov r14d, 0x40000000（基址）
+    a.db(b"\x41\xBC", le32(704))          # mov r12d, 704（首行）
+    a.label("fb_row")
+    a.db(b"\x41\x81\xFC", le32(725))      # cmp r12d, 725
+    a.jcc(0x82, "fb_red")                 # jb → 红带
+    a.db(b"\x41\x81\xFC", le32(746))      # cmp r12d, 746
+    a.jcc(0x82, "fb_green")               # jb → 绿带
+    a.db(b"\xBB", le32(0x000000FF))       # mov ebx, 蓝
+    a.jmp("fb_have_color")
+    a.label("fb_red")
+    a.db(b"\xBB", le32(0x00FF0000))       # mov ebx, 红
+    a.jmp("fb_have_color")
+    a.label("fb_green")
+    a.db(b"\xBB", le32(0x0000FF00))       # mov ebx, 绿
+    a.label("fb_have_color")
+    # r15 = r14 + (r12 << 12)（stride = 1024*4 = 0x1000 = 页粒度）
+    a.db(b"\x45\x89\xE7")                 # mov r15d, r12d
+    a.db(b"\x41\xC1\xE7\x0C")             # shl r15d, 12
+    a.db(b"\x45\x01\xF7")                 # add r15d, r14d
+    a.db(b"\x45\x31\xED")                 # xor r13d, r13d（x = 0）
+    a.label("fb_px")
+    a.db(b"\x41\x89\x1F")                 # mov [r15], ebx
+    a.db(b"\x49\x83\xC7\x04")             # add r15, 4
+    a.db(b"\x41\xFF\xC5")                 # inc r13d
+    a.db(b"\x41\x81\xFD", le32(1024))     # cmp r13d, 1024
+    a.jcc(0x82, "fb_px")                  # jb → 内环
+    a.db(b"\x41\xFF\xC4")                 # inc r12d
+    a.db(b"\x41\x81\xFC", le32(768))      # cmp r12d, 768
+    a.jcc(0x82, "fb_row")                 # jb → 外环
+    # SYS_FB_SYNC(rdi=0, rsi=704, rdx=1024, r10=64)——返回交盒字节数
+    #（demo 断言锚点 LUMINA-FB-SYNC 落串口，返码不校验）
+    a.db(b"\x31\xFF")                    # xor edi, edi
+    a.db(b"\xBE", le32(704))              # mov esi, 704
+    a.db(b"\xBA", le32(1024))             # mov edx, 1024
+    a.db(b"\x41\xBA", le32(64))           # mov r10d, 64
+    a.db(b"\xB8", le32(SYS_FB_SYNC))      # mov eax, 36
+    a.db(b"\x0F\x05")                    # syscall
+    log_call(a, "s_fbok", len(FBOK_TEXT))
+    a.jmp("prompt")
+    a.label("fb_fail")
+    log_call(a, "s_fberr", len(FBERR_TEXT))
     a.jmp("prompt")
 
     # ---- 派生共用臂：SPAWN → OK 位校验 → WAITPID 收割 → itoa 打印 ----
@@ -373,8 +442,9 @@ def main():
             "init shell 映像（M23-②③；位置固定 0x400000，单帧 RX + 栈帧）。\n"
             "/// 入口 r14 分向（0 = shell 主循环 / 非 0 = 派生子代 EXEC 信箱映像）。\n"
             "/// shell：prompt → GETCH 轮询（0 → YIELD）→ 首双字分派 halt/st/prog/\n"
-            "/// grow/deep/ping/echo/ver/help/err?；派生命令 = 信箱 + SPAWN + WAITPID\n"
-            "/// 及 itoa 打印 exit=<dec>；echo 参数面（r12-5 字节原样回显，空域→(void)）。\n"
+            "/// grow/deep/ping/echo/ver/help/fb/err?；派生命令 = 信箱 + SPAWN + WAITPID\n"
+            "/// 及 itoa 打印 exit=<dec>；echo 参数面（r12-5 字节原样回显，空域→(void)）；\n"
+            "/// fb 显示面（SYS_FB_MAP 映射 → 64 行三色带直画 → SYS_FB_SYNC 损伤屏障）。\n"
             "/// 子代：读信箱 → EXEC(映像号) 成功不返回 → 回落 76。\n"
             "/// 字节码由 scripts/gen_m23_images.py 生成（objdump 已收口）。\n"
             "/// 默认批跑构建未引用（interactive 面专用）——dead_code 豁免。",

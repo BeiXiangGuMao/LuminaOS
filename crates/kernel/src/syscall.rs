@@ -398,6 +398,17 @@ extern "C" fn lumina_syscall_dispatch(frame: &mut SyscallFrame) -> u64 {
             //（单消费者游标语义见 tty::getch；init shell 交互基座）
             crate::tty::getch()
         }
+        Syscall::FbMap { va } => {
+            task::count_syscall(2);
+            // M23-S1 显示服务面：LFB → 调用方任务根映射 + Surface 登记
+            //（单面 CAS 契约；证据行 LUMINA-FB-SURFACE，shell 直画基座）
+            crate::fb::sys_fb_map(va)
+        }
+        Syscall::FbSync { x, y, w, h } => {
+            task::count_syscall(2);
+            // M23-S1 损伤屏障：交盒量化返回（纯记账面，无 VRAM 访问）
+            crate::fb::sys_fb_sync(x, y, w, h)
+        }
     }
 }
 

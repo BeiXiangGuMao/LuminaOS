@@ -246,6 +246,31 @@ pub const SYS_IMAGE_ENUM: u64 = 33;
 /// 回显/退格编辑由内核行规程完成（M23-①），消费方只见提交后行。
 pub const SYS_TTY_GETCH: u64 = 34;
 
+/// 显示面映射（v0.21，M23-S1）：把 stdvga LFB 线性帧缓冲映射进调用方
+/// 任务根（Surface 表登记面）。
+///
+/// 参数 = rsi：用户虚地址（页对齐，域固定 [`FB_VA_BASE`,
+/// `FB_VA_LIMIT`)——PDPT[1] 显示专用分支，与用户态既有域零冲突）。
+/// 成功返回 0：调用方此后可直写该窗口逐像素上屏（XRGB32，`0x00RRGGBB`），
+/// 损伤面由调用方自记（v0 无内核侧合成队列）；失败：无 fb → `ENODEV(19)`，
+/// 域外/不对齐 → `EFAULT(14)`，Surface 表已占用 → `EEXIST(17)`（v0
+/// 单面契约：首请求者独占，二次请求拒绝——多任务 Surface 复用属后续
+/// 里程碑）。域常量见 [`FB_VA_BASE`] / [`FB_VA_LIMIT`]。
+pub const SYS_FB_MAP: u64 = 35;
+
+/// 显示映射窗口域基址（PDPT[1] 分支首槽；用户态代码 0x400000/栈
+/// 0x403000/信箱 0x402F00 均在 PDPT[0] 低 1 GiB 区，零冲突）。
+pub const FB_VA_BASE: u64 = 0x4000_0000;
+/// 显示映射窗口域上界（不含；PDPT[1] 4 GiB 分支尾——预留多 Surface
+/// 并存面，v0 单面仅占首 3 MiB）。
+pub const FB_VA_LIMIT: u64 = 0x8000_0000;
+
+/// 显示损伤屏障（v0.21，M23-S1）：量化面——对损伤盒（a0=x, a1=y,
+/// a2=w, a3=h，全 i64 语义可负）与全屏求交，返回交盒实际字节数
+/// （w*h*4；空盒/全出界 = 0）。无 fb → `ENODEV(19)`。证据行
+/// `LUMINA-FB-SYNC` 落串口（demo 取证锚点）。
+pub const SYS_FB_SYNC: u64 = 36;
+
 /// [`SYS_FCNTL`] 命令：复制句柄（rdx = 新句柄号下界）。
 pub const F_DUPFD: u64 = 0;
 /// [`SYS_FCNTL`] 命令：读描述符旗标。
@@ -281,7 +306,8 @@ pub const OPEN_MODE_MASK: u64 = 0b1_1111;
 /// 无独立用户空间 → `ERR_CAP`；帧耗尽 → `ERR_NOMEM(9)`。
 pub const SYS_EXEC: u64 = 17;
 
-/// 系统调用 ABI 版本（v0.20 = M23：新增 SYS_TTY_GETCH(34) TTY 取字
+/// 系统调用 ABI 版本（v0.14 = M23-S1：新增 SYS_FB_MAP(35)/SYS_FB_SYNC(36)
+/// 显示服务面（Surface 表 + 任务根 LFB 映射 + 损伤屏障量化）；v0.20 = M23：新增 SYS_TTY_GETCH(34) TTY 取字
 /// 轮询面——init shell 交互基座；v0.19 = M18：SYS_OPEN 模式域扩容 O_EXCL（bit4）、
 /// SYS_FCNTL 命令域扩容 F_DUP2FD（0..=3）、新增 SYS_IMAGE_ENUM(33)
 /// ring3 映像表查询面；v0.18 = M17：SYS_MOUNT fs_type 域扩容 0..=1
@@ -292,7 +318,7 @@ pub const SYS_EXEC: u64 = 17;
 /// v0.16 = M15：目录面五落点 MKDIR/REMOVE/READDIR/MOUNT/UMOUNT +
 /// 句柄面深化 DUP/FCNTL（CLOEXEC）+ NANOSLEEP 参数语义升级为 TSC 纳秒。
 /// v0.8 = SYS_QUOTA；v0.7 = 文件面六落点 + NANOSLEEP + 统一句柄面）。
-pub const ABI_VERSION: (u16, u16) = (0, 13);
+pub const ABI_VERSION: (u16, u16) = (0, 14);
 
 /// 寄存器快照形式的系统调用请求。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -514,11 +540,27 @@ pub enum Syscall {
     },
     /// TTY 取字（v0.20，M23-②；见 [`SYS_TTY_GETCH`]）。
     TtyGetCh,
+    /// 显示面映射（v0.21，M23-S1；见 [`SYS_FB_MAP`]）。
+    FbMap {
+        /// 用户虚地址（页对齐，[`FB_VA_BASE`] 域内）。
+        va: u64,
+    },
+    /// 显示损伤屏障（v0.21，M23-S1；见 [`SYS_FB_SYNC`]）。
+    FbSync {
+        /// 损伤盒 x（i64 语义可负）。
+        x: u64,
+        /// 损伤盒 y。
+        y: u64,
+        /// 损伤盒宽。
+        w: u64,
+        /// 损伤盒高。
+        h: u64,
+    },
 }
 
 /// 从寄存器快照解析调用意图。只做结构校验，不做内存访问（由慢路径完成）。
 pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
-    let [a0, a1, a2, _, _] = regs.args;
+    let [a0, a1, a2, a3, _] = regs.args;
     match regs.num {
         SYS_LOG if a1 <= 512 => Ok(Syscall::Log { len: a1 }),
         SYS_LOG => Err(AbiError::BadArgs),
@@ -611,6 +653,16 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
         }),
         SYS_IMAGE_ENUM => Err(AbiError::BadArgs),
         SYS_TTY_GETCH => Ok(Syscall::TtyGetCh),
+        SYS_FB_MAP if (FB_VA_BASE..FB_VA_LIMIT).contains(&a1) && a1 & 0xFFF == 0 => {
+            Ok(Syscall::FbMap { va: a1 })
+        }
+        SYS_FB_MAP => Err(AbiError::BadArgs),
+        SYS_FB_SYNC => Ok(Syscall::FbSync {
+            x: a0,
+            y: a1,
+            w: a2,
+            h: a3,
+        }),
         _ => Err(AbiError::UnknownSyscall),
     }
 }
@@ -981,7 +1033,7 @@ mod tests {
         assert_eq!(super::SYS_DUP, 31);
         assert_eq!(super::SYS_FCNTL, 32);
         assert_eq!(super::SYS_IMAGE_ENUM, 33);
-        assert_eq!(super::ABI_VERSION, (0, 13));
+        assert_eq!(super::ABI_VERSION, (0, 14));
         assert_eq!(super::SYS_TTY_GETCH, 34);
         assert_eq!(
             super::parse(super::SyscallRegs {
@@ -990,6 +1042,36 @@ mod tests {
             }),
             Ok(Syscall::TtyGetCh),
             "TTY 取字：零参轮询面（Yield 同款零参范式）"
+        );
+        assert_eq!(super::SYS_FB_MAP, 35);
+        assert_eq!(super::SYS_FB_SYNC, 36);
+        let r = |num: u64, args: [u64; 5]| SyscallRegs { num, args };
+        // FB_MAP：va 域结构校验（FB_VA_BASE 起、页对齐；域外/不对齐 BadArgs）
+        assert_eq!(
+            super::parse(r(super::SYS_FB_MAP, [0, super::FB_VA_BASE, 0, 0, 0])),
+            Ok(Syscall::FbMap { va: super::FB_VA_BASE }),
+            "域基址 + 页对齐 → 受理"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_FB_MAP, [0, 0x4020_1800, 0, 0, 0])),
+            Err(AbiError::BadArgs),
+            "页不对齐拒"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_FB_MAP, [0, 0x1000, 0, 0, 0])),
+            Err(AbiError::BadArgs),
+            "域外（低于 FB_VA_BASE）拒"
+        );
+        // FB_SYNC：损伤盒四参透传（i64 语义可负——u64 位型透传）
+        assert_eq!(
+            super::parse(r(super::SYS_FB_SYNC, [0, 704, 1024, 64, 0])),
+            Ok(Syscall::FbSync {
+                x: 0,
+                y: 704,
+                w: 1024,
+                h: 64
+            }),
+            "损伤盒四参透传"
         );
     }
 
