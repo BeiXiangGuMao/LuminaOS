@@ -12,6 +12,8 @@ SPAWN/WAITPID → 串口断言。全电气键路（自检注入面之外的独�
   3) ping → pong（直答面）；x → err?（未知命令负探针）；
   4) prog → exit=91（SPAWN→EXEC(1) prog.lxe→WAITPID 收割）；st →
      USER-OK + exit=42（EXEC(0) selftest.lxe）；grow → exit=92（增长栈）；
+  4b) A2 深化：help → 命令清单（自省面）；ver → 版本行；echo m23x9 →
+     参数回显（参数面首证）；echo 裸命令 → (void)（负探针）；
   5) halt → LUMINA-INIT-EXIT code=0x10 + LUMINA-EXIT code=0x10 +
      QEMU 退出码 33（interactive 尾透传面）。
 
@@ -114,6 +116,23 @@ def main():
             sendkey(mon, "g r o w ret")
             mark = wait_log("exit=92", since=mark)
             print("[demo] grow -> exit=92  OK（增长栈映像）")
+
+            # 4b) A2 深化：help / ver / echo 参数面 / echo 负探针
+            sendkey(mon, "h e l p ret")
+            mark = wait_log("cmds: halt st prog grow deep ping echo ver help", since=mark)
+            print("[demo] help -> 命令清单  OK（A2 自省面）")
+
+            sendkey(mon, "v e r ret")
+            mark = wait_log("LuminaOS v0.23.0+dev", since=mark)
+            print("[demo] ver -> 版本行  OK（A2 版本面）")
+
+            sendkey(mon, "e c h o spc m 2 3 x 9 ret")
+            mark = wait_log("m23x9", since=mark)
+            print("[demo] echo m23x9 -> 参数回显  OK（A2 参数面首证）")
+
+            sendkey(mon, "e c h o ret")
+            mark = wait_log("(void)", since=mark)
+            print("[demo] echo 裸命令 -> (void)  OK（负探针）")
 
             # 5) halt：init SYS_EXIT(0x10) → INIT_EXIT 透传 → QEMU 33
             sendkey(mon, "h a l t ret")

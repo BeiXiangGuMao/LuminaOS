@@ -18,6 +18,11 @@
     grow  → 信箱 3 → EXEC(2) grow.lxe  → exit 92
     deep  → 信箱 5 → EXEC(4) deep.lxe
     ping  → 直答 "pong\r\n"（不派生）
+    help  → 直答命令清单（A2 深化：自省面）
+    ver   → 直答 "LuminaOS v0.23.0+dev"（A2 深化：版本面）
+    echo  → 参数域原样回显（A2 深化：参数面首次引入；r12 = 行长自
+            parse 透传，r12 < 5 或参数域空 → "(void)" 占位——
+            validate_user_slice 拒 len=0，空回显不可达，占位即负探针）
     其余  → "err?\r\n"
   派生命令共用臂：信箱写 1 基映像号 → SYS_SPAWN → WAITPID 阻塞收割 →
   itoa 倒写 @NUM 区 → "exit=" + <dec> + "\r\n" 三段 SYS_LOG → 重打提示。
@@ -56,6 +61,11 @@ EXEC_BAIL = 76
 # bedrock abi v0.20 系统调用号
 SYS_LOG, SYS_EXIT, SYS_YIELD = 0, 1, 2
 SYS_WAIT_PID, SYS_SPAWN, SYS_EXEC, SYS_TTY_GETCH = 12, 13, 17, 34
+
+# A2 深化直答文本（长度由 len() 现算——免手数错）
+HELP_TEXT = b"cmds: halt st prog grow deep ping echo ver help"
+VER_TEXT = b"LuminaOS v0.23.0+dev"
+EVOID_TEXT = b"(void)"
 
 OUT = Path(__file__).resolve().parent.parent / "crates/kernel/src/exec_images_gen_m23.rs"
 
@@ -128,6 +138,9 @@ STRINGS = [
     ("s_pong", b"pong\r\n"),
     ("s_err", b"err?\r\n"),
     ("s_sperr", b"spawn-err\r\n"),
+    ("s_help", HELP_TEXT),
+    ("s_ver", VER_TEXT),
+    ("s_evoid", EVOID_TEXT),
 ]
 
 JE, JNE, JNZ = 0x84, 0x85, 0x85
@@ -190,6 +203,9 @@ def build_init_image():
         (b"grow", "do_grow"),
         (b"deep", "do_deep"),
         (b"ping", "do_ping"),
+        (b"echo", "do_echo"),
+        (b"ver\x00", "do_ver"),
+        (b"help", "do_help"),
     ]:
         a.db(b"\x3D", le32(cmd_word(cmd)))  # cmp eax, imm32
         a.jcc(JE, target)
@@ -214,6 +230,34 @@ def build_init_image():
 
     a.label("do_unknown")
     log_call(a, "s_err", 6)
+    a.jmp("prompt")
+
+    # ---- A2 深化直答：help / ver ----
+    a.label("do_help")
+    log_call(a, "s_help", len(HELP_TEXT))
+    a.jmp("prompt")
+
+    a.label("do_ver")
+    log_call(a, "s_ver", len(VER_TEXT))
+    a.jmp("prompt")
+
+    # ---- A2 参数面：echo（r12 = 行长自 parse 透传；首双字已证 "echo"）----
+    # 行长 < 5（裸 "echo"）或参数域空（"echo " 尾随空格）→ "(void)" 占位
+    # （validate_user_slice 拒 len=0——零长 SYS_LOG 静默无 CRLF，占位即
+    # 可断言负探针）；有参 → 自 LINE_BUF+5 起按 r12-5 字节原样回显，
+    # 尾随 CRLF 由内核 serial_log_bytes 补齐。
+    a.label("do_echo")
+    a.db(b"\x49\x83\xFC\x05")   # cmp r12, 5
+    a.jcc(0x82, "echo_void")     # jb → 裸 echo → (void)
+    a.db(b"\x48\xC7\xC7", le32(LINE_BUF + 5))  # mov rdi, LINE_BUF+5
+    a.db(b"\x4C\x89\xE6")        # mov rsi, r12
+    a.db(b"\x48\x83\xEE\x05")    # sub rsi, 5
+    a.jcc(JE, "echo_void")       # 参数域零字节 → (void)
+    a.db(b"\x31\xC0")            # xor eax, eax
+    a.db(b"\x0F\x05")            # SYS_LOG(args)——回显参数行
+    a.jmp("prompt")
+    a.label("echo_void")
+    log_call(a, "s_evoid", len(EVOID_TEXT))
     a.jmp("prompt")
 
     # ---- 派生共用臂：SPAWN → OK 位校验 → WAITPID 收割 → itoa 打印 ----
@@ -329,8 +373,9 @@ def main():
             "init shell 映像（M23-②③；位置固定 0x400000，单帧 RX + 栈帧）。\n"
             "/// 入口 r14 分向（0 = shell 主循环 / 非 0 = 派生子代 EXEC 信箱映像）。\n"
             "/// shell：prompt → GETCH 轮询（0 → YIELD）→ 首双字分派 halt/st/prog/\n"
-            "/// grow/deep/ping/err?；派生命令 = 信箱 + SPAWN + WAITPID + itoa 打印\n"
-            "/// exit=<dec>。子代：读信箱 → EXEC(映像号) 成功不返回 → 回落 76。\n"
+            "/// grow/deep/ping/echo/ver/help/err?；派生命令 = 信箱 + SPAWN + WAITPID\n"
+            "/// 及 itoa 打印 exit=<dec>；echo 参数面（r12-5 字节原样回显，空域→(void)）。\n"
+            "/// 子代：读信箱 → EXEC(映像号) 成功不返回 → 回落 76。\n"
             "/// 字节码由 scripts/gen_m23_images.py 生成（objdump 已收口）。\n"
             "/// 默认批跑构建未引用（interactive 面专用）——dead_code 豁免。",
             attrs="#[cfg_attr(not(feature = \"interactive\"), allow(dead_code))]",
