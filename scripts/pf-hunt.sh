@@ -94,6 +94,7 @@ for i in $(seq 1 "$ROUNDS"); do
     -drive "file=$SWAP,format=raw,if=ide,index=2,media=disk" \
     -m 256M -smp 2 -display none -no-reboot -serial stdio \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+    -device virtio-net-pci,netdev=n0,disable-legacy=on -netdev user,id=n0 \
     < <(
       for _ in $(seq 1 400); do
         grep -q "LUMINA-HOSTLINK-READY" "$log" 2>/dev/null && break

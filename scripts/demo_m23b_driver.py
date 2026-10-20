@@ -131,6 +131,8 @@ def main():
         "-m", "256M", "-smp", "2", "-display", "none", "-no-reboot",
         "-serial", "stdio",
         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
+        "-device", "virtio-net-pci,netdev=n0,disable-legacy=on",
+        "-netdev", "user,id=n0",
         "-monitor", f"unix:{MON},server,nowait",
     ]
     with open(LOG, "wb") as logf, subprocess.Popen(
@@ -142,13 +144,13 @@ def main():
             wait_log("LUMINA-HOSTLINK-READY")
             qemu.stdin.write(TLV_REQ)
             qemu.stdin.flush()
-            # 2) 自检收官（67/67）+ 首帧证据 + init 上线 + 提示符
-            wait_log("LUMINA-SELFTEST-PASS 67/67")
+            # 2) 自检收官（68/68）+ 首帧证据 + init 上线 + 提示符
+            wait_log("LUMINA-SELFTEST-PASS 68/68")
             mark = wait_log("LUMINA-FIRST-FRAME")
             wait_log("LUMINA-MIRROR-OK", since=mark)
             wait_log("LUMINA-INTERACTIVE-ON")
             mark = wait_log("ok> ")
-            print("[demo] selftest 67/67 + FIRST-FRAME + MIRROR-OK  OK")
+            print("[demo] selftest 68/68 + FIRST-FRAME + MIRROR-OK  OK")
 
             # 3) monitor 抓屏 + 像素断言
             time.sleep(0.4)

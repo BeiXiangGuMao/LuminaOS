@@ -54,6 +54,7 @@ mod timer;
 mod tty;
 mod user;
 mod vfs;
+mod vnet;
 mod vmm;
 
 use core::fmt::Write as _;
@@ -76,8 +77,8 @@ use crate::multiboot1::BOOT_MAGIC;
 const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
 /// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项
-/// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-B 起 67）。
-const SELFTEST_TOTAL: usize = 67;
+/// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C 起 68）。
+const SELFTEST_TOTAL: usize = 68;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -3329,6 +3330,37 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         None => false,
     };
     report(&mut log, t67, "mirror-first-frame");
+
+    // 68) M23-C1 virtio-net bring-up（PCI cap 走查 → 状态机 → vring 装配
+    //     → DRIVER_OK → MAC 读出）。fail-closed：无 virtio-net-pci 环境
+    //     返回 None → 本项 FAIL（回归批恒为 QEMU pc + virtio-net 机器）。
+    //     MAC 断言 = QEMU user-net 默认 52:54:00:12:34:56（电气活体）；
+    //     终态 status 断言 = 0x0F 全位（ACK|DRIVER|FEAT_OK|DRIVER_OK）。
+    let t68 = match vmm::global_frames().and_then(vnet::bring_up) {
+        Some(d) => {
+            let mac_ok = d.mac == [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+            let _ = writeln!(
+                log,
+                "net: mac={:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x} nq={} qsz={} status={:#x} mac_ok={}",
+                d.mac[0],
+                d.mac[1],
+                d.mac[2],
+                d.mac[3],
+                d.mac[4],
+                d.mac[5],
+                d.num_queues,
+                d.queue_size,
+                d.status,
+                mac_ok
+            );
+            mac_ok && d.num_queues >= 2 && d.status == 0x0F && d.queue_size == 1024
+        }
+        None => {
+            let _ = writeln!(log, "net: bring-up fail（无 virtio-net-pci?）");
+            false
+        }
+    };
+    report(&mut log, t68, "virtio-net-bringup");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {

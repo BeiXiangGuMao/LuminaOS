@@ -114,6 +114,8 @@ def main():
         "-m", "256M", "-smp", "2", "-display", "none", "-no-reboot",
         "-serial", "stdio",
         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
+        "-device", "virtio-net-pci,netdev=n0,disable-legacy=on",
+        "-netdev", "user,id=n0",
         "-monitor", f"unix:{MON},server,nowait",
     ]
     with open(LOG, "wb") as logf, subprocess.Popen(
