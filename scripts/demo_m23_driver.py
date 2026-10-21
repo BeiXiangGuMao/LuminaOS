@@ -161,7 +161,7 @@ def main():
 
             # 4b) A2 深化：help / ver / echo 参数面 / echo 负探针
             sendkey(mon, "h e l p ret")
-            mark = wait_log("cmds: halt st prog grow deep ping echo ver help fb text", since=mark)
+            mark = wait_log("cmds: halt st prog grow deep ping echo ver help fb text clear", since=mark)
             print("[demo] help -> 命令清单  OK（A2 自省面）")
 
             sendkey(mon, "v e r ret")
@@ -223,6 +223,13 @@ def main():
                 got = px_at(px, x, y, w)
                 print(f"[demo] {name} = {got}  OK（S2 横幅域取样）")
             print("[demo] screendump 横幅域前景像素在位（S2 文本服务铁证）")
+
+            # 4c-c) A3 清屏面：clear → ANSI 2J+H 经 SYS_LOG（控制字节过滤
+            # 为 '.' 的 v0 语义，序列骨架 [2J[H 在网即派发活体；raw 通道
+            # 随 M24 raw-log 挂账）
+            sendkey(mon, "c l e a r ret")
+            mark = wait_log(".[2J.[H", since=mark)
+            print("[demo] clear -> [2J[H 序列落串口  OK（A3 清屏面）")
 
             # 5) halt：init SYS_EXIT(0x10) → INIT_EXIT 透传 → QEMU 33
             sendkey(mon, "h a l t ret")

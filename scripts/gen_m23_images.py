@@ -67,7 +67,7 @@ SYS_LOG, SYS_EXIT, SYS_YIELD = 0, 1, 2
 SYS_WAIT_PID, SYS_SPAWN, SYS_EXEC, SYS_TTY_GETCH = 12, 13, 17, 34
 
 # A2/S1 直答文本（长度由 len() 现算——免手数错）
-HELP_TEXT = b"cmds: halt st prog grow deep ping echo ver help fb text"
+HELP_TEXT = b"cmds: halt st prog grow deep ping echo ver help fb text clear"
 VER_TEXT = b"LuminaOS v0.23.0+dev"
 EVOID_TEXT = b"(void)"
 FBOK_TEXT = b"fb-ok"
@@ -75,6 +75,7 @@ FBERR_TEXT = b"fb-err"
 BANNER_TEXT = b"LUMINA OS v0.23"
 TEXTOK_TEXT = b"text-ok"
 TEXTERR_TEXT = b"text-err"
+CLEAR_SEQ = b"\x1b[2J\x1b[H"
 
 # S1/S2 显示面常量（与 bedrock abi FB_VA_BASE/SYS_FB_* 双向对账）
 FB_VA = 0x40_000000
@@ -159,6 +160,7 @@ STRINGS = [
     ("s_banner", BANNER_TEXT),
     ("s_textok", TEXTOK_TEXT),
     ("s_texterr", TEXTERR_TEXT),
+    ("s_clear", CLEAR_SEQ),
 ]
 
 JE, JNE, JNZ = 0x84, 0x85, 0x85
@@ -226,6 +228,7 @@ def build_init_image():
         (b"help", "do_help"),
         (b"fb\x00\x00", "do_fb"),
         (b"text", "do_text"),
+        (b"clea", "do_clear"),
     ]:
         a.db(b"\x3D", le32(cmd_word(cmd)))  # cmp eax, imm32
         a.jcc(JE, target)
@@ -355,6 +358,11 @@ def build_init_image():
     a.jmp("prompt")
     a.label("text_fail")
     log_call(a, "s_texterr", len(TEXTERR_TEXT))
+    a.jmp("prompt")
+
+    # ---- A3 清屏面：clear（ANSI 2J+H 序列经 SYS_LOG 落终端）----
+    a.label("do_clear")
+    log_call(a, "s_clear", len(CLEAR_SEQ))
     a.jmp("prompt")
 
     # ---- 派生共用臂：SPAWN → OK 位校验 → WAITPID 收割 → itoa 打印 ----
