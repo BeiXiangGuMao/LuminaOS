@@ -77,8 +77,8 @@ use crate::multiboot1::BOOT_MAGIC;
 const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
 /// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项
-/// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C 起 68）。
-const SELFTEST_TOTAL: usize = 68;
+/// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C2 起 69）。
+const SELFTEST_TOTAL: usize = 69;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -3361,6 +3361,46 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         }
     };
     report(&mut log, t68, "virtio-net-bringup");
+
+    // 69) M23-C2 virtio-net 数据面（ARP 电气活体）：广播请求（who-has
+    //     10.0.2.2）→ slirp 应答 → used 环轮询 → 帧解析（oper=2 + tpa/
+    //     tha 寻我命中闸内建；spa=网关域 + 双环完成数三项断言）。预算
+    //     耗尽 / 数据面缺失 → fail-closed（回归批恒为 user-net 机器）。
+    let t69 = match vnet::arp_roundtrip() {
+        Some(a) => {
+            let spa_ok = a.spa == [10, 0, 2, 2];
+            let _ = writeln!(
+                log,
+                "net-arp: tx_used={} rx_seen={} spa={}.{}.{}.{} sha={:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x} tha={:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x} spa_ok={}",
+                a.tx_used,
+                a.rx_seen,
+                a.spa[0],
+                a.spa[1],
+                a.spa[2],
+                a.spa[3],
+                a.sha[0],
+                a.sha[1],
+                a.sha[2],
+                a.sha[3],
+                a.sha[4],
+                a.sha[5],
+                a.tha[0],
+                a.tha[1],
+                a.tha[2],
+                a.tha[3],
+                a.tha[4],
+                a.tha[5],
+                spa_ok
+            );
+            spa_ok && a.tx_used >= 1 && a.rx_seen >= 1
+        }
+        None => {
+            let _ = writeln!(log, "net-arp: no-reply（预算耗尽或数据面缺失）");
+            vnet::diag(&mut log);
+            false
+        }
+    };
+    report(&mut log, t69, "net-arp-roundtrip");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {
