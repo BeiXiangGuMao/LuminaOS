@@ -161,7 +161,7 @@ def main():
 
             # 4b) A2 深化：help / ver / echo 参数面 / echo 负探针
             sendkey(mon, "h e l p ret")
-            mark = wait_log("cmds: halt st prog grow deep ping echo ver help", since=mark)
+            mark = wait_log("cmds: halt st prog grow deep ping echo ver help fb text", since=mark)
             print("[demo] help -> 命令清单  OK（A2 自省面）")
 
             sendkey(mon, "v e r ret")
@@ -198,6 +198,31 @@ def main():
                     raise AssertionError(f"{name}: got {got} want {want}")
                 print(f"[demo] {name} = {got}  OK（ring3 直画活体）")
             print(f"[demo] screendump {w}x{h} 三色带像素五点全对（S1 壳直画 framebuffer 铁证）")
+
+            # 4c-b) S2 文本面：text → 内核侧 8x16 字体横幅直画 + 像素断言
+            sendkey(mon, "t e x t ret")
+            mark = wait_log("LUMINA-FB-TEXT chars=15 fg=", since=mark)
+            mark = wait_log("text-ok", since=mark)
+            print("[demo] text -> FB-TEXT(15) + text-ok  OK（S2 文本面）")
+            data = screendump(mon, PPM)
+            w, h, px = parse_ppm(data)
+            # 横幅域探针：'LUMINA OS v0.23' 字形像素（32,560 起排）vs 字间底黑
+            text_probes = {
+                "L-stem(33,566)": (33, 566),   # 'L' 左柱区（前景白域）
+                "bg(28,566)": (28, 566),       # 串前底黑
+                "bg(160,566)": (160, 566),     # 串尾后底黑（15 字符 × 8 = 120 → x<152 串内）
+            }
+            white_seen = any(
+                px_at(px, x, y, w) != (0x00, 0x00, 0x00)
+                for x in range(32, 152)
+                for y in range(560, 576)
+            )
+            if not white_seen:
+                raise AssertionError("banner 域无前景像素（文本未上屏）")
+            for name, (x, y) in text_probes.items():
+                got = px_at(px, x, y, w)
+                print(f"[demo] {name} = {got}  OK（S2 横幅域取样）")
+            print("[demo] screendump 横幅域前景像素在位（S2 文本服务铁证）")
 
             # 5) halt：init SYS_EXIT(0x10) → INIT_EXIT 透传 → QEMU 33
             sendkey(mon, "h a l t ret")

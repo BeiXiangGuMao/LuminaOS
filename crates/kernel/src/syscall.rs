@@ -409,6 +409,12 @@ extern "C" fn lumina_syscall_dispatch(frame: &mut SyscallFrame) -> u64 {
             // M23-S1 损伤屏障：交盒量化返回（纯记账面，无 VRAM 访问）
             crate::fb::sys_fb_sync(x, y, w, h)
         }
+        Syscall::FbText { x, y, buf, len } => {
+            task::count_syscall(2);
+            // M23-S2 文本渲染服务：8x16 位图字体内核侧直画（证据行
+            // LUMINA-FB-TEXT；shell 文本上屏基座）
+            crate::fb::sys_fb_text(x, y, buf, len)
+        }
     }
 }
 

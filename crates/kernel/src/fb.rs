@@ -184,6 +184,126 @@ pub fn bring_up(frames: &FrameAllocator) -> Option<(Framebuffer, u16)> {
     ))
 }
 
+// ---- M23-S2 文本渲染服务：8x16 位图字体 + SYS_FB_TEXT 主体 ----
+
+/// 文本前景色（xRGB 白）。
+const TEXT_FG: u32 = 0x00F0_F0F0;
+/// 文本底色（黑）。
+const TEXT_BG: u32 = 0x0000_0000;
+
+/// 前景色读出（t70 探针对账面；保持单一事实源）。
+pub fn text_fg_color() -> u32 {
+    TEXT_FG
+}
+/// 字形单元宽/高（像素）。
+const CELL_W: i64 = 8;
+const CELL_H: i64 = 16;
+
+/// 单帧缓冲句柄重建（FB_* 服务句柄 → [`Framebuffer`]；bring_up 登记
+/// 后调用——stride = WIDTH*4 恒等式，[`bring_up`] 构造同源）。
+fn fb_handle() -> Option<Framebuffer> {
+    let base = FB_BASE.load(Ordering::Acquire);
+    if base == 0 {
+        return None;
+    }
+    Some(Framebuffer {
+        base,
+        w: FB_W.load(Ordering::Acquire),
+        h: FB_H.load(Ordering::Acquire),
+        stride: WIDTH * 4,
+    })
+}
+
+/// 文本渲染核心：`s` 逐字符 8x16 单元直画（底黑整格 + 前景白位展开，
+/// 越屏像素经 [`Framebuffer::px`] 静默裁剪）。可打印域 0x20..=0x7E
+/// 之外的字节画空格（防御面——用户串不做编码假设）。返回前景像素
+/// 总数（t70 计数面；空格串恒 0）。
+fn draw_text(fb: &Framebuffer, x: i64, y: i64, s: &[u8]) -> u64 {
+    let mut fg_px = 0u64;
+    for (i, &c) in s.iter().enumerate() {
+        let gx = x + i as i64 * CELL_W;
+        let glyph = if (0x20..=0x7E).contains(&c) {
+            &crate::font_gen::FONT8X16[(c as usize - 0x20) * 16..(c as usize - 0x20) * 16 + 16]
+        } else {
+            &crate::font_gen::FONT8X16[..16]
+        };
+        for row in 0..CELL_H {
+            let bits = glyph[row as usize];
+            for col in 0..CELL_W {
+                let fg = bits & (0x80 >> col) != 0;
+                if fg {
+                    fg_px += 1;
+                }
+                let color = if fg { TEXT_FG } else { TEXT_BG };
+                // SAFETY: px 内部做界内检查/越界丢弃（损伤裁剪语义）。
+                fb.px((gx + col) as i32, (y + row) as i32, color);
+            }
+        }
+    }
+    fg_px
+}
+
+/// SYS_FB_TEXT 主体（M23-S2）：校验（设备/长度/用户串窗）→ 渲染 →
+/// 证据行。返回实渲染字符数；无 fb → ENODEV(19)；len > 512 →
+/// EINVAL(22)；串窗校验失败 → EFAULT(14)。
+pub fn sys_fb_text(x: u64, y: u64, buf: u64, len: u64) -> u64 {
+    const EFAULT: u64 = 14;
+    const EINVAL: u64 = 22;
+    const ENODEV: u64 = 19;
+    if FB_BASE.load(Ordering::Acquire) == 0 {
+        return ENODEV;
+    }
+    if len > 512 {
+        return EINVAL;
+    }
+    if len == 0 {
+        return 0;
+    }
+    let Some(s) = crate::syscall::validate_user_slice(buf, len) else {
+        return EFAULT;
+    };
+    let Some(fb) = fb_handle() else {
+        return ENODEV;
+    };
+    let chars = s.len() as u64;
+    let fg_px = draw_text(&fb, x as i64, y as i64, s);
+    // 证据行单调用交付
+    let mut out = [0u8; 96];
+    let mut n = put(&mut out, 0, b"LUMINA-FB-TEXT chars=");
+    n = put_udec(&mut out, n, chars);
+    n = put(&mut out, n, b" fg=");
+    n = put_udec(&mut out, n, fg_px);
+    n = put(&mut out, n, b" x=");
+    n = put_i64(&mut out, n, x as i64);
+    n = put(&mut out, n, b" y=");
+    n = put_i64(&mut out, n, y as i64);
+    crate::console::serial_log_bytes(&out[..n]);
+    chars
+}
+
+/// 文本自检面（t70 断言域）：主串前景像素计数 + 空格串零前景 +
+/// 'L' 首个前景位读回（表驱动探针——位坐标自字体表导出，读回断言
+/// 像素级活体）。返回 (主串前景px, 空格串前景px, 探针色)。
+pub fn text_selftest() -> Option<(u64, u64, u32)> {
+    let fb = fb_handle()?;
+    let main_fg = draw_text(&fb, 32, 40, b"LUMINA OS");
+    let blank_fg = draw_text(&fb, 32, 80, b"    ");
+    // 表驱动探针：'L'（表槽 0x4C-0x20=44）首个前景位（row,col）→
+    // 屏坐标 (32+col, 40+row) 读回——若显存写通路破，读回 ≠ 前景色。
+    let mut probe = 0u32;
+    for (row, &bits) in crate::font_gen::FONT8X16[44 * 16..44 * 16 + 16]
+        .iter()
+        .enumerate()
+    {
+        if bits != 0 {
+            let col = bits.leading_zeros() as i64; // MSB 起首前景列
+            probe = fb.px_read((32 + col) as i32, (40 + row) as i32);
+            break;
+        }
+    }
+    Some((main_fg, blank_fg, probe))
+}
+
 // ---- M23-S1 显示服务面：Surface 表 + 任务根 LFB 映射 + 损伤屏障 ----
 
 /// LFB 字节数（WIDTH × HEIGHT × 4 = 3 MiB；映射域与证据行共用）。

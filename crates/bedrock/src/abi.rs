@@ -271,6 +271,13 @@ pub const FB_VA_LIMIT: u64 = 0x8000_0000;
 /// `LUMINA-FB-SYNC` 落串口（demo 取证锚点）。
 pub const SYS_FB_SYNC: u64 = 36;
 
+/// 文本渲染服务（v0.22，M23-S2）：内核侧 8x16 等宽位图字体直画
+/// （a0=x, a1=y，i64 语义可负；a2=字符串指针，a3=字节数 ≤ 512）。
+/// 逐字符 8x16 单元：底黑 + 前景白位展开（越屏像素静默裁剪）；
+/// 返回实渲染字符数。无 fb → `ENODEV(19)`；len > 512 → `EINVAL(22)`；
+/// 指针校验失败 → `EFAULT(14)`。证据行 `LUMINA-FB-TEXT` 落串口。
+pub const SYS_FB_TEXT: u64 = 37;
+
 /// [`SYS_FCNTL`] 命令：复制句柄（rdx = 新句柄号下界）。
 pub const F_DUPFD: u64 = 0;
 /// [`SYS_FCNTL`] 命令：读描述符旗标。
@@ -306,7 +313,8 @@ pub const OPEN_MODE_MASK: u64 = 0b1_1111;
 /// 无独立用户空间 → `ERR_CAP`；帧耗尽 → `ERR_NOMEM(9)`。
 pub const SYS_EXEC: u64 = 17;
 
-/// 系统调用 ABI 版本（v0.14 = M23-S1：新增 SYS_FB_MAP(35)/SYS_FB_SYNC(36)
+/// 系统调用 ABI 版本（v0.15 = M23-S2：新增 SYS_FB_TEXT(37) 内核侧文本
+/// 渲染服务（8x16 位图字体 + 底黑前景白 + 越屏裁剪）；v0.14 = M23-S1：新增 SYS_FB_MAP(35)/SYS_FB_SYNC(36)
 /// 显示服务面（Surface 表 + 任务根 LFB 映射 + 损伤屏障量化）；v0.20 = M23：新增 SYS_TTY_GETCH(34) TTY 取字
 /// 轮询面——init shell 交互基座；v0.19 = M18：SYS_OPEN 模式域扩容 O_EXCL（bit4）、
 /// SYS_FCNTL 命令域扩容 F_DUP2FD（0..=3）、新增 SYS_IMAGE_ENUM(33)
@@ -556,6 +564,17 @@ pub enum Syscall {
         /// 损伤盒高。
         h: u64,
     },
+    /// 文本渲染服务（v0.22，M23-S2；见 [`SYS_FB_TEXT`]）。
+    FbText {
+        /// 起点 x（i64 语义可负，越屏裁剪）。
+        x: u64,
+        /// 起点 y。
+        y: u64,
+        /// 字符串指针（用户恒等窗）。
+        buf: u64,
+        /// 字节数（≤ 512）。
+        len: u64,
+    },
 }
 
 /// 从寄存器快照解析调用意图。只做结构校验，不做内存访问（由慢路径完成）。
@@ -663,6 +682,13 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
             w: a2,
             h: a3,
         }),
+        SYS_FB_TEXT if a3 <= 512 => Ok(Syscall::FbText {
+            x: a0,
+            y: a1,
+            buf: a2,
+            len: a3,
+        }),
+        SYS_FB_TEXT => Err(AbiError::BadArgs),
         _ => Err(AbiError::UnknownSyscall),
     }
 }
@@ -1072,6 +1098,22 @@ mod tests {
                 h: 64
             }),
             "损伤盒四参透传"
+        );
+        // FB_TEXT：四参透传 + 长度域（≤ 512）
+        assert_eq!(
+            super::parse(r(super::SYS_FB_TEXT, [32, 560, 0x400000, 15, 0])),
+            Ok(Syscall::FbText {
+                x: 32,
+                y: 560,
+                buf: 0x400000,
+                len: 15
+            }),
+            "文本服务四参透传"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_FB_TEXT, [0, 0, 0, 513, 0])),
+            Err(AbiError::BadArgs),
+            "len 超域（> 512）拒"
         );
     }
 

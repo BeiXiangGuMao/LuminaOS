@@ -67,15 +67,18 @@ SYS_LOG, SYS_EXIT, SYS_YIELD = 0, 1, 2
 SYS_WAIT_PID, SYS_SPAWN, SYS_EXEC, SYS_TTY_GETCH = 12, 13, 17, 34
 
 # A2/S1 直答文本（长度由 len() 现算——免手数错）
-HELP_TEXT = b"cmds: halt st prog grow deep ping echo ver help"
+HELP_TEXT = b"cmds: halt st prog grow deep ping echo ver help fb text"
 VER_TEXT = b"LuminaOS v0.23.0+dev"
 EVOID_TEXT = b"(void)"
 FBOK_TEXT = b"fb-ok"
 FBERR_TEXT = b"fb-err"
+BANNER_TEXT = b"LUMINA OS v0.23"
+TEXTOK_TEXT = b"text-ok"
+TEXTERR_TEXT = b"text-err"
 
-# S1 显示面常量（与 bedrock abi FB_VA_BASE 双向对账）
+# S1/S2 显示面常量（与 bedrock abi FB_VA_BASE/SYS_FB_* 双向对账）
 FB_VA = 0x40_000000
-SYS_FB_MAP, SYS_FB_SYNC = 35, 36
+SYS_FB_MAP, SYS_FB_SYNC, SYS_FB_TEXT = 35, 36, 37
 
 OUT = Path(__file__).resolve().parent.parent / "crates/kernel/src/exec_images_gen_m23.rs"
 
@@ -153,6 +156,9 @@ STRINGS = [
     ("s_evoid", EVOID_TEXT),
     ("s_fbok", FBOK_TEXT),
     ("s_fberr", FBERR_TEXT),
+    ("s_banner", BANNER_TEXT),
+    ("s_textok", TEXTOK_TEXT),
+    ("s_texterr", TEXTERR_TEXT),
 ]
 
 JE, JNE, JNZ = 0x84, 0x85, 0x85
@@ -219,6 +225,7 @@ def build_init_image():
         (b"ver\x00", "do_ver"),
         (b"help", "do_help"),
         (b"fb\x00\x00", "do_fb"),
+        (b"text", "do_text"),
     ]:
         a.db(b"\x3D", le32(cmd_word(cmd)))  # cmp eax, imm32
         a.jcc(JE, target)
@@ -327,6 +334,27 @@ def build_init_image():
     a.jmp("prompt")
     a.label("fb_fail")
     log_call(a, "s_fberr", len(FBERR_TEXT))
+    a.jmp("prompt")
+
+    # ---- S2 文本面：text（SYS_FB_TEXT 内核侧 8x16 字体直画横幅）----
+    # SYS_FB_TEXT(a0=x=rdi, a1=y=rsi, a2=buf=rdx, a3=len=r10)；返回实渲染
+    # 字符数（== len 即成功；ENODEV/EFAULT/EINVAL 皆 ≠ len → text-err）。
+    # 无需先 MAP——内核侧经 FB_* 服务句柄直写 LFB（S1 Surface 为用户侧
+    # 直画面；两者并存互不依赖）。y=560 落于三色带上方空白域。
+    a.label("do_text")
+    a.db(b"\xBF", le32(32))              # mov edi, 32（x）
+    a.db(b"\xBE", le32(560))             # mov esi, 560（y）
+    a.db(b"\xBA")                        # mov edx, s_banner（buf）
+    a.abs32("s_banner")
+    a.db(b"\x41\xBA", le32(len(BANNER_TEXT)))  # mov r10d, 15（len）
+    a.db(b"\xB8", le32(SYS_FB_TEXT))     # mov eax, 37
+    a.db(b"\x0F\x05")                    # syscall
+    a.db(b"\x3D", le32(len(BANNER_TEXT)))  # cmp eax, 15
+    a.jcc(JNE, "text_fail")              # 返码 ≠ 字符数 → text-err
+    log_call(a, "s_textok", len(TEXTOK_TEXT))
+    a.jmp("prompt")
+    a.label("text_fail")
+    log_call(a, "s_texterr", len(TEXTERR_TEXT))
     a.jmp("prompt")
 
     # ---- 派生共用臂：SPAWN → OK 位校验 → WAITPID 收割 → itoa 打印 ----

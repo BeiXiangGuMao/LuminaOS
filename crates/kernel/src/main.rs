@@ -39,6 +39,7 @@ mod caps;
 mod census;
 mod console;
 mod fb;
+mod font_gen;
 mod hostlink;
 mod interrupts;
 mod ipc;
@@ -77,8 +78,8 @@ use crate::multiboot1::BOOT_MAGIC;
 const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
 /// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项
-/// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C2 起 69）。
-const SELFTEST_TOTAL: usize = 69;
+/// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-S2 起 70）。
+const SELFTEST_TOTAL: usize = 70;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -3401,6 +3402,26 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         }
     };
     report(&mut log, t69, "net-arp-roundtrip");
+
+    // 70) M23-S2 文本渲染服务（8x16 位图字体直画）：主串前景计数 +
+    //     空格串零前景 + 'L' 左柱探针读回三断言（像素级活体）。fail-
+    //     closed：无 fb 环境 → 本项 FAIL（回归批恒为 stdvga 机器）。
+    let t70 = match fb::text_selftest() {
+        Some((main_fg, blank_fg, probe)) => {
+            let probe_ok = probe == fb::text_fg_color();
+            let _ = writeln!(
+                log,
+                "fb-text: main_fg={} blank_fg={} probe={:#x} probe_ok={}",
+                main_fg, blank_fg, probe, probe_ok
+            );
+            main_fg > 100 && blank_fg == 0 && probe_ok
+        }
+        None => {
+            let _ = writeln!(log, "fb-text: no-fb");
+            false
+        }
+    };
+    report(&mut log, t70, "fb-text-face");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {
