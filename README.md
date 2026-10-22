@@ -99,9 +99,10 @@ lumina-build/              ← 编译产物 + 日志 + 报告（源码树外，�
 ```bash
 cargo build --workspace          # 全仓构建（17 crate）
 cargo test  --workspace          # 全仓测试（宿主）+ 63 项裸机自检（S8）
-cargo run -p xtask -- ci         # 十阶段门禁（S1-S5 + S5b IDL 一致性 + S6/S7 + S8 冒烟 + S9 报告，fail-fast）
+cargo run -p xtask -- ci         # 十一阶段门禁（S1-S5 + S5b IDL 一致性 + S5c lint 台账 + S6/S7 + S8 冒烟 + S9 报告，fail-fast）
 cargo run -p xtask -- smoke      # 仅内核：lint + build + QEMU 裸机自检
-cargo run -p xtask -- check      # 仅宿主快速门禁（fmt + clippy + 测试 + 文档 + IDL 一致性）
+cargo run -p xtask -- check      # 仅宿主快速门禁（fmt + clippy + 测试 + 文档 + IDL 一致性 + lint 台账）
+cargo run -p xtask -- lint       # lint-deps 依赖矩阵对照 + unsafe 白名单扫描（allowlist.toml 引 ADR）
 cargo run -p xtask -- idl-gen    # IDL 契约 → 生成物落位（meridian/src/idl_gen.rs）
 cargo run -p xtask -- idl-check  # 生成物与契约字节级比对（手编漂移拒绝）
 ```

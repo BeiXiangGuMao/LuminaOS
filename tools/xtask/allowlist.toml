@@ -1,0 +1,111 @@
+# Lumina OS lint 台账（M24-X1 上线）—— 允许矩阵 + 债务登记
+#
+# 位置：tools/xtask/allowlist.toml；消费者：`cargo run -p xtask -- lint`
+# （ci S5c-lint 阶段同源）。
+#
+# 台账纪律：
+#   1. 依赖边分两面——[[allowed_edges]] 是**政策面**（细则/架构裁决允许的
+#      常态边，无需 ADR）；[[dep_exemptions]] 是**债务面**（现状违规但已由
+#      ADR 裁决收口窗口的边），每项 MUST 携带 adr 与 until；
+#   2. 新增依赖边 MUST 先改本台账再动 Cargo.toml——直接加边会被 lint 拒绝
+#      （政策面变更走评审，债务面变更必须有 ADR 背书）；
+#   3. [[module_overreach]] 登记结构性越界模块（非依赖边，模块归属债）；
+#   4. [[unsafe_allow]] 登记 unsafe 容忍面：无 path = 全 crate 允许层
+#      （机制件）；有 path = 文件级白名单（债务，MUST 有 adr + until）；
+#   5. until 到期未清账：清账批随迁移执行（如 ADR-0001 M26 收口时同步
+#      删台账条目）；lint 对 until 仅展示不执法（里程碑语义由人来判）。
+#   6. [dev-dependencies] / [build-dependencies] 不入依赖图（不随产物
+#      发布；构建期/测试期依赖另立台账再议）。
+
+[meta]
+ledger_version = 1
+
+# -------------------------------------------------------- 政策面：允许边
+
+[[allowed_edges]]
+from = "harbor"
+to = "ostd"
+note = "细则依赖方向：ostd → {harbor, vanguard} → bedrock"
+
+[[allowed_edges]]
+from = "vanguard"
+to = "ostd"
+note = "细则依赖方向同上"
+
+[[allowed_edges]]
+from = "lumina-kernel"
+to = "ostd"
+note = "内核消费机制层"
+
+[[allowed_edges]]
+from = "lumina-kernel"
+to = "harbor"
+note = "内核消费堆分配器（#[global_allocator]）"
+
+[[allowed_edges]]
+from = "lumina-kernel"
+to = "bedrock"
+note = "内核消费 abi/tlv/ipc/vfs 通信与文件面"
+
+[[allowed_edges]]
+from = "lumina-kernel"
+to = "vanguard"
+note = "内核消费驱动栈"
+
+[[allowed_edges]]
+from = "lumina-kernel"
+to = "weave"
+note = "内核消费 init/服务编排面"
+
+[[allowed_edges]]
+from = "lumina-kernel"
+to = "mirror"
+note = "内核消费显示合成面（SYS_FB 服务化，M23-S1 起）"
+
+# -------------------------------------------------------- 债务面：依赖豁免
+
+[[dep_exemptions]]
+from = "bedrock"
+to = "ostd"
+reason = "SpinLock ×4（block/ipc/vfs-lfs/vfs-mount/vfs-ramfs）+ SpscRing ×1（ipc FastPath 底座）；M26 随 vfs 外移与 FastPath 环内联清账"
+adr = "ADR-0001"
+until = "M26"
+
+[[dep_exemptions]]
+from = "bedrock"
+to = "crystal"
+reason = "GenerationalSlab fd 表底座（vfs/fd.rs）；M26 随 vfs 外移清账"
+adr = "ADR-0001"
+until = "M26"
+
+# -------------------------------------------------------- 债务面：模块越界
+
+[[module_overreach]]
+module = "bedrock::vfs"
+reason = "结构性越界（8 文件 3762 行，细则归属 Meridian/Crystal 层）；冻结新增——只收 bugfix 与既有 syscall 语义维护，新文件面需求排 M26 Crystal 批次"
+adr = "ADR-0002"
+until = "M26"
+
+# -------------------------------------------------------- unsafe 容忍面
+
+[[unsafe_allow]]
+crate = "ostd"
+note = "全仓唯一 unsafe 白名单 crate（收口层，ROADMAP §1.2；ADR-0005/0003 同构裁决：unsafe 机制件归 ostd）"
+
+[[unsafe_allow]]
+crate = "lumina-kernel"
+note = "内核态本体（ring0 边界面：中断/任务/页表/端口 I/O）"
+
+[[unsafe_allow]]
+crate = "harbor"
+path = "src/lib.rs"
+note = "内核堆分配器（HarborBump/FreeList：unsafe impl Sync/GlobalAlloc + 裸指针操作），待迁 ostd::heap（M29 Harbor libc 首版同批清库重铸）"
+adr = "ADR-0003"
+until = "M29"
+
+[[unsafe_allow]]
+crate = "pulse"
+path = "src/lib.rs"
+note = "SpscRing 无锁环（UnsafeCell + 原子序数，crate 内唯一 unsafe 集中区），待迁 ostd::sync::spsc；pulse 终态 forbid(unsafe_code) 密度 0"
+adr = "ADR-0005"
+until = "M27"

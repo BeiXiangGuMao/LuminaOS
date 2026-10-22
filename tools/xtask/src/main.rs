@@ -2,15 +2,17 @@
 //!
 //! 依据《系统开发指南》第三章（经 CHANGELOG v0.2.0 扩展，M24 起再度扩容）：
 //! 宿主面 S1 格式检查、S2 clippy、S3 构建、S4 单元测试、S5 文档 +
-//! S5b IDL 生成物一致性闸（idl-check，M24-M2 起）；内核三阶段
+//! S5b IDL 生成物一致性闸（idl-check，M24-M2 起）+ S5c lint-deps/unsafe
+//! 台账机检（lint，M24-X1 起）；内核三阶段
 //! S6 clippy（自定义目标）、S7 构建、S8 裸机冒烟（QEMU multiboot1 自检）；
 //! 最后 S9 写入报告。每个阶段的输出追加写入日志目录（源码树外），
 //! 失败即中断并返回非零码（fail-fast）。
 //!
-//! 用法：`cargo run -p xtask -- <ci|smoke|check|test|report|idl-gen|idl-check>`；
+//! 用法：`cargo run -p xtask -- <ci|smoke|check|test|report|lint|idl-gen|idl-check>`；
 //! 无参数默认 `ci`。
 
 mod idl;
+mod lint;
 mod toml_min;
 
 use std::fmt::Write as _;
@@ -196,6 +198,21 @@ fn idl_gate() -> bool {
             false
         }
     }
+}
+
+/// S5c-lint 闸：依赖矩阵对照 + unsafe 台账扫描（M24-X1；违规即拒）。
+fn lint_gate() -> bool {
+    let violations = lint::run(WORKSPACE_ROOT);
+    if violations > 0 {
+        if let Ok(mut f) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_file("S5c-lint"))
+        {
+            let _ = writeln!(f, "VIOLATIONS: {violations}");
+        }
+    }
+    violations == 0
 }
 
 /// QEMU 运行时（用户态解包，见 lumina-build/runtime/qemu-root/README）。
@@ -523,10 +540,13 @@ fn main() -> ExitCode {
     let cmd = std::env::args().nth(1).unwrap_or_else(|| "ci".into());
     match cmd.as_str() {
         "ci" => {
-            println!("Lumina OS xtask ci —— 十阶段门禁（宿主六阶段 + 内核三阶段 + 报告）");
+            println!("Lumina OS xtask ci —— 十一阶段门禁（宿主七阶段 + 内核三阶段 + 报告）");
             let mut results = run_stages(HOST_STAGES);
             if results.iter().all(|r| r.passed) {
                 results.push(run_fn_stage("S5b-idl", idl_gate));
+            }
+            if results.iter().all(|r| r.passed) {
+                results.push(run_fn_stage("S5c-lint", lint_gate));
             }
             if results.iter().all(|r| r.passed) {
                 results.extend(run_stages(KERNEL_STAGES));
@@ -534,7 +554,7 @@ fn main() -> ExitCode {
             if results.iter().all(|r| r.passed) {
                 results.push(run_smoke());
             }
-            let total = HOST_STAGES.len() + 1 + KERNEL_STAGES.len() + 1;
+            let total = HOST_STAGES.len() + 2 + KERNEL_STAGES.len() + 1;
             let all_passed = results.len() == total && results.iter().all(|r| r.passed);
             println!("{}", summarize(&results));
             match write_report(&results) {
@@ -542,7 +562,7 @@ fn main() -> ExitCode {
                 Err(e) => eprintln!("[S9-report] 报告写入失败：{e}"),
             }
             if all_passed {
-                println!("CI-OK：全部九阶段通过");
+                println!("CI-OK：全部 {} 阶段通过（含 S9 报告）", total + 1);
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE
@@ -569,6 +589,9 @@ fn main() -> ExitCode {
                 results.push(run_fn_stage("S5b-idl", idl_gate));
             }
             if results.iter().all(|r| r.passed) {
+                results.push(run_fn_stage("S5c-lint", lint_gate));
+            }
+            if results.iter().all(|r| r.passed) {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE
@@ -593,6 +616,14 @@ fn main() -> ExitCode {
             println!("报告目录：{BUILD_ROOT}/reports");
             ExitCode::SUCCESS
         }
+        "lint" => {
+            let violations = lint::run(WORKSPACE_ROOT);
+            if violations == 0 {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
         "idl-gen" => match idl::cmd_gen(WORKSPACE_ROOT) {
             Ok(path) => {
                 println!("IDL 生成物已落位：{path}");
@@ -615,7 +646,7 @@ fn main() -> ExitCode {
         },
         other => {
             eprintln!(
-                "未知子命令：{other}；可用：ci | smoke | check | test | report | idl-gen | idl-check"
+                "未知子命令：{other}；可用：ci | smoke | check | test | report | lint | idl-gen | idl-check"
             );
             ExitCode::FAILURE
         }
