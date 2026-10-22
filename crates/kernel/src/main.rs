@@ -78,8 +78,8 @@ use crate::multiboot1::BOOT_MAGIC;
 const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
 /// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项
-/// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-S2 起 70）。
-const SELFTEST_TOTAL: usize = 70;
+/// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71）。
+const SELFTEST_TOTAL: usize = 71;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -3422,6 +3422,41 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         }
     };
     report(&mut log, t70, "fb-text-face");
+
+    // 71) M23-C3 pulse 环交接活体：ARP 请求击发 → RX 排水面喂 SPSC 环
+    //     （完成 desc 重填，预填池可持续）→ 环出队消费 → 应答五条闸解
+    //     析（命中闸内建）。交接链「设备 → RX 缓冲 → pulse 环 → 消费
+    //     者」全活体；交接统计（pushed/popped）双计数断言。fail-closed：
+    //     无 virtio-net 环境 → 本项 FAIL（回归批恒为 virtio-net 机器）。
+    let t71 = match vnet::pulse_roundtrip() {
+        Some(pe) => {
+            let _ = writeln!(
+                log,
+                "net-pulse: spa={}.{}.{}.{} pushed={} popped={} sha={:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}",
+                pe.spa[0],
+                pe.spa[1],
+                pe.spa[2],
+                pe.spa[3],
+                pe.pushed,
+                pe.popped,
+                pe.sha[0],
+                pe.sha[1],
+                pe.sha[2],
+                pe.sha[3],
+                pe.sha[4],
+                pe.sha[5],
+            );
+            pe.spa == [10, 0, 2, 2]
+                && pe.tha == [0x52, 0x54, 0x00, 0x12, 0x34, 0x56]
+                && pe.pushed > 0
+                && pe.popped > 0
+        }
+        None => {
+            let _ = writeln!(log, "net-pulse: no-echo");
+            false
+        }
+    };
+    report(&mut log, t71, "net-pulse-handoff");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {

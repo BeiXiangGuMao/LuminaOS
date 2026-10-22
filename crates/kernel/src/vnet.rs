@@ -17,8 +17,10 @@
 //! virtio MMIO 寄存器访问无法以 safe Rust 表达；逐处携带 SAFETY 注释，
 //! 访问基址一律来自本模块 probe 成功后的映射窗（界内偏移，无越界路径）。
 
+use core::sync::atomic::{AtomicU64, Ordering};
 use ostd::mm::frame::FrameAllocator;
 use ostd::mm::page::{Entry, IdentityAccess, PageError, Walker};
+use ostd::sync::spsc::SpscRing;
 
 /// virtio 现代 PCI 供应商 ID。
 const VIRTIO_VENDOR: u16 = 0x1AF4;
@@ -650,7 +652,208 @@ pub fn diag(w: &mut impl core::fmt::Write) {
             *b = peek8(st.rx_bufs[0], i);
         }
         let _ = writeln!(w, "LUMINA-NETDIAG rxbuf0 {buf:02x?}");
+        let _ = writeln!(
+            w,
+            "LUMINA-NETDIAG pulse pushed={} popped={} miss={}",
+            PULSE_PUSHED.load(Ordering::Relaxed),
+            PULSE_POPPED.load(Ordering::Relaxed),
+            PULSE_MISS.load(Ordering::Relaxed),
+        );
     }
+}
+
+// ===================== C3：pulse 环交接面 =====================
+//
+// RX 帧「出内核」语义：设备 DMA 写 RX 缓冲 → 排水面喂 SPSC 环 →
+// 消费者出队。环交接把「轮询排水」与「帧消费」解耦——M24 起消费者
+// 为用户态网络服务（任务语境），本段消费者 = 自检 t71（单语境纪律
+// 承载 SPSC 契约：kmain 自检串行段，恰一生产者恰一消费者）。
+
+/// pulse 环容量（2 的幂；[`SpscRing`] 取模域契约）。
+const PULSE_CAP: usize = 8;
+
+/// pulse 槽帧数据域上限（以太 v2 最大帧 1514 → 1520 取整域）。
+const PULSE_FRAME_MAX: usize = 1520;
+
+/// pulse 环槽：单帧值语义（`Copy` 搬运、无堆无引用——环槽契约定式）。
+#[derive(Clone, Copy)]
+struct FrameSlot {
+    /// 有效帧长（VNET_HDR 已剥；≤ [`PULSE_FRAME_MAX`]）。
+    len: u16,
+    /// 保留域（data 起始 8 B 对齐）。
+    _pad: [u8; 6],
+    /// 帧数据（以太帧头起）。
+    data: [u8; PULSE_FRAME_MAX],
+}
+
+/// RX 交接环（内核 RX 面 = 唯一生产者；t71/未来网络服务 = 唯一消费者）。
+static PULSE_RX: SpscRing<FrameSlot, PULSE_CAP> = SpscRing::new();
+
+/// pulse 交接统计（累计口径；diag 与 t71 证据行同源）。
+static PULSE_PUSHED: AtomicU64 = AtomicU64::new(0);
+/// pulse 消费统计。
+static PULSE_POPPED: AtomicU64 = AtomicU64::new(0);
+/// 环满丢弃计数（fail-visible：交接面不静默吞帧）。
+static PULSE_MISS: AtomicU64 = AtomicU64::new(0);
+
+/// 消费者出队：帧拷入调用方缓冲，返回帧长（None = 环空）。
+pub fn pulse_rx_pop(out: &mut [u8]) -> Option<usize> {
+    let slot = PULSE_RX.recv()?;
+    let fl = slot.len as usize;
+    let n = fl.min(out.len());
+    out[..n].copy_from_slice(&slot.data[..n]);
+    PULSE_POPPED.fetch_add(1, Ordering::Relaxed);
+    Some(fl)
+}
+
+/// 帧缓冲 bulk volatile 读（peek8 逐字节的批量形）。
+/// SAFETY: 前置 —— buf 恒等映射帧内；off + out.len() ≤ 帧长（调用方域）。
+unsafe fn peek_bytes(buf: u64, off: usize, out: &mut [u8]) {
+    // SAFETY: 界内逐字节 volatile 单读（同函数级注释）。
+    unsafe {
+        for (i, b) in out.iter_mut().enumerate() {
+            *b = core::ptr::read_volatile((buf + off as u64 + i as u64) as *const u8);
+        }
+    }
+}
+
+/// RX 排水面：used 环排水 → 帧喂 pulse 环 → 重填预填（可持续数据面：
+/// 完成 desc 原位复用 + avail 再发布，RX 预填池不耗竭）。残帧/越界 id
+/// 拒收（fail-closed），环满丢弃计数（fail-visible）。
+/// SAFETY: 前置 —— vring 三表/rx_bufs 自 bring_up 装配（界内）；单语境
+///         串行（kmain 自检段）。返回喂环成功数。
+unsafe fn rx_service(st: &mut NetState) -> usize {
+    let mut elems = [Done { id: 0, len: 0 }; 8];
+    let n = unsafe { drain_used(&mut st.rx, &mut elems) };
+    let mut fed = 0usize;
+    for e in elems.iter().take(n) {
+        let idx = e.id as usize;
+        if idx >= RX_POST as usize {
+            continue; // 越界 id 拒收（fail-closed）
+        }
+        let full = e.len as usize;
+        if !(VNET_HDR + 14..=4096).contains(&full) {
+            continue; // 残帧（以太头不足）/ 设备写长越界拒收
+        }
+        let flen = full - VNET_HDR;
+        if flen > PULSE_FRAME_MAX {
+            continue;
+        }
+        let mut slot = FrameSlot {
+            len: flen as u16,
+            _pad: [0; 6],
+            data: [0; PULSE_FRAME_MAX],
+        };
+        // SAFETY: rx_bufs[idx] 恒等映射帧内（VNET_HDR + flen ≤ 4096 界内）。
+        unsafe { peek_bytes(st.rx_bufs[idx], VNET_HDR, &mut slot.data[..flen]) };
+        match PULSE_RX.send(slot) {
+            Ok(()) => {
+                PULSE_PUSHED.fetch_add(1, Ordering::Relaxed);
+                fed += 1;
+            }
+            Err(_) => {
+                PULSE_MISS.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        // 重填：desc 原位复用 + avail 再发布（预填池可持续）
+        // SAFETY: id = e.id < RX_POST 界内（上闸）；单语境发布序。
+        unsafe {
+            set_desc(st.rx.desc, e.id as u16, st.rx_bufs[idx], 4096, DFLAG_WRITE);
+            push_avail(&mut st.rx, e.id as u16);
+        }
+    }
+    fed
+}
+
+/// pulse 环交接活体成果（t71 断言域）。
+pub struct PulseEcho {
+    /// 应答源 MAC（slirp 网关域）。
+    pub sha: [u8; 6],
+    /// 应答源 IP（应为 10.0.2.2）。
+    pub spa: [u8; 4],
+    /// 应答目标 MAC（命中闸内建断言，此处留证）。
+    pub tha: [u8; 6],
+    /// 交接统计快照（累计口径）。
+    pub pushed: u64,
+    /// 消费统计快照。
+    pub popped: u64,
+}
+
+/// ARP 请求击发面（t69/t71 共用组帧）：TX 零垫 + 12 B 头 + ARP 请求域
+/// + desc 发布 + 击发（队列 1）。
+///
+/// SAFETY: 前置 —— tx_buf 单帧恒等映射；vring 三表自 setup_queue；
+///   单语境串行。
+unsafe fn tx_arp_request(st: &mut NetState) {
+    // SAFETY: 同函数级注释（组帧域界内，发布序 desc → avail → kick）。
+    unsafe {
+        ostd::hw::phys::write_zero(st.tx_buf, 4096);
+        let f = st.tx_buf + VNET_HDR as u64;
+        poke(f, 0, &[0xFF; 6]); // dst 广播
+        poke(f, 6, &st.mac); // src 本机
+        poke(f, 12, &[0x08, 0x06]); // ethertype ARP
+        poke(f, 14, &[0x00, 0x01]); // htype 以太网
+        poke(f, 16, &[0x08, 0x00]); // ptype IPv4
+        poke(f, 18, &[6, 4]); // hlen/plen
+        poke(f, 20, &[0x00, 0x01]); // oper 请求
+        poke(f, 22, &st.mac); // sha
+        poke(f, 28, &MY_IP); // spa
+        poke(f, 32, &[0u8; 6]); // tha 未知全零
+        poke(f, 38, &GW_IP); // tpa 网关
+        set_desc(st.tx.desc, 0, st.tx_buf, (VNET_HDR + ARP_TX_LEN) as u32, 0);
+        push_avail(&mut st.tx, 0);
+        kick(st.notify_base, st.notify_mult, 1, &st.tx);
+    }
+}
+
+/// pulse 环交接活体（t71）：ARP 请求击发 → 轮询 [`rx_service`] 喂环 →
+/// [`pulse_rx_pop`] 出队消费 → 应答五条闸（帧长足额 / 0806 / oper=2 /
+/// tpa 寻我 / tha 寻我 MAC）。交接链「设备 → RX 缓冲 → pulse 环 →
+/// 消费者」全活体；预算耗尽 / 态缺失返回 None（fail-closed）。
+pub fn pulse_roundtrip() -> Option<PulseEcho> {
+    let st = net_state_mut()?;
+    // SAFETY: 态自 bring_up 登记；组帧/排水/重填全部界内（单语境）。
+    unsafe { tx_arp_request(st) };
+    let mut buf = [0u8; PULSE_FRAME_MAX];
+    let mut spin = 0u64;
+    while spin < ARP_SPIN_BUDGET {
+        // SAFETY: 同上（排水 + 重填单语境界内）。
+        unsafe { rx_service(st) };
+        while let Some(fl) = pulse_rx_pop(&mut buf) {
+            if fl < 42 {
+                continue; // ARP 整帧 42 B 足额闸
+            }
+            let ethertype = u16::from_be_bytes([buf[12], buf[13]]);
+            if ethertype != 0x0806 {
+                continue; // 非 ARP（噪声帧）
+            }
+            let oper = u16::from_be_bytes([buf[20], buf[21]]);
+            if oper != 2 {
+                continue; // 非 ARP 应答
+            }
+            let mut sha = [0u8; 6];
+            let mut spa = [0u8; 4];
+            let mut tha = [0u8; 6];
+            let mut tpa = [0u8; 4];
+            sha.copy_from_slice(&buf[22..28]);
+            spa.copy_from_slice(&buf[28..32]);
+            tha.copy_from_slice(&buf[32..38]);
+            tpa.copy_from_slice(&buf[38..42]);
+            // 应答寻我 + 问我本机地址 → 命中（与 t69 命中闸同源）
+            if tpa == MY_IP && tha == st.mac {
+                return Some(PulseEcho {
+                    sha,
+                    spa,
+                    tha,
+                    pushed: PULSE_PUSHED.load(Ordering::Relaxed),
+                    popped: PULSE_POPPED.load(Ordering::Relaxed),
+                });
+            }
+        }
+        spin += 1;
+        core::hint::spin_loop();
+    }
+    None
 }
 
 /// ARP 回声活体成果（t69 断言域）。
@@ -681,24 +884,8 @@ pub fn arp_roundtrip() -> Option<ArpEcho> {
     // 违反后果 —— 环槽越界写邻表（num 模运算拦截）/ 游标错位丢帧
     //             （预算内重扫兜底）。
     unsafe {
-        // 1) TX 帧组装：12 B 零头 + 以太网广播 + ARP 请求 + 零垫
-        ostd::hw::phys::write_zero(st.tx_buf, 4096);
-        let f = st.tx_buf + VNET_HDR as u64;
-        poke(f, 0, &[0xFF; 6]); // dst 广播
-        poke(f, 6, &st.mac); // src 本机
-        poke(f, 12, &[0x08, 0x06]); // ethertype ARP
-        poke(f, 14, &[0x00, 0x01]); // htype 以太网
-        poke(f, 16, &[0x08, 0x00]); // ptype IPv4
-        poke(f, 18, &[6, 4]); // hlen/plen
-        poke(f, 20, &[0x00, 0x01]); // oper 请求
-        poke(f, 22, &st.mac); // sha
-        poke(f, 28, &MY_IP); // spa
-        poke(f, 32, &[0u8; 6]); // tha 未知全零
-        poke(f, 38, &GW_IP); // tpa 网关
-        // 2) 发布 + 击发（tx 队列 = 1；desc 槽 0 单 desc 链）
-        set_desc(st.tx.desc, 0, st.tx_buf, (VNET_HDR + ARP_TX_LEN) as u32, 0);
-        push_avail(&mut st.tx, 0);
-        kick(st.notify_base, st.notify_mult, 1, &st.tx);
+        // 1+2) TX 组帧 + 发布 + 击发（共用面：C3 抽 [`tx_arp_request`]）
+        tx_arp_request(st);
         // 3) 轮询：tx/rx used 双环排水 + 应答扫描
         let mut tx_used = 0usize;
         let mut rx_seen = 0usize;

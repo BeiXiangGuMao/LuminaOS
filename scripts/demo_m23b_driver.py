@@ -144,13 +144,13 @@ def main():
             wait_log("LUMINA-HOSTLINK-READY")
             qemu.stdin.write(TLV_REQ)
             qemu.stdin.flush()
-            # 2) 自检收官（70/70）+ 首帧证据 + init 上线 + 提示符
-            wait_log("LUMINA-SELFTEST-PASS 70/70")
+            # 2) 自检收官（71/71）+ 首帧证据 + init 上线 + 提示符
+            wait_log("LUMINA-SELFTEST-PASS 71/71")
             mark = wait_log("LUMINA-FIRST-FRAME")
             wait_log("LUMINA-MIRROR-OK", since=mark)
             wait_log("LUMINA-INTERACTIVE-ON")
             mark = wait_log("ok> ")
-            print("[demo] selftest 70/70 + FIRST-FRAME + MIRROR-OK  OK")
+            print("[demo] selftest 71/71 + FIRST-FRAME + MIRROR-OK  OK")
 
             # 3) monitor 抓屏 + 像素断言
             time.sleep(0.4)
