@@ -36,10 +36,10 @@
 | crystal | 180 | GenerationalSlab | 最薄；CR 三条 P0 全未启动 |
 | mirror | 163 | Rect+DamageTracker（被 kernel M23-B 消费） | 原语成形；损伤策略不满足细则（需 16 矩形上限） |
 | loom | 160 | 网格/字号/4 槽主题 | token 消费面；Elm 架构 0 |
-| prism | 150 | 电源策略纯函数 | **命名错位**（细则=GPU/显示栈；功耗策略属 Meridian）→ ADR-0006 |
+| prism → power | 150 | 电源策略纯函数（M24 起 crate 名 `power`） | 命名错位已裁决：更名 `power` 归 Meridian 域，prism 让位 GPU/显示栈 → ADR-0006（M24 执行） |
 | cascade | 140 | Shell 四态机+LRU 焦点序 | 骨架偏上 |
 | conduit | 138 | errno 名表+42 调用号快照 | 骨架；C-P04 机制 0 |
-| glyph | 81 | 24 基准 ×1/×2/×4 换算 | 骨架；**同源模型反向**（细则以 96 为母版）→ ADR-0007 |
+| glyph | 81 | 24 基准 ×1/×2/×4 换算 | 骨架；同源模型**合规**（细则 §5.1 明定 24 源网格，本行原「96 母版反向」系误读，见 ADR-0007 勘误）；渲染库本体 M30 |
 
 ### 1.3 资产面
 
@@ -50,7 +50,9 @@
 
 ---
 
-## 二、架构裁决议程（ADR Backlog，M24-ADR 任务输出 ADR-0001…0008）
+## 二、架构裁决议程（ADR Backlog → 已裁决，M24-ADR 落盘 docs/adr/0001…0008）
+
+> **状态更新（2026-10-22，M24-ADR）**：八项全部裁决完毕，五段模板 ADR 已落 `docs/adr/`（索引见 docs/adr/README.md）。要点：0001 终态零依赖三步收口（M24 删 vanguard 死声明）；0002 两步走 + vfs 冻结令；0003 分配器归 ostd::heap（M29 执行）；0004 混合态渐进双轨回滚；0005 环归 ostd::sync（M27 执行）；0006 prism→power **M24 已执行**；0007 **现实现合规**（细则 §5.1 明定 24 源网格，「96 母版」系误读，勘误闭环）；0008 双项偏差登记。下表保留原议程供历史对照：
 
 | # | 议题 | 选项 | 倾向方案 |
 |---|---|---|---|
@@ -92,7 +94,7 @@
 
 | 任务 | 内容 | 提交物 | 验收 |
 |---|---|---|---|
-| **M24-⓪** | M23 收口回归（宿主测试+冒烟 64+ 全绿）→ v0.24.0 定版八步：升版 → CHANGELOG → RELEASE_NOTES → tag → 双 tar → SHA256 → GitHub Release → ls-remote 回环 | v0.24.0 发布 + 四资产 | 回环 tag=0.24.0；RELEASE_NOTES 含 M23 十二笔 |
+| **M24-⓪** ✅ | M23 收口回归（宿主测试+冒烟 71/71 全绿）→ v0.24.0 定版八步：升版 → CHANGELOG → RELEASE_NOTES → tag → 双 tar → SHA256 → GitHub Release → ls-remote 回环 | v0.24.0 发布（id 420859562）+ 四资产 | ✅ 回环 tag=ce58844；RELEASE_NOTES 含 M23 全线；附带清欠：S8 补 virtio-net-pci + 计数 71/71 |
 | **M24-ADR** | 裁决 §二 全部 8 项，落 docs/adr/0001…0008（五段模板） | ADR 八篇 | 每篇含影响面与回滚；0001/0002/0003/0006 必须出结论 |
 | **M24-M1** | meridian::dispatcher 首割：号+版本位（高16族版本/低16消息号）解码、能力校验入口、三层错误模型（内核级透传/服务级可重试/兼容级 errno），宿主单测 + M-P01 打点骨架 | meridian 扩容（预计 +400~600 行） | 分发微基准挂 METRICS.md；错路全枚举测试 |
 | **M24-M2** | IDL 纪律起步：crates/meridian/idl/ 首个契约（VFS 注册四操作极小面草案：register/unregister/statfs/events）+ xtask idl-check 钩子（代码生成物一致性） | idl/*.toml + 生成器 | CI 校验可拒绝手写编解码漂移 |

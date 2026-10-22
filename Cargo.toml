@@ -13,7 +13,7 @@ members = [
     "crates/crystal",
     "crates/pulse",
     "crates/weave",
-    "crates/prism",
+    "crates/power",
     "crates/loom",
     "crates/ripple",
     "crates/glyph",
@@ -41,7 +41,7 @@ meridian = { path = "crates/meridian" }
 crystal = { path = "crates/crystal" }
 pulse = { path = "crates/pulse" }
 weave = { path = "crates/weave" }
-prism = { path = "crates/prism" }
+power = { path = "crates/power" }
 loom = { path = "crates/loom" }
 ripple = { path = "crates/ripple" }
 glyph = { path = "crates/glyph" }

@@ -1,0 +1,12 @@
+[package]
+name = "power"
+description = "Power 动力 —— 电源管理：状态迁移与三阶段策略（策略/回退/验证）；原 prism（ADR-0006 更名）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
