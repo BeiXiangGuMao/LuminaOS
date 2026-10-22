@@ -26,6 +26,49 @@
 - **v0.13.0（M13）**：VFS 骨架移植入真链。
 - **v0.14.0–v0.15.0（真链定版）**：云盘包（打包时刻 2026-10-10）。
 
+## v0.24.0（2026-10-22）—— M23：交互与电气面季（键盘/TTY/shell 交互闭环 + 显示三面服务化 + virtio-net 三段接线）
+
+### M23-①② 交互基座（键盘 + TTY + init shell）
+- **PS/2 键盘驱动 + TTY 行规程**（M23-①）：Irq1 桩 + i8042 自测 +
+  scancode 集 1 翻译 + 行规程（回显/退格/行缓冲）；自检 63 → 64。
+- **SYS_TTY_GETCH + init（PID 1 ring3 shell）**（M23-②③）：getch 面
+  （lines/drop 取证字段）+ init 任务常驻 shell（interactive 特性面）。
+
+### M23-A shell 深化
+- **A2**：help/ver 直答 + echo 参数面（首双字分派三臂扩展）。
+- **A3 搭车件**：shell clear 命令（ANSI 2J+H 经 SYS_LOG）+ help 清单扩容。
+
+### M23-B/S 显示面三步（首帧 → 服务化 → 文本渲染）
+- **首帧**（B）：stdvga dispi LFB 内核态直画 + mirror 损伤合成三帧面
+  （t66/t67；LUMINA-FIRST-FRAME + LUMINA-MIRROR-OK 取证行）。
+- **服务化**（S1）：Surface 表 + SYS_FB_MAP/SYS_FB_SYNC（首请求者 CAS
+  独占）+ 任务根 LFB 映射——shell 直画 framebuffer 通路成形。
+- **文本渲染**（S2）：SYS_FB_TEXT(37) 内核侧 8x16 字体直画（t70 +
+  shell text 命令；gen_font8x16.py 字库生成）。
+
+### M23-C virtio-net 三段接线（探测 → 数据面 → pulse 交接）
+- **C1 带网首段**：virtio 1.0 modern 探测/bring-up + t68 电气活体
+  （MAC/queue 数/isr 状态全命中）。
+- **C2 数据面**：vring RX/TX + ARP 广播应答电气活体（t69：slirp
+  spa=10.0.2.2 回包五条命中闸）+ PCI bus master 使能定案（四层取证
+  根因链：bus master 关闭时设备侧地址空间恒 unassigned）。
+- **C3 pulse 环交接**：RX 排水面喂 SPSC 环（FrameSlot×8 深度）+
+  t71 可持续预填活体（pushed/popped/miss 三计数 fail-visible）。
+
+### M24 起步（计划 + 对账）
+- **ROADMAP 落盘**：指南对齐差距成像 + ADR 议程八项（0001-0008）+
+  M24→M31 里程碑总规划 + M24 任务级分解（docs/ROADMAP.md）。
+- **ci 冒烟面对账**：S8 补 virtio-net-pci 参数 + 自检计数 69 → 71
+  （M23-C3 欠账清）；rustfmt 锁定工具链对账（4 文件纯格式）。
+
+### 变更
+- 自检 63 → 71（t66 mirror 首帧 / t67 损伤合成 / t68 virtio bring-up /
+  t69 ARP 往返 / t70 FB_TEXT / t71 pulse 环交接）。
+- ABI 面：SYS_FB_MAP/SYNC（Surface 服务化）、SYS_FB_TEXT(37)、
+  SYS_TTY_GETCH 新增；x86_64-unknown-none + rustflags 承载不变。
+- 宿主测试全绿；clippy 双段 -D warnings；ci 九阶段门禁全绿
+  （S8 冒烟 71/71 + 退出码 33 自动验收）。
+
 ## v0.23.0（2026-10-17）—— M22：稳定性收口季（六族根因收口 + [B] 猎场 v2.2 取证网常态化）
 
 ### M22-① census 败点名内化 + pf-hunt 大批次守候

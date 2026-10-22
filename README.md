@@ -3,11 +3,12 @@
 **100% Rust framekernel 桌面操作系统**——x86_64 长模式裸机内核 + 17 组件 crate
 workspace。内核可经 multiboot1 在 QEMU（`-smp 2`）上裸机启动，物理帧管理、四级
 页表（MMU 实机往返）、双核 SMP、抢占式调度、ring3 用户进程、SYSCALL/SYSRET
-系统调用、能力化 IPC、swap 换页、持久化存储面全部在环；**63 项裸机自检全绿并
-自动验收**（QEMU 退出码 33）。
+系统调用、能力化 IPC、swap 换页、持久化存储面全部在环；键盘/TTY 交互、
+显示面（LFB 首帧/Surface 服务化/文本渲染）、virtio-net 网络面全部在环；
+**71 项裸机自检全绿并自动验收**（QEMU 退出码 33）。
 
-当前状态：**v0.23.0（M22 稳定性收口季）** · pf-hunt 大批次守候在网 ·
-取证证据链全程落账（devlog S0–S83）。
+当前状态：**v0.24.0（M23 交互与电气面季）** · ROADMAP 制度化（ADR 议程
+八项）· 取证证据链全程落账（devlog S0–S83 归档 + t 系活体续编）。
 
 ## 特性一览
 
@@ -58,7 +59,7 @@ lumina-os/                 ← 源码树（保持干爽，永不出现编译产�
 ├── Cargo.toml             workspace：17 组件 crate + xtask
 ├── CHANGELOG.md           版本变更记录（v0.16.0 起详条目 + 早期沿革回溯补记）
 ├── LICENSE                MIT
-├── releases/              各版本发布说明（RELEASE_NOTES-v0.18.0 ~ v0.23.0）
+├── releases/              各版本发布说明（RELEASE_NOTES-v0.18.0 ~ v0.24.0）
 ├── .cargo/config.toml     target-dir → 源码树之外；内核目标 rustflags
 ├── rust-toolchain.toml    锁定 stable 1.99.0 + rustfmt/clippy
 ├── rustfmt.toml           行宽 100（DEV-002 4.1）
@@ -123,7 +124,7 @@ qemu-system-x86_64 -L <seabios> -L <qemu-data> \
 
 或者直接：`cargo run -p xtask -- smoke`（自动完成上述全部步骤并断言结果）。
 
-## 版本谱系（v0.2.0 → v0.23.0 全谱 tag）
+## 版本谱系（v0.2.0 → v0.24.0 全谱 tag）
 
 git 历史按版本序自云盘 src 包逐字节展开重建（树内容与云盘包一致，作者统一
 BeiXiangGuMao）；M20-① / M22-① 两个开发提交按原时刻 cherry-pick 归位。
@@ -145,8 +146,9 @@ BeiXiangGuMao）；M20-① / M22-① 两个开发提交按原时刻 cherry-pick 
 | v0.21.0 | M20 | #PF 根因闭环（取证 → 标本 → ELF 对号 → 切换机器契约修复） |
 | v0.22.0 | M21 | 钉扎拾取护槽 + pickup_sentinel + Harbor free-list |
 | v0.23.0 | M22 | 稳定性收口季：census 败点名内化 + #GP/spawn/waitpid/[C] 三面/[X] 出口闸六族根因收口 + [B] 猎场 v2.2 |
+| v0.24.0 | M23 | 交互与电气面季：键盘/TTY/init shell 交互闭环 + 显示三面（首帧/Surface/文本）+ virtio-net 三段接线（t66-t71）+ ROADMAP 制度化 |
 
-最新发布：**[Release v0.23.0](../../releases)**——src / artifacts（devlog S0–S83 +
+最新发布：**[Release v0.24.0](../../releases)**——src / artifacts（devlog S0–S83 +
 pf-hunt 台账）/ RELEASE_NOTES / SHA256SUMS 四资产。
 
 ## 工程纪律（对指南的承接）
