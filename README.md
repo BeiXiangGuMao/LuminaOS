@@ -84,7 +84,7 @@ lumina-os/                 ← 源码树（保持干爽，永不出现编译产�
 │   ├── mirror/      映境合成（损伤包围盒、跳帧快速通道）
 │   ├── cascade/     流域外壳（状态机、窗口焦点序 LRU）
 │   └── aurora/      极光应用框架（.luapp 校验、六态生命周期）
-├── tools/xtask/           九阶段 CI 编排（宿主五阶段 + 内核 lint/build/冒烟 + 报告）
+├── tools/xtask/           CI 门禁编排（宿主六阶段 + 内核 lint/build/冒烟 + 报告）+ IDL 生成器
 ├── docs/METRICS.md        指标 → 代码位置映射
 └── scripts/               pf-hunt 守候、QEMU 运行时重建、报告图生成
 
@@ -99,9 +99,11 @@ lumina-build/              ← 编译产物 + 日志 + 报告（源码树外，�
 ```bash
 cargo build --workspace          # 全仓构建（17 crate）
 cargo test  --workspace          # 全仓测试（宿主）+ 63 项裸机自检（S8）
-cargo run -p xtask -- ci         # 九阶段门禁（S1-S7 + S8 裸机冒烟 + S9 报告，fail-fast）
+cargo run -p xtask -- ci         # 十阶段门禁（S1-S5 + S5b IDL 一致性 + S6/S7 + S8 冒烟 + S9 报告，fail-fast）
 cargo run -p xtask -- smoke      # 仅内核：lint + build + QEMU 裸机自检
-cargo run -p xtask -- check      # 仅宿主快速门禁（fmt + clippy）
+cargo run -p xtask -- check      # 仅宿主快速门禁（fmt + clippy + 测试 + 文档 + IDL 一致性）
+cargo run -p xtask -- idl-gen    # IDL 契约 → 生成物落位（meridian/src/idl_gen.rs）
+cargo run -p xtask -- idl-check  # 生成物与契约字节级比对（手编漂移拒绝）
 ```
 
 ## 内核构建与裸机运行

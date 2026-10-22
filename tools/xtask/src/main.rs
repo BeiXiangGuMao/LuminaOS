@@ -1,12 +1,17 @@
-//! xtask —— Lumina OS 构建编排与九阶段 CI。
+//! xtask —— Lumina OS 构建编排与 CI 门禁。
 //!
-//! 依据《系统开发指南》第三章（经 CHANGELOG v0.2.0 扩展）：宿主五阶段
-//! S1 格式检查、S2 clippy、S3 构建、S4 单元测试、S5 文档；内核三阶段
+//! 依据《系统开发指南》第三章（经 CHANGELOG v0.2.0 扩展，M24 起再度扩容）：
+//! 宿主面 S1 格式检查、S2 clippy、S3 构建、S4 单元测试、S5 文档 +
+//! S5b IDL 生成物一致性闸（idl-check，M24-M2 起）；内核三阶段
 //! S6 clippy（自定义目标）、S7 构建、S8 裸机冒烟（QEMU multiboot1 自检）；
-//! 最后写入报告。每个阶段的输出追加写入日志目录（源码树外），
+//! 最后 S9 写入报告。每个阶段的输出追加写入日志目录（源码树外），
 //! 失败即中断并返回非零码（fail-fast）。
 //!
-//! 用法：`cargo run -p xtask -- <ci|smoke|check|test|report>`；无参数默认 `ci`。
+//! 用法：`cargo run -p xtask -- <ci|smoke|check|test|report|idl-gen|idl-check>`；
+//! 无参数默认 `ci`。
+
+mod idl;
+mod toml_min;
 
 use std::fmt::Write as _;
 use std::fs::OpenOptions;
@@ -58,8 +63,8 @@ fn run_logged(stage: &str, program: &str, args: &[&str]) -> Option<i32> {
     }
 }
 
-/// 宿主五阶段 + 内核两阶段：阶段名 → cargo 子命令与参数。
-const STAGES: &[(&str, &str, &[&str])] = &[
+/// 宿主五阶段（S1–S5）：阶段名 → cargo 子命令与参数。
+const HOST_STAGES: &[(&str, &str, &[&str])] = &[
     ("S1-fmt", "cargo", &["fmt", "--all", "--", "--check"]),
     (
         "S2-clippy",
@@ -76,6 +81,10 @@ const STAGES: &[(&str, &str, &[&str])] = &[
     ("S3-build", "cargo", &["build", "--workspace"]),
     ("S4-test", "cargo", &["test", "--workspace"]),
     ("S5-doc", "cargo", &["doc", "--no-deps", "--quiet"]),
+];
+
+/// 内核两阶段（S6–S7）：自定义目标语义。
+const KERNEL_STAGES: &[(&str, &str, &[&str])] = &[
     (
         "S6-kernel-lint",
         "cargo",
@@ -107,9 +116,6 @@ const STAGES: &[(&str, &str, &[&str])] = &[
         ],
     ),
 ];
-
-/// 宿主 CI 阶段数（check 子命令仅跑 S1–S5）。
-const HOST_STAGES: usize = 5;
 
 fn stage_log_header(stage: &str) {
     let _ = std::fs::create_dir_all(format!("{BUILD_ROOT}/logs"));
@@ -152,6 +158,44 @@ fn run_stages(
         println!("[PASS] {stage} ({} ms)", t0.elapsed().as_millis());
     }
     results
+}
+
+/// 运行内建函数阶段（不经 cargo 子进程；IDL 一致性闸等）。
+fn run_fn_stage(name: &'static str, f: impl FnOnce() -> bool) -> StageResult {
+    stage_log_header(name);
+    let t0 = Instant::now();
+    let passed = f();
+    println!(
+        "[{}] {name} ({} ms)",
+        if passed { "PASS" } else { "FAIL" },
+        t0.elapsed().as_millis()
+    );
+    StageResult {
+        name,
+        passed,
+        elapsed_ms: t0.elapsed().as_millis(),
+    }
+}
+
+/// S5b-idl 闸：契约 → 生成器重算 → 与落盘生成物字节级比对（M24-M2）。
+fn idl_gate() -> bool {
+    match idl::cmd_check(WORKSPACE_ROOT) {
+        Ok(()) => {
+            println!("[S5b-idl] 生成物与契约一致（字节级比对通过）");
+            true
+        }
+        Err(e) => {
+            eprintln!("[S5b-idl] {e}");
+            if let Ok(mut f) = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_file("S5b-idl"))
+            {
+                let _ = writeln!(f, "DRIFT: {e}");
+            }
+            false
+        }
+    }
 }
 
 /// QEMU 运行时（用户态解包，见 lumina-build/runtime/qemu-root/README）。
@@ -479,12 +523,18 @@ fn main() -> ExitCode {
     let cmd = std::env::args().nth(1).unwrap_or_else(|| "ci".into());
     match cmd.as_str() {
         "ci" => {
-            println!("Lumina OS xtask ci —— 九阶段门禁（宿主五阶段 + 内核三阶段 + 报告）");
-            let mut results = run_stages(STAGES);
+            println!("Lumina OS xtask ci —— 十阶段门禁（宿主六阶段 + 内核三阶段 + 报告）");
+            let mut results = run_stages(HOST_STAGES);
+            if results.iter().all(|r| r.passed) {
+                results.push(run_fn_stage("S5b-idl", idl_gate));
+            }
+            if results.iter().all(|r| r.passed) {
+                results.extend(run_stages(KERNEL_STAGES));
+            }
             if results.iter().all(|r| r.passed) {
                 results.push(run_smoke());
             }
-            let total = STAGES.len() + 1;
+            let total = HOST_STAGES.len() + 1 + KERNEL_STAGES.len() + 1;
             let all_passed = results.len() == total && results.iter().all(|r| r.passed);
             println!("{}", summarize(&results));
             match write_report(&results) {
@@ -500,12 +550,12 @@ fn main() -> ExitCode {
         }
         "smoke" => {
             println!("Lumina OS xtask smoke —— 内核 lint/build + QEMU 裸机自检");
-            let mut results = run_stages(&STAGES[HOST_STAGES..]);
+            let mut results = run_stages(KERNEL_STAGES);
             if results.iter().all(|r| r.passed) {
                 results.push(run_smoke());
             }
             println!("{}", summarize(&results));
-            let total = STAGES.len() - HOST_STAGES + 1;
+            let total = KERNEL_STAGES.len() + 1;
             if results.len() == total && results.iter().all(|r| r.passed) {
                 println!("SMOKE-OK");
                 ExitCode::SUCCESS
@@ -514,7 +564,10 @@ fn main() -> ExitCode {
             }
         }
         "check" => {
-            let results = run_stages(&STAGES[..HOST_STAGES]);
+            let mut results = run_stages(HOST_STAGES);
+            if results.iter().all(|r| r.passed) {
+                results.push(run_fn_stage("S5b-idl", idl_gate));
+            }
             if results.iter().all(|r| r.passed) {
                 ExitCode::SUCCESS
             } else {
@@ -540,8 +593,30 @@ fn main() -> ExitCode {
             println!("报告目录：{BUILD_ROOT}/reports");
             ExitCode::SUCCESS
         }
+        "idl-gen" => match idl::cmd_gen(WORKSPACE_ROOT) {
+            Ok(path) => {
+                println!("IDL 生成物已落位：{path}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("[idl-gen] {e}");
+                ExitCode::FAILURE
+            }
+        },
+        "idl-check" => match idl::cmd_check(WORKSPACE_ROOT) {
+            Ok(()) => {
+                println!("IDL 生成物与契约一致（字节级比对通过）");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("[idl-check] {e}");
+                ExitCode::FAILURE
+            }
+        },
         other => {
-            eprintln!("未知子命令：{other}；可用：ci | smoke | check | test | report");
+            eprintln!(
+                "未知子命令：{other}；可用：ci | smoke | check | test | report | idl-gen | idl-check"
+            );
             ExitCode::FAILURE
         }
     }

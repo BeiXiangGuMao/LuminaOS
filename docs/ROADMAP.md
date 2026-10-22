@@ -45,7 +45,7 @@
 
 - 活体自检序列续编点：**t72 起**（t66 首帧 / t68 vnet / t69 ARP / t70 text / t71 pulse 环已用）。
 - 基准折算口径沿用 METRICS.md：QEMU TCG 值仅作回归基线，P0 门禁数值以参考环境 B（裸机）实测为准。
-- xtask 现有 build/run(串口/QEMU 参数面)/test；**lint-deps 与 unsafe 白名单机检未建**（M24-X1 补齐）。
+- xtask 现有 build/run(串口/QEMU 参数面)/test + **idl-check 漂移闸已上线**（M24-M2：S5b 阶段，契约 crates/meridian/idl/ → 生成物字节级比对）；**lint-deps 与 unsafe 白名单机检未建**（M24-X1 补齐）。
 - 定版流水线已跑通两轮（v0.22.0 / v0.23.0：tag+双 tar+SHA256SUMS+RELEASE_NOTES+GitHub Release）。
 
 ---
@@ -95,9 +95,9 @@
 | 任务 | 内容 | 提交物 | 验收 |
 |---|---|---|---|
 | **M24-⓪** ✅ | M23 收口回归（宿主测试+冒烟 71/71 全绿）→ v0.24.0 定版八步：升版 → CHANGELOG → RELEASE_NOTES → tag → 双 tar → SHA256 → GitHub Release → ls-remote 回环 | v0.24.0 发布（id 420859562）+ 四资产 | ✅ 回环 tag=ce58844；RELEASE_NOTES 含 M23 全线；附带清欠：S8 补 virtio-net-pci + 计数 71/71 |
-| **M24-ADR** | 裁决 §二 全部 8 项，落 docs/adr/0001…0008（五段模板） | ADR 八篇 | 每篇含影响面与回滚；0001/0002/0003/0006 必须出结论 |
-| **M24-M1** | meridian::dispatcher 首割：号+版本位（高16族版本/低16消息号）解码、能力校验入口、三层错误模型（内核级透传/服务级可重试/兼容级 errno），宿主单测 + M-P01 打点骨架 | meridian 扩容（预计 +400~600 行） | 分发微基准挂 METRICS.md；错路全枚举测试 |
-| **M24-M2** | IDL 纪律起步：crates/meridian/idl/ 首个契约（VFS 注册四操作极小面草案：register/unregister/statfs/events）+ xtask idl-check 钩子（代码生成物一致性） | idl/*.toml + 生成器 | CI 校验可拒绝手写编解码漂移 |
+| **M24-ADR** ✅ | 裁决 §二 全部 8 项，落 docs/adr/0001…0008（五段模板） | ADR 八篇 | ✅ d9981a7：八篇落盘 + 0006/0007 随附执行（prism→power 更名 + bedrock 死声明清除）|
+| **M24-M1** ✅ | meridian::dispatcher 首割：号+版本位（高16族版本/低16消息号）解码、能力校验入口、三层错误模型（内核级透传/服务级可重试/兼容级 errno），宿主单测 + M-P01 打点骨架 | meridian 扩容（预计 +400~600 行） | ✅ 1a9b36c：+436 行；错路全枚举 11 例；M-P01 宿主基线 mean=229.6ns 登 METRICS.md |
+| **M24-M2** ✅ | IDL 纪律起步：crates/meridian/idl/ 首个契约（VFS 注册四操作极小面草案：register/unregister/statfs/events）+ xtask idl-check 钩子（代码生成物一致性） | idl/*.toml + 生成器 | ✅ S5b 阶段字节级比对挂闸；生成物 839 行 + 11 测试；漂移注入实证拒绝 |
 | **M24-X1** | xtask lint 子命令：lint-deps（解析 workspace 依赖图对照允许矩阵，白名单登记）+ unsafe 扫描（bedrock/ostd 白名单外 forbid 校验报告） | xtask 扩容 | 现有树通过零违规或给出白名单登记文件 |
 | **M24-S1** | mirror 损伤策略对齐细则：矩形并集合并、上限 16 超出全帧重绘、指针 16px 粒度累积；kernel SYS_FB 面对账 | mirror 扩容 + t72 活体 | t72：损伤上限翻转用例全绿 |
 | **M24-C1** | vnet RX 排水面背压/水位 + ICMP echo reply（t73）：延续 M23-C3 交接面 | kernel::vnet + pulse 对账 | t73 电气活体：ARP→ICMP 全链串口取证 |

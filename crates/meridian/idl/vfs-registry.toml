@@ -1,0 +1,109 @@
+# vfs-registry 契约 —— VFS 注册策略面四操作极小草案（M24-M2）
+#
+# 域归属：挂载/注册策略面随 meridian 域（ADR-0002 迁移步目标形态；本契约为
+# 服务化迁移前的策略面预锚点）。细则依据：《Meridian 经纬开发细则》§3.2
+# 「契约文档以 IDL 形式存放，CI 校验一致性」。
+#
+# 生成物：crates/meridian/src/idl_gen.rs —— `cargo run -p xtask -- idl-gen`
+# 产出；手编生成物将被 `cargo run -p xtask -- idl-check`（ci S5b-idl 阶段）
+# 以字节级比对拒绝。契约变更 MUST 改本文件后重新生成，禁止双向手改。
+#
+# 载荷模型：四寄存器风格（dispatcher::Payload = [u64; 4]，与 bedrock::abi
+# 五寄存器调用的参数位对齐，num 位由 32 位消息标识字承载——高 16 族版本 /
+# 低 16 消息号，见 dispatcher::MsgHeader）。
+#
+# 解码纪律：strict——保留寄存器（reserved* 字段）MUST 为 0，非零即拒
+# （DecodeError::ReservedNonZero），防语义漂移借保留位夹带。
+#
+# 类型面：M2 极小面仅收 u64（寄存器原生宽度）；u32/bool/bytes-ref 等窄型
+# 为后续扩展位（生成器校验器将随类型面扩容放行）。
+
+[contract]
+name = "vfs-registry"
+family_version = 1
+description = "VFS 注册策略面：挂载点注册/注销/统计/事件订阅四操作（极小面草案）"
+payload = "regs4"
+decoding = "strict"
+
+# ---------------------------------------------------------------- 四操作面
+
+[[messages]]
+name = "Register"
+number = 1
+description = "注册文件系统挂载点，返回注册令牌（后续操作的关联键）"
+request = [
+    { reg = 0, name = "path_ptr", doc = "路径缓冲区指针（调用方线性地址）" },
+    { reg = 1, name = "path_len", doc = "路径字节数（不含 NUL 终止符）" },
+    { reg = 2, name = "fs_kind", doc = "文件系统类型枚举（0 = LFS，1 = RAMFS）" },
+    { reg = 3, name = "flags", doc = "注册旗标位面（0 = 默认）" },
+]
+response = [
+    { reg = 0, name = "token", doc = "注册令牌（注销与事件订阅的关联键）" },
+    { reg = 1, name = "reserved1", doc = "保留（MUST 为 0）" },
+    { reg = 2, name = "reserved2", doc = "保留（MUST 为 0）" },
+    { reg = 3, name = "reserved3", doc = "保留（MUST 为 0）" },
+]
+errors = ["AlreadyRegistered", "PathInvalid", "FsKindUnsupported", "RegistryBusy"]
+
+[[messages]]
+name = "Unregister"
+number = 2
+description = "按令牌注销挂载点，返回释放计数"
+request = [
+    { reg = 0, name = "token", doc = "注册令牌（Register 应答颁发）" },
+    { reg = 1, name = "flags", doc = "注销旗标位面（0 = 默认）" },
+    { reg = 2, name = "reserved2", doc = "保留（MUST 为 0）" },
+    { reg = 3, name = "reserved3", doc = "保留（MUST 为 0）" },
+]
+response = [
+    { reg = 0, name = "released", doc = "释放计数（1 = 已注销）" },
+    { reg = 1, name = "reserved1", doc = "保留（MUST 为 0）" },
+    { reg = 2, name = "reserved2", doc = "保留（MUST 为 0）" },
+    { reg = 3, name = "reserved3", doc = "保留（MUST 为 0）" },
+]
+errors = ["NotRegistered", "RegistryBusy"]
+
+[[messages]]
+name = "Statfs"
+number = 3
+description = "按路径查询文件系统统计面（块规模与旗标）"
+request = [
+    { reg = 0, name = "path_ptr", doc = "路径缓冲区指针（调用方线性地址）" },
+    { reg = 1, name = "path_len", doc = "路径字节数（不含 NUL 终止符）" },
+    { reg = 2, name = "reserved2", doc = "保留（MUST 为 0）" },
+    { reg = 3, name = "reserved3", doc = "保留（MUST 为 0）" },
+]
+response = [
+    { reg = 0, name = "block_size", doc = "块字节（2 的幂约定）" },
+    { reg = 1, name = "blocks_total", doc = "总块数" },
+    { reg = 2, name = "blocks_free", doc = "空闲块数" },
+    { reg = 3, name = "fs_flags", doc = "文件系统旗标位面（0 = 默认）" },
+]
+errors = ["NotRegistered", "PathInvalid"]
+
+[[messages]]
+name = "Events"
+number = 4
+description = "订阅注册表变更事件（挂载/注销），返回事件队列标识"
+request = [
+    { reg = 0, name = "mask", doc = "事件掩码位面（位 0 = 挂载，位 1 = 注销）" },
+    { reg = 1, name = "queue_depth", doc = "事件队列深度（1..=4096）" },
+    { reg = 2, name = "reserved2", doc = "保留（MUST 为 0）" },
+    { reg = 3, name = "reserved3", doc = "保留（MUST 为 0）" },
+]
+response = [
+    { reg = 0, name = "queue_id", doc = "事件队列标识（pulse SocketAddr 承载前置占位，M27 对账）" },
+    { reg = 1, name = "reserved1", doc = "保留（MUST 为 0）" },
+    { reg = 2, name = "reserved2", doc = "保留（MUST 为 0）" },
+    { reg = 3, name = "reserved3", doc = "保留（MUST 为 0）" },
+]
+errors = ["PathInvalid", "RegistryBusy"]
+
+# ---------------------------------------------------------------- 开放问题
+#
+# 1. 组错误经 errno 绑定映射 DispatchError::Compat（生成物 into_dispatch_error，
+#    见 errors.toml 头注）——服务组 code 名在分发层载体的身份保全（M-VFS-* 前
+#    缀穿透）为开放问题，待 Conduit 接入批次裁决；本草案以「errno 单射」保
+#    客户端可辨识性（errors.toml 校验器强制组内 errno 唯一）。
+# 2. Events 的 queue_id 目前为占位标量；pulse::SocketAddr 承载与 M27 协议栈
+#    批次（ADR-0005 执行窗）对账后定稿。

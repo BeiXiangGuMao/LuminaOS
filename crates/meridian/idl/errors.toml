@@ -1,0 +1,57 @@
+# vfs-registry 服务组错误集（M24-M2 起按服务分组，细则 §3.3）
+#
+# 纪律：每个组错误 MUST 标注四元组——错误码名（code）/ 可重试（retryable）/
+# 建议重试间隔（interval_ms）/ Linux errno 绑定（x86_64 5.15 语义，与
+# conduit::errno_name 快照对账）。M1 骨架集（dispatcher::ServiceError）为
+# 分发层通用载体；本文件为服务组专属错误面，由生成器产出 VfsRegistryError
+# 枚举（crates/meridian/src/idl_gen.rs）。
+#
+# 映射纪律（草案）：组错误经 errno 绑定映射 DispatchError::Compat
+# （CompatErrno { errno, retryable }）——组内 errno 唯一（校验器强制）保
+# 客户端可辨识性；retryable 语义逐项显式标注。interval_ms 仅在
+# retryable = true 时可为正（不可重试项 MUST 为 0）；分发层 CompatErrno
+# 暂不承载建议间隔（草案开放点，随 Conduit 接入批次对账）。
+
+[meta]
+service = "vfs-registry"
+prefix = "M-VFS"
+
+[[errors]]
+name = "AlreadyRegistered"
+code = "M-VFS-ALREADY-REGISTERED"
+retryable = false
+interval_ms = 0
+errno = 17
+doc = "挂载点已注册（EEXIST 语义；同路径重复注册被拒）"
+
+[[errors]]
+name = "NotRegistered"
+code = "M-VFS-NOT-REGISTERED"
+retryable = false
+interval_ms = 0
+errno = 2
+doc = "挂载点未注册（ENOENT 语义；令牌或路径无对应注册项）"
+
+[[errors]]
+name = "PathInvalid"
+code = "M-VFS-PATH-INVALID"
+retryable = false
+interval_ms = 0
+errno = 22
+doc = "路径非法（EINVAL 语义；指针/长度不成立或路径格式违约）"
+
+[[errors]]
+name = "FsKindUnsupported"
+code = "M-VFS-FS-UNSUPPORTED"
+retryable = false
+interval_ms = 0
+errno = 19
+doc = "文件系统类型不支持（ENODEV 语义；fs_kind 枚举值未注册）"
+
+[[errors]]
+name = "RegistryBusy"
+code = "M-VFS-REGISTRY-BUSY"
+retryable = true
+interval_ms = 50
+errno = 11
+doc = "注册表过载（EAGAIN 语义；建议 50 ms 后重试）"

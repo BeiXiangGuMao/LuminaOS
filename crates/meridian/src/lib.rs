@@ -14,6 +14,11 @@
 
 pub mod dispatcher;
 
+/// M24-M2 生成物落位：IDL 契约（`crates/meridian/idl/`）经 `xtask idl-gen`
+/// 生成 —— 禁止手编；漂移由 `xtask idl-check`（ci S5b-idl 阶段）以字节级
+/// 比对拒绝。契约变更流程：改 toml → idl-gen → 生成物随契约同批提交。
+pub mod idl_gen;
+
 use std::collections::HashMap;
 
 /// 重启策略。
