@@ -1075,7 +1075,9 @@ mod tests {
         // FB_MAP：va 域结构校验（FB_VA_BASE 起、页对齐；域外/不对齐 BadArgs）
         assert_eq!(
             super::parse(r(super::SYS_FB_MAP, [0, super::FB_VA_BASE, 0, 0, 0])),
-            Ok(Syscall::FbMap { va: super::FB_VA_BASE }),
+            Ok(Syscall::FbMap {
+                va: super::FB_VA_BASE
+            }),
             "域基址 + 页对齐 → 受理"
         );
         assert_eq!(

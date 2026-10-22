@@ -342,13 +342,20 @@ pub fn sys_fb_map(va: u64) -> u64 {
     // 纵深防御：abi parse 层已检域，此处双检（防未来绕过 parse 的路径）
     if !(bedrock::abi::FB_VA_BASE..bedrock::abi::FB_VA_LIMIT).contains(&va)
         || va & 0xFFF != 0
-        || va.checked_add(LFB_BYTES).is_none_or(|end| end > bedrock::abi::FB_VA_LIMIT)
+        || va
+            .checked_add(LFB_BYTES)
+            .is_none_or(|end| end > bedrock::abi::FB_VA_LIMIT)
     {
         return EFAULT;
     }
     // Surface 单面登记（CAS：首请求者独占）
     if SURFACE_OWNER
-        .compare_exchange(SURFACE_FREE, crate::procs::current_pid(), Ordering::AcqRel, Ordering::Acquire)
+        .compare_exchange(
+            SURFACE_FREE,
+            crate::procs::current_pid(),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
         .is_err()
     {
         return EEXIST;
@@ -370,7 +377,12 @@ pub fn sys_fb_map(va: u64) -> u64 {
     let mut mapped = 0u64;
     for i in 0..pages {
         let phys = base + i * 4096;
-        match walker.map(user_root, va + i * 4096, phys, Entry::PRESENT | Entry::WRITABLE | Entry::USER) {
+        match walker.map(
+            user_root,
+            va + i * 4096,
+            phys,
+            Entry::PRESENT | Entry::WRITABLE | Entry::USER,
+        ) {
             Ok(()) => mapped += 1,
             Err(_) => break,
         }

@@ -55,8 +55,8 @@ mod timer;
 mod tty;
 mod user;
 mod vfs;
-mod vnet;
 mod vmm;
+mod vnet;
 
 use core::fmt::Write as _;
 use core::panic::PanicInfo;

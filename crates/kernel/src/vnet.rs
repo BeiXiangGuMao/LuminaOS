@@ -174,7 +174,6 @@ fn pci_write_dword(bus: u8, dev: u8, func: u8, offset: u8, val: u32) {
     ostd::hw::ports::write_u32(0xCFC, val);
 }
 
-
 /// 探测 virtio-net（bus 0 全扫）：vendor 0x1AF4 + device 0x1041。
 /// 返回（dev 槽位，BAR 基址表 [6]——0 = 无 BAR）。
 fn probe() -> Option<(u8, [u32; 6])> {
@@ -525,10 +524,7 @@ unsafe fn push_avail(vr: &mut Vring, head: u16) {
     // SAFETY: 环槽 + idx 域 volatile 单写（同函数级注释）。
     unsafe {
         core::ptr::write_volatile(slot as *mut u16, head);
-        core::ptr::write_volatile(
-            (vr.avail + 2) as *mut u16,
-            vr.next_idx.wrapping_add(1),
-        );
+        core::ptr::write_volatile((vr.avail + 2) as *mut u16, vr.next_idx.wrapping_add(1));
     }
     vr.next_idx = vr.next_idx.wrapping_add(1);
 }
@@ -551,10 +547,12 @@ unsafe fn drain_used(vr: &mut Vring, out: &mut [Done]) -> usize {
     while vr.last_used != target && n < out.len() {
         let e = vr.used + 4 + 8 * u64::from(vr.last_used % vr.num);
         // SAFETY: 完成项 8 B 逐字段 volatile 单读（同函数级注释）。
-        out[n] = unsafe { Done {
-            id: core::ptr::read_volatile(e as *const u32),
-            len: core::ptr::read_volatile((e + 4) as *const u32),
-        } };
+        out[n] = unsafe {
+            Done {
+                id: core::ptr::read_volatile(e as *const u32),
+                len: core::ptr::read_volatile((e + 4) as *const u32),
+            }
+        };
         n += 1;
         vr.last_used = vr.last_used.wrapping_add(1);
     }
@@ -578,7 +576,9 @@ unsafe fn peek16(buf: u64, off: usize) -> u16 {
     // SAFETY: 界内两字节 volatile 单读 + 大端拼装（同函数级注释）。
     unsafe {
         let hi = u16::from(core::ptr::read_volatile((buf + off as u64) as *const u8));
-        let lo = u16::from(core::ptr::read_volatile((buf + off as u64 + 1) as *const u8));
+        let lo = u16::from(core::ptr::read_volatile(
+            (buf + off as u64 + 1) as *const u8,
+        ));
         (hi << 8) | lo
     }
 }
@@ -993,11 +993,9 @@ pub fn bring_up(frames: &FrameAllocator) -> Option<NetDev> {
         base: cbase + coff as u64,
     };
     // 设备配置窗（MAC；与 common 同 BAR，同一映射覆盖）
-    let dev_win = caps
-        .device
-        .map(|(_, doff, _)| Window {
-            base: cbase + doff as u64,
-        });
+    let dev_win = caps.device.map(|(_, doff, _)| Window {
+        base: cbase + doff as u64,
+    });
     // SAFETY: 前置条件 —— cc_win 映射窗界内（common cfg 规范域偏移）。
     // 不变式 —— 状态机单调推进：ACK → DRIVER → 协商 → FEAT_OK 复验 →
     //           队列 → DRIVER_OK；每步读回验证，失败即 fail-closed。
