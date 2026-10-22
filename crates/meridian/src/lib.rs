@@ -8,6 +8,11 @@
 //! - 幂等恢复：对已运行服务重复 `start` 必须是无操作（幂等恢复的监管面保证）。
 //!
 //! 与 Bedrock 的交互（系统调用分发）在服务进程中实现；本 crate 不做 IO。
+//!
+//! M24-M1 起新增分发器首割 [`dispatcher`]：号 + 版本位解码、能力校验
+//! 入口与三层错误模型（细则 §3.2/§3.3；M-P01 打点骨架在位）。
+
+pub mod dispatcher;
 
 use std::collections::HashMap;
 

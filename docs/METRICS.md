@@ -13,7 +13,8 @@
 | OSTD 内存基元（M3） | OSTD（第 17 章） | `ostd::mm::frame`（区间裁剪 + LIFO 空闲表 + 统计不变式）、`ostd::mm::page`（四级页表 map/translate/unmap，`PhysAccess` 双后端：裸机 IdentityAccess + 宿主伪造内存） | **M3 新增：物理帧管理 + 页表抽象** | 宿主 9 例（裁剪/LIFO/耗尽复用/位域/往返/大页/需求分配）+ 冒烟自检 8/9（含 CR3 切换 MMU 写读实机往返） |
 | OSTD 任务基元（M3） | OSTD（第 17 章） | `ostd::task`（显式续点 TaskContext + `lumina_context_switch` global_asm 裸符号 + SwitchPair 锁外交换 + boot_new 初始上下文） | **M3 新增：协作式上下文切换（CONTEXT-01）** | 冒烟自检 11（轮转交错精确序列 [a1,b1,a2,b2,a3,b3]） |
 | OSTD 中断基元（M3） | OSTD（第 17 章） | `ostd::interrupt`（IDT 门描述符/原始地址注册/致命异常钩子 + `stubs` 手写桩白名单模块）、`ostd::time`（节拍计数/低功耗睡眠） | **M3 新增：IDT/PIC/PIT 中断链 + 节拍基线** | 宿主 3 例（门编码/双签名注册/越界防御）+ 冒烟自检 10 |
-| M 系列 | Meridian（第 3 章） | `meridian::Supervisor`（幂等恢复、退避封顶 30s） | 策略承接 | `backoff_grows_and_caps` 等 4 例 |
+| M 系列 | Meridian（第 3 章） | `meridian::Supervisor`（幂等恢复、退避封顶 30s）+ `meridian::dispatcher`（**M24-M1**：号+版本位解码、能力闸、三层错误模型；细则 §3.2/§3.3） | 策略承接 + 分发面结构承接；M-P01 ≤0.3μs 门禁数值待环境 B（真机窗口），宿主微基线在位 | `backoff_grows_and_caps` 等 4 例 + dispatcher 错路全枚举 11 例（含 M-P01 热路径微基线 `bench_dispatch_hot_path`：宿主均值/p99 打点，TCG 回归基线制） |
+| M-P01/M-P02（M24 承接） | Meridian（第 19 章） | `meridian::dispatcher::dispatch`（decode→版本闸→能力闸→路由→执行）+ `tests::bench_dispatch_hot_path`（100k 均值 + 1k 尾部 p99） | **打点骨架**：宿主均值/p99 防退化断言（<1μs/<10μs）；M-P02 空操作端到端 ≤2.5μs 待裸机集成期挂接 | 同上（ci S4 日志打印 M-P01 行） |
 | C-P01… | Conduit（第 4 章） | `conduit`（Linux 5.15 errno/syscall 快照） | 常量事实表 | 快照断言 2 例 |
 | CR 系列 | Crystal（第 6 章） | `crystal::GenerationalSlab`（代龄 ABA 防护） | 数据结构承接 | `stale_handle_never_sees_reused_slot` |
 | PU 系列 | Pulse（第 7 章） | `pulse::SpscRing`（零拷贝路径二） | 数据结构承接 | SPSC 双线程 1 万条 |
