@@ -188,8 +188,8 @@ const KERNEL_ELF: &str =
 const KERNEL_BIN: &str =
     "/home/z/my-project/lumina-build/target/x86_64-unknown-none/release/lumina-kernel.bin";
 
-/// 自检标记总数（与内核 SELFTEST_TOTAL 同步；M12 完成态 = 43，M13-② 起 46，M15 起 52，M16 起 55，M17 起 58，M18 起 62，M21-③ 起 63，M23 起 65，M23-B 起 67，M23-C1 起 68，M23-C2 起 69）。
-const SELFTEST_EXPECTED: &str = "69/69";
+/// 自检标记总数（与内核 SELFTEST_TOTAL 同步；M12 完成态 = 43，M13-② 起 46，M15 起 52，M16 起 55，M17 起 58，M18 起 62，M21-③ 起 63，M23 起 65，M23-B 起 67，M23-C1 起 68，M23-C2 起 69，M23-C3 起 71）。
+const SELFTEST_EXPECTED: &str = "71/71";
 
 /// TLV 请求帧：tag 0x0007，value = b"lumina-m5"。
 const TLV_REQ: &[u8] = &[
@@ -261,6 +261,13 @@ fn smoke_inner() -> bool {
             "stdio",
             "-device",
             "isa-debug-exit,iobase=0xf4,iosize=0x04",
+            // M24-⓪ 对账：网络面自检（t68-t71）需 virtio-net-pci 在场，
+            // 参数与 demo_m23b_driver.py 批跑面对齐；缺设备时 net 三项恒
+            // FAIL，ci 门禁面失真（本先例 71/71 全绿后才可提交）。
+            "-device",
+            "virtio-net-pci,netdev=n0,disable-legacy=on",
+            "-netdev",
+            "user,id=n0",
         ])
         .env("LD_LIBRARY_PATH", QEMU_LIB)
         .stdin(Stdio::piped())
