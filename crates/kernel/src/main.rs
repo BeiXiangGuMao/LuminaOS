@@ -77,9 +77,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 内核堆大小：4 MiB（M3 任务栈/日志/TLV 充足；帧管理独立于本堆）。
 const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项
-/// + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71）。
-const SELFTEST_TOTAL: usize = 71;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72）。
+const SELFTEST_TOTAL: usize = 72;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -3277,15 +3276,35 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                     0x0020_4068
                 }
             };
-            // 合成一步：损伤包围盒 → 裁剪上屏；无损伤 → 0 字节（跳帧）。
+            // 合成一步（M24-S1 细则计划面）：空 → 跳帧 0 字节；全帧
+            // 翻转 → 全幅重绘；否则按合并矩形列表逐块重绘（账目两两
+            // 不贴边，逐块计入无重复）。
             let compose = |dmg: &mirror::DamageTracker, win: Option<&mirror::Rect>| -> u64 {
-                match dmg.bounding_box() {
-                    Some(b) => s.fill(b, |x, y| match win {
+                let paint = |x: i32, y: i32| -> u32 {
+                    match win {
                         Some(r) if r.contains(x, y) => panel(x, y, r),
                         _ => bg(x, y),
-                    }),
-                    None => 0,
+                    }
+                };
+                if dmg.is_empty() {
+                    return 0;
                 }
+                if dmg.is_full() {
+                    return s.fill(
+                        mirror::Rect {
+                            x: 0,
+                            y: 0,
+                            w: s.w,
+                            h: s.h,
+                        },
+                        paint,
+                    );
+                }
+                let mut total = 0u64;
+                for r in dmg.rects() {
+                    total += s.fill(*r, paint);
+                }
+                total
             };
             // 帧1：全量损伤
             let mut dmg = mirror::DamageTracker::default();
@@ -3457,6 +3476,163 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         }
     };
     report(&mut log, t71, "net-pulse-handoff");
+
+    // 72) M24-S1 mirror 损伤策略细则活体（t72）：四相位——
+    //     (a) 并集合并：重叠对并成单包围盒、贴边对并成单块、分离对保留
+    //         两块；
+    //     (b) 上限 16 翻转（ROADMAP 钦定「损伤上限翻转用例」）：16 块
+    //         分离不翻；第 17 块入账即翻转全帧，全帧重绘实屏 3145728 字
+    //         节活体；全帧态吸收后续脏区，clear 复位；
+    //     (c) 指针 16px 粒度：跨格两笔外扩吸附 16px 网格并累积成单块；
+    //     (d) SYS_FB 面对账：两笔重叠 SYNC 经 syscall 面并集成单块、17
+    //         笔离散 SYNC 翻转全帧（LUMINA-FB-SYNC 证据行 rects=/full=
+    //         显形）→ 复位归零。fail-closed：无 fb 环境 → 本项 FAIL
+    //         （回归批恒为 stdvga 机器）。
+    let t72 = match &brought {
+        Some((s, _)) => {
+            let mut ok = true;
+            // (a) 并集合并
+            let mut d = mirror::DamageTracker::new();
+            d.mark(mirror::Rect {
+                x: 0,
+                y: 0,
+                w: 10,
+                h: 10,
+            });
+            d.mark(mirror::Rect {
+                x: 5,
+                y: 5,
+                w: 10,
+                h: 10,
+            });
+            ok &= d.rects().len() == 1
+                && d.rects()[0]
+                    == mirror::Rect {
+                        x: 0,
+                        y: 0,
+                        w: 15,
+                        h: 15,
+                    };
+            d.clear();
+            d.mark(mirror::Rect {
+                x: 0,
+                y: 0,
+                w: 10,
+                h: 10,
+            });
+            d.mark(mirror::Rect {
+                x: 10,
+                y: 0,
+                w: 10,
+                h: 10,
+            });
+            ok &= d.rects().len() == 1
+                && d.rects()[0]
+                    == mirror::Rect {
+                        x: 0,
+                        y: 0,
+                        w: 20,
+                        h: 10,
+                    };
+            d.clear();
+            d.mark(mirror::Rect {
+                x: 0,
+                y: 0,
+                w: 10,
+                h: 10,
+            });
+            d.mark(mirror::Rect {
+                x: 100,
+                y: 100,
+                w: 10,
+                h: 10,
+            });
+            ok &= d.rects().len() == 2 && !d.is_full();
+            // (b) 上限 16 翻转 + 全帧重绘实屏活体
+            d.clear();
+            for i in 0..16u32 {
+                d.mark(mirror::Rect {
+                    x: (i * 50) as i32,
+                    y: (i * 7) as i32,
+                    w: 10,
+                    h: 10,
+                });
+            }
+            ok &= !d.is_full() && d.rects().len() == 16;
+            d.mark(mirror::Rect {
+                x: 800,
+                y: 700,
+                w: 10,
+                h: 10,
+            }); // 第 17 块（与前列两两分离）
+            ok &= d.is_full() && d.rects().is_empty();
+            let full_bytes = s.fill(
+                mirror::Rect {
+                    x: 0,
+                    y: 0,
+                    w: s.w,
+                    h: s.h,
+                },
+                |x, y| ((x as u32 & 0x0F) << 16) | (y as u32 & 0x0F),
+            );
+            ok &= full_bytes == 3_145_728;
+            d.mark(mirror::Rect {
+                x: 1,
+                y: 1,
+                w: 1,
+                h: 1,
+            });
+            ok &= d.is_full(); // 全帧态吸收后续脏区
+            d.clear();
+            ok &= !d.is_full() && d.is_empty(); // 复位
+                                                // (c) 指针 16px 粒度累积
+            d.mark_pointer(mirror::Rect {
+                x: 5,
+                y: 5,
+                w: 2,
+                h: 2,
+            });
+            d.mark_pointer(mirror::Rect {
+                x: 20,
+                y: 8,
+                w: 4,
+                h: 4,
+            });
+            ok &= d.rects().len() == 1
+                && d.rects()[0]
+                    == mirror::Rect {
+                        x: 0,
+                        y: 0,
+                        w: 32,
+                        h: 16,
+                    };
+            // (d) SYS_FB 面对账（经 syscall 面，证据行 rects=/full=）
+            fb::fb_damage_reset();
+            let _ = fb::sys_fb_sync(0, 0, 10, 10);
+            let _ = fb::sys_fb_sync(5, 5, 10, 10);
+            let (n, f) = fb::fb_damage_plan();
+            ok &= n == 1 && !f;
+            for i in 0..17u64 {
+                let _ = fb::sys_fb_sync(i * 50, i * 7, 10, 10);
+            }
+            let (_, f) = fb::fb_damage_plan();
+            ok &= f; // 17 笔离散入账即翻转
+            fb::fb_damage_reset();
+            let (n, f) = fb::fb_damage_plan();
+            ok &= n == 0 && !f;
+            let _ = writeln!(
+                log,
+                "mirror-damage: union=ok cap16-flip=ok full_bytes={} ptr16=ok sysfb-reconciled=ok",
+                full_bytes
+            );
+            ok
+        }
+        None => {
+            let _ = writeln!(log, "mirror-damage: no-fb");
+            false
+        }
+    };
+    report(&mut log, t72, "mirror-damage-spec");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {

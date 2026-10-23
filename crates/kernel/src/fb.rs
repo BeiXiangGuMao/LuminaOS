@@ -19,11 +19,12 @@
 //! SAFETY 注释并做界内断言（像素坐标先钳制后寻址，无越界写路径）。
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use mirror::Rect;
+use mirror::{DamageTracker, Rect};
 use ostd::hw::control::read_cr3;
 use ostd::hw::ports;
 use ostd::mm::frame::FrameAllocator;
 use ostd::mm::page::{Entry, IdentityAccess, PageError, Walker};
+use ostd::sync::SpinLock;
 
 /// dispi 索引寄存器端口（bochs VBE 接口）。
 const DISPI_INDEX: u16 = 0x1CE;
@@ -322,6 +323,27 @@ static SURFACE_OWNER: AtomicU64 = AtomicU64::new(u64::MAX);
 /// Surface 表占用哨兵（空闲域）。
 const SURFACE_FREE: u64 = u64::MAX;
 
+// ---- M24-S1 损伤策略对账面：SYS_FB 帧损伤累计器 ----
+
+/// SYS_FB 帧损伤累计器（M24-S1）：ring3 每笔 SYS_FB_SYNC 的交盒经
+/// mirror [`DamageTracker`] 细则策略（矩形并集合并 / 上限 16 翻转全帧 /
+/// 指针 16px 粒度——指针面留合成器直标，syscall 面只流矩形）累积成
+/// 帧级损伤计划。合成器消费面（M28 组合器服务化）就绪前，本累计器
+/// 以证据行 `rects=`/`full=` 字段实时显形（记账活体）。
+static SYNC_DAMAGE: SpinLock<DamageTracker> = SpinLock::new(DamageTracker::new());
+
+/// 帧损伤计划读出：(合并后矩形数, 全帧翻转标志)。t72 对账域 +
+/// 未来合成器 flush 前置询问面（M28）。
+pub fn fb_damage_plan() -> (usize, bool) {
+    let acc = SYNC_DAMAGE.lock();
+    (acc.rects().len(), acc.is_full())
+}
+
+/// 帧损伤复位（合成器帧提交后清账；t72 相位隔离同用此口）。
+pub fn fb_damage_reset() {
+    SYNC_DAMAGE.lock().clear();
+}
+
 /// SYS_FB_MAP 主体（M23-S1）：把 LFB 映射进调用方任务根并登记 Surface。
 ///
 /// - `va` 已由 abi parse 层预检（页对齐 + [`bedrock::abi::FB_VA_BASE`]
@@ -412,9 +434,12 @@ pub fn sys_fb_map(va: u64) -> u64 {
     0
 }
 
-/// SYS_FB_SYNC 主体（M23-S1）：损伤盒与全屏求交，返回交盒字节数。
-/// 纯量化面（无 VRAM 访问——直写映射下像素已实时上屏）；证据行
-/// `LUMINA-FB-SYNC` 落串口（demo 取证锚点）。
+/// SYS_FB_SYNC 主体（M23-S1，M24-S1 对账）：损伤盒与全屏求交，返回交
+/// 盒字节数。几何单一事实源——交盒由 mirror [`Rect::intersection`]
+/// 给出（不再手搓裁剪）；同时把交盒喂入帧损伤累计器（
+/// [`SYNC_DAMAGE`]，细则策略面：并集合并/上限 16 翻转/指针 16px），
+/// 证据行追加 `rects=`/`full=` 字段实时显形。无 VRAM 访问（直写映射
+/// 下像素已实时上屏）。
 pub fn sys_fb_sync(x: u64, y: u64, w: u64, h: u64) -> u64 {
     const ENODEV: u64 = 19;
     let (sw, sh) = (
@@ -428,11 +453,38 @@ pub fn sys_fb_sync(x: u64, y: u64, w: u64, h: u64) -> u64 {
     let (x, y) = (x as i64, y as i64);
     let (w, h) = (w as i64, h as i64);
     let (w, h) = (w.max(0), h.max(0));
+    // 证据行域（与 M23-S1 行格式逐字节同源：坐标钳屏 + 交差）
     let x0 = x.clamp(0, sw);
     let y0 = y.clamp(0, sh);
     let x1 = (x.checked_add(w).unwrap_or(sw)).clamp(0, sw);
-    let y1 = (y.checked_add(h).unwrap_or(sh)).clamp(0, sh);
-    let bytes = (x1 - x0).max(0) as u64 * (y1 - y0).max(0) as u64 * 4;
+    let w_out = (x1 - x0).max(0);
+    // 几何单一事实源（M24-S1 对账）：交盒与字节数走 mirror 求交。
+    // 坐标收敛 i32 安全窗（屏 ≤ 64Ki 像素，窗外截断与求交结果等价）。
+    let win = |v: i64| v.clamp(-(1 << 29), 1 << 29) as i32;
+    let dim = |v: i64| v.min(1 << 29) as u32;
+    let full = Rect {
+        x: 0,
+        y: 0,
+        w: sw as u32,
+        h: sh as u32,
+    };
+    let req = Rect {
+        x: win(x),
+        y: win(y),
+        w: dim(w),
+        h: dim(h),
+    };
+    let bytes = full.intersection(&req).map_or(0, |c| c.area() * 4);
+    // 帧损伤累计（细则策略面在累计器内发生）：空交盒不入账
+    let (rects_n, full_flip) = {
+        let mut acc = SYNC_DAMAGE.lock();
+        if let Some(c) = full.intersection(&req) {
+            if c.w > 0 && c.h > 0 {
+                acc.mark(c);
+            }
+        }
+        (acc.rects().len(), acc.is_full())
+    };
     // 证据行单调用交付（serial_log_bytes 每调用追加 CRLF——分次会撕行）
     let mut buf = [0u8; 96];
     let mut n = put(&mut buf, 0, b"LUMINA-FB-SYNC x=");
@@ -440,9 +492,13 @@ pub fn sys_fb_sync(x: u64, y: u64, w: u64, h: u64) -> u64 {
     n = put(&mut buf, n, b" y=");
     n = put_i64(&mut buf, n, y0);
     n = put(&mut buf, n, b" w=");
-    n = put_udec(&mut buf, n, (x1 - x0).max(0) as u64);
+    n = put_udec(&mut buf, n, w_out as u64);
     n = put(&mut buf, n, b" bytes=");
     n = put_udec(&mut buf, n, bytes);
+    n = put(&mut buf, n, b" rects=");
+    n = put_udec(&mut buf, n, rects_n as u64);
+    n = put(&mut buf, n, b" full=");
+    n = put(&mut buf, n, if full_flip { b"1" } else { b"0" });
     crate::console::serial_log_bytes(&buf[..n]);
     bytes
 }

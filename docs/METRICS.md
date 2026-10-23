@@ -20,7 +20,7 @@
 | PU 系列 | Pulse（第 7 章） | `pulse::SpscRing`（零拷贝路径二） | 数据结构承接 | SPSC 双线程 1 万条 |
 | V-P02/03/05 | Vanguard（第 8 章） | `vanguard`（派生收窄、撤销） | 模型承接 | `derive_cannot_escalate` 等 |
 | PR 系列 | Prism（第 9 章） | `prism::decide`（三阶段策略 + 低电量回退） | 策略承接 | 时间线/回退/迁移表 |
-| MIR 系列 | Mirror（第 10 章） | `mirror::DamageTracker`（损伤包围盒 → 跳帧）；**v0.2.0：bounding_box 生产路径零 expect** | 算法承接 | `damage_bbox_and_skip_frame` |
+| MIR 系列 | Mirror（第 10 章） | `mirror::DamageTracker`（损伤包围盒 → 跳帧）；**v0.2.0：bounding_box 生产路径零 expect**；**M24-S1 细则损伤策略：矩形并集合并（相交/贴边 → 包围盒，不动点）+ 上限 16 翻转全帧重绘（DAMAGE_MAX_RECTS）+ 指针 16px 网格粒度累积（POINTER_GRANULARITY/mark_pointer）三态计划面（is_empty/is_full/rects）；kernel SYS_FB 面对账：sys_fb_sync 求交同源 mirror::Rect::intersection + 帧损伤累计器（SpinLock，证据行 rects=/full= 显形）** | 算法承接 | `damage_bbox_and_skip_frame` + `union_merge_overlap_adjacent_disjoint` / `cap16_flip_to_full_frame` / `pointer_grid_accumulation`（宿主）+ 冒烟 t72（损伤上限翻转用例，QEMU 实屏 3145728 B 全帧重绘活体） |
 | RI 系列 | Ripple（第 11 章） | `ripple`（170/26、300/30、可打断可逆） | 物理常量承接（数值与 ART-003 一致） | 收敛/快慢/打断 3 例 |
 | LO-P01/02 | Loom（第 12 章） | `loom`（8px 网格、字号公式、48/72 骨架） | 视觉常量承接（数值与 ART-003 一致） | 网格/公式/骨架 |
 | GL-P06… | Glyph（第 14 章） | `glyph`（24/48/96 ×1/×2/×4、悬停 1.05×/120ms） | 同源缩放承接 | 三档换算 |
