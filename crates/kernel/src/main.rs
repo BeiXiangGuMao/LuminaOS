@@ -77,8 +77,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 内核堆大小：4 MiB（M3 任务栈/日志/TLV 充足；帧管理独立于本堆）。
 const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72）。
-const SELFTEST_TOTAL: usize = 72;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73）。
+const SELFTEST_TOTAL: usize = 73;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -3633,6 +3633,229 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         }
     };
     report(&mut log, t72, "mirror-damage-spec");
+
+    // 73) M24-C1 vnet RX 背压/水位 + ICMP echo reply（t73）：五相位——
+    //     (a) 预备清场：pulse 环排空 + 排水面归位（占用 0 基线）；
+    //     (b) 背压投入：ARP 突发逐发逐排不消费 → 占用越 HI(6) → 停臂
+    //         投入（enters ≥ 1 且 active）+ 投入态拍短路（重臂计数冻结）；
+    //     (c) 水位解除：消费排水 → 占用回 LO(2) → pending 一揽子重臂
+    //         （exits ≥ 1 + rearmed 跳升 + 占用归零，缓冲池零泄漏），
+    //         同拍自突发 ARP 应答捕获网关 MAC（ARP→ICMP 全链第一环）；
+    //     (d) ARP→ICMP 全链：echo request 发 10.0.2.2（背压解除后 RX
+    //         面活性回证）→ slirp 回声 reply（寻源/type0/id/seq/payload/
+    //         IP+ICMP 双校验和五闸）；
+    //     (e) echo reply 应答器：合成请求字节级组帧断言（确定性面）+
+    //         应答器服务真发线上（slirp 无外部 type8 到达面——icmp_input
+    //         仅 vhost_addr 反射，其余 forward 代理，实测回环不成立）→
+    //         TX used 环完成回读 = 击发收讫电气证据 + replies 计数对账。
+    //     fail-closed：无 virtio-net 环境 → 本项 FAIL（回归批恒为
+    //     virtio-net 机器）。
+    let t73 = {
+        let mut ok = true;
+        let mut buf = [0u8; vnet::PULSE_FRAME_MAX];
+        let mac_self = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+        // (a) 预备清场：环排空 + 排水面归位
+        while vnet::pulse_rx_pop(&mut buf).is_some() {}
+        for _ in 0..4 {
+            vnet::rx_pump();
+        }
+        // (b) 背压投入：ARP 突发（逐发逐排不消费，占用爬坡越 HI）
+        let mut rounds = 0u32;
+        while vnet::bp_snapshot().enters == 0 && rounds < 32 {
+            if !vnet::arp_tx() {
+                break;
+            }
+            vnet::rx_pump();
+            rounds += 1;
+        }
+        let bp_in = vnet::bp_snapshot();
+        ok &= bp_in.enters >= 1 && bp_in.active && bp_in.occ >= 6;
+        // 投入态拍短路证据：重臂计数冻结（停臂 = 设备缓冲赤字保持）
+        let frozen = vnet::bp_snapshot().rearmed;
+        vnet::rx_pump();
+        ok &= vnet::bp_snapshot().rearmed == frozen;
+        // (c) 水位解除：消费排水 → 占用回 LO → pending 一揽子重臂；
+        //     同拍从突发应答面捕获网关 MAC（突发即 ARP 往返集——ARP→ICMP
+        //     全链的第一环，免独立 ARP 轮次的时序脆弱面）
+        let mut burst_pop = 0usize;
+        let mut gw_mac = [0u8; 6];
+        let mut got_arp = false;
+        while let Some(fl) = vnet::pulse_rx_pop(&mut buf) {
+            burst_pop += 1;
+            if fl >= 42
+                && u16::from_be_bytes([buf[12], buf[13]]) == 0x0806
+                && u16::from_be_bytes([buf[20], buf[21]]) == 2
+                && buf[38..42] == [10, 0, 2, 15]
+                && buf[32..38] == mac_self
+            {
+                gw_mac.copy_from_slice(&buf[22..28]);
+                got_arp = true;
+            }
+        }
+        let held_rearmed = vnet::bp_snapshot().rearmed;
+        vnet::rx_pump();
+        let bp_out = vnet::bp_snapshot();
+        // occ 不设零断言：解除语义看泵入口占用 ≤ LO（滞回闸内建），
+        // 泵入后异步到达帧可再喂环（occ0 仅留证）
+        ok &= bp_out.exits >= 1 && !bp_out.active && bp_out.rearmed > held_rearmed;
+        ok &= burst_pop >= 6 && got_arp;
+        let _ = writeln!(
+            log,
+            "net-bp: enter={} exit={} rearmed={} burst_pop={} occ0={} gw_mac={:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}",
+            bp_in.enters,
+            bp_out.exits,
+            bp_out.rearmed,
+            burst_pop,
+            bp_out.occ,
+            gw_mac[0],
+            gw_mac[1],
+            gw_mac[2],
+            gw_mac[3],
+            gw_mac[4],
+            gw_mac[5],
+        );
+        // (d) ARP→ICMP 全链：echo request 发 10.0.2.2（MAC 自突发 ARP
+        //     应答捕获；背压解除后 RX 面活性回证）→ slirp 回声 reply 五闸。
+        //     重发容忍域：slirp 反射回包偶发滞后（双峰实测），单请求未达
+        //     即换 id/seq 重击（≤3 拍，命中即收）。
+        let payload1 = *b"LUMINA-C1-GATEWAY-ECHO-01";
+        let mut gw_echo = false;
+        let mut gw_tries = 0u16;
+        while got_arp && gw_tries < 3 && !gw_echo {
+            gw_tries += 1;
+            if !vnet::icmp_echo_tx(
+                gw_mac,
+                [10, 0, 2, 2],
+                vnet::ICMP_ECHO_ID,
+                gw_tries,
+                &payload1,
+            ) {
+                break;
+            }
+            let mut spin = 0u64;
+            while spin < vnet::NET_SPIN_BUDGET && !gw_echo {
+                vnet::rx_pump();
+                while let Some(fl) = vnet::pulse_rx_pop(&mut buf) {
+                    // slirp who-has 我在场即应答（反射回包 ARP 解析解阻塞）
+                    if fl >= 42
+                        && u16::from_be_bytes([buf[12], buf[13]]) == 0x0806
+                        && u16::from_be_bytes([buf[20], buf[21]]) == 1
+                        && buf[38..42] == [10, 0, 2, 15]
+                    {
+                        let _ = vnet::arp_respond(&buf[..fl]);
+                        continue;
+                    }
+                    if fl < 42 {
+                        continue;
+                    }
+                    if u16::from_be_bytes([buf[12], buf[13]]) != 0x0800 || buf[23] != 1 {
+                        continue;
+                    }
+                    let ic = 14 + usize::from(buf[14] & 0x0F) * 4;
+                    if fl < ic + 8 || buf[ic] != 0 {
+                        continue; // 非 echo reply
+                    }
+                    let mut sip = [0u8; 4];
+                    sip.copy_from_slice(&buf[26..30]);
+                    if sip != [10, 0, 2, 2] {
+                        continue;
+                    }
+                    let id = u16::from_be_bytes([buf[ic + 4], buf[ic + 5]]);
+                    let seq = u16::from_be_bytes([buf[ic + 6], buf[ic + 7]]);
+                    if id != vnet::ICMP_ECHO_ID || seq != gw_tries {
+                        continue;
+                    }
+                    let payload_ok = fl - ic - 8 == payload1.len() && buf[ic + 8..fl] == payload1;
+                    let ic_ck_ok = vnet::cksum_ok(&buf[ic..fl]);
+                    let ip_ck_ok = vnet::cksum_ok(&buf[14..ic]);
+                    let _ = writeln!(
+                        log,
+                        "net-icmp-gw: id={id:#06x} seq={seq} payload_ok={payload_ok} icmp_ck={ic_ck_ok} ip_ck={ip_ck_ok}"
+                    );
+                    gw_echo = payload_ok && ic_ck_ok && ip_ck_ok;
+                }
+                spin += 1;
+                core::hint::spin_loop();
+            }
+        }
+        ok &= gw_echo;
+        let _ = writeln!(log, "net-icmp-gw-tries: {gw_tries}");
+        // (e-1) echo reply 应答器字节级组帧断言（确定性面；seq=3 域隔离）
+        let payload3 = *b"LUMINA-C1-SYNTH-REQ-0003";
+        let mut syn = [0u8; 66]; // 14 + 20 + 8 + 24
+        syn[0..6].copy_from_slice(&gw_mac);
+        syn[6..12].copy_from_slice(&mac_self);
+        syn[12..14].copy_from_slice(&0x0800u16.to_be_bytes());
+        syn[14] = 0x45;
+        syn[16..18].copy_from_slice(&((20 + 8 + payload3.len()) as u16).to_be_bytes());
+        syn[22] = 64;
+        syn[23] = 1;
+        syn[26..30].copy_from_slice(&[10, 0, 2, 2]); // 请求方 = 网关域
+        syn[30..34].copy_from_slice(&[10, 0, 2, 15]); // 寻我
+        syn[34] = 8;
+        syn[38..40].copy_from_slice(&vnet::ICMP_ECHO_ID.to_be_bytes());
+        syn[40..42].copy_from_slice(&3u16.to_be_bytes());
+        syn[42..66].copy_from_slice(&payload3);
+        let ip_ck = vnet::cksum16(&syn[14..34]);
+        syn[24..26].copy_from_slice(&ip_ck.to_be_bytes());
+        let ic_ck = vnet::cksum16(&syn[34..66]);
+        syn[36..38].copy_from_slice(&ic_ck.to_be_bytes());
+        let mut rep = [0u8; vnet::PULSE_FRAME_MAX];
+        let synth_ok = match vnet::build_icmp_reply(&syn, &mut rep) {
+            Some(n) => {
+                let ic = 34;
+                n == 66
+                    && rep[0..6] == syn[6..12]
+                    && rep[6..12] == syn[0..6]
+                    && rep[26..30] == syn[30..34]
+                    && rep[30..34] == syn[26..30]
+                    && rep[ic] == 0
+                    && rep[ic + 4..ic + 8] == syn[ic + 4..ic + 8]
+                    && rep[ic + 8..n] == syn[ic + 8..n]
+                    && vnet::cksum_ok(&rep[14..34])
+                    && vnet::cksum_ok(&rep[ic..n])
+            }
+            None => false,
+        };
+        ok &= synth_ok;
+        // (e-2) 应答器电气面：合成请求经应答器服务真发线上（QEMU slirp
+        //       icmp_input 实况：ICMP_ECHO 仅 vhost_addr 10.0.2.2 本地反
+        //       射，其余 dst 走 forward 代理——host socket 对 10.0.2.x 不
+        //       可达，type8 request 无到达面，回环设计不成立）→ TX used
+        //       环完成回读 = 击发收讫电气证据 + replies 计数对账。
+        let mut resp_txed = false;
+        if synth_ok {
+            while vnet::tx_drain() > 0 {} // 清历史积压（基线归零）
+            resp_txed = vnet::icmp_echo_reply(&syn).is_some();
+            let mut spin = 0u64;
+            while spin < vnet::NET_SPIN_BUDGET && vnet::tx_drain() == 0 {
+                spin += 1;
+                core::hint::spin_loop();
+            }
+            resp_txed &= vnet::icmp_snapshot().replies >= 1;
+        }
+        ok &= resp_txed;
+        let icmp = vnet::icmp_snapshot();
+        let _ = writeln!(
+            log,
+            "net-c1: bp_enter={} bp_exit={} rearmed={} arp_ok={} gw_echo={} synth_reply={} resp_txed={} icmp_req_tx={} replies={}",
+            bp_in.enters,
+            bp_out.exits,
+            bp_out.rearmed,
+            got_arp,
+            gw_echo,
+            synth_ok,
+            resp_txed,
+            icmp.req_tx,
+            icmp.replies,
+        );
+        ok
+    };
+    report(&mut log, t73, "net-backpressure-icmp");
+    if !t73 {
+        // 失败取证：vring 双环游标 + pulse/bp/icmp 计数器全量转储
+        vnet::diag(&mut log);
+    }
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {

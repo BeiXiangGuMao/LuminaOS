@@ -13,11 +13,20 @@
 //! 纯轮询（[`pulse`] SPSC 环交接随 C3 段）；ctrl vq（队列 2）仅装配
 //! 不驱动。
 //!
+//! M24-C1 段：RX 排水面水位背压 + ICMP echo reply（t73）。背压滞回：
+//! 环占用 ≥ [`RX_HI_WATERMARK`] → 投入（排水 desc 全部停臂入 pending，
+//! 设备自由缓冲递减 → 线上级背压；排水面短路）；占用 ≤
+//! [`RX_LO_WATERMARK`] → 解除（pending 一揽子重臂，缓冲池复位）。
+//! ICMP 面：RFC 1071 反码校验和（[`cksum16`]/[`cksum_ok`]）+ echo
+//! request 击发（[`icmp_echo_tx`]，网关 10.0.2.2 回声）+ echo reply
+//! 应答器（[`build_icmp_reply`] 纯组帧 + [`icmp_echo_reply`] TX 服务，
+//! 消费方对入帧 type8 调用即回——M24 起网络服务契约）。
+//!
 //! unsafe 白名单说明（SPEC 第十七章）：本模块是「框架内核白名单模块」，
 //! virtio MMIO 寄存器访问无法以 safe Rust 表达；逐处携带 SAFETY 注释，
 //! 访问基址一律来自本模块 probe 成功后的映射窗（界内偏移，无越界路径）。
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use ostd::mm::frame::FrameAllocator;
 use ostd::mm::page::{Entry, IdentityAccess, PageError, Walker};
 use ostd::sync::spsc::SpscRing;
@@ -433,8 +442,17 @@ const VNET_HDR: usize = 12;
 const ARP_TX_LEN: usize = 60;
 
 /// RX 预填缓冲数（单 desc 单缓冲，各 4096 B；slirp 应答单帧即收，
-/// 余量吸收噪声帧如 IPv6 RA）。
-const RX_POST: u16 = 4;
+/// 余量吸收噪声帧如 IPv6 RA）。M24-C1 起 8：水位背压占用域扩容
+/// （4 → 8，HI/LO 滞回域拉宽，ARP 突发相位可观测）。
+const RX_POST: u16 = 8;
+
+/// RX 背压高水位（pulse 环占用 ≥ HI → 投入：停臂 + 排水面短路）。
+/// 占用域 0..[`RX_POST`]，HI 取 6/8：ARP 突发相位 6 轮内必越限，
+/// 同时预置 2 槽噪声余量。
+const RX_HI_WATERMARK: usize = 6;
+/// RX 背压低水位（占用 ≤ LO → 解除：pending 一揽子重臂）。滞回带宽
+/// 4 槽：解除后满预填池复位，避免 HI 临界抖动（占用水位半开域）。
+const RX_LO_WATERMARK: usize = 2;
 
 /// QEMU user-net 地址面：网关 10.0.2.2 / 本机 10.0.2.15（DHCP 默认域）。
 const GW_IP: [u8; 4] = [10, 0, 2, 2];
@@ -478,6 +496,9 @@ struct NetState {
     rx_bufs: [u64; RX_POST as usize],
     /// TX 帧缓冲物理地址（单帧复用）。
     tx_buf: u64,
+    /// C1 背压 pending 域：已排水待重臂的 desc 下标（投入态停臂集，
+    /// 解除时一揽子重臂——缓冲池零泄漏的关键账本）。
+    rx_pending: [bool; RX_POST as usize],
 }
 
 /// 全局驱动态登记位（单语境纪律：kmain 自检段串行访问，&raw 手法）。
@@ -659,6 +680,20 @@ pub fn diag(w: &mut impl core::fmt::Write) {
             PULSE_POPPED.load(Ordering::Relaxed),
             PULSE_MISS.load(Ordering::Relaxed),
         );
+        let _ = writeln!(
+            w,
+            "LUMINA-NETDIAG bp active={} enters={} exits={} rearmed={}",
+            RX_BP_ACTIVE.load(Ordering::Relaxed),
+            RX_BP_ENTERS.load(Ordering::Relaxed),
+            RX_BP_EXITS.load(Ordering::Relaxed),
+            RX_REARMED.load(Ordering::Relaxed),
+        );
+        let _ = writeln!(
+            w,
+            "LUMINA-NETDIAG icmp req_tx={} replies={}",
+            ICMP_REQ_TX.load(Ordering::Relaxed),
+            ICMP_REPLIES.load(Ordering::Relaxed),
+        );
     }
 }
 
@@ -673,7 +708,13 @@ pub fn diag(w: &mut impl core::fmt::Write) {
 const PULSE_CAP: usize = 8;
 
 /// pulse 槽帧数据域上限（以太 v2 最大帧 1514 → 1520 取整域）。
-const PULSE_FRAME_MAX: usize = 1520;
+pub const PULSE_FRAME_MAX: usize = 1520;
+
+/// ICMP echo 标识（"LM"——t73 网关/自环双相位恒值）。
+pub const ICMP_ECHO_ID: u16 = 0x4C4D;
+
+/// t73 轮询预算（与 [`ARP_SPIN_BUDGET`] 同源；多相位各相位独立预算）。
+pub const NET_SPIN_BUDGET: u64 = ARP_SPIN_BUDGET;
 
 /// pulse 环槽：单帧值语义（`Copy` 搬运、无堆无引用——环槽契约定式）。
 #[derive(Clone, Copy)]
@@ -696,6 +737,21 @@ static PULSE_POPPED: AtomicU64 = AtomicU64::new(0);
 /// 环满丢弃计数（fail-visible：交接面不静默吞帧）。
 static PULSE_MISS: AtomicU64 = AtomicU64::new(0);
 
+/// C1 背压投入态（滞回标志；[`rx_service`] 单语境读写，原子面仅为
+/// diag/快照可读）。
+static RX_BP_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// 背压投入次数（占用越 HI 计一次；t73 证据行同源）。
+static RX_BP_ENTERS: AtomicU64 = AtomicU64::new(0);
+/// 背压解除次数（占用回 LO 计一次）。
+static RX_BP_EXITS: AtomicU64 = AtomicU64::new(0);
+/// 累计重臂数（pending 归位 desc 计数；投入态冻结 = 停臂证据）。
+static RX_REARMED: AtomicU64 = AtomicU64::new(0);
+
+/// ICMP echo request 击发计数（[`icmp_echo_tx`] 同源）。
+static ICMP_REQ_TX: AtomicU64 = AtomicU64::new(0);
+/// echo reply 应答器服务次数（[`icmp_echo_reply`] 同源）。
+static ICMP_REPLIES: AtomicU64 = AtomicU64::new(0);
+
 /// 消费者出队：帧拷入调用方缓冲，返回帧长（None = 环空）。
 pub fn pulse_rx_pop(out: &mut [u8]) -> Option<usize> {
     let slot = PULSE_RX.recv()?;
@@ -717,20 +773,35 @@ unsafe fn peek_bytes(buf: u64, off: usize, out: &mut [u8]) {
     }
 }
 
-/// RX 排水面：used 环排水 → 帧喂 pulse 环 → 重填预填（可持续数据面：
-/// 完成 desc 原位复用 + avail 再发布，RX 预填池不耗竭）。残帧/越界 id
-/// 拒收（fail-closed），环满丢弃计数（fail-visible）。
+/// RX 排水面：used 环排水 → 帧喂 pulse 环 → 水位重臂（M24-C1 背压）。
+///
+/// 背压滞回（[`RX_HI_WATERMARK`]/[`RX_LO_WATERMARK`]）：占用 ≥ HI →
+/// 投入——本拍已排水 desc 全部停臂入 pending（设备自由缓冲递减 →
+/// 线上级背压），后续拍短路（不排水不重臂）；占用 ≤ LO → 解除——
+/// pending 一揽子重臂（缓冲池复位，零泄漏账本）。残帧/越界 id 拒收
+/// （fail-closed），环满丢弃计数（fail-visible）。
 /// SAFETY: 前置 —— vring 三表/rx_bufs 自 bring_up 装配（界内）；单语境
 ///         串行（kmain 自检段）。返回喂环成功数。
 unsafe fn rx_service(st: &mut NetState) -> usize {
-    let mut elems = [Done { id: 0, len: 0 }; 8];
+    // 投入态先查解除：消费面已 pop → 占用回 LO → 解除并落入正常排水
+    if RX_BP_ACTIVE.load(Ordering::Relaxed) {
+        if PULSE_RX.len() <= RX_LO_WATERMARK {
+            RX_BP_ACTIVE.store(false, Ordering::Relaxed);
+            RX_BP_EXITS.fetch_add(1, Ordering::Relaxed);
+        } else {
+            return 0; // 仍投入：不排水不重臂（设备侧背压保持）
+        }
+    }
+    let mut elems = [Done { id: 0, len: 0 }; RX_POST as usize];
     let n = unsafe { drain_used(&mut st.rx, &mut elems) };
     let mut fed = 0usize;
     for e in elems.iter().take(n) {
         let idx = e.id as usize;
         if idx >= RX_POST as usize {
-            continue; // 越界 id 拒收（fail-closed）
+            continue; // 越界 id 拒收（fail-closed；无缓冲可归还）
         }
+        // C1：消费即入 pending（重臂权移交水位面——残帧同权统一归还口）
+        st.rx_pending[idx] = true;
         let full = e.len as usize;
         if !(VNET_HDR + 14..=4096).contains(&full) {
             continue; // 残帧（以太头不足）/ 设备写长越界拒收
@@ -755,12 +826,27 @@ unsafe fn rx_service(st: &mut NetState) -> usize {
                 PULSE_MISS.fetch_add(1, Ordering::Relaxed);
             }
         }
-        // 重填：desc 原位复用 + avail 再发布（预填池可持续）
-        // SAFETY: id = e.id < RX_POST 界内（上闸）；单语境发布序。
-        unsafe {
-            set_desc(st.rx.desc, e.id as u16, st.rx_bufs[idx], 4096, DFLAG_WRITE);
-            push_avail(&mut st.rx, e.id as u16);
+    }
+    // 水位重臂面：占用 ≥ HI → 投入（pending 停臂 = 设备缓冲赤字，线级
+    // 背压）；否则 pending 一揽子归位（缓冲池复位）。
+    if PULSE_RX.len() >= RX_HI_WATERMARK {
+        if !RX_BP_ACTIVE.swap(true, Ordering::Relaxed) {
+            RX_BP_ENTERS.fetch_add(1, Ordering::Relaxed);
         }
+    } else {
+        let mut rearmed = 0usize;
+        for i in 0..RX_POST as usize {
+            if st.rx_pending[i] {
+                // SAFETY: i < RX_POST 界内（pending 域守卫）；单语境发布序。
+                unsafe {
+                    set_desc(st.rx.desc, i as u16, st.rx_bufs[i], 4096, DFLAG_WRITE);
+                    push_avail(&mut st.rx, i as u16);
+                }
+                st.rx_pending[i] = false;
+                rearmed += 1;
+            }
+        }
+        RX_REARMED.fetch_add(rearmed as u64, Ordering::Relaxed);
     }
     fed
 }
@@ -785,6 +871,8 @@ pub struct PulseEcho {
 /// SAFETY: 前置 —— tx_buf 单帧恒等映射；vring 三表自 setup_queue；
 ///   单语境串行。
 unsafe fn tx_arp_request(st: &mut NetState) {
+    // SAFETY: 积压排空（前拍帧已读才许重写 tx_buf，同 tx_settle 注释）。
+    unsafe { tx_settle(st) };
     // SAFETY: 同函数级注释（组帧域界内，发布序 desc → avail → kick）。
     unsafe {
         ostd::hw::phys::write_zero(st.tx_buf, 4096);
@@ -854,6 +942,292 @@ pub fn pulse_roundtrip() -> Option<PulseEcho> {
         core::hint::spin_loop();
     }
     None
+}
+
+// ===================== M24-C1：水位背压 + ICMP echo 面 =====================
+
+/// 背压/水位快照（t73 证据行同源；累计口径）。
+pub struct BpSnapshot {
+    /// 背压投入次数（占用越 HI 计一次）。
+    pub enters: u64,
+    /// 背压解除次数（占用回 LO 计一次）。
+    pub exits: u64,
+    /// 累计重臂数（pending 归位 desc；投入态冻结 = 停臂证据）。
+    pub rearmed: u64,
+    /// 投入态现值。
+    pub active: bool,
+    /// pulse 环占用现值（`SpscRing::len`）。
+    pub occ: usize,
+}
+
+/// 背压/水位面快照读出（单语境纪律下与 [`rx_service`] 无竞争）。
+pub fn bp_snapshot() -> BpSnapshot {
+    BpSnapshot {
+        enters: RX_BP_ENTERS.load(Ordering::Relaxed),
+        exits: RX_BP_EXITS.load(Ordering::Relaxed),
+        rearmed: RX_REARMED.load(Ordering::Relaxed),
+        active: RX_BP_ACTIVE.load(Ordering::Relaxed),
+        occ: PULSE_RX.len(),
+    }
+}
+
+/// ICMP 面快照（t73 证据行同源；累计口径）。
+pub struct IcmpSnapshot {
+    /// echo request 击发数。
+    pub req_tx: u64,
+    /// echo reply 应答器服务数。
+    pub replies: u64,
+}
+
+/// ICMP 面快照读出。
+pub fn icmp_snapshot() -> IcmpSnapshot {
+    IcmpSnapshot {
+        req_tx: ICMP_REQ_TX.load(Ordering::Relaxed),
+        replies: ICMP_REPLIES.load(Ordering::Relaxed),
+    }
+}
+
+/// RX 排水面单拍（安全封装）：背压语义内建（见 [`rx_service`] 文档）。
+/// 返回本拍喂环成功数；投入态拍返回 0（短路）。单语境纪律同自检段
+/// （SPSC 契约：本面 = 恰一生产者，[`pulse_rx_pop`] = 恰一消费者）。
+pub fn rx_pump() -> usize {
+    let Some(st) = net_state_mut() else {
+        return 0;
+    };
+    // SAFETY: 态自 bring_up 登记；排水/重臂界内（单语境）。
+    unsafe { rx_service(st) }
+}
+
+/// ARP 请求单拍击发（t73 背压突发相位用：逐发逐排，占用爬坡）。
+/// 返回 false = 态缺失（fail-closed）。
+pub fn arp_tx() -> bool {
+    let Some(st) = net_state_mut() else {
+        return false;
+    };
+    // SAFETY: 组帧/发布/击发界内（单语境）。
+    unsafe { tx_arp_request(st) };
+    true
+}
+
+/// TX 完成排水（安全封装）：used 环消费完成项数（击发收讫电气证据）。
+pub fn tx_drain() -> usize {
+    let Some(st) = net_state_mut() else {
+        return 0;
+    };
+    let mut elems = [Done { id: 0, len: 0 }; 4];
+    // SAFETY: tx used 环排水界内（单语境）。
+    unsafe { drain_used(&mut st.tx, &mut elems) }
+}
+
+/// ARP 应答服务（C1 搭车面——入站可达前提）：who-has 我（oper 1 且
+/// tpa == MY_IP）→ is-at 应答（sha=本机 MAC / spa=MY_IP / tha=请求方
+/// sha / tpa=请求方 spa 原样回填）。slirp 反射回包对 10.0.2.15 的 ARP
+/// 解析缓存未命中时会排队回包并发 who-has——本面应答即解阻塞。
+/// 消费方对入帧调用即回；false = 非寻我请求或帧闸不过（fail-closed）。
+pub fn arp_respond(request: &[u8]) -> bool {
+    let Some(st) = net_state_mut() else {
+        return false;
+    };
+    if request.len() < 42
+        || u16::from_be_bytes([request[12], request[13]]) != 0x0806
+        || u16::from_be_bytes([request[20], request[21]]) != 1
+        || request[38..42] != MY_IP
+    {
+        return false;
+    }
+    let mut f = [0u8; ARP_TX_LEN];
+    f[0..6].copy_from_slice(&request[6..12]); // eth dst = 请求方
+    f[6..12].copy_from_slice(&st.mac);
+    f[12..14].copy_from_slice(&0x0806u16.to_be_bytes());
+    f[14..16].copy_from_slice(&0x0001u16.to_be_bytes()); // htype 以太网
+    f[16..18].copy_from_slice(&0x0800u16.to_be_bytes()); // ptype IPv4
+    f[18] = 6; // hlen
+    f[19] = 4; // plen
+    f[20..22].copy_from_slice(&0x0002u16.to_be_bytes()); // oper 应答
+    f[22..28].copy_from_slice(&st.mac); // sha
+    f[28..32].copy_from_slice(&MY_IP); // spa
+    f[32..38].copy_from_slice(&request[22..28]); // tha = 请求方 sha
+    f[38..42].copy_from_slice(&request[28..32]); // tpa = 请求方 spa
+                                                 // SAFETY: 态自 bring_up 登记；ARP_TX_LEN = 60 零垫先例（单语境）。
+    unsafe { tx_frame(st, &f, ARP_TX_LEN) };
+    true
+}
+
+/// 16 位反码求和折叠（RFC 1071；大端字序——IP/ICMP 校验域同源）。
+fn cksum_fold(data: &[u8]) -> u16 {
+    let mut sum = 0u32;
+    let mut i = 0;
+    while i + 1 < data.len() {
+        sum += u32::from(u16::from_be_bytes([data[i], data[i + 1]]));
+        i += 2;
+    }
+    if i < data.len() {
+        sum += u32::from(data[i]) << 8; // 尾奇字节按高字节补位
+    }
+    while sum >> 16 != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    sum as u16
+}
+
+/// 校验和生成：反码求和后取反（`data` 中校验域须先置零）。
+pub fn cksum16(data: &[u8]) -> u16 {
+    !cksum_fold(data)
+}
+
+/// 校验和验证：含校验域的整段折叠求和应为全一（0xFFFF）。
+pub fn cksum_ok(data: &[u8]) -> bool {
+    cksum_fold(data) == 0xFFFF
+}
+
+/// C1 击发收讫闸：排空 tx used 环积压（前拍帧全部被设备消费）才允许
+/// 重写 tx_buf。MTTCG 下 QEMU virtio-net TX 走 BH 异步读缓冲，单缓冲
+/// 复用域乱入写即帧撕裂（实测双峰：同构突发帧免疫、异构首帧中招，
+/// slirp 收残帧转 forward 路径 → 回包消失）。预算耗尽放行（fail-
+/// open 仅限病态调度，正常域 MTTCG 主线程并行执行 BH 即时收讫）。
+/// SAFETY: tx used 环排水界内（单语境）。
+unsafe fn tx_settle(st: &mut NetState) {
+    let mut spin = 0u64;
+    while spin < ARP_SPIN_BUDGET {
+        let mut done = [Done { id: 0, len: 0 }; 8];
+        // SAFETY: tx used 环排水界内（同函数级注释）。
+        if unsafe { drain_used(&mut st.tx, &mut done) } < done.len() {
+            break; // 积压已清（返回数 < 容量 = 无余项）
+        }
+        spin += 1;
+        core::hint::spin_loop();
+    }
+}
+
+/// 通用帧击发面（C1：ICMP 同用）：收讫闸 → tx_buf 帧域零化 → 组帧
+/// （VNET_HDR 垫头）→ desc 发布 → 击发（队列 1）。`frame` 为以太帧
+/// 头起；`wire_len` ≥ frame.len()（差值域为零垫，ARP 最小帧先例）。
+/// SAFETY: 前置 —— tx_buf 单帧恒等映射；frame.len() ≤ wire_len ≤
+///   4096 - VNET_HDR（调用方契约）；vring 三表自 setup_queue；单语境
+///   串行（收讫闸保证前拍帧已读，写域独占）。
+/// 不变式 —— 发布序 desc → avail 环项 → avail.idx → kick。
+unsafe fn tx_frame(st: &mut NetState, frame: &[u8], wire_len: usize) {
+    // SAFETY: 积压排空（同函数级注释）。
+    unsafe { tx_settle(st) };
+    // 帧域界内零化（write_zero 自持安全契约；wire_len ≤ 4096 - VNET_HDR）
+    ostd::hw::phys::write_zero(st.tx_buf, 4096);
+    // SAFETY: 组帧界内（VNET_HDR + frame.len() ≤ 4096）。
+    unsafe { poke(st.tx_buf + VNET_HDR as u64, 0, frame) };
+    // SAFETY: desc 0 单帧发布 + 击发（发布序同 tx_arp_request）。
+    unsafe {
+        set_desc(st.tx.desc, 0, st.tx_buf, (VNET_HDR + wire_len) as u32, 0);
+        push_avail(&mut st.tx, 0);
+        kick(st.notify_base, st.notify_mult, 1, &st.tx);
+    }
+}
+
+/// ICMP echo request 击发（t73 相位面）：组帧（以太 + IPv4 + ICMP
+/// echo，头部校验和自算）→ [`tx_frame`]。返回 false = 态缺失或组帧
+/// 越界（fail-closed）。帧长上限 = [`PULSE_FRAME_MAX`]。
+pub fn icmp_echo_tx(dst_mac: [u8; 6], dst_ip: [u8; 4], id: u16, seq: u16, payload: &[u8]) -> bool {
+    let Some(st) = net_state_mut() else {
+        return false;
+    };
+    let ip_total = 20 + 8 + payload.len();
+    let flen = 14 + ip_total;
+    if flen > PULSE_FRAME_MAX {
+        return false;
+    }
+    let mut f = [0u8; PULSE_FRAME_MAX];
+    f[0..6].copy_from_slice(&dst_mac);
+    f[6..12].copy_from_slice(&st.mac);
+    f[12..14].copy_from_slice(&0x0800u16.to_be_bytes());
+    f[14] = 0x45; // v4 / IHL 5
+    f[16..18].copy_from_slice(&(ip_total as u16).to_be_bytes());
+    f[22] = 64; // TTL
+    f[23] = 1; // proto = ICMP
+    f[26..30].copy_from_slice(&MY_IP);
+    f[30..34].copy_from_slice(&dst_ip);
+    let ip_ck = cksum16(&f[14..34]);
+    f[24..26].copy_from_slice(&ip_ck.to_be_bytes());
+    f[34] = 8; // type = echo request
+    f[38..40].copy_from_slice(&id.to_be_bytes());
+    f[40..42].copy_from_slice(&seq.to_be_bytes());
+    f[42..flen].copy_from_slice(payload);
+    let icmp_ck = cksum16(&f[34..flen]);
+    f[36..38].copy_from_slice(&icmp_ck.to_be_bytes());
+    ICMP_REQ_TX.fetch_add(1, Ordering::Relaxed);
+    // SAFETY: 态自 bring_up 登记；flen ≤ PULSE_FRAME_MAX 界内（单语境）。
+    unsafe { tx_frame(st, &f[..flen], flen) };
+    true
+}
+
+/// ICMP echo 应答组帧（纯函数，无 TX 无计数——字节级断言面与
+/// [`icmp_echo_reply`] 同源）：echo request → echo reply（以太/IP 双
+/// 交换，id/seq/payload 保真，IP/ICMP 校验和重算）。返回写入长度。
+/// 请求闸（0800 / IPv4 IHL 足额 / proto 1 / 寻我 / type 8 / IP 总长
+/// 对账 / 双校验和验证）不过 → None（fail-closed）。
+pub fn build_icmp_reply(req: &[u8], out: &mut [u8]) -> Option<usize> {
+    if req.len() < 14 + 20 + 8 {
+        return None;
+    }
+    if u16::from_be_bytes([req[12], req[13]]) != 0x0800 {
+        return None;
+    }
+    if req[14] >> 4 != 4 {
+        return None;
+    }
+    let ihl = usize::from(req[14] & 0x0F) * 4;
+    if ihl < 20 || req.len() < 14 + ihl + 8 {
+        return None;
+    }
+    if req[23] != 1 {
+        return None; // proto 非 ICMP
+    }
+    if u16::from_be_bytes([req[16], req[17]]) as usize != req.len() - 14 {
+        return None; // IP 总长与帧长对账
+    }
+    if !cksum_ok(&req[14..14 + ihl]) {
+        return None; // IP 校验和
+    }
+    let ic = 14 + ihl;
+    if req[ic] != 8 || req[ic + 1] != 0 {
+        return None; // 非 echo request
+    }
+    if req[30..34] != MY_IP {
+        return None; // 不寻我（不应答他人 ping）
+    }
+    if !cksum_ok(&req[ic..]) {
+        return None; // ICMP 校验和
+    }
+    let icmp_len = req.len() - ic;
+    let out_len = ic + icmp_len;
+    if out.len() < out_len {
+        return None;
+    }
+    out[6..12].copy_from_slice(&req[0..6]); // eth dst = 请求方
+    out[0..6].copy_from_slice(&req[6..12]); // eth src = 本机（请求 dst）
+    out[12..14].copy_from_slice(&0x0800u16.to_be_bytes());
+    out[14..14 + ihl].copy_from_slice(&req[14..14 + ihl]);
+    out[26..30].copy_from_slice(&req[30..34]); // IP src = 我
+    out[30..34].copy_from_slice(&req[26..30]); // IP dst = 请求方
+    out[24..26].copy_from_slice(&[0, 0]); // 旧校验域清零后重算
+    let ip_ck = cksum16(&out[14..14 + ihl]);
+    out[24..26].copy_from_slice(&ip_ck.to_be_bytes());
+    out[ic..out_len].copy_from_slice(&req[ic..out_len]);
+    out[ic] = 0; // type = echo reply
+    out[ic + 2..ic + 4].copy_from_slice(&[0, 0]); // 旧校验域清零后重算
+    let ic_ck = cksum16(&out[ic..out_len]);
+    out[ic + 2..ic + 4].copy_from_slice(&ic_ck.to_be_bytes());
+    Some(out_len)
+}
+
+/// ICMP echo reply 应答服务（C1 交付面）：echo request 帧 →
+/// [`build_icmp_reply`] → [`tx_frame`] 击发。消费方（自检 / M24 起网络
+/// 服务）对入帧 type8 调用即回；None = 请求闸不过或态缺失。
+pub fn icmp_echo_reply(request: &[u8]) -> Option<usize> {
+    let st = net_state_mut()?;
+    let mut out = [0u8; PULSE_FRAME_MAX];
+    let n = build_icmp_reply(request, &mut out)?;
+    // SAFETY: 态自 bring_up 登记；n ≤ PULSE_FRAME_MAX 界内（单语境）。
+    unsafe { tx_frame(st, &out[..n], n) };
+    ICMP_REPLIES.fetch_add(1, Ordering::Relaxed);
+    Some(n)
 }
 
 /// ARP 回声活体成果（t69 断言域）。
@@ -1099,6 +1473,7 @@ pub fn bring_up(frames: &FrameAllocator) -> Option<NetDev> {
             mac,
             rx_bufs,
             tx_buf,
+            rx_pending: [false; RX_POST as usize],
         };
         // RX 击发（队列 0）——预填缓冲对设备可见（slirp 噪声帧即收）
         // SAFETY: notify 窗自 cap 走查映射（span 已含 notify 段）。
