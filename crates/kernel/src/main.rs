@@ -3669,6 +3669,16 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
             vnet::rx_pump();
             rounds += 1;
         }
+        // 宽限轮询（M24-A1-b 时序加固）：slirp 应答迟到双峰家族（C1 实测，
+        // 本日冒烟复现：击发环短于 slirp 处理延迟 → 32 发零到达，used=9
+        // vs last_used=2 实证应答在 fail 判定后才投 used 环）。宽限窗纯
+        // 排水不消费（占用爬坡语义不变）：迟到帧逐拍入环爬坡 → 投入即
+        // 出；预算与 (d) 同源（NET_SPIN_BUDGET）。
+        let mut grace = 0u64;
+        while vnet::bp_snapshot().enters == 0 && grace < vnet::NET_SPIN_BUDGET {
+            vnet::rx_pump();
+            grace += 1;
+        }
         let bp_in = vnet::bp_snapshot();
         ok &= bp_in.enters >= 1 && bp_in.active && bp_in.occ >= 6;
         // 投入态拍短路证据：重臂计数冻结（停臂 = 设备缓冲赤字保持）
