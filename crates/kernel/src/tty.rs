@@ -14,6 +14,8 @@ const LINE_CAP: usize = 128;
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use ostd::sync::spsc::SpscRing;
+
 /// 编辑态行缓冲 + 长度。
 static mut LINE_BUF: [u8; LINE_CAP] = [0; LINE_CAP];
 static LINE_LEN: AtomicUsize = AtomicUsize::new(0);
@@ -47,7 +49,19 @@ fn echo(bytes: &[u8]) {
 }
 
 /// 行规程喂入口：单字节处理（编辑态推进 + 回显）。
+///
+/// M24-A1 行规程扩展：**分页态**优先——武装旗置位期间，键不入行编辑
+/// 也不回显，改投分页键队列（`more` 键面：任意键翻页、q 族键中止）。
+/// 生产侧 = [`pump`]（键盘环消费点，任务语境），消费侧 = shell 分页
+/// 等键环（[`crate::shell::pager_replay`]，同任务串行）——单任务
+/// 契约与 [`getch`] 消费面同源（M23-② 纪律）。
 pub fn feed(b: u8) {
+    if PAGER_ARMED.load(Ordering::Acquire) {
+        if PAGER_KEYS.send(b).is_err() {
+            PAGER_DROP.fetch_add(1, Ordering::Relaxed);
+        }
+        return;
+    }
     match b {
         b'\n' => submit(),
         0x08 => {
@@ -153,4 +167,43 @@ pub fn getch() -> u64 {
     let next = if cur < len { cur + 1 } else { usize::MAX };
     GETCH_CURSOR.store(next, Ordering::Release);
     u64::from(b)
+}
+
+// ---- M24-A1 行规程扩展：分页态（`more` 键面） ----
+//
+// 武装旗 + 分页键队列：`more` 重放期间键入不入行编辑（无回显无编辑
+// 态推进——raw 语义，real more 同款），改入 16 深键队列；shell 重放
+// 环在页界处取键裁决（任意键翻页 / q 族键中止）。队列生产者 = pump
+// 消费点（feed），消费者 = 分页等键环——同任务串行（init shell 的
+// SYS_PIPE op2 调用栈内），SPSC 契约成立。武装/卸臂皆 shell 单发
+// 语义（pager_replay 入口武装、出口卸臂），窗口外行规程原貌。
+
+/// 分页键队列容量（页界间连击余量；满则丢弃并计数——fail-visible）。
+const PAGER_KEY_CAP: usize = 16;
+
+/// 分页态武装旗（shell::pager_replay 窗口内置位）。
+static PAGER_ARMED: AtomicBool = AtomicBool::new(false);
+
+/// 分页键队列（元素 = 翻译后的 ASCII 键面字节）。
+static PAGER_KEYS: SpscRing<u8, PAGER_KEY_CAP> = SpscRing::new();
+
+/// 队列满丢弃计数（取证面：页界间连击溢出可观测）。
+pub static PAGER_DROP: AtomicUsize = AtomicUsize::new(0);
+
+/// 分页态武装：先卸臂排残（防御上一窗口残留键窜入本窗），再清队列、
+/// 置旗——窗口内 feed 改道分页键队列。
+pub fn pager_arm() {
+    PAGER_ARMED.store(false, Ordering::Release);
+    while PAGER_KEYS.recv().is_some() {}
+    PAGER_ARMED.store(true, Ordering::Release);
+}
+
+/// 分页态卸臂：行规程回原貌（行编辑 + 回显）。
+pub fn pager_disarm() {
+    PAGER_ARMED.store(false, Ordering::Release);
+}
+
+/// 分页键非阻塞取一（shell 页界裁决点）。
+pub fn pager_take_key() -> Option<u8> {
+    PAGER_KEYS.recv()
 }

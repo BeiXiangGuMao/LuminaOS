@@ -47,6 +47,7 @@ mod kbd;
 mod multiboot1;
 mod procs;
 mod selftest;
+mod shell;
 mod smp;
 mod swap;
 mod syscall;
@@ -77,8 +78,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 内核堆大小：4 MiB（M3 任务栈/日志/TLV 充足；帧管理独立于本堆）。
 const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73）。
-const SELFTEST_TOTAL: usize = 73;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74）。
+const SELFTEST_TOTAL: usize = 74;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -3856,6 +3857,104 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         // 失败取证：vring 双环游标 + pulse/bp/icmp 计数器全量转储
         vnet::diag(&mut log);
     }
+
+    // 74) M24-A1 shell 管道雏形 + more 分页（t74）：五相位——
+    //     (a) 捕获面：武装 → log_sink 产线两行 → 长度对账（载荷 +
+    //         每调用一 `\n` 行界）+ 行界逐字节断言（SYS_LOG 载荷不含
+    //         换行、串口路径每调用补 CRLF——行语义同源，捕获按调用序
+    //         行界成帧）；
+    //     (b) 排水面：drain 全量对账 + 二次 drain 零泄漏 + 卸臂回证
+    //         （drain 后 capture_active false = 后续 log_sink 复走串口）；
+    //     (c) more 全程分页：10 行产线（pl01..pl10，页界 4 → 4/4/2 三
+    //         页）→ 电键预注两拍（kbd::inject 扫描码 0x39 空格 → 翻译
+    //         → 键盘环 → pump → 行规程分页态 → 分页键队列——t64 同款
+    //         全链电气注入）→ pager_replay 页界两停全显断言
+    //         （lines=10 pauses=2 aborts=0 队列零丢弃）；
+    //     (d) q 中止面：'q'（0x10）首停即弃 → 只显首页（lines=4）+
+    //         aborts 跳升（残余行 fail-visible 舍弃）；
+    //     (e) 弃置 + 过载：drop 清账（len 0 + 卸臂）→ 512B 载荷 ×2 连
+    //         发 → 第二行不齐整行弃（dropped=1，len 停 513——不截半行）。
+    //     fail-closed：无宿主环境依赖（纯内核面，批跑/裸机同域）。
+    let t74 = {
+        let mut ok = true;
+        let mut buf = [0u8; 2048];
+        // 预备清场：键盘环残留排空（分页键全链注入零窜扰）
+        while kbd::pop().is_some() {}
+        // (a) 捕获面：武装 + 产线两行 + 行界成帧对账
+        shell::capture_arm();
+        shell::log_sink(b"pipe-alpha");
+        shell::log_sink(b"pipe-beta");
+        let ps = shell::pipe_snapshot();
+        // 长度对账：pipe-alpha(10) + \n + pipe-beta(9) + \n = 21
+        let ok_a = ps.active && ps.len == 10 + 1 + 9 + 1 && ps.lines == 2 && ps.dropped == 0;
+        ok &= ok_a;
+        // (b) 排水面：全量对账 + 二次排水零泄漏 + 卸臂回证
+        let n = shell::capture_drain(&mut buf);
+        let drain_ok = n == 21 && &buf[..21] == b"pipe-alpha\npipe-beta\n";
+        let leak_free = shell::capture_drain(&mut buf) == 0;
+        ok &= drain_ok && leak_free && !shell::pipe_snapshot().active;
+        let _ = writeln!(
+            log,
+            "shell-pipe-cap: n={n} leak_free={leak_free} drain_ok={drain_ok} ok_a={ok_a}"
+        );
+        // (c) more 全程分页：10 行产线 → 电键预注两拍 → 全显断言
+        shell::capture_arm();
+        for i in 1..=10 {
+            let line = alloc::format!("pl{i:02}");
+            shell::log_sink(line.as_bytes());
+        }
+        let n10 = shell::capture_drain(&mut buf);
+        ok &= n10 == 50; // 10 × (4 载荷 + 1 行界) = 50
+        tty::pager_arm();
+        kbd::inject(0x39); // 空格（扫描码 → 翻译 → 环 → 分页键队列）
+        kbd::inject(0x39);
+        let shown = shell::pager_replay(&buf[..n10]);
+        let pg = shell::pager_snapshot();
+        let ok_c = shown == 10 && pg.pauses == 2 && pg.aborts == 0;
+        let drop_zero = tty::PAGER_DROP.load(Ordering::Relaxed) == 0;
+        ok &= ok_c && drop_zero;
+        let _ = writeln!(
+            log,
+            "shell-pager-full: shown={shown} pauses={} aborts={} ok_c={ok_c} drop0={drop_zero}",
+            pg.pauses, pg.aborts
+        );
+        // (d) q 中止面：'q' 首停即弃 → 只显首页 + aborts 跳升
+        shell::capture_arm();
+        for i in 1..=10 {
+            let line = alloc::format!("pl{i:02}");
+            shell::log_sink(line.as_bytes());
+        }
+        let nq = shell::capture_drain(&mut buf);
+        tty::pager_arm();
+        kbd::inject(0x10); // 'q'
+        let shown_q = shell::pager_replay(&buf[..nq]);
+        let pgq = shell::pager_snapshot();
+        let ok_d = shown_q == shell::PAGE_LINES && pgq.aborts == pg.aborts + 1;
+        ok &= ok_d;
+        let _ = writeln!(
+            log,
+            "shell-pager-abort: shown={shown_q} aborts={} (page_lines={}) ok_d={ok_d}",
+            pgq.aborts,
+            shell::PAGE_LINES
+        );
+        // (e) 弃置 + 过载：drop 清账 + 满载整行弃（fail-visible）
+        shell::capture_arm();
+        shell::log_sink(&[b'x'; 512]);
+        shell::log_sink(&[b'y'; 512]);
+        let pso = shell::pipe_snapshot();
+        ok &= pso.len == 513 && pso.dropped == 1;
+        shell::capture_drop();
+        let psd = shell::pipe_snapshot();
+        let ok_e = psd.len == 0 && !psd.active;
+        ok &= ok_e;
+        let _ = writeln!(
+            log,
+            "shell-pipe-drop: overflown_len={} dropped={} post_drop_len={} active={} ok_e={ok_e}",
+            pso.len, pso.dropped, psd.len, psd.active
+        );
+        ok
+    };
+    report(&mut log, t74, "shell-pipe-more");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {

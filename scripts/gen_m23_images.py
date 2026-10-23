@@ -9,8 +9,8 @@
   r14 != 0（sys_spawn COW 子代，r14 = 父 pid）→ 子代分支。
 
   shell 主循环：prompt("ok> ") → GETCH 轮询（0 → YIELD 重试）→ 行积累
-  @LINE_BUF（每 prompt 清首 qword，短行比较安全）→ '\n' 提交后按首
-  双字分派：
+  @LINE_BUF（每 prompt 清首 qword，短行比较安全）→ '\n' 提交后管道
+  扫描（M24-A1：rbx 游标逐字节扫 '|'）→ 首双字分派：
     halt  → SYS_EXIT(0x10)（kmain interactive 尾读 INIT_EXIT 透传 →
             kernel_exit(0x10) → QEMU 码 33 = 批跑成功域同源）
     st    → 信箱 1 → spawn 子代 → 子代 EXEC(0) selftest.lxe → exit 42
@@ -18,8 +18,8 @@
     grow  → 信箱 3 → EXEC(2) grow.lxe  → exit 92
     deep  → 信箱 5 → EXEC(4) deep.lxe
     ping  → 直答 "pong\r\n"（不派生）
-    help  → 直答命令清单（A2 深化：自省面）
-    ver   → 直答 "LuminaOS v0.23.0+dev"（A2 深化：版本面）
+    help  → 直答命令清单（A2 深化：自省面；含 |more 管道提示）
+    ver   → 直答 "LuminaOS v0.24.0+dev"（A2 深化：版本面）
     echo  → 参数域原样回显（A2 深化：参数面首次引入；r12 = 行长自
             parse 透传，r12 < 5 或参数域空 → "(void)" 占位——
             validate_user_slice 拒 len=0，空回显不可达，占位即负探针）
@@ -28,6 +28,15 @@
             分色——字节码最短路径）→ SYS_FB_SYNC(0,704,1024,64) →
             "fb-ok"；MAP 失败（非零返码）→ "fb-err"
     其余  → "err?\r\n"
+  管道雏形（M24-A1，单级 '|'）：行内含 '|' → 右命令域（'|' 后去前导
+  空格）暂存 PIPE_RIGHT_* 锚点 + 左侧行长截断（r12 = '|' 位，分派与
+  echo 参数域零感知）+ SYS_PIPE(0) 捕获武装 → 左命令正常派发；左命
+  令完结尾跳汇聚点 done：旗 0 → 回 prompt；旗 1 → 右首双字 = 'more'
+  → SYS_PIPE(2) 分页重放（内核侧逐行落串口 + 页界 --more-- 等键，
+  阻塞至完结）；非 more → SYS_PIPE(3) 弃置 + "pipe-err\r\n"（fail-
+  visible）。左源推荐纯直答命令（echo/help/ver/ping）；halt 忽略
+  管道（SYS_EXIT 直终）；派生左源（st | more）捕含子代 SYS_LOG 流
+  + exit 行（全局单缓冲窗口语义，如实记档）。
   派生命令共用臂：信箱写 1 基映像号 → SYS_SPAWN → WAITPID 阻塞收割 →
   itoa 倒写 @NUM 区 → "exit=" + <dec> + "\r\n" 三段 SYS_LOG → 重打提示。
   spawn 失败（OK 位缺失）→ "spawn-err\r\n"。
@@ -40,14 +49,18 @@
   LINE_BUF   = 0x402E00   （行积累缓冲；栈帧内，COW 拷贝可见）
   MAILBOX    = 0x402F00   （命令信箱，1 基；0 = 无命令）
   NUM_END    = 0x402C20   （itoa 数字区尾；0x402C1F 起倒写，u64 上限 20 位）
+  PIPE_RIGHT_PTR/LEN = 0x402D00/0x402D08（M24-A1 管道右域暂存）
+  PIPE_FLAG  = 0x402D0C   （M24-A1 管道态旗；1 = 左源已完成待二段）
   HALT_CODE  = 0x10       （halt 终结码 = EXIT_SUCCESS）
   EXEC_BAIL  = 76         （子代信箱空回落码）
 
 寄存器纪律（syscall 桩契约）：rax = 返回值；rcx/r11/rbp 出入破坏；
 rbx/r12–r15 与五参数寄存器全量往返。本映像跨 syscall 持有：
-r12（行游标）/ r13（子 pid）/ r15（数字游标）；rbx 仅 itoa 内部
-（窗口内无 syscall）；rcx/r11/rbp 全程不用。无 push/call——栈页
-零侵扰，LINE_BUF/MAILBOX 静置栈页底部不受 rsp 下压影响。
+r12（行游标/行长/管道左截断长）/ r13（子 pid）/ r15（数字游标）；
+rbx = 管道扫描游标（parse 窗口内临时，与 itoa 窗口无重叠）；
+rcx = 管道右域游标（同窗口临时）；rcx/r11/rbp 全程不跨 syscall。
+无 push/call——栈页零侵扰，LINE_BUF/MAILBOX/PIPE_RIGHT_* 静置栈页
+底部不受 rsp 下压影响。
 
 用法：python3 scripts/gen_m23_images.py（工作区根运行）
 """
@@ -62,13 +75,19 @@ NUM_END = 0x40_2C20
 HALT_CODE = 0x10
 EXEC_BAIL = 76
 
-# bedrock abi v0.20 系统调用号
+# M24-A1 管道二段面锚点（栈页内自由域，与行缓冲/信箱/数字区零冲突）
+PIPE_RIGHT_PTR = 0x40_2D00  # 右命令首址（qword）
+PIPE_RIGHT_LEN = 0x40_2D08  # 右命令长（qword）
+PIPE_FLAG = 0x40_2D0C  # 管道态旗（byte：1 = 左命令已完成待二段）
+
+# bedrock abi v0.24 系统调用号
 SYS_LOG, SYS_EXIT, SYS_YIELD = 0, 1, 2
 SYS_WAIT_PID, SYS_SPAWN, SYS_EXEC, SYS_TTY_GETCH = 12, 13, 17, 34
+SYS_PIPE = 38  # M24-A1：捕获武装/排水/分页重放/弃置四操作
 
 # A2/S1 直答文本（长度由 len() 现算——免手数错）
-HELP_TEXT = b"cmds: halt st prog grow deep ping echo ver help fb text clear"
-VER_TEXT = b"LuminaOS v0.23.0+dev"
+HELP_TEXT = b"cmds: halt st prog grow deep ping echo ver help fb text clear |more"
+VER_TEXT = b"LuminaOS v0.24.0+dev"
 EVOID_TEXT = b"(void)"
 FBOK_TEXT = b"fb-ok"
 FBERR_TEXT = b"fb-err"
@@ -161,6 +180,7 @@ STRINGS = [
     ("s_textok", TEXTOK_TEXT),
     ("s_texterr", TEXTERR_TEXT),
     ("s_clear", CLEAR_SEQ),
+    ("s_pipeerr", b"pipe-err\r\n"),
 ]
 
 JE, JNE, JNZ = 0x84, 0x85, 0x85
@@ -215,6 +235,49 @@ def build_init_image():
     a.db(b"\x49\x81\xEC", le32(LINE_BUF))  # sub r12, LINE_BUF（r12 = 行长）
     a.db(b"\x4D\x85\xE4")                  # test r12, r12
     a.jcc(JE, "prompt")                    # 空行 → 静默重提示
+
+    # ---- M24-A1 管道扫描：单级 '|' 检测（rbx = 扫描游标）----
+    # 命中：右命令域（'|' 后去前导空格）暂存栈页锚点 → 左侧行长截断
+    # （r12 = i，首双字分派与 echo 参数域零感知）→ 管道态旗置位 →
+    # SYS_PIPE(0) 捕获武装 → 入正常分派；未命中 → 原样入分派。
+    a.db(b"\x31\xDB")                      # xor ebx, ebx
+    a.label("scan_loop")
+    a.db(b"\xB8", le32(LINE_BUF))          # mov eax, LINE_BUF
+    a.db(b"\x48\x01\xD8")                  # add rax, rbx
+    a.db(b"\x80\x38\x7C")                  # cmp byte [rax], '|'
+    a.jcc(JE, "pipe_found")
+    a.db(b"\x48\xFF\xC3")                  # inc rbx
+    a.db(b"\x4C\x39\xE3")                  # cmp rbx, r12
+    a.jcc(0x82, "scan_loop")               # jb → 扫描内环
+    a.jmp("dispatch_entry")
+    a.label("pipe_found")
+    # 右命令域 = '|' 后去前导空格（rcx = 右首偏移）
+    a.db(b"\x48\x8D\x4B\x01")              # lea rcx, [rbx+1]
+    a.label("skip_ws")
+    a.db(b"\x4C\x39\xE1")                  # cmp rcx, r12
+    a.jcc(0x83, "right_end")               # jae → 行尾
+    a.db(b"\xB8", le32(LINE_BUF))          # mov eax, LINE_BUF
+    a.db(b"\x48\x01\xC8")                  # add rax, rcx
+    a.db(b"\x80\x38\x20")                  # cmp byte [rax], ' '
+    a.jcc(JNE, "right_end")
+    a.db(b"\x48\xFF\xC1")                  # inc rcx
+    a.jmp("skip_ws")
+    a.label("right_end")
+    a.db(b"\xB8", le32(LINE_BUF))          # mov eax, LINE_BUF
+    a.db(b"\x48\x01\xC8")                  # add rax, rcx
+    a.db(b"\x48\x89\x04\x25", le32(PIPE_RIGHT_PTR))  # mov [PTR], rax
+    a.db(b"\x4C\x89\xE0")                  # mov rax, r12
+    a.db(b"\x48\x29\xC8")                  # sub rax, rcx
+    a.db(b"\x48\x89\x04\x25", le32(PIPE_RIGHT_LEN))  # mov [LEN], rax
+    # 左侧截断：r12 = i（首双字分派 + echo 参数域对左域感知）
+    a.db(b"\x49\x89\xDC")                  # mov r12, rbx
+    a.db(b"\xC6\x04\x25", le32(PIPE_FLAG), b"\x01")  # mov byte [FLAG], 1
+    # SYS_PIPE(0) 捕获武装：后续 SYS_LOG 入捕（左命令产线重定向）
+    a.db(b"\x31\xFF")                      # xor edi, edi
+    a.db(b"\xB8", le32(SYS_PIPE))          # mov eax, 38
+    a.db(b"\x0F\x05")                      # syscall
+
+    a.label("dispatch_entry")
     a.db(b"\x8B\x04\x25", le32(LINE_BUF))  # mov eax, [LINE_BUF]
     for cmd, target in [
         (b"halt", "do_halt"),
@@ -249,20 +312,20 @@ def build_init_image():
 
     a.label("do_ping")
     log_call(a, "s_pong", 6)
-    a.jmp("prompt")
+    a.jmp("done")
 
     a.label("do_unknown")
     log_call(a, "s_err", 6)
-    a.jmp("prompt")
+    a.jmp("done")
 
     # ---- A2 深化直答：help / ver ----
     a.label("do_help")
     log_call(a, "s_help", len(HELP_TEXT))
-    a.jmp("prompt")
+    a.jmp("done")
 
     a.label("do_ver")
     log_call(a, "s_ver", len(VER_TEXT))
-    a.jmp("prompt")
+    a.jmp("done")
 
     # ---- A2 参数面：echo（r12 = 行长自 parse 透传；首双字已证 "echo"）----
     # 行长 < 5（裸 "echo"）或参数域空（"echo " 尾随空格）→ "(void)" 占位
@@ -278,10 +341,10 @@ def build_init_image():
     a.jcc(JE, "echo_void")       # 参数域零字节 → (void)
     a.db(b"\x31\xC0")            # xor eax, eax
     a.db(b"\x0F\x05")            # SYS_LOG(args)——回显参数行
-    a.jmp("prompt")
+    a.jmp("done")
     a.label("echo_void")
     log_call(a, "s_evoid", len(EVOID_TEXT))
-    a.jmp("prompt")
+    a.jmp("done")
 
     # ---- S1 显示面：fb（映射 → 直画三色带 → 损伤屏障）----
     # 寄存器窗口（无 syscall 持有态）：r12 = 行 y 游标 / r13 = 列 x 游标 /
@@ -334,10 +397,10 @@ def build_init_image():
     a.db(b"\xB8", le32(SYS_FB_SYNC))      # mov eax, 36
     a.db(b"\x0F\x05")                    # syscall
     log_call(a, "s_fbok", len(FBOK_TEXT))
-    a.jmp("prompt")
+    a.jmp("done")
     a.label("fb_fail")
     log_call(a, "s_fberr", len(FBERR_TEXT))
-    a.jmp("prompt")
+    a.jmp("done")
 
     # ---- S2 文本面：text（SYS_FB_TEXT 内核侧 8x16 字体直画横幅）----
     # SYS_FB_TEXT(a0=x=rdi, a1=y=rsi, a2=buf=rdx, a3=len=r10)；返回实渲染
@@ -355,14 +418,42 @@ def build_init_image():
     a.db(b"\x3D", le32(len(BANNER_TEXT)))  # cmp eax, 15
     a.jcc(JNE, "text_fail")              # 返码 ≠ 字符数 → text-err
     log_call(a, "s_textok", len(TEXTOK_TEXT))
-    a.jmp("prompt")
+    a.jmp("done")
     a.label("text_fail")
     log_call(a, "s_texterr", len(TEXTERR_TEXT))
-    a.jmp("prompt")
+    a.jmp("done")
 
     # ---- A3 清屏面：clear（ANSI 2J+H 序列经 SYS_LOG 落终端）----
     a.label("do_clear")
     log_call(a, "s_clear", len(CLEAR_SEQ))
+    a.jmp("done")
+
+    # ---- M24-A1 命令完结汇聚点：管道二段裁决 ----
+    # 所有直答/派生命令尾跳入此处（原直跳 prompt 的全部尾巴）。
+    # 旗 0 = 普通命令 → 回 prompt；旗 1 = 管道左源已完成 → 右命令
+    # 裁决：'more' 首双字 → SYS_PIPE(2) 分页重放（阻塞至分页完结，
+    # 返实显行数）；非 more → SYS_PIPE(3) 弃置 + "pipe-err"（fail-
+    # visible，捕获面已清账卸臂）。
+    a.label("done")
+    a.db(b"\x8A\x04\x25", le32(PIPE_FLAG))  # mov al, [FLAG]
+    a.db(b"\x84\xC0")                       # test al, al
+    a.jcc(JE, "prompt")                     # 普通命令 → 回提示
+    a.db(b"\xC6\x04\x25", le32(PIPE_FLAG), b"\x00")  # 旗清（单发语义）
+    a.db(b"\x48\x8B\x04\x25", le32(PIPE_RIGHT_PTR))  # mov rax, [PTR]
+    a.db(b"\x8B\x00")                       # mov eax, [rax]（右首双字）
+    a.db(b"\x3D", le32(cmd_word(b"more")))  # cmp eax, 'more'
+    a.jcc(JNE, "pipe_err")
+    # SYS_PIPE(2) 分页重放：捕获内容逐行落串口 + 页界 --more-- 等键
+    a.db(b"\xBF", le32(2))                  # mov edi, 2
+    a.db(b"\xB8", le32(SYS_PIPE))
+    a.db(b"\x0F\x05")
+    a.jmp("prompt")
+    a.label("pipe_err")
+    # SYS_PIPE(3) 弃置：捕获清账 + 卸臂（零泄漏）
+    a.db(b"\xBF", le32(3))                  # mov edi, 3
+    a.db(b"\xB8", le32(SYS_PIPE))
+    a.db(b"\x0F\x05")
+    log_call(a, "s_pipeerr", len(b"pipe-err\r\n"))
     a.jmp("prompt")
 
     # ---- 派生共用臂：SPAWN → OK 位校验 → WAITPID 收割 → itoa 打印 ----
@@ -410,11 +501,11 @@ def build_init_image():
     a.db(b"\x48\x29\xFE")          # sub rsi, rdi（整行长 = 5 + 数字位 + 2）
     a.db(b"\x31\xC0")              # xor eax, eax
     a.db(b"\x0F\x05")
-    a.jmp("prompt")
+    a.jmp("done")
 
     a.label("spawn_fail")
     log_call(a, "s_sperr", 11)
-    a.jmp("prompt")
+    a.jmp("done")
 
     # ---- 子代分支：信箱 → EXEC（成功不返回；信箱空回落 76）----
     a.label("child")
@@ -469,19 +560,25 @@ def main():
         anchor("INIT_LINE_BUF", LINE_BUF, "文档锚点：字节码内嵌 0x402E00 的常量定义源"),
         anchor("INIT_MAILBOX", MAILBOX, "文档锚点：字节码内嵌 0x402F00 的常量定义源"),
         anchor("INIT_NUM_END", NUM_END, "文档锚点：字节码内嵌 0x402C20 的常量定义源"),
+        anchor("INIT_PIPE_RIGHT_PTR", PIPE_RIGHT_PTR, "文档锚点：M24-A1 管道右域暂存 0x402D00"),
+        anchor("INIT_PIPE_RIGHT_LEN", PIPE_RIGHT_LEN, "文档锚点：M24-A1 管道右长暂存 0x402D08"),
+        anchor("INIT_PIPE_FLAG", PIPE_FLAG, "文档锚点：M24-A1 管道态旗 0x402D0C"),
         anchor("INIT_HALT_CODE", HALT_CODE, "文档锚点：halt 终结码（EXIT_SUCCESS 同源）"),
         anchor("INIT_EXEC_BAIL", EXEC_BAIL, "文档锚点：子代信箱空回落码"),
         "",
         rust_array(
             "INIT_IMAGE",
             init,
-            "init shell 映像（M23-②③；位置固定 0x400000，单帧 RX + 栈帧）。\n"
+            "init shell 映像（M23-②③ + M24-A1 管道二段面；位置固定 0x400000，单帧 RX + 栈帧）。\n"
             "/// 入口 r14 分向（0 = shell 主循环 / 非 0 = 派生子代 EXEC 信箱映像）。\n"
-            "/// shell：prompt → GETCH 轮询（0 → YIELD）→ 首双字分派 halt/st/prog/\n"
-            "/// grow/deep/ping/echo/ver/help/fb/err?；派生命令 = 信箱 + SPAWN + WAITPID\n"
+            "/// shell：prompt → GETCH 轮询（0 → YIELD）→ 管道扫描（单级 '|' →\n"
+            "/// 右域暂存 + 左截断 + SYS_PIPE(0) 捕获武装）→ 首双字分派 halt/st/prog/\n"
+            "/// grow/deep/ping/echo/ver/help/fb/text/clear；派生命令 = 信箱 + SPAWN + WAITPID\n"
             "/// 及 itoa 打印 exit=<dec>；echo 参数面（r12-5 字节原样回显，空域→(void)）；\n"
             "/// fb 显示面（SYS_FB_MAP 映射 → 64 行三色带直画 → SYS_FB_SYNC 损伤屏障）。\n"
-            "/// 子代：读信箱 → EXEC(映像号) 成功不返回 → 回落 76。\n"
+            "/// 命令完结汇聚 done：管道旗 0 → prompt；旗 1 → 右首双字 'more' →\n"
+            "/// SYS_PIPE(2) 分页重放（内核页界 --more-- 等键）/ 非 more → SYS_PIPE(3)\n"
+            "/// 弃置 + pipe-err。子代：读信箱 → EXEC(映像号) 成功不返回 → 回落 76。\n"
             "/// 字节码由 scripts/gen_m23_images.py 生成（objdump 已收口）。\n"
             "/// 默认批跑构建未引用（interactive 面专用）——dead_code 豁免。",
             attrs="#[cfg_attr(not(feature = \"interactive\"), allow(dead_code))]",

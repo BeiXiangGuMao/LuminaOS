@@ -278,6 +278,32 @@ pub const SYS_FB_SYNC: u64 = 36;
 /// 指针校验失败 → `EFAULT(14)`。证据行 `LUMINA-FB-TEXT` 落串口。
 pub const SYS_FB_TEXT: u64 = 37;
 
+/// shell 管道/分页面（v0.24，M24-A1）：单级 `|` 雏形的内核承接面。
+///
+/// 四操作（a0 = op，域 0..=3）：
+/// - **0 = 捕获武装**：调用方后续 [`SYS_LOG`] 不再落串口，改写入内核
+///   单捕获缓冲（每次调用按一行成帧——载荷尾追加 `\n`；`SYS_LOG`
+///   载荷本身不含换行，串口路径每调用补 CRLF，行语义同源）。缓冲满
+///   则**整行丢弃**并计数（fail-visible，不截半行）。全局单缓冲、
+///   arm..drain/replay 窗口内所有 `SYS_LOG` 入捕（含派生子代——
+///   `st | more` 即捕获子代自检输出流），纯直答命令（echo/help/ver）
+///   为推荐左源。
+/// - **1 = 排水**：a1 = 用户缓冲指针、a2 = 缓冲长（≤ 512）；捕获
+///   内容拷出，返回实拷字节数；拷毕清账并卸臂（单发语义，二次排水
+///   得 0 = 零泄漏对账锚）。指针校验失败 → `EFAULT(14)` 域返码。
+/// - **2 = 分页重放**（`more` 主体）：捕获内容逐行重落串口，每满
+///   页界（内核常量 4 行）停顿打 `--more--` 等键——任意键翻页、
+///   `q`/`Q`/ESC/Ctrl-C 中止（残余行舍弃，实显行数为返码）。键经
+///   TTY 行规程分页态投递（[`SYS_TTY_GETCH`] 同链：IRQ1 → 键盘环 →
+///   pump → 行规程——分页态下键不再入行编辑，改入分页键队列）。
+///   重放毕清账卸臂（无论中止与否）。
+/// - **3 = 弃置**：捕获清账 + 卸臂（右命令非 `more` 的shell 侧清场）。
+///
+/// 返回：op 0/3 = 0；op 1 = 实拷字节数；op 2 = 实显行数。未知 op →
+/// `BadArgs` 域返码。雏形定位：单级管道、单捕获缓冲、单消费者（init
+/// shell 串行调用），多级管道与双缓冲属后续里程碑。
+pub const SYS_PIPE: u64 = 38;
+
 /// [`SYS_FCNTL`] 命令：复制句柄（rdx = 新句柄号下界）。
 pub const F_DUPFD: u64 = 0;
 /// [`SYS_FCNTL`] 命令：读描述符旗标。
@@ -313,7 +339,9 @@ pub const OPEN_MODE_MASK: u64 = 0b1_1111;
 /// 无独立用户空间 → `ERR_CAP`；帧耗尽 → `ERR_NOMEM(9)`。
 pub const SYS_EXEC: u64 = 17;
 
-/// 系统调用 ABI 版本（v0.15 = M23-S2：新增 SYS_FB_TEXT(37) 内核侧文本
+/// 系统调用 ABI 版本（v0.16 = M24-A1：新增 SYS_PIPE(38) shell 管道/
+/// 分页面（捕获武装/排水/分页重放/弃置四操作——单级 `|` 雏形 + `more`
+/// 内核承接面）；v0.15 = M23-S2：新增 SYS_FB_TEXT(37) 内核侧文本
 /// 渲染服务（8x16 位图字体 + 底黑前景白 + 越屏裁剪）；v0.14 = M23-S1：新增 SYS_FB_MAP(35)/SYS_FB_SYNC(36)
 /// 显示服务面（Surface 表 + 任务根 LFB 映射 + 损伤屏障量化）；v0.20 = M23：新增 SYS_TTY_GETCH(34) TTY 取字
 /// 轮询面——init shell 交互基座；v0.19 = M18：SYS_OPEN 模式域扩容 O_EXCL（bit4）、
@@ -326,7 +354,7 @@ pub const SYS_EXEC: u64 = 17;
 /// v0.16 = M15：目录面五落点 MKDIR/REMOVE/READDIR/MOUNT/UMOUNT +
 /// 句柄面深化 DUP/FCNTL（CLOEXEC）+ NANOSLEEP 参数语义升级为 TSC 纳秒。
 /// v0.8 = SYS_QUOTA；v0.7 = 文件面六落点 + NANOSLEEP + 统一句柄面）。
-pub const ABI_VERSION: (u16, u16) = (0, 14);
+pub const ABI_VERSION: (u16, u16) = (0, 16);
 
 /// 寄存器快照形式的系统调用请求。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -575,6 +603,11 @@ pub enum Syscall {
         /// 字节数（≤ 512）。
         len: u64,
     },
+    /// shell 管道/分页面（v0.24，M24-A1；见 [`SYS_PIPE`]）。
+    Pipe {
+        /// 操作码（0 捕获武装 / 1 排水 / 2 分页重放 / 3 弃置）。
+        op: u64,
+    },
 }
 
 /// 从寄存器快照解析调用意图。只做结构校验，不做内存访问（由慢路径完成）。
@@ -689,6 +722,8 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
             len: a3,
         }),
         SYS_FB_TEXT => Err(AbiError::BadArgs),
+        SYS_PIPE if a0 <= 3 => Ok(Syscall::Pipe { op: a0 }),
+        SYS_PIPE => Err(AbiError::BadArgs),
         _ => Err(AbiError::UnknownSyscall),
     }
 }
@@ -1059,7 +1094,7 @@ mod tests {
         assert_eq!(super::SYS_DUP, 31);
         assert_eq!(super::SYS_FCNTL, 32);
         assert_eq!(super::SYS_IMAGE_ENUM, 33);
-        assert_eq!(super::ABI_VERSION, (0, 14));
+        assert_eq!(super::ABI_VERSION, (0, 16));
         assert_eq!(super::SYS_TTY_GETCH, 34);
         assert_eq!(
             super::parse(super::SyscallRegs {
@@ -1071,6 +1106,23 @@ mod tests {
         );
         assert_eq!(super::SYS_FB_MAP, 35);
         assert_eq!(super::SYS_FB_SYNC, 36);
+        assert_eq!(super::SYS_PIPE, 38);
+        assert_eq!(
+            super::parse(super::SyscallRegs {
+                num: super::SYS_PIPE,
+                args: [3, 0, 0, 0, 0]
+            }),
+            Ok(Syscall::Pipe { op: 3 }),
+            "管道面：op 域 0..=3（3 = 弃置臂自证）"
+        );
+        assert_eq!(
+            super::parse(super::SyscallRegs {
+                num: super::SYS_PIPE,
+                args: [4, 0, 0, 0, 0]
+            }),
+            Err(AbiError::BadArgs),
+            "管道面：op 越域拒收"
+        );
         let r = |num: u64, args: [u64; 5]| SyscallRegs { num, args };
         // FB_MAP：va 域结构校验（FB_VA_BASE 起、页对齐；域外/不对齐 BadArgs）
         assert_eq!(

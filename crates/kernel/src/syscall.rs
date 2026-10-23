@@ -217,7 +217,9 @@ extern "C" fn lumina_syscall_dispatch(frame: &mut SyscallFrame) -> u64 {
             task::note_log_cpu(); // 跨核取证面（服务核 + 本核 RSP0/调用栈）
             let ptr = frame.rdi;
             if let Some(text) = validate_user_slice(ptr, len) {
-                crate::console::serial_log_bytes(text);
+                // M24-A1：去向面改 shell::log_sink——捕获武装期入捕
+                // （管道左源），否则落串口（默认面零扰动）
+                crate::shell::log_sink(text);
             }
             0
         }
@@ -414,6 +416,13 @@ extern "C" fn lumina_syscall_dispatch(frame: &mut SyscallFrame) -> u64 {
             // M23-S2 文本渲染服务：8x16 位图字体内核侧直画（证据行
             // LUMINA-FB-TEXT；shell 文本上屏基座）
             crate::fb::sys_fb_text(x, y, buf, len)
+        }
+        Syscall::Pipe { op } => {
+            task::count_syscall(2);
+            // M24-A1 shell 管道/分页面：捕获武装/排水/分页重放/弃置
+            // 四操作（单级 `|` 雏形 + more 内核主体；缓冲指针/长 =
+            // rsi/rdx 慢路径语义）
+            crate::shell::sys_pipe(op, frame.rsi, frame.rdx)
         }
     }
 }
