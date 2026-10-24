@@ -14,6 +14,7 @@ pub mod checksum;
 pub mod format;
 pub mod layout;
 pub mod vfs;
+pub mod wal;
 
 use alloc::vec::Vec;
 
