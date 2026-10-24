@@ -3727,20 +3727,26 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         );
         // (d) ARP→ICMP 全链：echo request 发 10.0.2.2（MAC 自突发 ARP
         //     应答捕获；背压解除后 RX 面活性回证）→ slirp 回声 reply 五闸。
-        //     重发容忍域：slirp 反射回包偶发滞后（双峰实测），单请求未达
-        //     即换 id/seq 重击（≤3 拍，命中即收）。
+        //     重发容忍域（M25-C1-a 加固）：slirp 反射回包滞后双峰实测——
+        //     迟到回声会落在后续拍窗口（seq 错拍），故五闸只锁
+        //     id+payload+双校验和+寻源（payload 三拍同源，payload 匹配
+        //     已锁死本自检请求的回声），seq 仅作证据行记录不作判定闸；
+        //     容忍域 3 拍重发 + 第 4 拍纯排水（不发请求——slirp 迟到
+        //     回声落地窗；总时长上限 4×SPIN 不超 S8 杀线）。
         let payload1 = *b"LUMINA-C1-GATEWAY-ECHO-01";
         let mut gw_echo = false;
         let mut gw_tries = 0u16;
-        while got_arp && gw_tries < 3 && !gw_echo {
+        while got_arp && gw_tries < 4 && !gw_echo {
             gw_tries += 1;
-            if !vnet::icmp_echo_tx(
-                gw_mac,
-                [10, 0, 2, 2],
-                vnet::ICMP_ECHO_ID,
-                gw_tries,
-                &payload1,
-            ) {
+            if gw_tries <= 3
+                && !vnet::icmp_echo_tx(
+                    gw_mac,
+                    [10, 0, 2, 2],
+                    vnet::ICMP_ECHO_ID,
+                    gw_tries,
+                    &payload1,
+                )
+            {
                 break;
             }
             let mut spin = 0u64;
@@ -3773,8 +3779,8 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                     }
                     let id = u16::from_be_bytes([buf[ic + 4], buf[ic + 5]]);
                     let seq = u16::from_be_bytes([buf[ic + 6], buf[ic + 7]]);
-                    if id != vnet::ICMP_ECHO_ID || seq != gw_tries {
-                        continue;
+                    if id != vnet::ICMP_ECHO_ID {
+                        continue; // M25-C1-a：seq 不作判定闸（迟到回声错拍容忍）
                     }
                     let payload_ok = fl - ic - 8 == payload1.len() && buf[ic + 8..fl] == payload1;
                     let ic_ck_ok = vnet::cksum_ok(&buf[ic..fl]);

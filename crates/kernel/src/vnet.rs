@@ -1119,6 +1119,25 @@ unsafe fn tx_frame(st: &mut NetState, frame: &[u8], wire_len: usize) {
         push_avail(&mut st.tx, 0);
         kick(st.notify_base, st.notify_mult, 1, &st.tx);
     }
+    // M25-C1-a 发后收讫（撕裂窗口关闭闸）：tx_settle 只能排空「已回写」
+    // 积压，无法感知 BH 尚未回写的在途帧——MTTCG 下设备 BH 异步读
+    // tx_buf 的窗口仍然敞开（t73 三连丢实证：同构异构混杂时前拍帧
+    // 被后拍零化覆盖前未读完）。发后等本帧 used 回写（设备读走 tx_buf
+    // 后才回写 used——virtio 消费契约），回写即窗口关闭，TX 面同步化。
+    // 尽力域：预算内未回写放行（不堵 fail 面）；settle 保证 kick
+    // 前 used 环空 → 首个回写项即本帧。预算 1M 轮（回写正常毫秒级；
+    // ARP_SPIN_BUDGET 级 40M 轮在 TCG 下实为数十秒，撞 S8 看门狗）。
+    const TX_SETTLE_SPIN: u64 = 1_000_000;
+    let mut spin = 0u64;
+    while spin < TX_SETTLE_SPIN {
+        let mut done = [Done { id: 0, len: 0 }; 8];
+        // SAFETY: tx used 环排水界内（同函数级注释）。
+        if unsafe { drain_used(&mut st.tx, &mut done) } > 0 {
+            break;
+        }
+        spin += 1;
+        core::hint::spin_loop();
+    }
 }
 
 /// ICMP echo request 击发（t73 相位面）：组帧（以太 + IPv4 + ICMP
