@@ -102,10 +102,13 @@
 | **M24-S1** ✅ | mirror 损伤策略对齐细则：矩形并集合并、上限 16 超出全帧重绘、指针 16px 粒度累积；kernel SYS_FB 面对账 | mirror 扩容 + t72 活体 | ✅ t72 四相位全绿（72/72）：并集/翻转/指针网格/syscall 对账，证据行 rects=/full= 显形 |
 | **M24-C1** ✅ | vnet RX 排水面背压/水位 + ICMP echo reply（t73）：延续 M23-C3 交接面 | kernel::vnet + pulse 对账 | ✅ t73 电气活体五相位全绿（73/73）：背压投入/重臂冻结/解除 + 网关回声五闸 + 应答器字节级断言 + 击发收讫；tx_settle 定案 TX 撕裂 |
 | **M24-A1** ✅ | shell 管道雏形（单级 `|`）+ `more` 分页命令（TTY 行规程扩展） | kernel::shell + t74 | ✅ t74 电气活体五相位全绿（74/74）：捕获行界成帧/排水零泄漏/分页全程/q 中止/弃置过载；SYS_PIPE(38) 四操作 + ring3 管道扫描二段面 |
-| **M24-B1** | [B] rip=-1 蹲守挂账复核（非阻塞）：若复现走标本流程（pf-evidence 定根因 → 互斥 → 回归） | 记录或修复 | 挂账状态更新进 worklog |
-| **搭车件** | aurora 注释 AF-P03/P06 标号笔误修正；Cargo.toml 描述与细则定位对齐（prism 更名视 ADR-0006 结论） | 零散小 PR | 冒烟全绿 |
+| **M24-B1** ✅ | [B] rip=-1 蹲守挂账复核（非阻塞）：若复现走标本流程（pf-evidence 定根因 → 互斥 → 回归） | 记录或修复 | ✅ 蹲守复核完成：74/74 冒烟两轮 + 全量串口日志扫描 rip=-1/FRAME-POISON/DRDB 取证行零复现（census f0 ff0）——未复现不触发标本流程，挂账延续，猎场 v2.2 哨兵面（poison 取证行 + DR0/DR1 命中取证 + 出口互斥闸）全部在位不动；状态登 worklog（Task 5） |
+| **搭车件** ✅ | aurora 注释 AF-P03/P06 标号笔误修正；Cargo.toml 描述与细则定位对齐（prism 更名视 ADR-0006 结论） | 零散小 PR | ✅ 四笔滚动落账：963ea64（Cargo.lock 对账）+ A1 内 ver 升 v0.24.0 + help 管道提示 + A1-b 3306df4（t73 宽限加固）+ f8a712f（AF-P06 勘误 + 14 crate description 细则对齐）；历次冒烟全绿 |
+| **M24-收尾** ✅ | ROADMAP 状态对账（S1/C1/A1/B1/搭车件全行 ✅ 落账）+ 退出口径五项核验 | 对账提交 | ✅ 本提交：五项全达关账（详见退出口径核验注） |
 
 M24 退出口径：v0.24.0 已发布 + ADR 八篇落盘 + M-P01 打点面可用 + t72-t74 全绿 + lint-deps 上线。
+
+> **收尾核验（M24-收尾）**：五项全达——① v0.24.0 已发布（tag ce58844 / Release id 420859562 四资产）；② ADR 八篇在案（d9981a7）；③ M-P01 打点面可用（dispatcher 宿主基线 mean=229.6ns 登 METRICS.md）；④ t72-t74 全绿（现基线 74/74，冒烟 LUMINA-SELFTEST-PASS 实证）；⑤ lint-deps 上线（S5c 阶段零违规挂闸）。M24 关账，近线转入 M25。
 
 ---
 
