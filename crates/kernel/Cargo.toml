@@ -26,6 +26,7 @@ bedrock.workspace = true
 vanguard.workspace = true
 weave.workspace = true
 mirror.workspace = true
+conduit.workspace = true
 
 [[bin]]
 name = "lumina-kernel"

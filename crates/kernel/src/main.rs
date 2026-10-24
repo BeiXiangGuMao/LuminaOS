@@ -79,7 +79,7 @@ use crate::multiboot1::BOOT_MAGIC;
 const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
 /// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74）。
-const SELFTEST_TOTAL: usize = 74;
+const SELFTEST_TOTAL: usize = 75;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -3844,8 +3844,11 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         if synth_ok {
             while vnet::tx_drain() > 0 {} // 清历史积压（基线归零）
             resp_txed = vnet::icmp_echo_reply(&syn).is_some();
+            // M25-T1 对账：tx_frame 发后收讫（M25-C1-a）已同步化 TX 面，
+            // 本处电气等待仅余设备 BH 残余延迟——预算 1M 轮对齐
+            // TX_SETTLE_SPIN 口径（40M 级在 TCG 实为数十秒，撞看门狗）。
             let mut spin = 0u64;
-            while spin < vnet::NET_SPIN_BUDGET && vnet::tx_drain() == 0 {
+            while spin < 1_000_000 && vnet::tx_drain() == 0 {
                 spin += 1;
                 core::hint::spin_loop();
             }
@@ -3971,6 +3974,63 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t74, "shell-pipe-more");
+
+    // ---- t75（M25-T1）：conduit 兼容面在环活体（C-P04 布局快照裸机侧
+    //      对账 + C-P01 转换器/绑定表抽查）——宿主侧编译期双闸
+    //      （conduit::layout const 断言矩阵）已挂，此处裸机实机二次
+    //      锚定：size/offset 由本核编译器即时求值与 UAPI 快照逐项对照
+    //      （四代表结构：Stat 文件面 / SysInfo 对齐补位面 / EPollEvent
+    //      packed 面 / Statx 5.15 形状面）；转换器面 errno 正向全表 +
+    //      反向抽查 + 哨兵域 + flags 往返 + 绑定表 ≥20 锚点。
+    let t75 = {
+        use conduit::convert::{
+            err_to_errno, errno_to_err, flags_to_open_mode, open_mode_to_flags, BINDINGS,
+        };
+        use conduit::defs;
+        let mut ok = true;
+        // (a) 布局快照裸机对账（行面 + 四代表 size/offset 锚）
+        ok &= conduit::layout::SNAPSHOT.len() == 20;
+        ok &= core::mem::size_of::<defs::Stat>() == 144
+            && core::mem::offset_of!(defs::Stat, st_size) == 48;
+        ok &= core::mem::size_of::<defs::SysInfo>() == 112
+            && core::mem::offset_of!(defs::SysInfo, procs) == 80
+            && core::mem::offset_of!(defs::SysInfo, totalhigh) == 88;
+        ok &= core::mem::size_of::<defs::EPollEvent>() == 12
+            && core::mem::offset_of!(defs::EPollEvent, data) == 4;
+        ok &= core::mem::size_of::<defs::Statx>() == 256
+            && core::mem::offset_of!(defs::Statx, stx_mnt_id) == 144;
+        // (b) errno 双向在环：正向 LXE1 v0 全表 10 项 + 反向抽查 +
+        //     哨兵/成功域不可翻译 + 反向登记项往返
+        ok &= err_to_errno(bedrock::abi::ERR_CAP) == Some(1);
+        ok &= err_to_errno(bedrock::abi::ERR_EMPTY) == Some(11);
+        ok &= err_to_errno(bedrock::abi::ERR_DERIVE) == Some(1);
+        ok &= err_to_errno(bedrock::abi::ERR_FULL) == Some(11);
+        ok &= err_to_errno(bedrock::abi::ERR_HANDLE) == Some(9);
+        ok &= err_to_errno(bedrock::abi::ERR_TARGET) == Some(3);
+        ok &= err_to_errno(bedrock::abi::ERR_TABLE) == Some(24);
+        ok &= err_to_errno(bedrock::abi::ERR_CHILD) == Some(10);
+        ok &= err_to_errno(bedrock::abi::ERR_NOMEM) == Some(12);
+        ok &= err_to_errno(bedrock::abi::ERR_IMAGE) == Some(8);
+        ok &= errno_to_err(9) == Some(bedrock::abi::ERR_HANDLE);
+        ok &= errno_to_err(24) == Some(bedrock::abi::ERR_TABLE);
+        ok &= err_to_errno(0).is_none() && err_to_errno(u64::MAX).is_none();
+        ok &= errno_to_err(2).is_none(); // 文件面透传域
+        ok &= err_to_errno(errno_to_err(12).unwrap_or(0)) == Some(12);
+        // (c) flags 往返抽查（全域组合 + 非法域）
+        ok &= flags_to_open_mode(open_mode_to_flags(0b1_1111).unwrap_or(0)) == Some(0b1_1111);
+        ok &= open_mode_to_flags(0).is_none() && open_mode_to_flags(0b10_0000).is_none();
+        // (d) 绑定表 C-P01 面：≥20 行 + 号名快照同源锚
+        ok &= BINDINGS.len() >= 20;
+        ok &= BINDINGS.iter().find(|b| b.num == 60).map(|b| b.name) == Some("exit");
+        let _ = writeln!(
+            log,
+            "conduit-compat: snapshot_rows={} bindings={} errno_fwd=10/10 errno_rev_rt=ok flags_rt=ok ok={ok}",
+            conduit::layout::SNAPSHOT.len(),
+            BINDINGS.len()
+        );
+        ok
+    };
+    report(&mut log, t75, "conduit-compat");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {

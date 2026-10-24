@@ -49,6 +49,7 @@ name = "lumina-kernel"
 version = "0.24.0"
 dependencies = [
  "bedrock",
+ "conduit",
  "harbor",
  "mirror",
  "ostd",
