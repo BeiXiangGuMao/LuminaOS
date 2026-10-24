@@ -5,9 +5,15 @@
 //! 常量事实表：errno 名称映射与 x86_64 系统调用号快照，供兼容层慢路径与测试断言
 //! 共用。完整的语义转换在 Conduit 服务进程中实现，不在本表范围。
 //!
-//! 注意：这是兼容层常量表，与《语言移植与支持指南》所述「原生 ABI 路径」无关；
-//! 原生路径直接使用 [`bedrock::abi`](https://docs.rs/bedrock) 的调用号。
+//! M25-D1 起（兼容路径启动）：`defs` 承载 Linux 5.15 x86_64 UAPI 结构体
+//! 布局面（abi-defs 首批约 20 结构，repr(C) 纯布局零语义）；布局快照挂闸
+//! （`layout`，M25-D2，C-P04=0 偏差）与 LXE1 ↔ Linux 首批转换器（`convert`，
+//! M25-C1，C-P01 首批 ≥20 调用全绑定）随后续笔次落位。与《语言移植与支持
+//! 指南》所述「原生 ABI 路径」无关——原生路径直接使用 `bedrock::abi` 的调用号。
 #![no_std]
+
+pub mod defs;
+pub mod layout;
 
 /// 兼容目标 Linux 版本。
 pub const LINUX_ABI_VERSION: (u16, u16, u16) = (5, 15, 0);
