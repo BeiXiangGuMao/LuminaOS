@@ -117,13 +117,14 @@ impl<'a> BtreeContext<'a> {
     }
 
     /// 编码并写整节点（新址写入 = COW 复制面；旧节点零触碰）。
+    /// 返回该节点的校验和（WAL 意图表对照锚，X1 消费）。
     fn write_node(
         &self,
         addr: u64,
         node_type: NodeType,
         level: u8,
         items: &[Item],
-    ) -> Result<(), BtreeError> {
+    ) -> Result<u64, BtreeError> {
         let mut node = [0u8; NODE_BYTES];
         let mut raw = alloc::vec![0u8; items.len() * 16];
         for (i, item) in items.iter().enumerate() {
@@ -137,6 +138,7 @@ impl<'a> BtreeContext<'a> {
             item_count: items.len() as u16,
         };
         encode_node(&head, &raw, &mut node).map_err(BtreeError::Format)?;
+        let sum = crate::format::node_checksum(&node);
         for i in 0..(NODE_BYTES / BLOCK_SIZE) {
             let mut sector = [0u8; BLOCK_SIZE];
             sector.copy_from_slice(&node[i * BLOCK_SIZE..(i + 1) * BLOCK_SIZE]);
@@ -144,7 +146,7 @@ impl<'a> BtreeContext<'a> {
                 .write_block(addr + i as u64, &sector)
                 .map_err(|_| BtreeError::Io)?;
         }
-        Ok(())
+        Ok(sum)
     }
 }
 
@@ -207,16 +209,18 @@ pub fn lookup(ctx: &BtreeContext, root: RootRef, key: u64) -> Result<Option<u64>
     }
 }
 
-/// COW 复制写一个节点（同类型/层级，条目替换），返回新址。
+/// COW 复制写一个节点（同类型/层级，条目替换），返回 (新址, 校验和)。
 fn cow_copy(
     ctx: &mut BtreeContext,
     node_type: NodeType,
     level: u8,
     items: &[Item],
-) -> Result<u64, BtreeError> {
+    writes: &mut Vec<(u64, u64)>,
+) -> Result<(u64, u64), BtreeError> {
     let addr = ctx.alloc_node()?;
-    ctx.write_node(addr, node_type, level, items)?;
-    Ok(addr)
+    let sum = ctx.write_node(addr, node_type, level, items)?;
+    writes.push((addr, sum));
+    Ok((addr, sum))
 }
 
 /// 下降路径条目：`(节点地址, 选中臂下标)`。
@@ -256,7 +260,19 @@ pub fn insert(
     key: u64,
     value: u64,
 ) -> Result<RootRef, BtreeError> {
-    tree_write(ctx, root, key, value, false)
+    tree_write(ctx, root, key, value, false, &mut Vec::new())
+}
+
+/// 插入并回报写入集（节点地址 + 校验和；WAL 意图表事实源，X1/T1 消费）。
+pub fn insert_tracked(
+    ctx: &mut BtreeContext,
+    root: RootRef,
+    key: u64,
+    value: u64,
+) -> Result<(RootRef, Vec<(u64, u64)>), BtreeError> {
+    let mut writes = Vec::new();
+    let root = tree_write(ctx, root, key, value, false, &mut writes)?;
+    Ok((root, writes))
 }
 
 /// 插入或覆盖（upsert）：键已存在时原位覆盖值域（COW 同路径复制）。
@@ -268,7 +284,7 @@ pub fn upsert(
     key: u64,
     value: u64,
 ) -> Result<RootRef, BtreeError> {
-    tree_write(ctx, root, key, value, true)
+    tree_write(ctx, root, key, value, true, &mut Vec::new())
 }
 
 /// insert/upsert 共享主体（`overwrite` 区分重复键策略）。
@@ -278,6 +294,7 @@ fn tree_write(
     key: u64,
     value: u64,
     overwrite: bool,
+    writes: &mut Vec<(u64, u64)>,
 ) -> Result<RootRef, BtreeError> {
     if root.addr == 0 {
         let addr = ctx.alloc_node()?;
@@ -296,8 +313,8 @@ fn tree_write(
         // 原位覆盖：同长度叶重写（COW 复制，结构不变）。
         let mut leaf = items;
         leaf[hit].value = value;
-        let new_addr = cow_copy(ctx, leaf_head.node_type, leaf_head.level, &leaf)?;
-        return finish_cow(ctx, path, new_addr, None, root);
+        let (new_addr, _) = cow_copy(ctx, leaf_head.node_type, leaf_head.level, &leaf, writes)?;
+        return finish_cow(ctx, path, new_addr, None, root, writes);
     }
     // 叶层插入（满则先分裂）。
     let idx = lower_bound(&items, key);
@@ -308,12 +325,24 @@ fn tree_write(
     let new_addr;
     let mut sep_up: Option<Item> = None;
     if leaf.len() <= NODE_ITEM_CAP {
-        new_addr = cow_copy(ctx, leaf_head.node_type, leaf_head.level, &leaf)?;
+        new_addr = cow_copy(ctx, leaf_head.node_type, leaf_head.level, &leaf, writes)?.0;
     } else {
         let mid = leaf.len() / 2;
         let right_key = leaf[mid].key;
-        let la = cow_copy(ctx, leaf_head.node_type, leaf_head.level, &leaf[..mid])?;
-        let ra = cow_copy(ctx, leaf_head.node_type, leaf_head.level, &leaf[mid..])?;
+        let (la, _) = cow_copy(
+            ctx,
+            leaf_head.node_type,
+            leaf_head.level,
+            &leaf[..mid],
+            writes,
+        )?;
+        let (ra, _) = cow_copy(
+            ctx,
+            leaf_head.node_type,
+            leaf_head.level,
+            &leaf[mid..],
+            writes,
+        )?;
         new_addr = la;
         sep_up = Some(Item {
             key: right_key,
@@ -322,7 +351,7 @@ fn tree_write(
     }
     // 整路径复制（COW 纪律）：叶复制后父臂指针即失效——逐层冒泡重写，
     // 分裂（sep_up = Some）多插一条分隔键，非分裂仅臂改指；根层完成收口。
-    finish_cow(ctx, path, new_addr, sep_up, root)
+    finish_cow(ctx, path, new_addr, sep_up, root, writes)
 }
 
 /// COW 冒泡收口：从叶新址逐层重写父链至根（split 分隔键随层插入）。
@@ -332,6 +361,7 @@ fn finish_cow(
     mut new_addr: u64,
     mut sep_up: Option<Item>,
     root: RootRef,
+    writes: &mut Vec<(u64, u64)>,
 ) -> Result<RootRef, BtreeError> {
     loop {
         let (parent_addr, arm) = match path.pop() {
@@ -344,7 +374,7 @@ fn finish_cow(
                         return Err(BtreeError::TooDeep);
                     }
                     let raddr = ctx.alloc_node()?;
-                    ctx.write_node(
+                    let sum = ctx.write_node(
                         raddr,
                         NodeType::Internal,
                         level + 1,
@@ -356,6 +386,7 @@ fn finish_cow(
                             sep,
                         ],
                     )?;
+                    writes.push((raddr, sum));
                     return Ok(RootRef {
                         addr: raddr,
                         generation: root.generation,
@@ -379,12 +410,12 @@ fn finish_cow(
         }
         pins.extend_from_slice(&pitems[arm + 1..]);
         if pins.len() <= NODE_ITEM_CAP {
-            new_addr = cow_copy(ctx, phead.node_type, phead.level, &pins)?;
+            new_addr = cow_copy(ctx, phead.node_type, phead.level, &pins, writes)?.0;
         } else {
             let mid = pins.len() / 2;
             let right_key = pins[mid].key;
-            let la = cow_copy(ctx, phead.node_type, phead.level, &pins[..mid])?;
-            let ra = cow_copy(ctx, phead.node_type, phead.level, &pins[mid..])?;
+            let (la, _) = cow_copy(ctx, phead.node_type, phead.level, &pins[..mid], writes)?;
+            let (ra, _) = cow_copy(ctx, phead.node_type, phead.level, &pins[mid..], writes)?;
             new_addr = la;
             sep_up = Some(Item {
                 key: right_key,
