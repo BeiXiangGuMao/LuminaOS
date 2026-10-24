@@ -1,6 +1,6 @@
 [package]
 name = "bedrock"
-description = "Bedrock 磐基 —— 100% Rust framekernel 内核（指标族 B-P01…B-P07）"
+description = "Bedrock 磐基 —— 内核框架（framekernel）：物理帧 / 页表 / 上下文切换 / IPC 端点 / 中断入口（指标族 B-P01…B-P07）"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "glyph"
-description = "Glyph 曜纹 —— 图标体系：24/48/96 同源缩放与悬停规格"
+description = "Glyph 曜纹 —— 动画 SVG 图标系统：24/48/96 三档网格同源缩放 / 构造规则 / 状态动画 / 语义映射"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

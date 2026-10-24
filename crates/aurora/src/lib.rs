@@ -6,7 +6,7 @@
 //!
 //! - [`LuappManifest`]：`.luapp` 清单的最小校验（应用 id 反向域名、能力声明）；
 //! - [`AppRuntime`]：六态生命周期状态机（Registered → Launching → Foreground →
-//!   Background → Suspended → Terminated），拦截率 100%（AF-P03，P0）。
+//!   Background → Suspended → Terminated），拦截率 100%（AF-P06，P0）。
 //!
 //! 能力权限的派生规则由 Vanguard 能力模型执行；意图路由与后台任务在 SDK 服务侧。
 

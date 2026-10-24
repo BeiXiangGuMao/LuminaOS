@@ -1,6 +1,6 @@
 [package]
 name = "conduit"
-description = "Conduit 通衢 —— Linux 5.15 ABI 兼容层常量表（布局快照 + 三级语义）"
+description = "Conduit 通衢 —— Linux 5.15 ABI 兼容层：230+ syscall / 布局快照 / 性能对齐"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

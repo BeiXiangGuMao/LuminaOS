@@ -1,6 +1,6 @@
 [package]
 name = "harbor"
-description = "Harbor 港湾 —— 内核与用户态的分配器与 libc 边界（指标族 H-P01…H-P07）"
+description = "Harbor 港湾 —— 纯 Rust POSIX libc：POSIX.1-2017 / 动态链接 / 分配器（指标族 H-P01…H-P07）"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

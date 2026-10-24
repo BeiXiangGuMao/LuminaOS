@@ -1,6 +1,6 @@
 [package]
 name = "loom"
-description = "Loom 织机 —— 主题与设计 token：8px 网格、间距/字号刻度（承接美术指南）"
+description = "Loom 织机 —— Elm 架构 GUI 框架：约束求解布局 / 虚拟化列表 / 主题系统（承接美术指南）"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

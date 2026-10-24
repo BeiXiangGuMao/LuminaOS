@@ -1,6 +1,6 @@
 [package]
 name = "mirror"
-description = "Mirror 映境 —— 合成器：Surface 表与损伤跟踪（复用 Crystal 代际思想）"
+description = "Mirror 映境 —— Wayland 合成器：HDR / 分数缩放 / VRR / 崩溃恢复（现状：Surface 表与损伤跟踪）"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

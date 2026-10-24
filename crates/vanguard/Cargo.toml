@@ -1,6 +1,6 @@
 [package]
 name = "vanguard"
-description = "Vanguard 前卫 —— 能力模型与安全基元（指标族 V-P02/03/05）"
+description = "Vanguard 前卫 —— 用户态驱动框架：IOMMU 隔离 / 驱动生命周期 / 设备节点图（现状：能力模型与安全基元，V-P02/03/05）"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

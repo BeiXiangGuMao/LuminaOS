@@ -1,6 +1,6 @@
 [package]
 name = "crystal"
-description = "Crystal 晶簇 —— 存储栈的代际槽位容器（双代际根槽 + ABA 防护）"
+description = "Crystal 晶簇 —— COW B-tree 文件系统：快照 / 子卷 / 压缩校验 / 崩溃一致（现状：双代际根槽容器 + ABA 防护）"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

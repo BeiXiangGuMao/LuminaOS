@@ -1,6 +1,6 @@
 [package]
 name = "meridian"
-description = "Meridian 经纬 —— OS 服务监管者与调度面（幂等恢复 + 启动序）"
+description = "Meridian 经纬 —— 系统服务基座：syscall 分发 / 进程管理 / VFS / 能力表（幂等恢复 + 启动序）"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

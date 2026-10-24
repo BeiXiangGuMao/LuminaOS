@@ -1,6 +1,6 @@
 [package]
 name = "aurora"
-description = "Aurora 极光 —— 原生应用框架：.luapp 清单与六态生命周期（AF-P01…P06）"
+description = "Aurora 极光 —— 原生应用框架：应用清单 / 生命周期 / 能力权限 / 意图路由 / SDK（AF-P01…P06）"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

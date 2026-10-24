@@ -1,6 +1,6 @@
 [package]
 name = "ripple"
-description = "Ripple 涟漪 —— 弹簧物理动效求解器（参数 170/26 与 300/30）"
+description = "Ripple 涟漪 —— 物理动画引擎：弹簧参数库（170/26 与 300/30）/ GPU 求解 / 硬同步 / 手势涟漪"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

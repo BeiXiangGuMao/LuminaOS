@@ -1,6 +1,6 @@
 [package]
 name = "cascade"
-description = "Cascade 流域 —— 桌面环境外壳：窗口焦点序与外壳状态机"
+description = "Cascade 流域 —— 桌面环境：动态平铺 / 自由浮窗 / 工作区 / Fluid Glass"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
