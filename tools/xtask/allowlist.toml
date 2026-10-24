@@ -99,12 +99,6 @@ note = "SYS_OPEN..SYS_MOUNT 文件面改道 meridian::vfs（挂载策略 + 全�
 
 # -------------------------------------------------------- 债务面：依赖豁免
 
-[[dep_exemptions]]
-from = "bedrock"
-to = "ostd"
-reason = "SpinLock ×4（block/ipc/vfs-lfs/vfs-mount/vfs-ramfs）+ SpscRing ×1（ipc FastPath 底座）；M26 随 vfs 外移与 FastPath 环内联清账"
-adr = "ADR-0001"
-until = "M26"
 
 
 # -------------------------------------------------------- 债务面：模块越界
@@ -114,6 +108,10 @@ until = "M26"
 # 随本批删除；段头笔误同步修正于文件头注释。
 
 # -------------------------------------------------------- unsafe 容忍面
+
+[[unsafe_allow]]
+crate = "bedrock"
+note = "自持同步原语（M26-V1-c 零依赖收口：SpinLock/SpscRing 等价内联，ADR-0001 终态 + ADR-0005 归 ostd 原则的登记例外——bedrock 拒绝对 ostd 的运行期依赖；unsafe 封装面 = unsafe impl Sync/Send + 槽位操作，API 全 safe）"
 
 [[unsafe_allow]]
 crate = "ostd"

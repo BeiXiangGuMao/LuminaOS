@@ -7,7 +7,7 @@
 //! 落 kernel（`crate::block`）——bedrock 保持平台无关。
 //!
 //! 并发模型：与 `crystal::vfs::fs::FileSystem`（ADR-0002 迁移步） 同款纪律——实现方内部
-//! 自持同步原语（OSTD `SpinLock`），trait 方法全部 `&self`，同一实例
+//! 自持同步原语（[`crate::sync::SpinLock`]，M26-V1-c 零依赖收口），trait 方法全部 `&self`，同一实例
 //! 可被多 fs 实例/多 CPU 共享。
 //!
 //! 语义注记（v0 记档）：
@@ -20,7 +20,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use ostd::sync::SpinLock;
+use crate::sync::SpinLock;
 
 /// 块大小（字节）：与 ATA 扇区同宽（512 B），硬件适配零转换。
 pub const BLOCK_SIZE: usize = 512;

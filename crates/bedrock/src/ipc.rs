@@ -4,13 +4,14 @@
 //! 自旋锁保护 `VecDeque`，M2 阶段按 SPEC 2 章升级为无锁环形通道并保留本实现
 //! 作为语义参考。载荷为 TLV 帧字节（见 [`crate::tlv`]）。
 //!
-//! M5：无锁环形通道以 [`FastPath`] 落地——底层为 `ostd::sync::spsc::SpscRing`
-//! （unsafe 收口在 OSTD，本 crate 保持零 unsafe），定槽、零堆、缓存行隔离。
+//! M5：无锁环形通道以 [`FastPath`] 落地——底层为 [`crate::sync::SpscRing`]
+//! （M26-V1-c 零依赖收口：自持环，OSTD SYNC-02 同款语义）
+//! 定槽、零堆、缓存行隔离（unsafe 面 = crate::sync 自持原语，ADR-0001/0005
+//! 登记例外）。
 
+use crate::sync::{SpinLock, SpscRing};
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use ostd::sync::spsc::SpscRing;
-use ostd::sync::SpinLock;
 
 /// 单端点信箱：发送入队、接收出队。
 pub struct Endpoint {
@@ -96,7 +97,7 @@ pub enum FastPathError {
 
 /// 无锁快速路径通道：单发送方 → 单接收方（SPSC）。
 ///
-/// 底层 [`SpscRing`]（OSTD SYNC-02）；本类型全部 safe Rust。
+/// 底层 [`SpscRing`]（自持 SYNC-02）；本类型全部 safe Rust。
 /// 典型用法：BSP↔AP 各持一条单向通道（双向 = 两条实例）。
 pub struct FastPath {
     ring: SpscRing<FastSlot, { FastPath::CAP }>,

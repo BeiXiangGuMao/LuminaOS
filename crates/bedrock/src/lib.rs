@@ -12,6 +12,10 @@
 //! ADR-0002 迁移步（M26）：原 vfs 模块整体外移——fd/物理面/契约入
 //! `crystal::vfs`，挂载策略面入 `meridian::vfs`；本 crate 回归通信与契约域。
 //!
+//! ADR-0001 终态兑现（M26-V1-c）：[`sync`] 自持同步原语（SpinLock/SpscRing
+//! 等价内联，unsafe 例外登记见 allowlist）——本 crate 对 ostd **零运行期
+//! 依赖**，回归零依赖通信与契约域。
+//!
 //! 非目标：页表、调度器与中断控制属 bedrock-boot/ostd 后续里程碑（SPEC 表 19-1 P0）。
 #![no_std]
 extern crate alloc;
@@ -20,6 +24,7 @@ pub mod abi;
 pub mod block;
 pub mod exec;
 pub mod ipc;
+pub mod sync;
 pub mod tlv;
 
 #[cfg(test)]

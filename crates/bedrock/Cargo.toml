@@ -10,7 +10,7 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
-# ADR-0002 迁移步（M26）：fd 表随 vfs 外移 crystal，bedrock 回归零 crystal 依赖
-ostd = { workspace = true }
+# ADR-0001 终态（M26-V1-c）：零依赖通信与契约域——同步原语自持（crates/bedrock/src/sync.rs）
+
 
 [dev-dependencies]
