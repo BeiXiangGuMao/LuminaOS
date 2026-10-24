@@ -10,6 +10,7 @@
 #![no_std]
 extern crate alloc;
 
+pub mod btree;
 pub mod checksum;
 pub mod format;
 pub mod layout;

@@ -20,10 +20,11 @@
 use core::fmt;
 
 use crate::checksum::xxh64;
+pub use crate::layout::NODE_ITEM_CAP;
 use crate::layout::{
     feature, is_node_addr, CKSUM_XXH64, FORMAT_VERSION, MIN_DEVICE_LBAS, NODE_BYTES,
-    NODE_HEADER_BYTES, NODE_ITEM_CAP, NODE_MAGIC, SB_A_LBA, SB_B_LBA, SB_CKSUM_OFFSET, SB_MAGIC,
-    TREE_MAX_DEPTH, WAL_LBAS,
+    NODE_HEADER_BYTES, NODE_MAGIC, SB_A_LBA, SB_B_LBA, SB_CKSUM_OFFSET, SB_MAGIC, TREE_MAX_DEPTH,
+    WAL_LBAS,
 };
 
 /// 格式域错误（细则 3.3 一致性级 + 结构面；IO 级由 `BlockError` 透传）。
