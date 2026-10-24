@@ -76,7 +76,7 @@
 | 里程碑 | 主题 | 对齐阶段 | 验收锚（指标编号） | 主战场 |
 |---|---|---|---|---|
 | **M24** | 服务边界元年：v0.24.0 定版 + ADR 裁决 + Meridian 分发面首割 | P1 起步 | M-P01 打点挂接；t72+ 活体 | meridian/xtask/mirror/vnet |
-| **M25** | 兼容路径启动：Conduit abi-defs + 布局快照 + 首批转换器——**近线**（任务级分解见 §四 M25 子节） | P1 | C-P04=0 偏差；C-P01 首批 ≥20 调用全绑定用例 | conduit/bedrock::abi |
+| **M25** | 兼容路径启动：Conduit abi-defs + 布局快照 + 首批转换器——**✅ 关账**（M25-收尾核验：C-P04=0 双闸挂闸；C-P01 首批 25 调用全绑定 ≥20；t75 活体 75/75 全绿；六笔对账见 §四 M25 子节） | P1 | C-P04=0 偏差；C-P01 首批 ≥20 调用全绑定用例 | conduit/bedrock::abi |
 | **M26** | Crystal 文件系统首割：格式 v1 + WAL + 快照常数时间 | P2 | CR-P05≤50ms（常数时间）；crash-fs 断电注入 ≥1000 次 | crystal/kernel::blk |
 | **M27** | 网络栈收口：IP/ICMP/UDP + TCP 首割 | P2→P3 | PU-P03 回环延迟口径挂接；t 系列 ARP→ICMP→UDP 活体链 | pulse/kernel::vnet |
 | **M28** | 显示栈闭环：Mirror 合成管线 + 用户态显示面 | P3 | MI-P01 结构面；1080p@60 合成冒烟 | mirror/kernel::fb/prism |
@@ -116,14 +116,17 @@ M24 退出口径：v0.24.0 已发布 + ADR 八篇落盘 + M-P01 打点面可用 
 
 | 任务 | 内容 | 提交物 | 验收 |
 |---|---|---|---|
-| **M25-计划** ✅ | 本表落盘 + §三 M25 行近线标注 | 对账提交 | 本提交 |
-| **M25-D1** | conduit abi-defs 首批：Linux 5.15 x86_64 UAPI 结构体布局面（timespec/timeval/iovec/stat/statx·statx_timestamp/sigset·sigaction/pollfd/epoll_event/sockaddr·sockaddr_in/rlimit/utsname/termios/winsize/itimerspec·itimerval/rusage/sysinfo），repr(C) no_std 纯布局 + 字段逐项 UAPI 对齐注记 | conduit::defs | 布局面在位（约 20 结构体） |
-| **M25-D2** | 布局快照挂闸：size/align/关键字段 offset 静态断言矩阵（编译期 const 断言 + 快照对照表测试双闸）= C-P04=0 偏差；lint 台账登记 conduit→bedrock 政策边（转换器消费 LXE1 事实源） | conduit::layout + allowlist.toml | C-P04=0 双闸挂接 |
-| **M25-C1** | 首批转换器：errno 常量事实源（Linux 5.15 值域表，收口 kernel 散布 const 口径）+ LXE1 ERR_* ↔ errno 双向映射 + flags 映射首批（LXE1 open 模式域 ↔ O_*）+ syscall 绑定表（num/name/nargs/错误域注记）≥20 调用 | conduit::convert + bedrock 边生效 | 绑定表 ≥20；errno 事实源单点化 |
-| **M25-T1** | 全绑定用例：每绑定 ≥1 用例（号快照/nargs/errno 往返/错误域对账）+ errno 双向全覆盖 + t75 活体（kernel 冒烟自检段消费 conduit：布局快照在环断言 + errno 往返，74→75 双端同步） | conduit 用例 + t75 + lint 边 lumina-kernel→conduit | C-P01 首批 ≥20 全绑定用例；t75 全绿 |
-| **M25-收尾** | ROADMAP 对账 + METRICS.md C-P01/C-P04 行扩记 + 退出口径核验 | 对账提交 | C-P04=0；C-P01 ≥20；全绿关账 |
+| **M25-计划** ✅ | 本表落盘 + §三 M25 行近线标注 | 对账提交 | ✅ 2880882 |
+| **M25-D1** ✅ | conduit abi-defs 首批：Linux 5.15 x86_64 UAPI 结构体布局面（timespec/timeval/iovec/stat/statx·statx_timestamp/sigset·sigaction/pollfd/epoll_event/sockaddr·sockaddr_in/rlimit/utsname/termios/winsize/itimerspec·itimerval/rusage/sysinfo），repr(C) no_std 纯布局 + 字段逐项 UAPI 对齐注记 | conduit::defs | ✅ 布局面 20 结构体（D1+D2 合笔，547388a） |
+| **M25-D2** ✅ | 布局快照挂闸：size/align/关键字段 offset 静态断言矩阵（编译期 const 断言 + 快照对照表测试双闸）= C-P04=0 偏差；lint 台账登记 conduit→bedrock 政策边 | conduit::layout + allowlist.toml | ✅ 双闸挂接（D1+D2 合笔 547388a；双闸效力实证：SockAddrIn align 预期值偏差当场拒收后归零；conduit→bedrock 政策边随 C1 落 65ca3f2） |
+| **M25-C1-a** ✅（搭车件，计划外） | t73 迟到回声/三连丢收口（CI 挂账三次复发的电气加固）：五闸 seq 拍号绑定解除 + 第 4 拍纯排水窗 + tx_frame 发后收讫（撕裂窗口关闭 TX 同步化，预算 1M 轮）+ 单线程 TCG 方案实测否决（双核自检死锁）；内核二进制逐字节同 SHA 实证环境时序面非语义面 | kernel::vnet + t73 判定面 | ✅ 31648e7：加固后 14 跑 13 绿（修复前 4 跑 1 绿）；残留 ~10% 挂率挂账 M27 重访 |
+| **M25-C1** ✅ | 首批转换器：errno 常量事实源（36 值域，收口 kernel 散布 const 口径基准）+ LXE1 ERR_* ↔ errno 双向映射（正向多对一收敛/反向一对一/透传域显式）+ flags 映射首批（open 模式域 ↔ O_*，fail-visible）+ syscall 绑定表 25 调用 | conduit::convert + bedrock ERR 具名化 + procs 锚定 | ✅ 65ca3f2：绑定表 25 ≥20；errno 事实源单点化；宿主测试 +4 |
+| **M25-T1** ✅ | 全绑定用例 + t75 活体：kernel 自检段 conduit-compat 相位（布局快照裸机侧对账四代表 + errno 正向全表/反向往返 + flags 双向 + 绑定表锚）+ SELFTEST_TOTAL 74→75 双端同步 | conduit 用例 + t75 + lint 边 lumina-kernel→conduit | ✅ 30add91：C-P01 首批 25 调用全绑定用例（宿主 4 例 + t75 在环全绿，证据行 conduit-compat snapshot_rows=20 bindings=25 errno_fwd=10/10） |
+| **M25-收尾** ✅ | ROADMAP 对账 + METRICS.md C-P01/C-P04 行扩记 + 退出口径核验 | 对账提交 | ✅ 本提交：C-P04=0；C-P01 25 ≥20；t75 全绿关账 |
 
 M25 退出口径：C-P04=0 偏差（布局快照双闸挂接）+ C-P01 首批 ≥20 调用全绑定用例 + t75 冒烟活体全绿。
+
+> **收尾核验（M25-收尾）**：三项全达——① C-P04=0 偏差（conduit::layout 编译期 const 断言矩阵 20 结构 size/align/offset 全量挂闸，漂移即构建失败；效力实证：SockAddrIn align 预期值 2→4 偏差当场拒收后归零；t75 裸机侧四代表结构二次锚定在环）；② C-P01 首批 ≥20 调用全绑定用例（BINDINGS 25 调用全绑定：号/名/参数计数/错误域四要素，宿主 4 例全覆盖 + t75 在环锚点全绿）；③ t75 冒烟活体全绿（75/75，conduit-compat 证据行实证）。M25 六笔（计划/D1+D2/C1-a/C1/T1/收尾）关账，近线转入 M26。挂账延续：t73 残余 flake（M25-C1-a 口径，M27 网络栈收口时重访 t73 电气面）。
 
 ---
 

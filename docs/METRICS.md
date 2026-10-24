@@ -15,7 +15,7 @@
 | OSTD 中断基元（M3） | OSTD（第 17 章） | `ostd::interrupt`（IDT 门描述符/原始地址注册/致命异常钩子 + `stubs` 手写桩白名单模块）、`ostd::time`（节拍计数/低功耗睡眠） | **M3 新增：IDT/PIC/PIT 中断链 + 节拍基线** | 宿主 3 例（门编码/双签名注册/越界防御）+ 冒烟自检 10 |
 | M 系列 | Meridian（第 3 章） | `meridian::Supervisor`（幂等恢复、退避封顶 30s）+ `meridian::dispatcher`（**M24-M1**：号+版本位解码、能力闸、三层错误模型；细则 §3.2/§3.3） | 策略承接 + 分发面结构承接；M-P01 ≤0.3μs 门禁数值待环境 B（真机窗口），宿主微基线在位 | `backoff_grows_and_caps` 等 4 例 + dispatcher 错路全枚举 11 例（含 M-P01 热路径微基线 `bench_dispatch_hot_path`：宿主均值/p99 打点，TCG 回归基线制） |
 | M-P01/M-P02（M24 承接） | Meridian（第 19 章） | `meridian::dispatcher::dispatch`（decode→版本闸→能力闸→路由→执行）+ `tests::bench_dispatch_hot_path`（100k 均值 + 1k 尾部 p99） | **打点骨架**：宿主均值/p99 防退化断言（<1μs/<10μs）；M-P02 空操作端到端 ≤2.5μs 待裸机集成期挂接 | 同上（ci S4 日志打印 M-P01 行） |
-| C-P01… | Conduit（第 4 章） | `conduit`（Linux 5.15 errno/syscall 快照） | 常量事实表 | 快照断言 2 例 |
+| C-P01/C-P04（M25 承接） | Conduit（第 4 章） | `conduit::defs`（20 结构 Linux 5.15 x86_64 UAPI 布局面，repr(C) 纯布局）+ `conduit::layout`（**C-P04=0 双闸**：编译期 const 断言矩阵 size/align/offset 漂移即拒 + SNAPSHOT 20 行运行期行表）+ `conduit::convert`（errno 值域事实源 36 常量 + `err_to_errno`/`errno_to_err` 双向映射 + open 模式域 ↔ O_* 双向 + **C-P01 BINDINGS 25 调用全绑定**：号/名/参数计数/错误域四要素）+ `bedrock::abi`（LXE1 v0 错误码表具名化事实源）+ `kernel::procs` 六 const 锚定 | **M25 承接**：C-P04=0 偏差（双闸挂接 + t75 裸机侧四代表二次锚定）；C-P01 首批 25 ≥20（全绑定用例宿主 4 例 + 在环锚点）；t75 活体 conduit-compat 相位（75/75） | conduit 宿主 8 例（快照行面对账/errno 双向全覆盖/flags 往返与门禁/全绑定面/号唯一性）+ 冒烟 t75 conduit-compat（snapshot_rows=20 bindings=25 errno_fwd=10/10 证据行） |
 | CR 系列 | Crystal（第 6 章） | `crystal::GenerationalSlab`（代龄 ABA 防护） | 数据结构承接 | `stale_handle_never_sees_reused_slot` |
 | PU 系列 | Pulse（第 7 章） | `pulse::SpscRing`（零拷贝路径二） | 数据结构承接 | SPSC 双线程 1 万条 |
 | V-P02/03/05 | Vanguard（第 8 章） | `vanguard`（派生收窄、撤销） | 模型承接 | `derive_cannot_escalate` 等 |
