@@ -1,9 +1,15 @@
-//! 挂载表与命名空间：跨文件系统的统一名字解析。
+//! 挂载表与命名空间：跨文件系统的统一名字解析（meridian::vfs）。
 //!
-//! 解析模型（M13-① 骨架）：路径在进入解析前已完成词法规范化（[`super::path`]），
-//! 解析时选取**组件意义下最长前缀**的挂载点，余下组件自该文件系统根逐段走查
-//! （[`super::fs::walk`]）。最长前缀策略天然覆盖嵌套挂载——更深挂载点必然
-//! 拥有更长前缀而被优先选中，无需在逐段走查中二次检查挂载表。
+//! **归属裁决**（ADR-0002 迁移步 + 补篇）：挂载/注册策略面归 meridian 域——
+//! 本模块消费 `crystal::vfs` 的 FS 侧契约（[`crystal::vfs::fs::FileSystem`]、
+//! [`crystal::vfs::path::PathBuf`]、[`crystal::vfs::fs::ResolvedNode`]）组装
+//! 统一名字解析；原 bedrock::vfs 门面已删除，kernel 引用面随迁移改道至此。
+//!
+//! 解析模型（M13-① 骨架）：路径在进入解析前已完成词法规范化
+//! （[`crystal::vfs::path`]），解析时选取**组件意义下最长前缀**的挂载点，
+//! 余下组件自该文件系统根逐段走查（[`crystal::vfs::fs::walk`]）。最长前缀
+//! 策略天然覆盖嵌套挂载——更深挂载点必然拥有更长前缀而被优先选中，无需
+//! 在逐段走查中二次检查挂载表。
 //!
 //! 并发模型：挂载表整体置于 OSTD `SpinLock` 之后；`resolve` 在持锁期间完成
 //! 走查（骨架级简化——挂载/卸载与解析互斥，文件面块引入路径步行器时再评估
@@ -13,12 +19,16 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use crystal::vfs::fs::{walk, ResolvedNode};
 use ostd::sync::SpinLock;
 
-use super::fs::{walk, FileSystem};
-use super::node::VnodeId;
-use super::path::PathBuf;
-use super::FsError;
+// kernel 引用面改道门面（ADR-0002 迁移步）：原 bedrock::vfs 全量出口在此
+// 聚合——kernel 侧 `use meridian::vfs::…` 单前缀替换即完成改道。
+pub use crystal::vfs::{
+    dir_entry_abi_code, pack_dir_page, CookieEntry, DirEntry, Fd, FdError, FdTable, FileSystem,
+    FsError, Lfs, Metadata, NodeKind, OpenFileDescription, OpenFlags, PathBuf, RamFs, VnodeId,
+    Whence,
+};
 
 /// 单条挂载记录：挂载路径 + 文件系统实例。
 #[derive(Clone)]
@@ -48,27 +58,6 @@ impl MountTable {
 pub struct Namespace {
     root: Arc<dyn FileSystem>,
     table: SpinLock<MountTable>,
-}
-
-/// 解析结果：落点文件系统 + 节点号 + 解析所用规范路径。
-#[derive(Clone)]
-pub struct ResolvedNode {
-    /// 落点文件系统。
-    pub fs: Arc<dyn FileSystem>,
-    /// 该文件系统内的节点号。
-    pub vnode: VnodeId,
-    /// 解析输入的规范路径（诊断与后续 openat 语义复用）。
-    pub path: PathBuf,
-}
-
-impl core::fmt::Debug for ResolvedNode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // 文件系统为 trait 对象，不参与 Debug；以节点号 + 路径标识落点。
-        f.debug_struct("ResolvedNode")
-            .field("vnode", &self.vnode)
-            .field("path", &self.path)
-            .finish()
-    }
 }
 
 impl Namespace {
@@ -174,12 +163,13 @@ impl Namespace {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::{Namespace, PathBuf};
-    use crate::vfs::fs::FileSystem;
-    use crate::vfs::node::{NodeKind, VnodeId};
-    use crate::vfs::ramfs::{RamFs, RAMFS_ROOT};
-    use crate::vfs::FsError;
+    use super::Namespace;
     use alloc::sync::Arc;
+    use crystal::vfs::fs::FileSystem;
+    use crystal::vfs::node::{NodeKind, VnodeId};
+    use crystal::vfs::path::PathBuf;
+    use crystal::vfs::ramfs::{RamFs, RAMFS_ROOT};
+    use crystal::vfs::FsError;
 
     fn path(s: &str) -> PathBuf {
         PathBuf::normalize(s).expect("normalize")

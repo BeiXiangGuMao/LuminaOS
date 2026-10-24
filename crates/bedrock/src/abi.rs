@@ -92,7 +92,7 @@ pub const SYS_IPC_BIND: u64 = 16;
 /// 文件与通道共享同一句柄命名空间，靠对象 id 段位（0xF11E…）与权限位
 /// （READ/WRITE）区分；句柄表满 → `EMFILE(24)`，内核文件表满 →
 /// `ENFILE(23)`（Linux 语义正分）。
-/// 错误域 = Linux 5.15 errno（Conduit 口径，见 [`crate::vfs::FsError::errno`]）。
+/// 错误域 = Linux 5.15 errno（Conduit 口径，见 `crystal::vfs::FsError::errno`（ADR-0002 迁移步））。
 pub const SYS_OPEN: u64 = 18;
 /// 从文件句柄读取（v0.14 追加，M13-② 文件面）。
 ///
@@ -182,7 +182,7 @@ pub const SYS_READDIR: u64 = 28;
 /// 在目录上挂载新文件系统（v0.16 追加，M15-① 目录面）。
 ///
 /// 参数布局：挂载点路径指针 = rdi、长 = rsi、类型 = rdx（v0 恒 0 =
-/// 内核侧新建 [`crate::vfs::RamFs`] 内存文件系统；结构校验）。
+/// 内核侧新建 `crystal::vfs::RamFs`（ADR-0002 迁移步） 内存文件系统；结构校验）。
 /// 挂载点必须已存在且为目录（内核侧校验）；同路径重复挂载 →
 /// `EEXIST(17)`；挂载点缺失 → `ENOENT(2)`；非目录 → `ENOTDIR(20)`。
 /// 成功返回 0（挂载后子 fs 遮蔽挂载点原内容，最长前缀解析生效）。

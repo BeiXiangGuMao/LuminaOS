@@ -7,7 +7,7 @@
 use alloc::string::String;
 
 /// 文件系统内部的节点号。仅在单一 [`super::fs::FileSystem`] 实例内有意义；
-/// 跨文件系统的同一性由「fs 实例 + 节点号」二元组表达（见 [`super::mount::ResolvedNode`]）。
+/// 跨文件系统的同一性由「fs 实例 + 节点号」二元组表达（见 [`super::fs::ResolvedNode`]）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VnodeId(pub u64);
 

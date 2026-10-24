@@ -10,3 +10,7 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+# ADR-0002 迁移步（M26）：挂载策略面消费 crystal::vfs FS 侧契约 + OSTD SpinLock（细则 4.3）
+crystal.workspace = true
+ostd.workspace = true
+

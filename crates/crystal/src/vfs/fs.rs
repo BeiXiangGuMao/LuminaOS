@@ -6,9 +6,11 @@
 //! [`FsError`](crate::vfs::FsError) 表达；errno 映射收敛在后续文件面块。
 
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use super::node::{DirEntry, Metadata, NodeKind, VnodeId};
+use super::path::PathBuf;
 use super::FsError;
 
 /// 一个可挂载文件系统的最小完备契约。
@@ -88,10 +90,32 @@ pub struct CookieEntry {
     pub cookie: u64,
 }
 
+/// 解析结果：落点文件系统 + 节点号 + 解析所用规范路径（ADR-0002 迁移步：
+/// 契约型三元组随 FS 契约归 crystal::vfs；挂载层构造，fd 表持有）。
+#[derive(Clone)]
+pub struct ResolvedNode {
+    /// 落点文件系统。
+    pub fs: Arc<dyn FileSystem>,
+    /// 该文件系统内的节点号。
+    pub vnode: VnodeId,
+    /// 解析输入的规范路径（诊断与后续 openat 语义复用）。
+    pub path: PathBuf,
+}
+
+impl core::fmt::Debug for ResolvedNode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // 文件系统为 trait 对象，不参与 Debug；以节点号 + 路径标识落点。
+        f.debug_struct("ResolvedNode")
+            .field("vnode", &self.vnode)
+            .field("path", &self.path)
+            .finish()
+    }
+}
+
 /// 便捷封装：路径组件逐段走查（从 `fs` 的根开始）。
 ///
 /// 供挂载层在确定落点文件系统后使用；空组件序列返回该 fs 的根节点。
-pub(crate) fn walk(
+pub fn walk(
     fs: &dyn FileSystem,
     components: impl IntoIterator<Item = String>,
 ) -> Result<VnodeId, FsError> {
@@ -103,7 +127,8 @@ pub(crate) fn walk(
 }
 
 /// 目录项类型域的 ABI 编码（M15-① READDIR 项首字节；与内核 STAT kind
-/// 域同一映射，单一事实源落 bedrock——内核侧 `kind_code` 委托至此）。
+/// 域同一映射，单一事实源落 crystal（ADR-0002 迁移步）——内核侧 `kind_code`
+/// 委托至此）。
 ///
 /// 0 = File、1 = Dir、2 = CharDev、3 = Pipe、4 = Symlink。
 pub const fn dir_entry_abi_code(kind: NodeKind) -> u8 {

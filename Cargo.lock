@@ -10,7 +10,6 @@ version = "0.24.0"
 name = "bedrock"
 version = "0.24.0"
 dependencies = [
- "crystal",
  "ostd",
 ]
 
@@ -28,6 +27,10 @@ dependencies = [
 [[package]]
 name = "crystal"
 version = "0.24.0"
+dependencies = [
+ "bedrock",
+ "ostd",
+]
 
 [[package]]
 name = "glyph"
@@ -51,6 +54,7 @@ dependencies = [
  "bedrock",
  "conduit",
  "harbor",
+ "meridian",
  "mirror",
  "ostd",
  "vanguard",
@@ -60,6 +64,10 @@ dependencies = [
 [[package]]
 name = "meridian"
 version = "0.24.0"
+dependencies = [
+ "crystal",
+ "ostd",
+]
 
 [[package]]
 name = "mirror"

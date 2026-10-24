@@ -612,7 +612,8 @@ fn emit_header(out: &mut String, c: &Contract) {
         "    CompatErrno, DispatchError, Dispatcher, Payload, ServiceError, ServiceHandler,"
             .to_string(),
         "};".to_string(),
-        "use std::sync::Arc;".to_string(),
+        "use alloc::boxed::Box;".to_string(),
+        "use alloc::sync::Arc;".to_string(),
         String::new(),
     ];
     out.push_str(&lines.join("\n"));
@@ -850,7 +851,7 @@ fn emit_tests(out: &mut String, c: &Contract, eg: &ErrorGroup) {
     out.push_str(
         "#[cfg(test)]\n\
          #[allow(clippy::unwrap_used, clippy::expect_used)]\n\
-         mod tests {\n    use super::{\n",
+         mod tests {\n    use alloc::boxed::Box;\n\n    use super::{\n",
     );
     // 导入面：消息常量 + 结构体 + 错误面（全量，未用即 S2 拦）。
     for m in &c.messages {

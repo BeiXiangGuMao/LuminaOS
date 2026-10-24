@@ -7,9 +7,9 @@
 //! 骨架边界：每个 OFD 独占一条槽（`dup` 的共享偏移语义、`fcntl`、`O_CLOEXEC`
 //! 等留待文件面块；届时 OFD 改为 `Arc` 共享即可，本表外部形态不变）。
 
-use crystal::{GenerationalSlab, Key, SlotError};
+use crate::{GenerationalSlab, Key, SlotError};
 
-use super::mount::ResolvedNode;
+use super::fs::ResolvedNode;
 use super::node::Metadata;
 use super::FsError;
 
@@ -212,24 +212,31 @@ impl FdTable {
 mod tests {
     use super::{FdError, FdTable, OpenFlags, Whence};
     use crate::vfs::fs::FileSystem;
-    use crate::vfs::mount::Namespace;
+    use crate::vfs::fs::{walk, ResolvedNode};
     use crate::vfs::node::{NodeKind, VnodeId};
     use crate::vfs::path::PathBuf;
     use crate::vfs::ramfs::{RamFs, RAMFS_ROOT};
+    use alloc::string::ToString;
     use alloc::sync::Arc;
 
-    /// 布局：根 ramfs 挂 /data/file（内容 "lumina-vfs"），返回 (ns, table)。
-    fn setup() -> (Namespace, FdTable) {
+    /// 布局：根 ramfs 挂 /data/file（内容 "lumina-vfs"），返回 (fs, table)。
+    /// ADR-0002 迁移后 fd 测试不再依赖挂载层——单 fs 域内用 `walk` 直构
+    /// [`ResolvedNode`]（挂载层协同面由 meridian::vfs 测试覆盖）。
+    fn setup() -> (Arc<RamFs>, FdTable) {
         let fs = Arc::new(RamFs::new());
         let dir = fs.create(RAMFS_ROOT, "data", NodeKind::Dir).expect("mkdir");
         let file = fs.create(dir, "file", NodeKind::File).expect("touch");
         fs.write_at(file, 0, b"lumina-vfs").expect("seed");
-        (Namespace::new(fs), FdTable::new())
+        (fs, FdTable::new())
     }
 
-    fn resolve(ns: &Namespace, p: &str) -> crate::vfs::mount::ResolvedNode {
-        ns.resolve(&PathBuf::normalize(p).expect("normalize"))
-            .expect("resolve")
+    fn resolve(fs: &Arc<RamFs>, p: &str) -> ResolvedNode {
+        let path = PathBuf::normalize(p).expect("normalize");
+        ResolvedNode {
+            fs: fs.clone(),
+            vnode: walk(fs.as_ref(), path.components().map(str::to_string)).expect("walk"),
+            path,
+        }
     }
 
     #[test]
@@ -344,7 +351,7 @@ mod tests {
     #[test]
     fn ghost_fd_is_stale() {
         let (_ns, mut table) = setup();
-        let ghost = crystal::Key {
+        let ghost = crate::Key {
             index: 0,
             generation: 999,
         };

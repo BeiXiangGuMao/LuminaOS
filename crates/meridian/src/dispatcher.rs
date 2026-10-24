@@ -18,7 +18,8 @@
 //! 微基准：[`tests::bench_dispatch_hot_path`] 为 M-P01 宿主打点骨架
 //! （TCG 回归基线制，≤0.3 μs 门禁数值以参考环境 B 裸机实测为准）。
 
-use std::collections::HashMap;
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 
 /// 消息标识字：高 16 位接口族版本，低 16 位消息号。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,7 +230,7 @@ impl DispatchError {
 /// 分发器：版本闸 → 能力闸 → 路由 → 执行。
 pub struct Dispatcher {
     family_version: u16,
-    routes: HashMap<u16, Box<dyn ServiceHandler>>,
+    routes: BTreeMap<u16, Box<dyn ServiceHandler>>,
     gate: Box<dyn CapabilityGate>,
 }
 
@@ -238,7 +239,7 @@ impl Dispatcher {
     pub fn new(family_version: u16, gate: Box<dyn CapabilityGate>) -> Self {
         Dispatcher {
             family_version,
-            routes: HashMap::new(),
+            routes: BTreeMap::new(),
             gate,
         }
     }
@@ -281,6 +282,10 @@ impl Dispatcher {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use alloc::boxed::Box;
+    use alloc::vec::Vec;
+    use std::println;
+
     use super::{
         CapabilityGate, CompatErrno, DispatchError, Dispatcher, KernelCode, MsgHeader, Payload,
         RetryHint, ServiceError, ServiceHandler,

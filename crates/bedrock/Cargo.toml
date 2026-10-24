@@ -10,8 +10,7 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
-# v0.13.0（M13-①）：fd 表以 Crystal 代际槽为基座（crystal 为通用数据结构层，方向仍低 → 高）
-crystal = { workspace = true }
+# ADR-0002 迁移步（M26）：fd 表随 vfs 外移 crystal，bedrock 回归零 crystal 依赖
 ostd = { workspace = true }
 
 [dev-dependencies]

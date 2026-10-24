@@ -16,7 +16,8 @@
 use crate::dispatcher::{
     CompatErrno, DispatchError, Dispatcher, Payload, ServiceError, ServiceHandler,
 };
-use std::sync::Arc;
+use alloc::boxed::Box;
+use alloc::sync::Arc;
 
 /// 接口族版本（契约 family_version；版本闸语义见 dispatcher）。
 pub const FAMILY_VERSION: u16 = 1;
@@ -537,6 +538,8 @@ pub fn attach(d: &mut Dispatcher, svc: Arc<dyn VfsRegistryService>) {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use alloc::boxed::Box;
+
     use super::{
         attach, DecodeError, EventsRequest, EventsResponse, RegisterRequest, RegisterResponse,
         StatfsRequest, StatfsResponse, UnregisterRequest, UnregisterResponse, VfsRegistryError,

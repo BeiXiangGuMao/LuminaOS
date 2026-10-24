@@ -14,12 +14,12 @@
 //!
 //! **OFD 语义**：内核 [`FileObject`] 复刻 M13-① `FdTable::OpenFileDescription`
 //! 的骨架语义——私有偏移推进、访问位强制（读句柄写 → EBADF）、seek 三基准
-//! 与负偏移拒绝。M13-① `bedrock::vfs::FdTable` 保持宿主面参照实现地位
+//! 与负偏移拒绝。M13-① `meridian::vfs::FdTable` 保持宿主面参照实现地位
 //! （其代际槽 ABA 防护留在数据结构面）；内核面 fd 号复用 = Linux 同款
 //! 语义（close 后旧句柄失效，v0 不做代际槽，与通道面一致，如实记档）。
 //!
 //! **错误域分立**：本面全部错误返回 Linux 5.15 errno（Conduit 口径，经
-//! [`bedrock::vfs::FsError::errno`] 折叠 + 本模块本地 errno）；进程/能力
+//! [`meridian::vfs::FsError::errno`] 折叠 + 本模块本地 errno）；进程/能力
 //! 面错误域（1–10，procs 文档）不受影响。注册表满 = ENFILE(23)、调用方
 //! 句柄表满 = EMFILE(24)（Linux 语义正分，不与 ERR_TABLE(7) 混用）。
 //!
@@ -30,7 +30,7 @@
 //!
 //! **M15-① 目录面**：SYS_MKDIR/REMOVE（父走查 + 叶子操作，[`PathBuf::
 //! parent`]/[`PathBuf::name`] 切片）+ SYS_READDIR（**分页化**——OFD
-//! 偏移兼任目录项游标，[`bedrock::vfs::pack_dir_page`] 纯函数打包）+
+//! 偏移兼任目录项游标，[`meridian::vfs::pack_dir_page`] 纯函数打包）+
 //! SYS_MOUNT/UMOUNT（v0 仅 RamFs 挂载：内核侧新建空实例，mount 契约
 //! M13-① 已备）。错误域同文件面 errno。
 //!
@@ -51,7 +51,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use bedrock::vfs::{FileSystem, FsError, Namespace, NodeKind, OpenFlags, PathBuf, RamFs, VnodeId};
+use meridian::vfs::{FileSystem, FsError, Namespace, NodeKind, OpenFlags, PathBuf, RamFs, VnodeId};
 use ostd::sync::SpinLock;
 use vanguard::{Capability, Right};
 
@@ -297,7 +297,7 @@ pub fn files_usage() -> (usize, usize) {
 /// 节点类型编码（SYS_STAT kind 域）：委托 bedrock 单一事实源
 /// （READDIR 项首字节同一映射，宿主测试交叉钉值）。
 const fn kind_code(kind: NodeKind) -> u64 {
-    bedrock::vfs::dir_entry_abi_code(kind) as u64
+    meridian::vfs::dir_entry_abi_code(kind) as u64
 }
 
 /// 段位判定：对象 id 是否属于文件段。
@@ -843,7 +843,7 @@ pub fn sys_remove(path_ptr: u64, len: u64) -> u64 {
 /// 句柄须为目录（metadata kind 判定，非目录 → ENOTDIR；无需 READ
 /// 权限位以外的门禁——目录打开即枚举，v0 与 read 的 READ 位校验对齐：
 /// 未以读方式打开 → EBADF）。OFD 私有偏移兼任**目录项游标**：自游标
-/// 起调用 [`bedrock::vfs::pack_dir_page`] 尽量多打包（半项不落盘），
+/// 起调用 [`meridian::vfs::pack_dir_page`] 尽量多打包（半项不落盘），
 /// 消费后游标推进。SEEK 可重定位游标（目录 read 恒 EISDIR，偏移域
 /// 专用）。成功返回 `(1 << 32) | n_entries`（0 = 枚举尽/EOF）。
 pub fn sys_readdir(handle: u64, buf_ptr: u64, buf_len: u64) -> u64 {
@@ -878,9 +878,9 @@ fn readdir_checked(handle: u64, buf: &mut [u8]) -> u64 {
                 Ok(items) => {
                     // fs 侧已按稳定 cookie 序过滤余项；打包自 0 起
                     //（半项不落盘纪律不变）。游标推进 = 最后交付项 cookie。
-                    let entries: Vec<bedrock::vfs::DirEntry> =
+                    let entries: Vec<meridian::vfs::DirEntry> =
                         items.iter().map(|c| c.entry.clone()).collect();
-                    let (_packed, consumed) = bedrock::vfs::pack_dir_page(&entries, 0, buf);
+                    let (_packed, consumed) = meridian::vfs::pack_dir_page(&entries, 0, buf);
                     if consumed > 0 {
                         f.pos = items[consumed - 1].cookie;
                     }
@@ -910,7 +910,7 @@ pub fn sys_mount(path_ptr: u64, len: u64, fs_type: u64) -> u64 {
                             if !crate::block::ready() {
                                 Err(EINVAL)
                             } else {
-                                bedrock::vfs::Lfs::format_or_open(crate::block::DataBlock::arced())
+                                meridian::vfs::Lfs::format_or_open(crate::block::DataBlock::arced())
                                     .map(|l| Arc::new(l) as Arc<dyn FileSystem>)
                                     .map_err(|e| e.errno())
                             }

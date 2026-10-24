@@ -45,7 +45,7 @@ use super::fs::{CookieEntry, FileSystem};
 use super::node::{DirEntry, Metadata, NodeKind, VnodeId};
 use super::path::validate_component;
 use super::FsError;
-use crate::block::{BlockDevice, BlockError, BLOCK_SIZE};
+use bedrock::block::{BlockDevice, BlockError, BLOCK_SIZE};
 
 /// 盘上格式识别码（超级块首 4 字节）。
 const MAGIC: &[u8; 4] = b"LFS1";
@@ -1116,12 +1116,12 @@ impl FileSystem for Lfs {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{FileSystem, Lfs, ROOT_INO};
-    use crate::block::{BlockDevice, BlockError, MemBlock, BLOCK_SIZE};
     use crate::vfs::node::NodeKind;
     use crate::vfs::{FsError, VnodeId};
     use alloc::sync::Arc;
     use alloc::vec;
     use alloc::vec::Vec;
+    use bedrock::block::{BlockDevice, BlockError, MemBlock, BLOCK_SIZE};
 
     /// 标准测试盘：64 块（32 KiB）。
     fn dev() -> Arc<MemBlock> {

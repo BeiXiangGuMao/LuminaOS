@@ -10,6 +10,11 @@
 #![no_std]
 extern crate alloc;
 
+pub mod checksum;
+pub mod format;
+pub mod layout;
+pub mod vfs;
+
 use alloc::vec::Vec;
 
 /// 代际槽表中的句柄。

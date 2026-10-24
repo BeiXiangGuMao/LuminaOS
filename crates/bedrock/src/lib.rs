@@ -7,8 +7,10 @@
 //! - [`abi`]：系统调用号与寄存器布局（v0 ABI）；
 //! - [`tlv`]：内核测试与 IPC 载荷的 TLV 编帧（QEMU 宿主-客户机协议约定）；
 //! - [`ipc`]：端点信箱（快速路径的数据结构面）；
-//! - [`vfs`]：虚拟文件系统骨架——文件面与多段映像的公共基座（v0.13.0，M13-①）；
 //! - [`exec`]：LXE1 多段可执行映像格式结构面（M14-①；放置策略归内核装载器）。
+//!
+//! ADR-0002 迁移步（M26）：原 vfs 模块整体外移——fd/物理面/契约入
+//! `crystal::vfs`，挂载策略面入 `meridian::vfs`；本 crate 回归通信与契约域。
 //!
 //! 非目标：页表、调度器与中断控制属 bedrock-boot/ostd 后续里程碑（SPEC 表 19-1 P0）。
 #![no_std]
@@ -19,7 +21,6 @@ pub mod block;
 pub mod exec;
 pub mod ipc;
 pub mod tlv;
-pub mod vfs;
 
 #[cfg(test)]
 extern crate std;

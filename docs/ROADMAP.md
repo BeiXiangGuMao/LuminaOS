@@ -140,8 +140,7 @@ M25 退出口径：C-P04=0 偏差（布局快照双闸挂接）+ C-P01 首批 �
 | **M26-B1** | COW B-tree 首割：16 KiB 节点寻址 + 路径复制 + 双代际根槽原子切换 + 键序/树深钳制 + 子卷根表/目录树/校验和树三树键布局 | crystal::btree | 宿主测试全绿 |
 | **M26-S1** | 快照/子卷原语：快照创建 O(1)（根指针 + 代际登记，零遍历）+ 克隆（可写快照共享节点）+ 激活/回滚（根槽位切换）+ 引用计数延迟回收最小面 | crystal::subvol | 宿主测试 + CR-P05 结构面证据（创建路径常数操作） |
 | **M26-X1** | crash-fs 断电注入框架：FaultBlockDevice（任意块边界断电 + torn write）+ 任意事务点断电 ≥1000 样本（确定性种子）+ 两态一致性断言（已提交事务全见/未提交全不见）+ 位翻转读路径检出先行矩阵 | crystal 测试面 crash-fs | ≥1000 注入全绿 + 检出 100% |
-| **M26-V1-a** | ADR-0002 迁移步第一步：vfs 八文件整体迁 crystal::vfs（mount 暂驻过渡）+ bedrock::vfs re-export 门面（正文承诺的过渡窗，kernel 零改道）+ 台账 crystal→ostd 政策边 | crystal::vfs + bedrock 门面 | CI 全绿 + 过渡窗开 |
-| **M26-V1-b** | 迁移步第二步：mount 策略面 crystal::vfs → meridian::vfs（策略面上移正挂）+ kernel SYS_OPEN..SYS_MOUNT 引用面改道 + bedrock::vfs 门面删除 + 台账 overreach/bedrock→crystal 清账 + 冻结令解除 | bedrock::vfs 消失 + meridian::vfs | CI 全绿 + 豁免两条清账 |
+| **M26-V1**（执行序提前至 F1 前——循环依赖物理约束，见勘误注） | ADR-0002 迁移步单批：vfs 八文件分发（fd/fs/path/node/lfs/ramfs + ResolvedNode 契约型 → crystal::vfs；mount 策略面 → meridian::vfs）+ kernel SYS_OPEN..SYS_MOUNT 引用面改道 + bedrock::vfs 删除 + meridian no_std 化（kernel 可链接前置，HashMap→BTreeMap）+ 台账三清（overreach/bedrock→crystal）+ 五政策边（crystal→bedrock/ostd，meridian→crystal/ostd，kernel→meridian）+ idl 生成器模板 no_std 随迁 | bedrock::vfs 消失 + crystal::vfs + meridian::vfs | ✅ CI-OK 11 阶段（含 S7 内核链接 + S8 冒烟 75/75 不降）|
 | **M26-V1-c** | bedrock 零依赖收口：ipc FastPath SpscRing 内联 + block/ipc SpinLock 内联化（无依赖等价实现）→ bedrock→ostd 豁免清账（ADR-0001 终态兑现：bedrock 回归零依赖通信契约域） | bedrock 内联面 | CI 全绿 + bedrock→ostd 清账 |
 | **M26-T1** | t76 裸机活体：kernel 自检段 crystal-compat 相位（数据盘底座：format v1 → 事务写读 → 快照 O(1) 证据 → WAL 提交/回放证据）+ SELFTEST_TOTAL 75→76 双端同步 | t76 + 计数 76/76 | 冒烟 LUMINA-SELFTEST-PASS 76/76 + crystal-compat 证据行 |
 | **M26-收尾** | ROADMAP/METRICS 对账（CR-P05 结构面打点 + vfs 外移观察项收口 + crystal description 对齐）+ 退出口径核验注 | 对账提交 | 退出口径全达关账，近线 M27 |

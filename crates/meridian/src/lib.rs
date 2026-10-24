@@ -11,15 +11,35 @@
 //!
 //! M24-M1 起新增分发器首割 [`dispatcher`]：号 + 版本位解码、能力校验
 //! 入口与三层错误模型（细则 §3.2/§3.3；M-P01 打点骨架在位）。
+//!
+//! **形态**（ADR-0004 渐进混合态 + ADR-0002 补篇，M26-V1）：kernel 引用面
+//! 改道 `meridian::vfs` 要求本 crate 内核可链接——no_std + alloc；std 仅
+//! 测试域经 `extern crate std` 引入。挂载/命名空间策略面自 bedrock::vfs
+//! 上移落位（迁移文件零改写，alloc 路径显式声明）。
+#![no_std]
+extern crate alloc;
+
+#[cfg(test)]
+extern crate std;
+
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOC: std::alloc::System = std::alloc::System;
 
 pub mod dispatcher;
+
+/// 挂载表与命名空间：跨文件系统统一名字解析（原 bedrock::vfs/mount 策略面，
+/// ADR-0002 补篇归属裁决——策略面随 meridian 域）。
+pub mod vfs;
 
 /// M24-M2 生成物落位：IDL 契约（`crates/meridian/idl/`）经 `xtask idl-gen`
 /// 生成 —— 禁止手编；漂移由 `xtask idl-check`（ci S5b-idl 阶段）以字节级
 /// 比对拒绝。契约变更流程：改 toml → idl-gen → 生成物随契约同批提交。
 pub mod idl_gen;
 
-use std::collections::HashMap;
+use alloc::collections::BTreeMap;
+use alloc::format;
+use alloc::string::String;
 
 /// 重启策略。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +84,7 @@ pub struct ServiceSpec {
 /// 监管者注册表。
 #[derive(Debug, Default)]
 pub struct Supervisor {
-    services: HashMap<String, (ServiceSpec, ServiceState)>,
+    services: BTreeMap<String, (ServiceSpec, ServiceState)>,
 }
 
 /// 退避封顶（毫秒）。

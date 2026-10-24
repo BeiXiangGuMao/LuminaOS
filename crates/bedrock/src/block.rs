@@ -6,7 +6,7 @@
 //! （bedrock 宿主测试基座 + 内核面通用 RAM 盘），硬件适配器（ATA 从盘）
 //! 落 kernel（`crate::block`）——bedrock 保持平台无关。
 //!
-//! 并发模型：与 [`crate::vfs::fs::FileSystem`] 同款纪律——实现方内部
+//! 并发模型：与 `crystal::vfs::fs::FileSystem`（ADR-0002 迁移步） 同款纪律——实现方内部
 //! 自持同步原语（OSTD `SpinLock`），trait 方法全部 `&self`，同一实例
 //! 可被多 fs 实例/多 CPU 共享。
 //!
