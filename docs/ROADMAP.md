@@ -76,7 +76,7 @@
 | 里程碑 | 主题 | 对齐阶段 | 验收锚（指标编号） | 主战场 |
 |---|---|---|---|---|
 | **M24** | 服务边界元年：v0.24.0 定版 + ADR 裁决 + Meridian 分发面首割 | P1 起步 | M-P01 打点挂接；t72+ 活体 | meridian/xtask/mirror/vnet |
-| **M25** | 兼容路径启动：Conduit abi-defs + 布局快照 + 首批转换器 | P1 | C-P04=0 偏差；C-P01 首批 ≥20 调用全绑定用例 | conduit/bedrock::abi |
+| **M25** | 兼容路径启动：Conduit abi-defs + 布局快照 + 首批转换器——**近线**（任务级分解见 §四 M25 子节） | P1 | C-P04=0 偏差；C-P01 首批 ≥20 调用全绑定用例 | conduit/bedrock::abi |
 | **M26** | Crystal 文件系统首割：格式 v1 + WAL + 快照常数时间 | P2 | CR-P05≤50ms（常数时间）；crash-fs 断电注入 ≥1000 次 | crystal/kernel::blk |
 | **M27** | 网络栈收口：IP/ICMP/UDP + TCP 首割 | P2→P3 | PU-P03 回环延迟口径挂接；t 系列 ARP→ICMP→UDP 活体链 | pulse/kernel::vnet |
 | **M28** | 显示栈闭环：Mirror 合成管线 + 用户态显示面 | P3 | MI-P01 结构面；1080p@60 合成冒烟 | mirror/kernel::fb/prism |
@@ -109,6 +109,21 @@
 M24 退出口径：v0.24.0 已发布 + ADR 八篇落盘 + M-P01 打点面可用 + t72-t74 全绿 + lint-deps 上线。
 
 > **收尾核验（M24-收尾）**：五项全达——① v0.24.0 已发布（tag ce58844 / Release id 420859562 四资产）；② ADR 八篇在案（d9981a7）；③ M-P01 打点面可用（dispatcher 宿主基线 mean=229.6ns 登 METRICS.md）；④ t72-t74 全绿（现基线 74/74，冒烟 LUMINA-SELFTEST-PASS 实证）；⑤ lint-deps 上线（S5c 阶段零违规挂闸）。M24 关账，近线转入 M25。
+
+### M25 任务级分解（近线，逐笔执行）
+
+> 主题：兼容路径启动（P1 主攻续段）。验收锚：C-P04=0 偏差 + C-P01 首批 ≥20 调用全绑定用例；活体自 t75 续编。事实源现状：LXE1 错误码双体系并存（文件/fb 面 errno 值域 const 散布 vs 进程/IPC 面 ERR_* 1..10）——M25 以 conduit 单点事实源收口，kernel 侧散布 const 收编押后。bedrock::abi 冻结面零语义改动（v0 编号纪律），仅作 LXE1 对照事实源消费。
+
+| 任务 | 内容 | 提交物 | 验收 |
+|---|---|---|---|
+| **M25-计划** ✅ | 本表落盘 + §三 M25 行近线标注 | 对账提交 | 本提交 |
+| **M25-D1** | conduit abi-defs 首批：Linux 5.15 x86_64 UAPI 结构体布局面（timespec/timeval/iovec/stat/statx·statx_timestamp/sigset·sigaction/pollfd/epoll_event/sockaddr·sockaddr_in/rlimit/utsname/termios/winsize/itimerspec·itimerval/rusage/sysinfo），repr(C) no_std 纯布局 + 字段逐项 UAPI 对齐注记 | conduit::defs | 布局面在位（约 20 结构体） |
+| **M25-D2** | 布局快照挂闸：size/align/关键字段 offset 静态断言矩阵（编译期 const 断言 + 快照对照表测试双闸）= C-P04=0 偏差；lint 台账登记 conduit→bedrock 政策边（转换器消费 LXE1 事实源） | conduit::layout + allowlist.toml | C-P04=0 双闸挂接 |
+| **M25-C1** | 首批转换器：errno 常量事实源（Linux 5.15 值域表，收口 kernel 散布 const 口径）+ LXE1 ERR_* ↔ errno 双向映射 + flags 映射首批（LXE1 open 模式域 ↔ O_*）+ syscall 绑定表（num/name/nargs/错误域注记）≥20 调用 | conduit::convert + bedrock 边生效 | 绑定表 ≥20；errno 事实源单点化 |
+| **M25-T1** | 全绑定用例：每绑定 ≥1 用例（号快照/nargs/errno 往返/错误域对账）+ errno 双向全覆盖 + t75 活体（kernel 冒烟自检段消费 conduit：布局快照在环断言 + errno 往返，74→75 双端同步） | conduit 用例 + t75 + lint 边 lumina-kernel→conduit | C-P01 首批 ≥20 全绑定用例；t75 全绿 |
+| **M25-收尾** | ROADMAP 对账 + METRICS.md C-P01/C-P04 行扩记 + 退出口径核验 | 对账提交 | C-P04=0；C-P01 ≥20；全绿关账 |
+
+M25 退出口径：C-P04=0 偏差（布局快照双闸挂接）+ C-P01 首批 ≥20 调用全绑定用例 + t75 冒烟活体全绿。
 
 ---
 
