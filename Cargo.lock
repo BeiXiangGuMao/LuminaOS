@@ -50,6 +50,7 @@ version = "0.24.0"
 dependencies = [
  "bedrock",
  "conduit",
+ "crystal",
  "harbor",
  "meridian",
  "mirror",

@@ -79,7 +79,7 @@ use crate::multiboot1::BOOT_MAGIC;
 const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
 /// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74）。
-const SELFTEST_TOTAL: usize = 75;
+const SELFTEST_TOTAL: usize = 76;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -4031,6 +4031,69 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t75, "conduit-compat");
+
+    // ---- t76（M26-T1）：crystal 格式 v1 在盘活体（ATA 数据盘底座）——
+    //      格式 v1 双槽 + WAL 意图 + SB 对槽切换 + 回放采纳 + 快照 O(1)
+    //      结构面证据（CR-P05）；崩溃前窗口由 insert_without_switch 确定
+    //      性重放（设备真实介质：重启态 = 重新 mount 读盘）。
+    let t76 = {
+        use crystal::fs::Fs;
+        let mut ok = true;
+        let mut evidence: alloc::string::String = "fmt=0 txn=0 replay=0 snap=0".into();
+        let dev = crate::block::DataBlock::arced();
+        let lbas = crate::block::data_lbas();
+        // (a) 格式化 + 8 事务写读对账
+        match Fs::format(&dev, lbas) {
+            Ok(mut fs) => {
+                let mut txn_ok = true;
+                for k in 0..8u64 {
+                    if fs.data_insert(k, k + 700).is_err() {
+                        txn_ok = false;
+                        break;
+                    }
+                }
+                for k in 0..8u64 {
+                    if fs.data_lookup(k) != Ok(Some(k + 700)) {
+                        txn_ok = false;
+                        break;
+                    }
+                }
+                let gen_after_txn = fs.generation();
+                txn_ok &= gen_after_txn == 9;
+                // (b) 回放采纳：崩溃前窗口（节点+WAL 落盘不切 SB）→ 重 mount
+                let mut replay_ok = false;
+                let mut replay_gen = 0u64;
+                if fs.insert_without_switch(42, 742).is_ok() && fs.data_lookup(42) == Ok(None) {
+                    if let Ok((fs2, stats)) = Fs::mount(&dev, lbas) {
+                        replay_ok = stats.txns_adopted == 1
+                            && fs2.data_lookup(42) == Ok(Some(742))
+                            && fs2.data_lookup(0) == Ok(Some(700));
+                        replay_gen = fs2.generation();
+                    }
+                }
+                // (c) 快照 O(1)：分配增量 ≤4 节点（与数据量无关的结构面）
+                let mut snap_ok = false;
+                let mut snap_delta = 0u64;
+                if let Ok((mut fs3, _)) = Fs::mount(&dev, lbas) {
+                    let before = fs3.alloc_next();
+                    if let Ok(_snap) = fs3.snapshot_create(1) {
+                        snap_delta = fs3.alloc_next() - before;
+                        snap_ok = snap_delta <= 4 * 32;
+                    }
+                }
+                ok &= txn_ok && replay_ok && snap_ok;
+                evidence = alloc::format!(
+                    "fmt=1 txn=8 gen={gen_after_txn} replay={replay_ok}+g{replay_gen} snap_delta={snap_delta}LBA ok={ok}"
+                );
+            }
+            Err(_) => {
+                ok = false;
+            }
+        }
+        let _ = writeln!(log, "crystal-compat: {evidence}");
+        ok
+    };
+    report(&mut log, t76, "crystal-compat");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {

@@ -73,6 +73,11 @@ to = "bedrock"
 note = "兼容层转换器消费 LXE1 事实源（abi 调用号/错误码表）；细则第 4 章 Conduit 定位（M25-C1 起）"
 
 [[allowed_edges]]
+from = "lumina-kernel"
+to = "crystal"
+note = "t76 活体消费 crystal 格式 v1 装配面（format/mount/WAL 回放/快照 O(1) 结构面证据）；M26-T1 起"
+
+[[allowed_edges]]
 from = "crystal"
 to = "bedrock"
 note = "crystal 消费 bedrock::block 块契约（平台无关 512B 块底座，格式 v1 骑行其上）；块契约终态随 Vanguard 驱动栈演进再议（M26-F1 起）"

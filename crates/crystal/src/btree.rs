@@ -287,6 +287,18 @@ pub fn upsert(
     tree_write(ctx, root, key, value, true, &mut Vec::new())
 }
 
+/// 覆盖写并回报写入集（子卷表/回滚面的事务意图事实源，T1 消费）。
+pub fn upsert_tracked(
+    ctx: &mut BtreeContext,
+    root: RootRef,
+    key: u64,
+    value: u64,
+) -> Result<(RootRef, Vec<(u64, u64)>), BtreeError> {
+    let mut writes = Vec::new();
+    let root = tree_write(ctx, root, key, value, true, &mut writes)?;
+    Ok((root, writes))
+}
+
 /// insert/upsert 共享主体（`overwrite` 区分重复键策略）。
 fn tree_write(
     ctx: &mut BtreeContext,

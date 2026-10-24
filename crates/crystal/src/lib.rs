@@ -13,6 +13,7 @@ extern crate alloc;
 pub mod btree;
 pub mod checksum;
 pub mod format;
+pub mod fs;
 pub mod layout;
 pub mod subvol;
 pub mod vfs;

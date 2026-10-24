@@ -50,6 +50,11 @@ impl DataBlock {
     }
 }
 
+/// 数据盘容量（LBA 数；IDENTIFY 固化；0 = 未探测/未就绪）。
+pub fn data_lbas() -> u64 {
+    SECTORS.load(Ordering::Acquire)
+}
+
 /// 探测数据盘（IDENTIFY + 容量固化）；返回是否就绪。
 #[allow(dead_code)]
 pub fn init(log: &mut DualLog) -> bool {

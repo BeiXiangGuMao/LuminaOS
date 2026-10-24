@@ -201,18 +201,19 @@ impl core::fmt::Display for WalError {
 
 /// 追加一个事务记录到环（write-ahead；调用方随后写节点 + 切 SB）。
 ///
-/// `sb.wal_head` 为写入起点；环容量不足（记录跨界回绕覆盖未回收记录）时
-/// 返回 [`WalError::BadRecordSize`]——调用方应先推进 SB 提交点再重试
-/// （v1 纪律：绝不覆盖可能仍在回放域内的记录）。
+/// 环尾不足时**回绕覆盖最老记录**——安全性论证：调用方每事务提交即切
+/// SB（代际 +1），环内全部既有记录的代际 ≤ SB 代际（恢复按代序跳过，
+/// 覆盖无观察面）；单记录尺寸超环容量才拒绝（`BadRecordSize`）。
 pub fn append_txn(dev: &dyn BlockDevice, sb: &SuperBlock, txn: &WalTxn) -> Result<(), WalError> {
     let lbas = record_lbas(txn.intents.len());
     if lbas > WAL_LBAS {
         return Err(WalError::BadRecordSize);
     }
-    let head = u64::from(sb.wal_head);
-    if head + lbas > WAL_LBAS {
-        return Err(WalError::BadRecordSize); // 环回绕覆盖禁则；先推进提交点
-    }
+    let head = if u64::from(sb.wal_head) + lbas > WAL_LBAS {
+        0 // 回绕：最老记录已全部被 SB 代序消费，覆盖安全
+    } else {
+        u64::from(sb.wal_head)
+    };
     let mut buf = alloc::vec![0u8; (lbas as usize) * BLOCK_SIZE];
     encode_txn(txn, &mut buf);
     for i in 0..lbas {
@@ -309,11 +310,24 @@ pub fn recover(
             continue; // 已持久化于超级块
         }
         let mut all_ok = true;
-        for intent in &txn.intents {
+        // 根节点同验（零意图事务的唯一防线——根损坏绝不被采纳）。
+        for root_addr in [txn.root_subvols.addr, txn.root_cksum.addr] {
+            if root_addr == 0 {
+                continue;
+            }
             stats.nodes_verified += 1;
-            if node_cksum_at(dev, intent.addr) != Ok(intent.expected_cksum) {
+            if node_cksum_at(dev, root_addr).is_err() {
                 all_ok = false;
                 break;
+            }
+        }
+        if all_ok {
+            for intent in &txn.intents {
+                stats.nodes_verified += 1;
+                if node_cksum_at(dev, intent.addr) != Ok(intent.expected_cksum) {
+                    all_ok = false;
+                    break;
+                }
             }
         }
         if all_ok {
@@ -473,7 +487,7 @@ mod tests {
         let (adopted, stats) = recover(&dev, &sb).expect("recover");
         assert_eq!(stats.txns_scanned, 1);
         assert_eq!(stats.txns_adopted, 1);
-        assert_eq!(stats.nodes_verified, 1);
+        assert_eq!(stats.nodes_verified, 2, "根 1 + 意图 1（根同验面）");
         let sb2 = adopted.expect("adopted");
         assert_eq!(sb2.generation, 6);
         assert_eq!(sb2.root_subvols.addr, a0);
@@ -517,17 +531,42 @@ mod tests {
     }
 
     #[test]
-    fn ring_wrap_refuses_overwrite_of_unconsumed() {
+    fn ring_wrap_covers_consumed_records() {
         let dev = Dev::new(2048);
-        // head = 247：零意图事务（1 块）恰收尾；带意图事务（2 块）跨界拒收。
+        // 根节点（回放同验面）：合法 CRTN 叶，txn1/txn2 根同址。
+        let mut node = [0u8; 16384];
+        let mut items = alloc::vec![0u8; 16];
+        items[0..8].copy_from_slice(&41u64.to_le_bytes());
+        crate::format::encode_node(
+            &crate::format::NodeHead {
+                node_type: crate::format::NodeType::Leaf,
+                level: 0,
+                checksum_algo: crate::layout::CKSUM_XXH64,
+                item_count: 1,
+            },
+            &items,
+            &mut node,
+        )
+        .expect("encode");
+        let sum = crate::format::node_checksum(&node);
+        for i in 0..32u64 {
+            let mut sector = [0u8; 512];
+            sector.copy_from_slice(&node[i as usize * 512..(i as usize + 1) * 512]);
+            bedrock::block::BlockDevice::write_block(&dev, NODE_START_LBA + i, &sector)
+                .expect("plant root");
+        }
+        // head = 247：零意图事务（1 块）恰收尾；带意图事务（2 块）跨界回绕至槽 0
+        // （SB 代序已消费全环，覆盖安全）。
         let sb = sb_at((WAL_LBAS - 1) as u32, 5);
         append_txn(&dev, &sb, &txn(1, 6, &[])).expect("边界内可写");
         let sb2 = sb_at((WAL_LBAS - 1) as u32, 5);
-        assert!(append_txn(&dev, &sb2, &txn(2, 6, &[(NODE_START_LBA, 1)])).is_err());
-        let sb3 = sb_at(WAL_LBAS as u32, 5);
-        assert!(
-            append_txn(&dev, &sb3, &txn(3, 6, &[])).is_err(),
-            "head 出界拒收"
+        append_txn(&dev, &sb2, &txn(2, 6, &[(NODE_START_LBA, sum)])).expect("回绕覆盖已消费域");
+        let (adopted, stats) = recover(&dev, &sb_at(0, 5)).expect("recover");
+        assert_eq!(stats.txns_scanned, 2, "txn1@247 存续 + txn2@0-1 回绕落位");
+        assert_eq!(
+            adopted.expect("adopt txn2").wal_seq,
+            2,
+            "回绕后采纳最高代际 txn2"
         );
     }
 
@@ -548,6 +587,6 @@ mod tests {
         assert_eq!(sb2.root_subvols.generation, 7, "根集随最新事务");
         assert_eq!(sb2.wal_seq, 2);
         assert_eq!(stats.txns_adopted, 2);
-        assert_eq!(stats.nodes_verified, 2);
+        assert_eq!(stats.nodes_verified, 4, "根+意图 ×2 事务");
     }
 }

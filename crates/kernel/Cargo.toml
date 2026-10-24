@@ -22,6 +22,8 @@ interactive = []
 [dependencies]
 # ADR-0002 迁移步（M26）：SYS 文件面改道 meridian::vfs（挂载策略 + 门面聚合）
 meridian.workspace = true
+# M26-T1：t76 活体消费 crystal 格式 v1 装配面（format/mount/WAL 回放/快照 O(1)）
+crystal.workspace = true
 
 ostd.workspace = true
 harbor.workspace = true
