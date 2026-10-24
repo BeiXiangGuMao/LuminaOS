@@ -256,6 +256,29 @@ pub fn insert(
     key: u64,
     value: u64,
 ) -> Result<RootRef, BtreeError> {
+    tree_write(ctx, root, key, value, false)
+}
+
+/// 插入或覆盖（upsert）：键已存在时原位覆盖值域（COW 同路径复制）。
+///
+/// 子卷表/校验和树的回滚与墓碑语义底座（S1 消费）。
+pub fn upsert(
+    ctx: &mut BtreeContext,
+    root: RootRef,
+    key: u64,
+    value: u64,
+) -> Result<RootRef, BtreeError> {
+    tree_write(ctx, root, key, value, true)
+}
+
+/// insert/upsert 共享主体（`overwrite` 区分重复键策略）。
+fn tree_write(
+    ctx: &mut BtreeContext,
+    root: RootRef,
+    key: u64,
+    value: u64,
+    overwrite: bool,
+) -> Result<RootRef, BtreeError> {
     if root.addr == 0 {
         let addr = ctx.alloc_node()?;
         ctx.write_node(addr, NodeType::Leaf, 0, &[Item { key, value }])?;
@@ -264,9 +287,17 @@ pub fn insert(
             generation: root.generation,
         });
     }
-    let (mut path, leaf_head, items) = descend(ctx, root, key)?;
-    if lower_bound(&items, key) < items.len() && items[lower_bound(&items, key)].key == key {
-        return Err(BtreeError::KeyExists);
+    let (path, leaf_head, items) = descend(ctx, root, key)?;
+    let hit = lower_bound(&items, key);
+    if hit < items.len() && items[hit].key == key {
+        if !overwrite {
+            return Err(BtreeError::KeyExists);
+        }
+        // 原位覆盖：同长度叶重写（COW 复制，结构不变）。
+        let mut leaf = items;
+        leaf[hit].value = value;
+        let new_addr = cow_copy(ctx, leaf_head.node_type, leaf_head.level, &leaf)?;
+        return finish_cow(ctx, path, new_addr, None, root);
     }
     // 叶层插入（满则先分裂）。
     let idx = lower_bound(&items, key);
@@ -274,7 +305,7 @@ pub fn insert(
     leaf.extend_from_slice(&items[..idx]);
     leaf.push(Item { key, value });
     leaf.extend_from_slice(&items[idx..]);
-    let mut new_addr;
+    let new_addr;
     let mut sep_up: Option<Item> = None;
     if leaf.len() <= NODE_ITEM_CAP {
         new_addr = cow_copy(ctx, leaf_head.node_type, leaf_head.level, &leaf)?;
@@ -291,6 +322,17 @@ pub fn insert(
     }
     // 整路径复制（COW 纪律）：叶复制后父臂指针即失效——逐层冒泡重写，
     // 分裂（sep_up = Some）多插一条分隔键，非分裂仅臂改指；根层完成收口。
+    finish_cow(ctx, path, new_addr, sep_up, root)
+}
+
+/// COW 冒泡收口：从叶新址逐层重写父链至根（split 分隔键随层插入）。
+fn finish_cow(
+    ctx: &mut BtreeContext,
+    mut path: Vec<PathEntry>,
+    mut new_addr: u64,
+    mut sep_up: Option<Item>,
+    root: RootRef,
+) -> Result<RootRef, BtreeError> {
     loop {
         let (parent_addr, arm) = match path.pop() {
             Some(p) => p,
@@ -354,6 +396,32 @@ pub fn insert(
         addr: new_addr,
         generation: root.generation,
     })
+}
+
+/// 中序全量扫描（诊断/枚举面；树深 ≤8 + 条目双有界）。
+///
+/// 内部条目键 = 子树下界（不需输出）——按臂序递归收集叶条目即得键序全集。
+pub fn scan(ctx: &BtreeContext, root: RootRef) -> Result<Vec<Item>, BtreeError> {
+    let mut out = Vec::new();
+    scan_into(ctx, root.addr, &mut out)?;
+    Ok(out)
+}
+
+/// scan 递归体。
+fn scan_into(ctx: &BtreeContext, addr: u64, out: &mut Vec<Item>) -> Result<(), BtreeError> {
+    if addr == 0 {
+        return Ok(());
+    }
+    let (head, items) = ctx.read_node(addr)?;
+    match head.node_type {
+        NodeType::Leaf => out.extend_from_slice(&items),
+        NodeType::Internal => {
+            for item in &items {
+                scan_into(ctx, item.value, out)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 读节点层级（根分裂时取左子层级 +1；防御面）。
