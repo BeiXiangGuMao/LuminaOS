@@ -77,8 +77,8 @@
 |---|---|---|---|---|
 | **M24** | 服务边界元年：v0.24.0 定版 + ADR 裁决 + Meridian 分发面首割 | P1 起步 | M-P01 打点挂接；t72+ 活体 | meridian/xtask/mirror/vnet |
 | **M25** | 兼容路径启动：Conduit abi-defs + 布局快照 + 首批转换器——**✅ 关账**（M25-收尾核验：C-P04=0 双闸挂闸；C-P01 首批 25 调用全绑定 ≥20；t75 活体 75/75 全绿；六笔对账见 §四 M25 子节） | P1 | C-P04=0 偏差；C-P01 首批 ≥20 调用全绑定用例 | conduit/bedrock::abi |
-| **M26** | Crystal 文件系统首割：格式 v1 + WAL + 快照常数时间——⏳ 近线（本批执行；分解见 §四 M26 子节 + ADR-0002 补篇） | P2 | CR-P05≤50ms（常数时间）；crash-fs 断电注入 ≥1000 次 | crystal/kernel::blk |
-| **M27** | 网络栈收口：IP/ICMP/UDP + TCP 首割 | P2→P3 | PU-P03 回环延迟口径挂接；t 系列 ARP→ICMP→UDP 活体链 | pulse/kernel::vnet |
+| **M26** | Crystal 文件系统首割：格式 v1 + WAL + 快照常数时间——**✅ 关账**（M26-收尾核验：格式 v1 落盘 + crash-fs ≥1000 两态一致性 + CR-P05 常数时间跨规模实证 + ADR-0002 迁移步清账 + t76 活体 76/76；十笔对账见 §四 M26 子节） | P2 | CR-P05≤50ms（常数时间）；crash-fs 断电注入 ≥1000 次 | crystal/kernel::blk |
+| **M27** | 网络栈收口：IP/ICMP/UDP + TCP 首割——⏳ 近线（M26 关账后续段） | P2→P3 | PU-P03 回环延迟口径挂接；t 系列 ARP→ICMP→UDP 活体链 | pulse/kernel::vnet |
 | **M28** | 显示栈闭环：Mirror 合成管线 + 用户态显示面 | P3 | MI-P01 结构面；1080p@60 合成冒烟 | mirror/kernel::fb/prism |
 | **M29** | Harbor libc 首版 + Weave 对象库 | P2 补课 | H-P01 首批 ≥50 符号垂直切片；WE-P02 断电注入框架 | harbor/weave |
 | **M30** | 桌面骨架：Loom Elm 架构 + Cascade shell 语义 | P4 | LO-P01 口径挂接；CA-P05 结构面 | loom/cascade/glyph |
@@ -128,24 +128,26 @@ M25 退出口径：C-P04=0 偏差（布局快照双闸挂接）+ C-P01 首批 �
 
 > **收尾核验（M25-收尾）**：三项全达——① C-P04=0 偏差（conduit::layout 编译期 const 断言矩阵 20 结构 size/align/offset 全量挂闸，漂移即构建失败；效力实证：SockAddrIn align 预期值 2→4 偏差当场拒收后归零；t75 裸机侧四代表结构二次锚定在环）；② C-P01 首批 ≥20 调用全绑定用例（BINDINGS 25 调用全绑定：号/名/参数计数/错误域四要素，宿主 4 例全覆盖 + t75 在环锚点全绿）；③ t75 冒烟活体全绿（75/75，conduit-compat 证据行实证）。M25 六笔（计划/D1+D2/C1-a/C1/T1/收尾）关账，近线转入 M26。挂账延续：t73 残余 flake（M25-C1-a 口径，M27 网络栈收口时重访 t73 电气面）。
 
-### M26 任务级分解（近线，逐笔执行）
+### M26 任务级分解（✅ 关账）
 
 > 主题：Crystal 文件系统首割（P2 主攻）+ ADR-0002 vfs 迁移步。验收锚：CR-P05 常数时间（结构面：快照 = 根指针引用 + 代际登记，零遍历）+ crash-fs 断电注入 ≥1000 样本两态一致性；活体自 t76 续编。细则锚（LUM-DEV-CRS-001）：16 KiB 节点、双代际根槽交替写、WAL 回放逐节点重验、解析防线四道、`forbid(unsafe_code)` 零容忍、常量集中 layout.rs、OnDisk 类型与 codec 隔离、TreeTx 事务句柄。校验和首割口径（既登记偏差）：v1 首发算法 XXH64（in-crate 零依赖实现 + 规范测试向量锚定），xxh3-128 按细则 3.4 演进规则以算法 ID + 特性位并存推进（uplift 挂账；CR-P10 全量口径验收随 uplift 重跑——M26 退出口径不含 CR-P10）。
 
 | 任务 | 内容 | 提交物 | 验收 |
 |---|---|---|---|
-| **M26-计划** | 本表落盘 + §三 M26 行近线标注 + ADR-0002 补篇（vfs 迁移 crate 归属锁定） | ROADMAP + ADR 补篇 | 本提交 |
-| **M26-F1** | 格式 v1：crystal/docs/format.md 规格书（超级块/双代际根槽/节点头/键布局/特性位/错误模型，编号对应细则）+ layout.rs 常量集中 + format.rs OnDisk 类型与 codec（解析防线四道）+ xxh64 校验和（规范向量锚定）+ MemBlock 测试底座 | format.md + crystal::{layout,format,checksum} | 宿主测试全绿 + 台账 crystal→bedrock 政策边 |
-| **M26-W1** | WAL 写前日志：事务意图记录 + 日志区环形复用 + 组提交（多树脏节点单事务）+ 回放逐节点重验（细则 9.1 陷阱对位）+ 恢复统计（事务/节点/耗时，CR-P06 承载口） | crystal::wal | 宿主测试（含半写/断尾注入）全绿 |
-| **M26-B1** | COW B-tree 首割：16 KiB 节点寻址 + 路径复制 + 双代际根槽原子切换 + 键序/树深钳制 + 子卷根表/目录树/校验和树三树键布局 | crystal::btree | 宿主测试全绿 |
-| **M26-S1** | 快照/子卷原语：快照创建 O(1)（根指针 + 代际登记，零遍历）+ 克隆（可写快照共享节点）+ 激活/回滚（根槽位切换）+ 引用计数延迟回收最小面 | crystal::subvol | 宿主测试 + CR-P05 结构面证据（创建路径常数操作） |
-| **M26-X1** | crash-fs 断电注入框架：FaultBlockDevice（任意块边界断电 + torn write）+ 任意事务点断电 ≥1000 样本（确定性种子）+ 两态一致性断言（已提交事务全见/未提交全不见）+ 位翻转读路径检出先行矩阵 | crystal 测试面 crash-fs | ≥1000 注入全绿 + 检出 100% |
-| **M26-V1**（执行序提前至 F1 前——循环依赖物理约束，见勘误注） | ADR-0002 迁移步单批：vfs 八文件分发（fd/fs/path/node/lfs/ramfs + ResolvedNode 契约型 → crystal::vfs；mount 策略面 → meridian::vfs）+ kernel SYS_OPEN..SYS_MOUNT 引用面改道 + bedrock::vfs 删除 + meridian no_std 化（kernel 可链接前置，HashMap→BTreeMap）+ 台账三清（overreach/bedrock→crystal）+ 五政策边（crystal→bedrock/ostd，meridian→crystal/ostd，kernel→meridian）+ idl 生成器模板 no_std 随迁 | bedrock::vfs 消失 + crystal::vfs + meridian::vfs | ✅ CI-OK 11 阶段（含 S7 内核链接 + S8 冒烟 75/75 不降）|
-| **M26-V1-c** | bedrock 零依赖收口：ipc FastPath SpscRing 内联 + block/ipc SpinLock 内联化（无依赖等价实现）→ bedrock→ostd 豁免清账（ADR-0001 终态兑现：bedrock 回归零依赖通信契约域） | bedrock 内联面 | CI 全绿 + bedrock→ostd 清账 |
-| **M26-T1** | t76 裸机活体：kernel 自检段 crystal-compat 相位（数据盘底座：format v1 → 事务写读 → 快照 O(1) 证据 → WAL 提交/回放证据）+ SELFTEST_TOTAL 75→76 双端同步 | t76 + 计数 76/76 | 冒烟 LUMINA-SELFTEST-PASS 76/76 + crystal-compat 证据行 |
-| **M26-收尾** | ROADMAP/METRICS 对账（CR-P05 结构面打点 + vfs 外移观察项收口 + crystal description 对齐）+ 退出口径核验注 | 对账提交 | 退出口径全达关账，近线 M27 |
+| **M26-计划** ✅ | 本表落盘 + §三 M26 行近线标注 + ADR-0002 补篇（vfs 迁移 crate 归属锁定） | ROADMAP + ADR 补篇 | ✅ 27b1c6d |
+| **M26-F1** ✅ | 格式 v1：crystal/docs/format.md 规格书（超级块/双代际根槽/节点头/键布局/特性位/错误模型，编号对应细则）+ layout.rs 常量集中 + format.rs OnDisk 类型与 codec（解析防线四道）+ xxh64 校验和（规范向量锚定）+ MemBlock 测试底座 | format.md + crystal::{layout,format,checksum} | ✅ 1d42ce5（codec 主体随 V1 合流如实登记）；宿主 29 例 |
+| **M26-W1** ✅ | WAL 写前日志：事务意图记录 + 日志区环形复用 + 组提交（多树脏节点单事务）+ 回放逐节点重验（细则 9.1 陷阱对位）+ 恢复统计（事务/节点/耗时，CR-P06 承载口）+ 环回绕覆盖语义（SB 代序消费全环） | crystal::wal | ✅ 5bcbb56：宿主 8 例全绿（半写/断尾/残迹/回绕）|
+| **M26-B1** ✅ | COW B-tree 首割：16 KiB 节点寻址 + 整路径复制 + 分裂冒泡 + upper_bound 选臂（键 = 子树下界不变式）+ 键序/树深钳制 + 通用树面（三树复用） | crystal::btree | ✅ 04864e0：2000 键多层/倒序/COW 共享/枯竭 6 例 |
+| **M26-S1** ✅ | 快照/子卷原语：快照创建 O(1)（根指针 + 代际登记，零数据树遍历）+ 克隆（id 位面）+ 激活/回滚（根指针切换）+ 墓碑 fail-visible + 引用计数最小面（下溢钳 0）+ btree::scan 枚举面 | crystal::subvol | ✅ 38017a3：跨规模分配等值实证（1 键 vs 2000 键 delta 相等）|
+| **M26-X1** ✅ | crash-fs 断电注入框架：FaultBlockDevice（扇区预算断电 + torn 半写 + is_dead 停机守卫）+ 全量逐扇区断点扫 ≥1000 样本 + 两态一致性断言 + 位翻转读路径检出矩阵 96 点 + wal_discard 重验拒收专测 | crystal/tests/crash_fs | ✅ f08aecf：4/4（全量扫 + 撕裂变体 + 检出 100% + 拒收路径）|
+| **M26-V1** ✅（执行序提前至 F1 前——循环依赖物理约束，见勘误注） | ADR-0002 迁移步单批：vfs 八文件分发（fd/fs/path/node/lfs/ramfs + ResolvedNode 契约型 → crystal::vfs；mount 策略面 → meridian::vfs）+ kernel SYS_OPEN..SYS_MOUNT 引用面改道 + bedrock::vfs 删除 + meridian no_std 化（kernel 可链接前置，HashMap→BTreeMap）+ 台账三清（overreach/bedrock→crystal）+ 五政策边（crystal→bedrock/ostd，meridian→crystal/ostd，kernel→meridian）+ idl 生成器模板 no_std 随迁 | bedrock::vfs 消失 + crystal::vfs + meridian::vfs | ✅ 23c5407：CI-OK 11 阶段（S7 内核链接 + S8 冒烟 75/75 不降）|
+| **M26-V1-c** ✅ | bedrock 零依赖收口：sync.rs 自持 SpinLock/SpscRing（OSTD SYNC-01/02 等价内联，unsafe 例外登记 allowlist）→ bedrock→ostd 豁免清账（ADR-0001 终态：零依赖通信契约域） | bedrock::sync | ✅ 1d35d49：bedrock 31/31；零 ostd 依赖 |
+| **M26-T1** ✅ | t76 裸机活体：crystal::fs 装配面首割 + kernel 自检段 crystal-compat 相位（ATA 数据盘真实介质：format v1 → 8 事务写读 → 回放采纳 g10 → 快照 O(1) snap_delta）+ SELFTEST_TOTAL 75→76 双端同步 + WAL 环回绕 + 根同验面 | t76 + 计数 76/76 | ✅ b4b0a9a：冒烟 LUMINA-SELFTEST-PASS 76/76 + crystal-compat 证据行 |
+| **M26-收尾** ✅ | ROADMAP/METRICS 对账（CR-P05 结构面打点 + vfs 外移观察项收口 + crystal description 对齐）+ 退出口径核验注 | 对账提交 | ✅ 本提交：五项全达关账（详见退出口径核验注），近线 M27 |
 
 M26 退出口径：格式 v1 落盘（规格书 + codec 防线四道）+ WAL/快照/B-tree 宿主与活体全绿 + crash-fs ≥1000 断电注入两态一致性 + CR-P05 常数时间结构面证据 + ADR-0002 迁移步完成（bedrock::vfs 清零 + 豁免三条清账）+ t76 冒烟活体全绿。
+
+> **收尾核验（M26-收尾）**：五项全达——① 格式 v1 落盘（crystal/docs/format.md F-01..F-14 ↔ layout.rs 对号；codec 解析防线四道；XXH64 规范向量锚定；既登记偏差：xxh3-128 uplift 挂账、严格 write-ahead 序押后 T1+ 分阶段写入——后者安全性由 ≥1000 注入实证）；② WAL/快照/B-tree 宿主与活体全绿（crystal 宿主 95 例 + crash-fs 4 例 + 全仓 259 例 + t76 裸机相位 crystal-compat 证据行）；③ crash-fs ≥1000 两态一致性（全量逐扇区断点扫 ~1500 样本 + 撕裂变体 ≥100 + 双槽皆损拒挂载窗口 + 位翻转 96 点全检出 + wal_discard 重验拒收专测）；④ CR-P05 常数时间结构面（快照分配增量跨规模等值：1 键树 vs 2000 键多层树 delta 相等 ≤4 节点；t76 snap_delta 裸机证据行）；⑤ ADR-0002 迁移步完成（bedrock::vfs 八文件清零、crystal::vfs/meridian::vfs 落位、meridian no_std 化、bedrock 零依赖收口 V1-c、豁免三条全清 + 政策边七条新立）。M26 十笔（计划/V1/F1/W1/B1/S1/X1/V1-c/T1/收尾）关账，近线转入 M27。挂账延续：t73 残余 flake（M27 重访）；GC/引用计数持久化与迭代器枚举面（后续批次）；xxh3-128 uplift（CR-P10 全量口径随 uplift 重跑）。
 
 ---
 
@@ -171,6 +173,8 @@ M26 退出口径：格式 v1 落盘（规格书 + codec 防线四道）+ WAL/快
 | 15 细则与现状偏差集中爆发 | 中 | ADR 议程一次性收口；偏差登记表随 ADR 维护 |
 
 ## 七、与指南的既登记偏差
+
+> 身份改写（M26 前会话）：全历史提交人统一为 BeiXiangGuMao（保序保时，树字节级不变）——M24/M25 提交消息内嵌旧哈希引用随改写失配（映射表存会话 scripts/pre-rewrite.txt；不改历史，登记备查）。
 
 1. 提交信息风格：M 系中文活体式（ADR-0008 登记），不采 Conventional Commits。
 2. 阶段日历：里程碑序列制替代 spec 日历制（指标编号口径不变）。

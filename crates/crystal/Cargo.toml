@@ -1,6 +1,6 @@
 [package]
 name = "crystal"
-description = "Crystal 晶簇 —— COW B-tree 文件系统：快照 / 子卷 / 压缩校验 / 崩溃一致（现状：双代际根槽容器 + ABA 防护）"
+description = "Crystal 晶簇 —— COW B-tree 文件系统：格式 v1（双代际根槽 + XXH64 校验 + 解析防线四道）/ WAL 写前日志（回放逐节点重验）/ 快照子卷 O(1)（CR-P05 结构面）/ vfs 契约与物理面（ADR-0002 迁移落位）；压缩校验矩阵与 GC 随后续批次"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
