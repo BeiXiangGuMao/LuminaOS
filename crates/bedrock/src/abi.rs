@@ -356,6 +356,40 @@ pub const SYS_EXEC: u64 = 17;
 /// v0.8 = SYS_QUOTA；v0.7 = 文件面六落点 + NANOSLEEP + 统一句柄面）。
 pub const ABI_VERSION: (u16, u16) = (0, 16);
 
+/// ---------------------------------------------------------------------------
+/// LXE1 v0 错误码表（具名化事实源，M25-C1）：
+///
+/// v0 全表（返回码契约，事实源 = kernel::procs；编号冻结只增不改）：
+/// 0 = 成功；1 = [`ERR_CAP`]；2 = [`ERR_EMPTY`]；3 = [`ERR_DERIVE`]；
+/// 4 = [`ERR_FULL`]；5 = [`ERR_HANDLE`]；6 = [`ERR_TARGET`]；7 = [`ERR_TABLE`]；
+/// 8 = [`ERR_CHILD`]；9 = [`ERR_NOMEM`]；10 = [`ERR_IMAGE`]。
+///
+/// 返回域纪律：错误码为**非零 u64 小值域**（1..=10），与成功返回的载荷域
+/// （`(1<<32)|…` 高位装载形）无交叠；`u64::MAX`（未知调用）/`u64::MAX-1`
+/// （坏参数）为保留哨兵（`AbiError` 映射面）。兼容层双向翻译见
+/// conduit::convert（M25-C1：err_to_errno / errno_to_err）。
+/// ---------------------------------------------------------------------------
+/// 错误码 1：能力校验未过（句柄未持有 / 权限不足 / 通道不存在同面）。
+pub const ERR_CAP: u64 = 1;
+/// 错误码 2：环空（IPC RECV 无数据可取——非阻塞语义的重试类）。
+pub const ERR_EMPTY: u64 = 2;
+/// 错误码 3：能力派生提权/空槽（派生请求超出源能力权限面）。
+pub const ERR_DERIVE: u64 = 3;
+/// 错误码 4：环满/容量耗尽（IPC SEND 无空间可写——非阻塞语义的重试类）。
+pub const ERR_FULL: u64 = 4;
+/// 错误码 5：句柄无效/未持有/主身份不可撤销。
+pub const ERR_HANDLE: u64 = 5;
+/// 错误码 6：目标不存在或非直接子任务（跨任务操作面）。
+pub const ERR_TARGET: u64 = 6;
+/// 错误码 7：目标句柄表满。
+pub const ERR_TABLE: u64 = 7;
+/// 错误码 8：无匹配子任务（WAIT_PID 面不阻塞直返）。
+pub const ERR_CHILD: u64 = 8;
+/// 错误码 9：内存/帧耗尽。
+pub const ERR_NOMEM: u64 = 9;
+/// 错误码 10：映像号越界或映像装载失败（EXEC/IMAGE_ENUM 面）。
+pub const ERR_IMAGE: u64 = 10;
+
 /// 寄存器快照形式的系统调用请求。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyscallRegs {

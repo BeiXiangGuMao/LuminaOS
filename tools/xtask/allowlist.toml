@@ -62,6 +62,16 @@ from = "lumina-kernel"
 to = "mirror"
 note = "内核消费显示合成面（SYS_FB 服务化，M23-S1 起）"
 
+[[allowed_edges]]
+from = "lumina-kernel"
+to = "conduit"
+note = "内核冒烟自检消费 conduit 布局快照/转换器活体（C-P04/C-P01 在环证据，M25-T1 起）"
+
+[[allowed_edges]]
+from = "conduit"
+to = "bedrock"
+note = "兼容层转换器消费 LXE1 事实源（abi 调用号/错误码表）；细则第 4 章 Conduit 定位（M25-C1 起）"
+
 # -------------------------------------------------------- 债务面：依赖豁免
 
 [[dep_exemptions]]

@@ -38,18 +38,19 @@ use crate::task;
 const GRANT_OK_BIT: u64 = 1 << 32;
 
 /// 错误码：句柄无效（NULL/越界/未持有/主身份不可撤销）。
-pub const ERR_HANDLE: u64 = 5;
+/// （M25-C1 起值锚定 bedrock::abi 事实源——本地名仅作路径兼容。）
+pub const ERR_HANDLE: u64 = bedrock::abi::ERR_HANDLE;
 /// 错误码：目标不存在或不是调用方的子任务。
-pub const ERR_TARGET: u64 = 6;
+pub const ERR_TARGET: u64 = bedrock::abi::ERR_TARGET;
 /// 错误码：目标句柄表已满。
-pub const ERR_TABLE: u64 = 7;
+pub const ERR_TABLE: u64 = bedrock::abi::ERR_TABLE;
 /// 错误码：无匹配子任务（无直接子任务 / 目标非直接子任务）。
-pub const ERR_CHILD: u64 = 8;
+pub const ERR_CHILD: u64 = bedrock::abi::ERR_CHILD;
 /// 错误码：帧/任务槽耗尽（M11-A：SYS_SPAWN 子空间创建失败）。
-pub const ERR_NOMEM: u64 = 9;
+pub const ERR_NOMEM: u64 = bedrock::abi::ERR_NOMEM;
 /// 错误码：能力/门禁拒绝（v0 全表共享；sys_spawn 用于「调用方无用户
 /// 空间」——内核任务与主任务不可派生）。
-const ERR_CAP: u64 = 1;
+const ERR_CAP: u64 = bedrock::abi::ERR_CAP;
 
 /// WAIT_PID 成功标记位：返回值 `(1 << 32) | (pid << 16) | (code & 0xFFFF)`。
 const WAITPID_OK_BIT: u64 = 1 << 32;
@@ -342,7 +343,7 @@ pub fn sys_spawn(reserved: u64) -> u64 {
 }
 
 /// SYS_EXEC 错误码：映像号越界（M12-B）。
-pub const ERR_IMAGE: u64 = 10;
+pub const ERR_IMAGE: u64 = bedrock::abi::ERR_IMAGE;
 
 /// EXEC 成功标记位：返回值 `(1 << 32) | image`（成功位与映像号域隔离）。
 const EXEC_OK_BIT: u64 = 1 << 32;

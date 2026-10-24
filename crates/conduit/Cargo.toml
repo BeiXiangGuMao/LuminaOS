@@ -10,3 +10,4 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+bedrock.workspace = true

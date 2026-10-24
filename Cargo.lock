@@ -21,6 +21,9 @@ version = "0.24.0"
 [[package]]
 name = "conduit"
 version = "0.24.0"
+dependencies = [
+ "bedrock",
+]
 
 [[package]]
 name = "crystal"

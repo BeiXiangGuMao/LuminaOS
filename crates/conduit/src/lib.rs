@@ -5,13 +5,15 @@
 //! 常量事实表：errno 名称映射与 x86_64 系统调用号快照，供兼容层慢路径与测试断言
 //! 共用。完整的语义转换在 Conduit 服务进程中实现，不在本表范围。
 //!
-//! M25-D1 起（兼容路径启动）：`defs` 承载 Linux 5.15 x86_64 UAPI 结构体
-//! 布局面（abi-defs 首批约 20 结构，repr(C) 纯布局零语义）；布局快照挂闸
-//! （`layout`，M25-D2，C-P04=0 偏差）与 LXE1 ↔ Linux 首批转换器（`convert`，
-//! M25-C1，C-P01 首批 ≥20 调用全绑定）随后续笔次落位。与《语言移植与支持
+//! M25 起（兼容路径启动）：[`defs`] 承载 Linux 5.15 x86_64 UAPI 结构体
+//! 布局面（abi-defs 首批 20 结构，repr(C) 纯布局零语义）；[`layout`]
+//! 布局快照双闸挂接（编译期 const 断言 + 运行期行表，C-P04=0 偏差）；
+//! [`convert`] LXE1 ↔ Linux 首批转换器（errno 事实源 + 双向映射 + flags
+//! 映射 + 25 调用绑定表，C-P01 首批 ≥20 调用全绑定）。与《语言移植与支持
 //! 指南》所述「原生 ABI 路径」无关——原生路径直接使用 `bedrock::abi` 的调用号。
 #![no_std]
 
+pub mod convert;
 pub mod defs;
 pub mod layout;
 
@@ -88,6 +90,7 @@ pub fn linux_syscall_name(num: u64) -> Option<&'static str> {
         22 => "pipe",
         23 => "select",
         33 => "dup2",
+        35 => "nanosleep",
         39 => "getpid",
         41 => "socket",
         42 => "connect",
@@ -102,7 +105,10 @@ pub fn linux_syscall_name(num: u64) -> Option<&'static str> {
         60 => "exit",
         61 => "wait4",
         62 => "kill",
+        63 => "uname",
+        98 => "getrusage",
         101 => "ptrace",
+        179 => "sysinfo",
         202 => "futex",
         218 => "set_tid_address",
         231 => "exit_group",
