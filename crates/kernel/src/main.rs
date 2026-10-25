@@ -78,8 +78,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 内核堆大小：4 MiB（M3 任务栈/日志/TLV 充足；帧管理独立于本堆）。
 const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74）。
-const SELFTEST_TOTAL: usize = 79;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80）。
+const SELFTEST_TOTAL: usize = 80;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -4608,6 +4608,67 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t79, "desktop-skel");
+
+    // t80) 自举预备活体（M31-T1）：三面贯通——① V-P05 注入矩阵结论在环
+    // （vanguard 能力面四相×不变式内核态收口）② Weave 自举装载证据
+    // （bootstrap 幂等复跑全绿，W1 冒烟证据行的活体收编）③ 驱动外移面
+    // 对账（morse 翻译面活体——kernel::kbd 消费面同源纯函数）。
+    let t80 = {
+        // 面① V-P05 注入矩阵结论在环：越权派生拒 / 合法收窄 / 链传播
+        // 不可回升 / 撤销后死槽 / 未安装与越界两级语义 / 重复撤销显形。
+        let v_ok = {
+            let mut cap = vanguard::CapabilityTable::new();
+            let mut v = cap
+                .install(
+                    0,
+                    vanguard::Capability::new(
+                        7,
+                        vanguard::Right::READ.bits() | vanguard::Right::WRITE.bits(),
+                    ),
+                )
+                .is_ok();
+            // ① 越权派生显形拒（EXEC 不在父集）
+            v &= cap.derive(0, vanguard::Right::EXEC.bits())
+                == Err(vanguard::CapError::RightsEscalation);
+            // 合法收窄派生 → 首个空槽分配确定性（槽 1）
+            v &= cap.derive(0, vanguard::Right::READ.bits()) == Ok(1);
+            // 链传播：子代（READ）回升 WRITE 拒
+            v &= cap.derive(1, vanguard::Right::WRITE.bits())
+                == Err(vanguard::CapError::RightsEscalation);
+            // ② 撤销后使用：死槽读 / 为父派生均显形
+            v &= cap.revoke(1).is_ok();
+            v &= cap.get(1) == Err(vanguard::CapError::SlotEmpty);
+            v &= cap.derive(1, vanguard::Right::READ.bits()) == Err(vanguard::CapError::SlotEmpty);
+            // ③ 未安装（界内空）与越界两级错误语义 + ④ 重复撤销显形
+            v &= cap.get(2) == Err(vanguard::CapError::SlotEmpty);
+            v &= cap.get(vanguard::CAPACITY) == Err(vanguard::CapError::NoSuchSlot);
+            v &= cap.revoke(1) == Err(vanguard::CapError::SlotEmpty);
+            v
+        };
+        // 面② Weave 自举装载证据：bootstrap 幂等复跑——三不变式四相
+        // 复演全过 + 恢复终态 gen2 + store 根装载独占一对象。
+        let wb = weave::boot::bootstrap();
+        let w_ok = wb.ok()
+            && wb.gen == 2
+            && wb.replay_pass == weave::boot::REPLAY_TOTAL
+            && wb.store_objects == 1;
+        // 面③ 驱动外移面对账：morse 翻译面活体（kernel::kbd 消费面同源）
+        // ——字母/数字行 Shift 双态 + Shift 事件分类 + 释放码判定 + 非映射键。
+        let m_ok = morse::translate(0x1E, false) == Some(b'a')
+            && morse::translate(0x1E, true) == Some(b'A')
+            && morse::translate(0x02, false) == Some(b'1')
+            && morse::translate(0x02, true) == Some(b'!')
+            && morse::translate(0x00, false).is_none()
+            && morse::shift_event(0x2A) == Some(true)
+            && morse::shift_event(0xAA) == Some(false)
+            && morse::shift_event(0x1E).is_none()
+            && morse::is_release(0x9E)
+            && !morse::is_release(0x1E);
+        let ok = v_ok && w_ok && m_ok;
+        let _ = writeln!(log, "bootprep: v={v_ok} weave={w_ok} morse={m_ok} ok={ok}");
+        ok
+    };
+    report(&mut log, t80, "bootprep");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {
