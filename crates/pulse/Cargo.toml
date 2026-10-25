@@ -1,6 +1,6 @@
 [package]
 name = "pulse"
-description = "Pulse 脉冲 —— 全异步网络栈：Tokio / QUIC / TLS 1.3 / HTTP/3 / 零拷贝（现状：地址类型 + 零拷贝 SPSC 环）"
+description = "Pulse 脉冲 —— 网络栈协议数据面：地址类型与协议结构（UDP/TCP 报文面、端口管理）；环机制归 ostd::sync（ADR-0005）"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

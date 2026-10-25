@@ -142,10 +142,3 @@ path = "src/lib.rs"
 note = "内核堆分配器（HarborBump/FreeList：unsafe impl Sync/GlobalAlloc + 裸指针操作），待迁 ostd::heap（M29 Harbor libc 首版同批清库重铸）"
 adr = "ADR-0003"
 until = "M29"
-
-[[unsafe_allow]]
-crate = "pulse"
-path = "src/lib.rs"
-note = "SpscRing 无锁环（UnsafeCell + 原子序数，crate 内唯一 unsafe 集中区），待迁 ostd::sync::spsc；pulse 终态 forbid(unsafe_code) 密度 0"
-adr = "ADR-0005"
-until = "M27"
