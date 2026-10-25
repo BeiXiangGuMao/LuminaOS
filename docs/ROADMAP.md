@@ -78,8 +78,8 @@
 | **M24** | 服务边界元年：v0.24.0 定版 + ADR 裁决 + Meridian 分发面首割 | P1 起步 | M-P01 打点挂接；t72+ 活体 | meridian/xtask/mirror/vnet |
 | **M25** | 兼容路径启动：Conduit abi-defs + 布局快照 + 首批转换器——**✅ 关账**（M25-收尾核验：C-P04=0 双闸挂闸；C-P01 首批 25 调用全绑定 ≥20；t75 活体 75/75 全绿；六笔对账见 §四 M25 子节） | P1 | C-P04=0 偏差；C-P01 首批 ≥20 调用全绑定用例 | conduit/bedrock::abi |
 | **M26** | Crystal 文件系统首割：格式 v1 + WAL + 快照常数时间——**✅ 关账**（M26-收尾核验：格式 v1 落盘 + crash-fs ≥1000 两态一致性 + CR-P05 常数时间跨规模实证 + ADR-0002 迁移步清账 + t76 活体 76/76；十笔对账见 §四 M26 子节） | P2 | CR-P05≤50ms（常数时间）；crash-fs 断电注入 ≥1000 次 | crystal/kernel::blk |
-| **M27** | 网络栈收口：IP/ICMP/UDP + TCP 首割——⏳ 近线（M26 关账后续段） | P2→P3 | PU-P03 回环延迟口径挂接；t 系列 ARP→ICMP→UDP 活体链 | pulse/kernel::vnet |
-| **M28** | 显示栈闭环：Mirror 合成管线 + 用户态显示面 | P3 | MI-P01 结构面；1080p@60 合成冒烟 | mirror/kernel::fb/prism |
+| **M27** | 网络栈收口：IP/ICMP/UDP + TCP 首割——⏸ 顺延（偏差登记：两段会话窗口未产出提交，M28 先行；t73 flake ~10% 挂账随行） | P2→P3 | PU-P03 回环延迟口径挂接；t 系列 ARP→ICMP→UDP 活体链 | pulse/kernel::vnet |
+| **M28** | 显示栈闭环：Mirror 合成管线 + 用户态显示面——🚧 进行中（M28-计划 已落 §四，任务级分解七笔） | P3 | MI-P01 结构面；1080p@60 合成冒烟 | mirror/kernel::fb/prism |
 | **M29** | Harbor libc 首版 + Weave 对象库 | P2 补课 | H-P01 首批 ≥50 符号垂直切片；WE-P02 断电注入框架 | harbor/weave |
 | **M30** | 桌面骨架：Loom Elm 架构 + Cascade shell 语义 | P4 | LO-P01 口径挂接；CA-P05 结构面 | loom/cascade/glyph |
 | **M31** | 自举预备：驱动用户态化起步 + Weave 自举 | P5 | V-P05 首批注入矩阵；驱动旁路清单缩编 | vanguard/drivers |
@@ -149,6 +149,22 @@ M26 退出口径：格式 v1 落盘（规格书 + codec 防线四道）+ WAL/快
 
 > **收尾核验（M26-收尾）**：五项全达——① 格式 v1 落盘（crystal/docs/format.md F-01..F-14 ↔ layout.rs 对号；codec 解析防线四道；XXH64 规范向量锚定；既登记偏差：xxh3-128 uplift 挂账、严格 write-ahead 序押后 T1+ 分阶段写入——后者安全性由 ≥1000 注入实证）；② WAL/快照/B-tree 宿主与活体全绿（crystal 宿主 95 例 + crash-fs 4 例 + 全仓 259 例 + t76 裸机相位 crystal-compat 证据行）；③ crash-fs ≥1000 两态一致性（全量逐扇区断点扫 ~1500 样本 + 撕裂变体 ≥100 + 双槽皆损拒挂载窗口 + 位翻转 96 点全检出 + wal_discard 重验拒收专测）；④ CR-P05 常数时间结构面（快照分配增量跨规模等值：1 键树 vs 2000 键多层树 delta 相等 ≤4 节点；t76 snap_delta 裸机证据行）；⑤ ADR-0002 迁移步完成（bedrock::vfs 八文件清零、crystal::vfs/meridian::vfs 落位、meridian no_std 化、bedrock 零依赖收口 V1-c、豁免三条全清 + 政策边七条新立）。M26 十笔（计划/V1/F1/W1/B1/S1/X1/V1-c/T1/收尾）关账，近线转入 M27。挂账延续：t73 残余 flake（M27 重访）；GC/引用计数持久化与迭代器枚举面（后续批次）；xxh3-128 uplift（CR-P10 全量口径随 uplift 重跑）。
 
+### M28 任务级分解（🚧 进行中）
+
+> 主题：显示栈闭环（P3 主攻）。验收锚：MI-P01 结构面 + 1080p@60 合成冒烟（t77 续编，现值 76/76）。提交物 mirror/kernel::fb/prism。细则锚：《Prism 棱镜开发细则》v1.0.0（PR-P01 显示输出 / PR-P02 合成 / PR-P04 电源协同显示侧）+ Mirror 细则第 10 章（MI-P01/02）——细则 PDF 介质失联偏差见 §七 5，结构面以在库引用面（ADR-0006 / METRICS MI·PR 编号 / 本表）为准，重取后补逐条对账（挂账）。ADR-0006 落地：prism crate 名字归位 GPU/显示栈（power 已让位迁出）。既登记组成语义偏差（v0 结构面）：不透明合成（无 alpha 混合）、单 stage 面（多 Surface 表扩容挂账）、@60 刷新率在 QEMU TCG 下不可实测（冒烟仅证成像素通路，时限类指标留环境 B）。
+
+| 任务 | 内容 | 提交物 | 验收 |
+|---|---|---|---|
+| **M28-计划** ✅ | 本表落盘 + §三 M27 顺延/M28 进行中标注 + §七 5 PDF 介质偏差登记 + prism 新建预注记（ADR-0006 名字归位） | ROADMAP | ✅ 本提交 |
+| **M28-F1** | prism crate 骨架（no_std + `forbid(unsafe_code)`，依赖仅 mirror）：Layer 栈 z 序仲裁 + 损伤交盒裁剪 + 逐像素裁决纯函数（PR-P02 结构面）+ overdraw 计数面 | crates/prism | 宿主 ≥6 例全绿 |
+| **M28-S1** | mirror 合成消费面：`drain_plan`（损伤计划读出复位一体，消费方原子取走——合成器帧边界吃计划）+ 与 prism 管线几何对账测试 | crates/mirror | 宿主 +2 例 |
+| **M28-K1** | kernel::fb 组合器服务化：SYS_FB_STAGE(39) stage 面（内核后备缓冲 ring3 映射，ADR-0004 双轨共存——SYS_FB_MAP 直写路径不动）+ 合成执行器（drain_plan → prism compose → VRAM 交盒局部上屏，交盒外字节零触碰）+ abi v0.17 注记 + conduit 绑定 +1（BINDINGS 26 ≥20 锚不破） | kernel::fb + bedrock::abi + conduit | CI-OK（76/76 不降） |
+| **M28-R1** | 1080p 模式切换：WIDTH/HEIGHT → 1920×1080（dispi 同参数域）+ LFB_BYTES 3,145,728→8,294,400 + 受影响断言对账（t67 三帧面/t72 全帧翻转字节数/t70 文本域）+ stage 后备缓冲随 LFB_BYTES 自适应 | kernel::fb | CI-OK（76/76 不降） |
+| **M28-T1** | t77 合成活体：stage 写入 → 合成前 VRAM 不变（哨兵像素）→ 合成后交盒内 == stage、交盒外哨兵未触（损伤域局部上屏电气证据）+ SELFTEST_TOTAL 76→77 双端同步 | t77 + 计数 | 77/77 全绿 |
+| **M28-收尾** | ROADMAP/METRICS 对账：MI-P01/02 + PR-P01/02/04 指标行登记（结构面口径，时限类标环境 B 待实测）+ 退出口径核验注 | 对账提交 | 关账 |
+
+M28 退出口径：prism 合成结构面（PR-P02 z 序仲裁/交盒裁剪/逐像素裁决宿主全绿）+ mirror drain_plan 消费面 + kernel::fb 组合器服务化（stage 双轨共存 + 交盒局部上屏）+ 1080p 模式切换 + t77 冒烟活体全绿（77/77）+ METRICS 指标行登记。
+
 ---
 
 ## 五、工作流自约束（每会话执行）
@@ -180,3 +196,4 @@ M26 退出口径：格式 v1 落盘（规格书 + codec 防线四道）+ WAL/快
 2. 阶段日历：里程碑序列制替代 spec 日历制（指标编号口径不变）。
 3. framekernel 混合态：syscall 热路径暂居内核，策略面外移 Meridian（ADR-0004），迁移完成前豁免「services 全用户态」条款。
 4. targets/x86_64-lumina.json：stable 工具链门控期以 x86_64-unknown-none + rustflags 等效承载（METRICS.md 既有登记）。
+5. 细则 PDF 介质失联（M28-计划 登记）：会话沙盒重置致 22 份指南原件丢失；M28 结构面对照以在库引用面（ADR-0006 引文 + METRICS MI·PR 编号口径 + ROADMAP P3 行）为准，PDF 重取后补 Prism/Mirror 细则逐条对账（挂账，不阻塞结构面）。
