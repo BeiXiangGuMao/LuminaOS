@@ -6,11 +6,11 @@ workspace。内核可经 multiboot1 在 QEMU（`-smp 2`）上裸机启动，物�
 系统调用、能力化 IPC、swap 换页、持久化存储面全部在环；键盘/TTY 交互、
 显示面（1080p LFB/Surface 服务化/文本渲染/stage 合成器）、virtio-net 网络面
 （UDP/TCP 协议栈）全部在环；crystal 格式 v1 文件系统（WAL/快照）在环；
-**79 项裸机自检全绿并自动验收**（QEMU 退出码 33）。
+**80 项裸机自检全绿并自动验收**（QEMU 退出码 33）。
 
-当前状态：**v0.25.0（M27 网络栈收口季）** · ROADMAP 制度化（M24→M31 六里
-程碑逐笔落账）· 取证证据链全程落账（t 系活体 t66-t79 续编）· ADR 八项裁决
-在库（docs/adr/）。
+当前状态：**v0.25.0（M31 自举预备季）** · ROADMAP 制度化（M24→M31 八里程碑逐笔
+落账）· 取证证据链全程落账（t 系活体 t66-t80 续编）· ADR 八项裁决在库
+（docs/adr/）。
 
 ## 特性一览
 
@@ -39,10 +39,11 @@ workspace。内核可经 multiboot1 在 QEMU（`-smp 2`）上裸机启动，物�
 - 无锁 SPSC IPC 快速路径（BSP↔AP 双环基准）+ 能力化 IPC 系统调用面 + 定向门铃
 - bedrock 磐基（ABI/TLV/LXE1 + 自持同步原语）· harbor 港湾 libc 符号面
   （errno/string/ctype/stdlib，forbid unsafe）·
-  vanguard 能力模型 · meridian 监管者（dispatcher + IDL 契约闸）·
+  vanguard 能力模型（派生收窄 + V-P05 注入矩阵）· meridian 监管者（dispatcher + IDL 契约闸）·
   conduit 通衢（Linux UAPI 布局快照 + errno/flags 转换器）·
   crystal 晶簇文件系统（格式 v1 + WAL + COW B-tree + O(1) 快照）·
-  pulse 脉冲网络（UDP/TCP 协议数据面，forbid unsafe）· weave 包管理（对象库 + 代际事务 + 断电注入）·
+  pulse 脉冲网络（UDP/TCP 协议数据面，forbid unsafe）· weave 包管理（对象库 + 代际事务 + 断电注入 + 自举装载面）·
+  morse 摩尔斯电键（kbd 翻译面纯函数——驱动用户态化首割外移）·
   power 电源 · loom 织机（Elm 架构 + 网格 token）· ripple 弹簧 · glyph 图标（同源缩放渲染）· mirror 合成 ·
   prism 显示栈合成（z 序仲裁）· cascade 外壳（工作区/平铺/Dock）· aurora 应用框架
 
@@ -62,7 +63,7 @@ workspace。内核可经 multiboot1 在 QEMU（`-smp 2`）上裸机启动，物�
 
 ```
 lumina-os/                 ← 源码树（保持干爽，永不出现编译产物）
-├── Cargo.toml             workspace：17 组件 crate + xtask
+├── Cargo.toml             workspace：18 组件 crate + xtask
 ├── CHANGELOG.md           版本变更记录（v0.16.0 起详条目 + 早期沿革回溯补记）
 ├── LICENSE                MIT
 ├── releases/              各版本发布说明（RELEASE_NOTES-v0.18.0 ~ v0.24.0）
@@ -76,11 +77,11 @@ lumina-os/                 ← 源码树（保持干爽，永不出现编译产�
 │   │                SAFETY 四行模板，unsafe_op_in_unsafe_fn = deny）
 │   ├── kernel/      内核映像（启动汇编 + 中断子系统 + 调度 + 进程 + VFS 接线
 │   │                + crystal 装配 + fb stage 合成器 + vnet UDP/TCP 回环 + census
-│   │                败点名面 + 79 项自检）
+│   │                败点名面 + bootprep 自举预备活体 + 80 项自检）
 │   ├── bedrock/     磐基内核（syscall ABI、TLV、IPC 端点信箱、LXE1、自持同步原语）
 │   ├── harbor/      港湾 libc 符号面（errno/string/ctype/stdlib 首批 57 符号
 │   │                垂直切片，forbid unsafe；ADR-0003 重铸，分配器归 ostd::heap）
-│   ├── vanguard/    前卫能力模型（权限位、派生收窄、撤销）
+│   ├── vanguard/    前卫能力模型（权限位、派生收窄、撤销、V-P05 注入矩阵）
 │   ├── meridian/    经纬监管者（幂等恢复 + dispatcher 三层错误模型 + IDL 契约闸）
 │   ├── conduit/     通衢 ABI 快照（Linux 5.15 UAPI 20 结构布局双闸 + errno/flags
 │   │                转换器 + 25 调用绑定表）
@@ -89,7 +90,9 @@ lumina-os/                 ← 源码树（保持干爽，永不出现编译产�
 │   ├── pulse/       脉冲网络协议面（SocketAddr + UDP/TCP 报文编解码与校验和 +
 │   │                端口绑定表；环机制归 ostd::sync〔ADR-0005〕；forbid unsafe）
 │   ├── weave/       织流包管理（语义版本、代际事务 + WE-P02 断电注入框架、
-│   │                内容寻址对象库、LWP1 包容器，no_std）
+│   │                内容寻址对象库、LWP1 包容器、boot 自举装载面，no_std）
+│   ├── morse/       摩尔斯电键（kbd scancode 集 1 翻译面纯函数——
+│   │                驱动用户态化首割外移，零依赖 forbid unsafe）
 │   ├── power/       电源策略纯函数（三阶段策略、低电量回退；M24 归位）
 │   ├── loom/        织机 Elm 架构（Model/Msg/update/view 折叠环、约束求解布局、虚拟化列表、8px 网格 token）
 │   ├── ripple/      涟漪弹簧（170/26 与 300/30，半隐式欧拉）
@@ -112,7 +115,7 @@ lumina-build/              ← 编译产物 + 日志 + 报告（源码树外，�
 
 ```bash
 cargo build --workspace          # 全仓构建（18 crate）
-cargo test  --workspace          # 全仓测试（宿主）+ 79 项裸机自检（S8）
+cargo test  --workspace          # 全仓测试（宿主）+ 80 项裸机自检（S8）
 cargo run -p xtask -- ci         # 十一阶段门禁（S1-S5 + S5b IDL 一致性 + S5c lint 台账 + S6/S7 + S8 冒烟 + S9 报告，fail-fast）
 cargo run -p xtask -- smoke      # 仅内核：lint + build + QEMU 裸机自检
 cargo run -p xtask -- check      # 仅宿主快速门禁（fmt + clippy + 测试 + 文档 + IDL 一致性 + lint 台账）
@@ -133,7 +136,7 @@ objcopy -O binary \
   <target-dir>/x86_64-unknown-none/release/lumina-kernel \
   <target-dir>/x86_64-unknown-none/release/lumina-kernel.bin
 
-# 裸机启动（串口落盘 + isa-debug-exit 自动退出，退出码 33 = 自检全过[79 项]）
+# 裸机启动（串口落盘 + isa-debug-exit 自动退出，退出码 33 = 自检全过[80 项]）
 qemu-system-x86_64 -L <seabios> -L <qemu-data> \
   -kernel lumina-kernel.bin -m 256M -display none -no-reboot \
   -serial file:boot.log -device isa-debug-exit,iobase=0xf4,iosize=0x04
