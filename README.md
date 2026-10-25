@@ -1,14 +1,16 @@
 # Lumina OS（曜光系统）
 
-**100% Rust framekernel 桌面操作系统**——x86_64 长模式裸机内核 + 17 组件 crate
+**100% Rust framekernel 桌面操作系统**——x86_64 长模式裸机内核 + 18 组件 crate
 workspace。内核可经 multiboot1 在 QEMU（`-smp 2`）上裸机启动，物理帧管理、四级
 页表（MMU 实机往返）、双核 SMP、抢占式调度、ring3 用户进程、SYSCALL/SYSRET
 系统调用、能力化 IPC、swap 换页、持久化存储面全部在环；键盘/TTY 交互、
-显示面（LFB 首帧/Surface 服务化/文本渲染）、virtio-net 网络面全部在环；
-**71 项裸机自检全绿并自动验收**（QEMU 退出码 33）。
+显示面（1080p LFB/Surface 服务化/文本渲染/stage 合成器）、virtio-net 网络面
+（UDP/TCP 协议栈）全部在环；crystal 格式 v1 文件系统（WAL/快照）在环；
+**78 项裸机自检全绿并自动验收**（QEMU 退出码 33）。
 
-当前状态：**v0.24.0（M23 交互与电气面季）** · ROADMAP 制度化（ADR 议程
-八项）· 取证证据链全程落账（devlog S0–S83 归档 + t 系活体续编）。
+当前状态：**v0.25.0（M27 网络栈收口季）** · ROADMAP 制度化（M24→M31 六里
+程碑逐笔落账）· 取证证据链全程落账（t 系活体 t66-t78 续编）· ADR 八项裁决
+在库（docs/adr/）。
 
 ## 特性一览
 
@@ -33,12 +35,15 @@ workspace。内核可经 multiboot1 在 QEMU（`-smp 2`）上裸机启动，物�
 - IntWindow 调度锁纪律：42 调用点全量审计，同核 tick↔锁互等死锁族根因封死
 - 钉扎拾取护槽三件：Type A/B 簇败族（死者鬼影槽复用）结构性根因收口
 
-**IPC · 能力 · 组件策略（15 册 crate）**
+**IPC · 能力 · 组件策略（18 册 crate）**
 - 无锁 SPSC IPC 快速路径（BSP↔AP 双环基准）+ 能力化 IPC 系统调用面 + 定向门铃
-- bedrock 磐基（ABI/TLV/VFS/LXE1）· harbor 港湾分配器（free-list 回收）·
-  vanguard 能力模型 · meridian 监管者 · conduit ABI 快照 · crystal 代际槽表 ·
-  pulse 网络 · weave 包管理 · prism 电源 · loom 网格 · ripple 弹簧 ·
-  glyph 图标 · mirror 合成 · cascade 外壳 · aurora 应用框架
+- bedrock 磐基（ABI/TLV/LXE1 + 自持同步原语）· harbor 港湾分配器（free-list 回收）·
+  vanguard 能力模型 · meridian 监管者（dispatcher + IDL 契约闸）·
+  conduit 通衢（Linux UAPI 布局快照 + errno/flags 转换器）·
+  crystal 晶簇文件系统（格式 v1 + WAL + COW B-tree + O(1) 快照）·
+  pulse 脉冲网络（UDP/TCP 协议数据面，forbid unsafe）· weave 包管理 ·
+  power 电源 · loom 网格 · ripple 弹簧 · glyph 图标 · mirror 合成 ·
+  prism 显示栈合成（z 序仲裁）· cascade 外壳 · aurora 应用框架
 
 ## 文档体系（唯一事实源）
 
@@ -68,20 +73,25 @@ lumina-os/                 ← 源码树（保持干爽，永不出现编译产�
 │   ├── ostd/        unsafe 基元层（hw 基元 / mm / sync / time / task / IDT；
 │   │                SAFETY 四行模板，unsafe_op_in_unsafe_fn = deny）
 │   ├── kernel/      内核映像（启动汇编 + 中断子系统 + 调度 + 进程 + VFS 接线
-│   │                + census 败点名面 + 63 项自检）
-│   ├── bedrock/     磐基内核（syscall ABI、TLV、IPC 端点信箱、VFS、LFS1、LXE1）
+│   │                + crystal 装配 + fb stage 合成器 + vnet UDP/TCP 回环 + census
+│   │                败点名面 + 78 项自检）
+│   ├── bedrock/     磐基内核（syscall ABI、TLV、IPC 端点信箱、LXE1、自持同步原语）
 │   ├── harbor/      港湾分配器（Bump + free-list 回收 + 取证面，GlobalAlloc）
 │   ├── vanguard/    前卫能力模型（权限位、派生收窄、撤销）
-│   ├── meridian/    经纬监管者（幂等恢复、指数退避封顶 30s）
-│   ├── conduit/     通衢 ABI 快照（Linux 5.15 errno/syscall 常量表）
-│   ├── crystal/     晶簇代际槽表（ABA 防护）
-│   ├── pulse/       脉冲网络（IPv4 解析、零拷贝 SPSC 环）
+│   ├── meridian/    经纬监管者（幂等恢复 + dispatcher 三层错误模型 + IDL 契约闸）
+│   ├── conduit/     通衢 ABI 快照（Linux 5.15 UAPI 20 结构布局双闸 + errno/flags
+│   │                转换器 + 25 调用绑定表）
+│   ├── crystal/     晶簇文件系统（格式 v1 + XXH64 + WAL 回放重验 + COW B-tree +
+│   │                O(1) 快照/子卷 + crash-fs 断电注入）
+│   ├── pulse/       脉冲网络协议面（SocketAddr + UDP/TCP 报文编解码与校验和 +
+│   │                端口绑定表；环机制归 ostd::sync〔ADR-0005〕；forbid unsafe）
 │   ├── weave/       织流包管理（语义版本、事务、LWP1 包容器，no_std）
-│   ├── prism/       棱镜电源（三阶段策略、低电量回退）
+│   ├── power/       电源策略纯函数（三阶段策略、低电量回退；M24 归位）
 │   ├── loom/        织机 token（8px 网格、字号公式）
 │   ├── ripple/      涟漪弹簧（170/26 与 300/30，半隐式欧拉）
 │   ├── glyph/       曜纹图标（24/48/96 同源缩放）
-│   ├── mirror/      映境合成（损伤包围盒、跳帧快速通道）
+│   ├── mirror/      映境合成（损伤包围盒/并集合并/16 块翻转/drain_plan 消费面）
+│   ├── prism/       棱镜显示栈合成（z 序仲裁、交盒裁剪、逐像素裁决；M28 归位）
 │   ├── cascade/     流域外壳（状态机、窗口焦点序 LRU）
 │   └── aurora/      极光应用框架（.luapp 校验、六态生命周期）
 ├── tools/xtask/           CI 门禁编排（宿主六阶段 + 内核 lint/build/冒烟 + 报告）+ IDL 生成器
@@ -97,8 +107,8 @@ lumina-build/              ← 编译产物 + 日志 + 报告（源码树外，�
 ## 构建与门禁
 
 ```bash
-cargo build --workspace          # 全仓构建（17 crate）
-cargo test  --workspace          # 全仓测试（宿主）+ 63 项裸机自检（S8）
+cargo build --workspace          # 全仓构建（18 crate）
+cargo test  --workspace          # 全仓测试（宿主）+ 78 项裸机自检（S8）
 cargo run -p xtask -- ci         # 十一阶段门禁（S1-S5 + S5b IDL 一致性 + S5c lint 台账 + S6/S7 + S8 冒烟 + S9 报告，fail-fast）
 cargo run -p xtask -- smoke      # 仅内核：lint + build + QEMU 裸机自检
 cargo run -p xtask -- check      # 仅宿主快速门禁（fmt + clippy + 测试 + 文档 + IDL 一致性 + lint 台账）
@@ -119,7 +129,7 @@ objcopy -O binary \
   <target-dir>/x86_64-unknown-none/release/lumina-kernel \
   <target-dir>/x86_64-unknown-none/release/lumina-kernel.bin
 
-# 裸机启动（串口落盘 + isa-debug-exit 自动退出，退出码 33 = 自检全过[63 项]）
+# 裸机启动（串口落盘 + isa-debug-exit 自动退出，退出码 33 = 自检全过[78 项]）
 qemu-system-x86_64 -L <seabios> -L <qemu-data> \
   -kernel lumina-kernel.bin -m 256M -display none -no-reboot \
   -serial file:boot.log -device isa-debug-exit,iobase=0xf4,iosize=0x04
@@ -149,16 +159,19 @@ BeiXiangGuMao）；M20-① / M22-① 两个开发提交按原时刻 cherry-pick 
 | v0.21.0 | M20 | #PF 根因闭环（取证 → 标本 → ELF 对号 → 切换机器契约修复） |
 | v0.22.0 | M21 | 钉扎拾取护槽 + pickup_sentinel + Harbor free-list |
 | v0.23.0 | M22 | 稳定性收口季：census 败点名内化 + #GP/spawn/waitpid/[C] 三面/[X] 出口闸六族根因收口 + [B] 猎场 v2.2 |
-| v0.24.0 | M23 | 交互与电气面季：键盘/TTY/init shell 交互闭环 + 显示三面（首帧/Surface/文本）+ virtio-net 三段接线（t66-t71）+ ROADMAP 制度化 |
+| v0.24.0 | M24 | 服务边界元年：v0.24.0 定版 + ADR 八篇裁决 + Meridian dispatcher 首割 + IDL 纪律 + lint-deps/unsafe 台账 + mirror 损伤细则 + vnet 背压/ICMP（t72-t74） |
+| v0.25.0 | M25–M27 | 兼容与栈收口三季连发：M25 Conduit abi-defs 20 结构/布局双闸 C-P04=0/25 调用绑定（t75）→ M26 Crystal 文件系统首割（格式 v1 + WAL + COW B-tree + O(1) 快照 + crash-fs ≥1000 注入，ADR-0002 vfs 迁移，t76）→ M27 网络栈收口（ADR-0005 环归位 + t73 丢帧类排水限流收口 + UDP 协议面 + t78 回环活体 + PU-P03 口径挂接 + TCP 首割） |
 
-最新发布：**[Release v0.24.0](../../releases)**——src / artifacts（devlog S0–S83 +
+最新发布：**[Release v0.25.0](../../releases)**——src / artifacts（devlog S0–S83 +
 pf-hunt 台账）/ RELEASE_NOTES / SHA256SUMS 四资产。
 
 ## 工程纪律（对指南的承接）
 
 - **unsafe 收口**：全仓 unsafe 仅存在于 `ostd`（硬件基元 + 同步/引导/控制台）、
-  `harbor` 分配器契约与 `kernel::boot` 启动汇编（框架内核白名单模块）内，
-  逐处携带 SAFETY 四行注释；`unsafe_op_in_unsafe_fn = deny` 全仓生效。
+  `harbor` 分配器契约、`kernel::boot` 启动汇编（框架内核白名单模块）与
+  `bedrock::sync`（M26-V1-c 等价内联登记例外）内，逐处携带 SAFETY 四行注释；
+  `pulse`/`crystal` 等 14 协议与策略 crate `forbid(unsafe_code)` 密度 0；
+  `unsafe_op_in_unsafe_fn = deny` 全仓生效。
 - **生产路径零 unwrap/expect**：workspace clippy `unwrap_used/expect_used = deny`，
   测试模块显式豁免（DEV-002 第四章）。
 - **panic = abort**：release 配置全局生效。

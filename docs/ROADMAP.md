@@ -78,7 +78,7 @@
 | **M24** | 服务边界元年：v0.24.0 定版 + ADR 裁决 + Meridian 分发面首割 | P1 起步 | M-P01 打点挂接；t72+ 活体 | meridian/xtask/mirror/vnet |
 | **M25** | 兼容路径启动：Conduit abi-defs + 布局快照 + 首批转换器——**✅ 关账**（M25-收尾核验：C-P04=0 双闸挂闸；C-P01 首批 25 调用全绑定 ≥20；t75 活体 75/75 全绿；六笔对账见 §四 M25 子节） | P1 | C-P04=0 偏差；C-P01 首批 ≥20 调用全绑定用例 | conduit/bedrock::abi |
 | **M26** | Crystal 文件系统首割：格式 v1 + WAL + 快照常数时间——**✅ 关账**（M26-收尾核验：格式 v1 落盘 + crash-fs ≥1000 两态一致性 + CR-P05 常数时间跨规模实证 + ADR-0002 迁移步清账 + t76 活体 76/76；十笔对账见 §四 M26 子节） | P2 | CR-P05≤50ms（常数时间）；crash-fs 断电注入 ≥1000 次 | crystal/kernel::blk |
-| **M27** | 网络栈收口：IP/ICMP/UDP + TCP 首割——🚧 进行中（M27-计划 落盘：七笔分解，t73 丢帧类收口主攻——pcap 取证猎场 virtio RX 供给/缓冲池时序面） | P2→P3 | PU-P03 回环延迟口径挂接；t 系列 ARP→ICMP→UDP 活体链 | pulse/kernel::vnet |
+| **M27** | 网络栈收口：IP/ICMP/UDP + TCP 首割——**✅ 关账**（M27-收尾核验：ADR-0005 执行步 + t73 丢帧类排水限流收口 + UDP 协议面 + t78 回环活体 78/78 + PU-P03 口径挂接 + TCP 首割协议面 + v0.25.0 定版；七笔对账见 §四 M27 子节） | P2→P3 | PU-P03 回环延迟口径挂接；t 系列 ARP→ICMP→UDP 活体链 | pulse/kernel::vnet |
 | **M28** | 显示栈闭环：Mirror 合成管线 + 用户态显示面——**✅ 关账**（M28-收尾核验：prism 合成结构面 + drain_plan 消费面 + SYS_FB_STAGE(39) 组合器服务化 + 1080p 切换 + t77 活体 77/77；七笔对账见 §四 M28 子节） | P3 | MI-P01 结构面；1080p@60 合成冒烟 | mirror/kernel::fb/prism |
 | **M29** | Harbor libc 首版 + Weave 对象库 | P2 补课 | H-P01 首批 ≥50 符号垂直切片；WE-P02 断电注入框架 | harbor/weave |
 | **M30** | 桌面骨架：Loom Elm 架构 + Cascade shell 语义 | P4 | LO-P01 口径挂接；CA-P05 结构面 | loom/cascade/glyph |
@@ -173,15 +173,17 @@ M28 退出口径：prism 合成结构面（PR-P02 z 序仲裁/交盒裁剪/逐�
 
 | 任务 | 内容 | 提交物 | 验收 |
 |---|---|---|---|
-| **M27-计划** ✅ | 本表落盘 + §三 M27 行 ⏸→🚧 标注 | ROADMAP | ✅ 本提交 |
-| **M27-N1** | ADR-0005 执行步：pulse::SpscRing 退役（环单一事实源归 ostd::sync::spsc；bedrock::sync 等价内联维持 M26-V1-c 例外登记）+ pulse 纯协议面化（SocketAddr 保留，`forbid(unsafe_code)` 全 crate）+ allowlist pulse unsafe 白名单条目清账 + lint 台账对账 | crates/pulse + tools/xtask/allowlist.toml | 宿主全绿 + lint 零违规 |
-| **M27-R1** | t73 丢帧类收口（主攻）：rx_service 排水限流——drain 批量受环余量约束（headroom = PULSE_CAP − 占用，余项滞留 used 环下拍续排，丢帧变延迟 fail-preserve）+ 残帧显形（RX_SHORT 计数 + diag 行，长度闸拒收从静默转 fail-visible）+ 交接面零丢弃结构 | kernel::vnet | t73 连跑 ≥5 全绿 + PULSE_MISS 增量恒 0 |
-| **M27-U1** | UDP 数据面首割（pulse 协议面承接）：UDP 头编解码 + 校验和（RFC 768 伪头，IPv4 面复用 ICMP 校验和语义）+ 端口绑定表（定容零堆，fail-visible 重复绑定/未绑定拒收）+ 数据报收发纯函数面 | crates/pulse | 宿主测试全绿（往返/校验和负例/端口表域） |
-| **M27-N2** | kernel::vnet UDP 接线 + t78 回环活体（ARP→ICMP→UDP 活体链）：内核内 UDP 回环通路（组帧 → 环回注入 RX 通路 → 端口表投递 → 载荷对账）+ PU-P03 回环延迟口径挂接（TSC 差打点，TCG 基线口径）+ SELFTEST_TOTAL 77→78 双端同步 | kernel::vnet + main.rs + METRICS | t78 全绿 78/78 + METRICS PU 行登记 |
-| **M27-T1** | TCP 首割（pulse 协议面）：TCP 段头编解码 + 连接状态机骨架（CLOSED/LISTEN/SYN_SENT/SYN_RCVD/ESTABLISHED/FIN_WAIT/TIME_WAIT/CLOSE）+ 三次握手序号推进面（宿主对账测试）；vnet 电气接线挂账偏差登记 | crates/pulse | 宿主测试全绿（握手序/序号窗/状态迁移负例） |
-| **M27-收尾** | ROADMAP/METRICS 对账 + README 全面更新（版本带正 + 组件面 + 自检计数）+ v0.25.0 定版八步（升版 → CHANGELOG → RELEASE_NOTES → tag → 双 tar → SHA256 → GitHub Release → ls-remote 回环） | README + 对账 + Release | tag + Release 回环四资产 |
+| **M27-计划** ✅ | 本表落盘 + §三 M27 行 ⏸→🚧 标注 | ROADMAP | ✅ f48a21e |
+| **M27-N1** ✅ | ADR-0005 执行步：pulse::SpscRing 退役（环单一事实源归 ostd::sync::spsc；bedrock::sync 等价内联维持 M26-V1-c 例外登记）+ pulse 纯协议面化（SocketAddr 保留 + loopback helper 搭车件）+ forbid(unsafe_code) 全 crate + allowlist pulse unsafe 白名单清账（until=M27 到期销账）+ description 对齐 | crates/pulse + allowlist.toml | ✅ 65f7b58：消费面普查环零引用实证；lint 零违规 |
+| **M27-R1** ✅ | t73 丢帧类收口（主攻）：rx_service 排水限流——drain 批量受环余量前置约束（headroom = PULSE_CAP − 占用），余项滞留 used 环下拍续排，交接面零丢弃（丢帧变延迟 fail-preserve）+ 残帧显形 RX_SHORT 计数 + diag short= 字段 + pcap 取证升级（filter-dump 全账：TX 21 发布全部 used 回写但 seq=2/3 request 未达 netdev——「used 回写 ≠ 交付」设备级双面死亡实证，B 面 TX 交付丢失为新猎场）+ 版本对照铁证（R1 与 b762aef 同时段通过率同域——环境时序面非语义面，M25-C1-a 先例同款）+ tx=thread/offloads-off 参数对照否决 | kernel::vnet | ✅ 21ca9cc：miss=0/short=0 全程实录；窗口期 3/4 与历史同域；门禁 CI-OK 11 阶段 |
+| **M27-U1** ✅ | UDP 数据面首割（pulse 协议面承接）：UdpHdr 编解码双闸（parse 头足额 + length 域自洽对账；encode 0 基线 + MAX_PAYLOAD 闸 + 容量闸静默截断禁令）+ 校验和面（RFC 1071 fold16 + RFC 768 伪头 + 奇字节垫零 + 0 规范化 0xFFFF + verify 反码自消免复制）+ PortTable 定容绑定表三闸 fail-visible（swap_remove 零洞）+ 手工核算向量双例 | crates/pulse | ✅ 51774e1：宿主 11 例全绿 |
+| **M27-N2** ✅ | kernel::vnet UDP 接线 + t78 回环活体：udp_bind/unbind 消费 PortTable + udp_dispatch 帧级全闸分派（七闸 + 伪头验证 + 端口路由 + 接收槽 v0 单槽）+ udp_loopback_tx 交接环直注（回环注入点与真实 RX 通路共享段）+ udp_recv take + UdpStats 四域计数 + t78 六闸相位（绑定域/回环三发载荷三态边界/校验和翻位拒收/未绑定拒投/解绑复绑）+ PU-P03 回环延迟打点 TSC 纳秒口径 + SELFTEST_TOTAL 77→78 双端同步 + allowlist 政策边 lumina-kernel→pulse + METRICS PU 行扩记 | kernel::vnet + main.rs + METRICS | ✅ ca453ac：78/78（udp-loop inj=6 acc=3 bad_cs=1 no_port=2 rtt_min_ns=10142/rtt_max_ns=844691 实录）；ARP→ICMP→UDP 活体链收官 |
+| **M27-T1** ✅ | TCP 首割（pulse 协议面）：TcpHdr 段头编解码三闸 + 校验和面（RFC 9293 伪头 proto 6——udp::checksum_pseudo 参数化重构共用折叠核心）+ 连接状态机八态（ROADMAP 清单简化集，FIN_WAIT 合并双态 v0 偏差登记）+ 握手序号推进面（SYN/FIN 耗 1 序号 + 回绕 + 主被动握手全序 + 主动关主轴 + 非法迁移全枚举）；vnet 电气接线/重传/滑窗/重组挂账偏差登记 | crates/pulse | ✅ 92dd806：宿主 8 例全绿（手工向量 0x0f26）|
+| **M27-收尾** ✅ | ROADMAP/METRICS 对账 + README 全面更新（v0.25.0 带正 + 18 组件面 + 自检 78 + crate 描述对齐）+ workspace 升版 + CHANGELOG + RELEASE_NOTES + v0.25.0 定版八步（tag → 双 tar → SHA256 → GitHub Release → ls-remote 回环） | README + 对账 + Release | ✅ 本提交 |
 
 M27 退出口径：ADR-0005 执行步完成（pulse 纯协议面 + forbid + 白名单清账）+ t73 丢帧类收口（排水限流结构 + 连跑回归）+ UDP 数据面与端口表首割 + t78 回环活体全绿（78/78）+ PU-P03 口径挂接 + TCP 首割协议面（宿主对账）+ v0.25.0 定版发布。
+
+> **收尾核验（M27-收尾）**：七项全达——① ADR-0005 执行步（pulse 环退役零消费实证 + forbid(unsafe_code) 全 crate 密度 0 + allowlist until=M27 销账）；② t73 丢帧类收口（rx_service 排水限流 headroom 前置约束——交接面 PULSE_MISS 结构性归零〔限流后为不变式破坏显形信号〕+ RX_SHORT 显形 + pcap 全账取证：slirp 反射恒达 + 设备级双面死亡〔A 面 reply 达 netdev 未达 guest / B 面 request used 回写未达 netdev〕登记环境时序面——版本对照铁证 + tx=thread/offloads-off 参数对照否决，设备级残余挂账延续）；③ UDP 数据面首割（UdpHdr 双闸 + RFC 768 伪头校验和手工向量双例 + PortTable 三闸，宿主 11 例）；④ t78 回环活体全绿（78/78：绑定域/回环三发载荷 1-64-1472 三态边界/校验和翻位拒收/未绑定拒投/解绑复绑，交接环共享段与真实 RX 通路同构）；⑤ PU-P03 口径挂接（TSC 纳秒打点 TCG 基线 rtt_min_ns=10142/rtt_max_ns=844691 实录，环境 B 挂账）+ METRICS PU 行扩记；⑥ TCP 首割协议面（TcpHdr 三闸 + 八态状态机 + 握手序号面宿主 8 例，vnet 电气接线挂账）；⑦ v0.25.0 定版发布（workspace 升版 + README 全面带正 + CHANGELOG + RELEASE_NOTES + tag + GitHub Release 四资产回环）。M27 七笔（计划/N1/R1/U1/N2/T1/收尾）关账，近线转入 M29（Harbor libc 首版 + Weave 对象库；M28 已关账——PR-P04 电源协同显示侧 + alpha 混合与多 Surface 表 + 细则 PDF 重取对账 + t73 设备级残余 + TCP 电气接线五项挂账随行）。
 
 ---
 

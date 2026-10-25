@@ -26,6 +26,58 @@
 - **v0.13.0（M13）**：VFS 骨架移植入真链。
 - **v0.14.0–v0.15.0（真链定版）**：云盘包（打包时刻 2026-10-10）。
 
+## v0.25.0（2026-10-25）—— M25–M27 三季连发：兼容路径 + Crystal 文件系统 + 网络栈收口
+
+> 三里程碑（M25 六笔 / M26 十笔 / M28 七笔 + M27 七笔）连续落账；本版为
+> workspace 升版定版（v0.24.0 → v0.25.0），裸机自检 74 → **78** 项
+> （t75 conduit / t76 crystal / t77 stage 合成 / t78 UDP 回环续编）。
+
+### M25（Conduit 兼容路径）
+- conduit::defs 20 结构 Linux 5.15 x86_64 UAPI 布局面（repr(C) no_std 纯布局）+
+  conduit::layout 双闸（编译期 const 断言矩阵 + SNAPSHOT 行表，**C-P04=0**，
+  SockAddrIn align 偏差当场拒收实证）。
+- conduit::convert errno 事实源 36 值域 + LXE1 ERR_* ↔ errno 双向映射 +
+  open 模式域 flags 双向 + **BINDINGS 25 调用全绑定**（C-P01 首批 ≥20）。
+- t75 conduit-compat 活体（布局快照裸机锚定 + errno 正向全表/反向往返）。
+- 搭车件 M25-C1-a：t73 迟到回声电气加固（发后收讫闸 + 拍钟窗），残留 ~10%
+  挂率挂账 M27。
+
+### M26（Crystal 文件系统首割）
+- 格式 v1 规格书（crystal/docs/format.md F-01..F-14 ↔ layout.rs 对号）+ XXH64
+  校验和规范向量锚定 + codec 解析防线四道。
+- WAL 写前日志（环形回绕语义 + 回放逐节点重验 + RecoveryStats）。
+- COW B-tree 首割（整路径复制 + upper_bound 选臂 + 分裂冒泡，2000 键对账）。
+- 快照/子卷 O(1)（根指针 + 代际登记，跨规模分配等值实证 = CR-P05 结构面）。
+- crash-fs 断电注入 ≥1000（全量逐扇区扫 ~1500 样本 + 撕裂 ≥100 + 位翻转 96 点
+  全检出 + wal_discard 重验拒收专测）。
+- ADR-0002 迁移步（bedrock::vfs 八文件清零 → crystal::vfs/meridian::vfs +
+  bedrock 零依赖收口 V1-c + 政策边七立）。
+- t76 crystal-compat 活体（ATA 真实介质 format v1 → 事务写读 → 回放采纳 → 快照）。
+
+### M28（显示栈闭环）
+- prism crate 骨架（z 序仲裁 + 交盒裁剪 + 逐像素裁决，胜者单写 overdraw 恒 0）。
+- mirror drain_plan 合成消费面（读出复位一体 + 三态计划）。
+- kernel::fb 组合器服务化（SYS_FB_STAGE(39) abi v0.17 + stage 页帧表散帧 +
+  fb_compose_tick 交盒局部上屏；ADR-0004 双轨共存）。
+- 1080p 模式切换（dispi 1920×1080@32，LFB_BYTES 8294400）。
+- t77 compose-spec 活体（交盒内五点等值 + 交盒外哨兵零触碰 + 二拍空账直返）。
+
+### M27（网络栈收口）
+- **ADR-0005 执行步**：pulse::SpscRing 退役（环单一事实源归 ostd::sync::spsc）+
+  pulse 纯协议面化 + `forbid(unsafe_code)` 全 crate + allowlist 白名单销账。
+- **t73 丢帧类收口**：rx_service 排水限流（drain 批量受环余量前置约束——交接面
+  PULSE_MISS 结构性归零，丢帧变延迟 fail-preserve）+ 残帧显形 RX_SHORT + pcap
+  全账取证（slirp 反射恒达 + 设备级双面死亡登记环境时序面，版本对照铁证）。
+- UDP 数据面首割（pulse::udp：UdpHdr 双闸编解码 + RFC 768 伪头校验和 + 手工
+  向量双例 + PortTable 定容绑定表三闸）。
+- vnet UDP 接线 + t78 回环活体（六闸：绑定域/回环三发载荷三态边界/校验和翻位
+  拒收/未绑定拒投/解绑复绑；交接环共享段与真实 RX 通路同构）+
+  **PU-P03 回环延迟口径挂接**（TSC 纳秒打点，TCG 基线 rtt 10μs–0.84ms 实录）。
+- TCP 首割（pulse::tcp：TcpHdr 三闸 + 校验和伪头 proto 6 参数化共用折叠核心 +
+  八态状态机骨架 + 握手序号推进面主/被动全序与非法迁移全枚举；vnet 电气接线
+  挂账）。
+- lint 台账政策边 +1（lumina-kernel→pulse）；METRICS PU 行扩记。
+
 ## v0.24.0（2026-10-22）—— M23：交互与电气面季（键盘/TTY/shell 交互闭环 + 显示三面服务化 + virtio-net 三段接线）
 
 ### M23-①② 交互基座（键盘 + TTY + init shell）
