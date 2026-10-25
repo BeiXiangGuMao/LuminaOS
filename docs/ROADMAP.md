@@ -17,7 +17,7 @@
 | P1（Meridian+Conduit 就位，Linux 静态二进制） | M-P01/M-P02 分发达标；busybox 静态运行 24h | `meridian` 仅监管者骨架（198 行）；`conduit` 仅常量表（138 行）；自有 ABI（LXE1）未接 Linux 语义 | **主缺口，M24-M25 主攻** |
 | P2（Crystal/Pulse/Harbor 成形） | CR-P05/06/10；PU-P01/03；H-P01≥150 | crystal=代际槽容器；pulse=SPSC 环；harbor=内核堆分配器（均非细则本体） | **M26-M27 主攻** |
 | P3（显示栈闭环 1080p@60/72h） | MI-P01/02；PR-P01/02/04 | stdvga dispi LFB 内核态直画 + mirror 损伤首帧 + SYS_FB_TEXT(37)；无合成器/无 Wayland/无用户态 KMS | **M28 主攻** |
-| P4（桌面+Aurora） | CA-P02/04/05/06；AF-P01 | loom=token 常量；cascade=四态状态机；aurora=生命周期骨架 | 远线 |
+| P4（桌面+Aurora） | CA-P02/04/05/06；AF-P01 | loom=1,162 行 Elm 架构面（M30-L1 归位）；cascade=704 行 shell 语义四面（M30-C1 归位）；glyph=494 行渲染库本体（M30-G1 归位）；aurora=200 行六态生命周期+最小清单校验（M32 主攻扩容） | 进行中（M32：SDK/权限中心） |
 | P5（Weave/Vanguard/自举） | WE-P02/03/07；V-P02/03/05；驱动自举 | weave=1,298 行（事务策略面+WE-P02 注入框架+对象库+**boot 自举装载面**）；vanguard=405 行（能力令牌库+**V-P05 注入矩阵**）；morse=317 行（kbd 翻译面首割外移）；**内核态驱动 fb/vnet/kbd 即 P5 要移除的旁路——M31 台账首版成像，缩编起步** | 进行中（M31 关账；WE-P03/07 随 crystal 块域 + 驱动服务化批次续挂） |
 
 ### 1.2 crate 深度评级（细则对照后）
@@ -70,7 +70,7 @@
 
 ---
 
-## 三、里程碑总规划（M24 → M31）
+## 三、里程碑总规划（M24 → M32）
 
 > 节奏：单人执行，每里程碑 8-12 笔 commit，任务级拆解仅展开近线两个里程碑；远线保持主题粒度。规范手册日历（P1=2026-03—06 等）已滞后于实际，登记为日历偏差：**以里程碑序列为准，阶段 DoD 指标编号为验收锚**。
 
@@ -84,8 +84,9 @@
 | **M29** | Harbor libc 首版 + Weave 对象库——**✅ 关账**（M29-收尾核验：ADR-0003 执行步分配器迁 ostd::heap + H-P01 首批 57 符号 forbid(unsafe_code) + WE-P02 断电注入框架 + 冒烟 78/78；五笔对账见 §四 M29 子节） | P2 补课 | H-P01 首批 ≥50 符号垂直切片；WE-P02 断电注入框架 | harbor/weave |
 | **M30** | 桌面骨架：Loom Elm 架构 + Cascade shell 语义——**✅ 关账**（M30-收尾核验：LO-P01 Elm 架构面 + CA-P05 shell 语义四面 + glyph 渲染库本体 + t79 活体 79/79 首跑即绿 + pcap 取证搭车件；七笔对账见 §四 M30 子节） | P4 | LO-P01 口径挂接；CA-P05 结构面 | loom/cascade/glyph |
 | **M31** | 自举预备：驱动用户态化起步 + Weave 自举——**✅ 关账**（M31-收尾核验：驱动旁路台账首版成像〔五清点+策略面两区分+三分分级〕+ morse 首割外移在环 + V-P05 首批注入矩阵 + Weave 自举装载面〔boot::bootstrap + LUMINA-WEAVE-BOOT 证据行机器可验〕+ t80 活体 80/80；六笔对账见 §四 M31 子节） | P5 | V-P05 首批注入矩阵；驱动旁路清单缩编 | vanguard/drivers |
+| **M32** | Aurora SDK/权限中心：权限中心首割 + SDK 最小服务面——**🚧 进行中**（M32-计划笔已落盘，七笔分解见 §四 M32 子节） | P4 | AF-P03/P06 拦截校验在环；AF-P01 基准口径登记；CA-P02/04/06 细则失联按在库面承接 | aurora/vanguard |
 
-远线（M31 后）：Aurora SDK/权限中心、Linux 静态 busybox 全功能 24h（P1 末 DoD 收口）、1080p@60/72h 长稳、五维成熟度指数首评。
+远线（M32 后）：Linux 静态 busybox 全功能 24h（P1 末 DoD 收口）、1080p@60/72h 长稳、五维成熟度指数首评。（Aurora SDK/权限中心已转近线 M32——§四 M32 子节）
 
 ---
 
@@ -238,6 +239,22 @@ M30 退出口径：Loom Elm 架构面在环（App 折叠环 + 平面元素树 + 
 M31 退出口径：驱动旁路清单首版成像（五面分类 + 缩编路径分级）+ 首割外移面在环（kernel 消费面切换 + 冒烟不破）+ V-P05 首批注入矩阵全枚举在环 + Weave 自举装载面在环（journal 重放三不变式 + store 根装载）+ t80 活体 80/80 + 宿主全谱绿 + 冒烟 80/80。
 
 > **收尾核验（M31-收尾）**：六项全达——① 驱动旁路台账首版成像（五清点 vnet 1,743/fb 953/kbd 250/console 212/block 134 + tty/shell 策略面两区分 + 电气面/纯函数面/策略面三分分级落 ROADMAP M31 子节——每里程碑核销缩编起点，缩编进度入 METRICS P5 旁路行）；② 首割外移面在环（kbd scancode 集 1 翻译面 → `morse` crate 317 行：translate/shift_event/is_release 纯函数零依赖 forbid(unsafe_code) + 宿主 7 例 + match 体机械对账零漂移 + kernel::kbd 消费面切换 + allowlist 政策面 24→25）；③ V-P05 首批注入矩阵在环（vanguard 四相×不变式 + derive 链传播全枚举 + 宿主 3→5 例 + t80 内核态收口——库本体零改动实现零缺陷显形）；④ Weave 自举装载面在环（boot::bootstrap 恢复装载 gen1 基线 + 三不变式四相复演 + store 根装载同源对账 + BootReport 结构化报告 + 宿主 18→21 例 + LUMINA-WEAVE-BOOT 证据行 + xtask S8 必检行 5→6 机器可验 + kernel 启动序列挂接 fail-visible）；⑤ t80 活体首跑即绿（bootprep 三面贯通：V 注入矩阵结论 + Weave 自举装载证据 + morse 外移面对账；SELFTEST_TOTAL 79→80 双端同步，80/80 CENSUS n80 p80 f0）；⑥ 挂账六项随行复核：t73 设备级残余（**本轮撞窗第三样本捕获**：V1 首轮 S8 gw_echo=false replies=1/3 设备级 RX 死亡窗口 + 取证留档 t73-capture-epoch-1792918011.log，重跑即绿环境时序面定性不变）/ TCP 电气接线（M27-T1 偏差不变；网络电气面不纳入 M31 自举预备轮）/ PR-P04 电源协同显示侧（未启动不变）/ alpha 混合与多 Surface 表（v0 偏差不变）/ 细则 PDF 重取逐条对账（介质失联不变；本轮 V/自举结构面按在库引用面承接——重取后补 V/WE 逐条 + morse 命名偏差对账）/ harbor C ABI 链接层（M29-H1 登记，不变）。M31 六笔（计划 e422d0b / N1 4002ce6 / V1 be2280d / W1 2523832 / T1 d8a9ad7 / 收尾本提交）关账，近线转入 M32（Aurora SDK/权限中心——§三 远线首项，M32 计划笔随开工裁决）。
+
+### M32 任务级分解（🚧 进行中）
+
+> 主题：Aurora SDK/权限中心（§三 远线首项转近线，P4）。验收锚：AF-P03/P06 生命周期拦截与全迁移经框架校验（Aurora 第 16 章口径，细则 PDF 介质失联以在库引用面为准——§七 5）+ AF-P01 ≤120 ms 冷启动基准口径。主战场 aurora/vanguard。结构界定：① 权限中心 = 策略面四相（`.luapp` 能力声明 schema 闸 → 安装时授予〔vanguard CapabilityTable 承接桥〕→ 运行时检查拒绝显形 → 撤销后访问显形），vanguard 能力模型为事实源——**vanguard 本体零改动**（M31-V1 先例），M32-A1 拟立 aurora→vanguard 政策边（allowlist 台账先行动随 A1 落账；现 aurora 零依赖零政策边，Cargo.toml 描述域已预告能力权限/意图路由/SDK 四面待落）；② aurora 转 no_std+alloc（crystal/cascade 先例——内核 t81 消费铺路）；③ SDK 最小服务面 = App 声明式注册折叠（manifest + 生命周期回调单环折叠，loom Elm fold 纪律同构）+ 意图路由骨架（定容路由表 + 未注册意图显形拒收）；④ AF-P01 ≤120 ms 为端到端口径——本轮落宿主框架面基准桩（记录型 + 合理余量闸）+ 口径登记 METRICS，端到端基准随用户态进程基础设施挂账；⑤ 自检基线 80/80 → 81/81（t81 aurora 活体）双端同步，冒烟既有 80 项不破。**搭车件**：aurora lib 头注 AF-P03/P06 标号笔误对齐 METRICS 行（拦截 100% = AF-P03）。**挂账六项随行**（M31 收尾移交逐项复核，非本轮主攻）：① t73 设备级残余（撞窗三样本 + 取证留档在库，环境时序面定性不变）② TCP 电气接线（M27-T1 偏差不变；本轮 Aurora 面，网络电气面不纳入）③ PR-P04 电源协同显示侧 ④ alpha 混合与多 Surface 表 ⑤ 细则 PDF 重取逐条对账（本轮 Aurora 结构面按在库引用面承接——重取后补 AF 逐条 + morse 命名偏差）⑥ harbor C ABI 链接层（M29-H1 登记）。
+
+| 任务 | 内容 | 提交物 | 验收 |
+|---|---|---|---|
+| **M32-计划**（笔①） ✅ | 本表落盘 + §三 M32 行 🚧 标注 + 远线行更新 + §1.1 P4 行刷新（loom/cascade/glyph M30 归位成像）+ 范围界定注（权限中心四相形态 + SDK 最小面 + AF-P01 口径挂账 + aurora no_std 转换铺路）+ 挂账六项随行登记 | ROADMAP | ✅ 本提交 |
+| **M32-⓪**（笔②） | v0.26.0 定版八步（M24-⓪ 先例定版前置，覆盖 M29–M31 三季）：workspace 升版 0.25.0→0.26.0（Cargo.lock 随动）→ CHANGELOG v0.26.0 条目 → RELEASE_NOTES-v0.26.0.md → README 带正 → tag → 双 tar → SHA256 → GitHub Release → ls-remote 回环 | 发布面 | tag + Release 资产回环 |
+| **M32-A1**（笔③） | 权限中心首割：aurora 转 no_std+alloc + aurora::perm 四相面（声明 schema 闸 → 安装时授予〔vanguard CapabilityTable 承接桥〕→ 运行时检查 check 拒绝显形 → 撤销后访问显形）+ LuappManifest 能力域扩容（cap 域反向段格式闸）+ allowlist 新边 aurora→vanguard + 搭车件注释笔误修 | crates/aurora（vanguard 只消费零改动） + allowlist | 宿主测试全谱绿 + clippy 零警告 + 政策面零违规 |
+| **M32-S1**（笔④） | SDK 最小服务面：App 声明式注册折叠（manifest + 生命周期回调单环折叠）+ 意图路由骨架（intent 命名域 + 定容路由表 + 未注册意图显形拒收） | crates/aurora | 宿主测试绿 + 冒烟不破 |
+| **M32-B1**（笔⑤） | AF-P01 基准口径面：宿主框架冷启动基准桩（manifest 装载 + Registered→Foreground 全迁移路径计时）+ ≤120 ms 口径登记 METRICS（端到端基准挂账注记） | crates/aurora + docs/METRICS | 基准在环 + 口径行落账 |
+| **M32-T1**（笔⑥） | t81 aurora 活体：kernel 自检段新相位（权限四相内核态收口 + 生命周期拦截矩阵 + 清单闸）+ SELFTEST_TOTAL 80→81 双端同步 | crates/kernel + xtask | 81/81 CENSUS n81 p81 f0 |
+| **M32-收尾**（笔⑦） | ROADMAP/METRICS/README 对账 + 挂账六项复核注 + 近线转 M33 | 对账提交 | §三 M32 行 ✅ 关账 |
+
+M32 退出口径：权限中心四相面在环（声明闸 + 授予 + 检查 + 撤销显形；vanguard 零改动）+ manifest 能力域闸 + SDK 最小面（注册折叠 + 意图路由）+ AF-P01 基准口径登记 + t81 活体 81/81 + 宿主全谱绿 + 冒烟 81/81。
 
 ---
 
