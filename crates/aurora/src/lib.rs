@@ -9,10 +9,14 @@
 //! - [`AppRuntime`]：六态生命周期状态机（Registered → Launching → Foreground →
 //!   Background → Suspended → Terminated），拦截率 100%（AF-P03，P0）；
 //! - [`perm`]：权限中心首割四相面（声明 schema 闸 → 安装时授予〔vanguard
-//!   CapabilityTable 承接桥〕→ 运行时检查拒绝显形 → 撤销后访问显形）。
+//!   CapabilityTable 承接桥〕→ 运行时检查拒绝显形 → 撤销后访问显形）；
+//! - [`sdk`]：SDK 最小服务面（App 声明式注册折叠〔清单 + 生命周期回调单环
+//!   折叠，loom Elm fold 纪律同构〕+ 意图路由骨架〔intent 命名域 + 定容
+//!   路由表 + 未注册意图显形拒收〕——M32-S1）。
 //!
 //! 能力权限的派生规则由 Vanguard 能力模型执行（单一事实源——vanguard 本体
-//! 零改动，M32-A1 政策边 aurora→vanguard）；意图路由与后台任务在 SDK 服务侧。
+//! 零改动，M32-A1 政策边 aurora→vanguard）；意图路由随 M32-S1 落 [`sdk`]
+//! 面，后台任务仍居 SDK 服务侧后续批次。
 //!
 //! M32-A1 起 no_std + alloc（crystal/cascade 先例）：内核自检段（t81）直接
 //! 消费本 crate 的语义面；宿主测试经 test 模块照常运行。
@@ -23,6 +27,7 @@ extern crate alloc;
 use alloc::{format, string::String, vec::Vec};
 
 pub mod perm;
+pub mod sdk;
 
 /// 应用生命周期六态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
