@@ -78,7 +78,7 @@
 | **M24** | 服务边界元年：v0.24.0 定版 + ADR 裁决 + Meridian 分发面首割 | P1 起步 | M-P01 打点挂接；t72+ 活体 | meridian/xtask/mirror/vnet |
 | **M25** | 兼容路径启动：Conduit abi-defs + 布局快照 + 首批转换器——**✅ 关账**（M25-收尾核验：C-P04=0 双闸挂闸；C-P01 首批 25 调用全绑定 ≥20；t75 活体 75/75 全绿；六笔对账见 §四 M25 子节） | P1 | C-P04=0 偏差；C-P01 首批 ≥20 调用全绑定用例 | conduit/bedrock::abi |
 | **M26** | Crystal 文件系统首割：格式 v1 + WAL + 快照常数时间——**✅ 关账**（M26-收尾核验：格式 v1 落盘 + crash-fs ≥1000 两态一致性 + CR-P05 常数时间跨规模实证 + ADR-0002 迁移步清账 + t76 活体 76/76；十笔对账见 §四 M26 子节） | P2 | CR-P05≤50ms（常数时间）；crash-fs 断电注入 ≥1000 次 | crystal/kernel::blk |
-| **M27** | 网络栈收口：IP/ICMP/UDP + TCP 首割——⏸ 顺延（偏差登记：两段会话窗口未产出提交，M28 先行；t73 flake ~10% 挂账随行） | P2→P3 | PU-P03 回环延迟口径挂接；t 系列 ARP→ICMP→UDP 活体链 | pulse/kernel::vnet |
+| **M27** | 网络栈收口：IP/ICMP/UDP + TCP 首割——🚧 进行中（M27-计划 落盘：七笔分解，t73 丢帧类收口主攻——pcap 取证猎场 virtio RX 供给/缓冲池时序面） | P2→P3 | PU-P03 回环延迟口径挂接；t 系列 ARP→ICMP→UDP 活体链 | pulse/kernel::vnet |
 | **M28** | 显示栈闭环：Mirror 合成管线 + 用户态显示面——**✅ 关账**（M28-收尾核验：prism 合成结构面 + drain_plan 消费面 + SYS_FB_STAGE(39) 组合器服务化 + 1080p 切换 + t77 活体 77/77；七笔对账见 §四 M28 子节） | P3 | MI-P01 结构面；1080p@60 合成冒烟 | mirror/kernel::fb/prism |
 | **M29** | Harbor libc 首版 + Weave 对象库 | P2 补课 | H-P01 首批 ≥50 符号垂直切片；WE-P02 断电注入框架 | harbor/weave |
 | **M30** | 桌面骨架：Loom Elm 架构 + Cascade shell 语义 | P4 | LO-P01 口径挂接；CA-P05 结构面 | loom/cascade/glyph |
@@ -166,6 +166,22 @@ M26 退出口径：格式 v1 落盘（规格书 + codec 防线四道）+ WAL/快
 M28 退出口径：prism 合成结构面（PR-P02 z 序仲裁/交盒裁剪/逐像素裁决宿主全绿）+ mirror drain_plan 消费面 + kernel::fb 组合器服务化（stage 双轨共存 + 交盒局部上屏）+ 1080p 模式切换 + t77 冒烟活体全绿（77/77）+ METRICS 指标行登记。
 
 > **收尾核验（M28-收尾）**：五项全达——① prism 合成结构面（PR-P02：z 序仲裁/交盒裁剪/逐像素裁决/扫描计数宿主 9 例全绿，几何单一事实源全量复用 mirror::Rect）；② mirror drain_plan 消费面（三态计划读出复位一体 + 管线几何对账测试：visit 域 == 计划域）；③ kernel::fb 组合器服务化（SYS_FB_STAGE(39) abi v0.17 + stage 页帧表散帧方案 + fb_compose_tick 交盒局部上屏；ADR-0004 双轨共存实证：SYS_FB_MAP 直写路径 77/77 不降）；④ 1080p 模式切换（dispi 1920×1080@32 LFB 8294400 B；t67/t72 断言随动实录）；⑤ t77 冒烟活体全绿（77/77，compose-spec px=64000 eq=true sent=true tick2=0——交盒外字节零触碰电气证据）。M28 七笔（计划/F1/S1/K1/R1/T1/收尾）关账，近线转回 M27（网络栈收口，顺延已清账）。挂账延续：t73 丢帧类残余 flake——**今日 pcap 取证升级（filter-dump 实证）：slirp 反射恒达（3/3 回声帧离开 netdev），帧死于客户机 RX 通路的设备级（RX 长度闸拒短帧 + 环满 miss=1..3 双形态）；拍钟窗搭车件治延迟类、不治丢帧类——M27 网络栈收口按此猎场重访（virtio RX 环供给/缓冲池时序面）**；PR-P04 电源协同显示侧（未启动）；alpha 混合与多 Surface 表扩容（v0 偏差登记域）；细则 PDF 重取后 Prism/Mirror 逐条对账。
+
+### M27 任务级分解（🚧 进行中）
+
+> 主题：网络栈收口（P2→P3）+ ADR-0005 环归位执行步。验收锚：PU-P03 回环延迟口径挂接 + t 系列 ARP→ICMP→UDP 活体链（t78 续编，现值 77/77）。提交物 pulse/kernel::vnet。t73 丢帧类收口为主攻之一——M28 收尾 pcap 取证定案：slirp 反射恒达（3/3 回声帧离开 netdev），帧死于客户机 RX 通路的设备级（RX 长度闸拒短帧 + 环满 miss=1..3 双形态），猎场 = 排水面结构（先排后喂无限流 → 环满即丢）。事实源现状：环三处并存（ostd::sync::spsc = SYNC-02 本体 / bedrock::sync M26-V1-c 等价内联已登记例外 / pulse::SpscRing 原生面）——消费面普查证实 pulse 环为零消费孤儿（vnet 用 ostd 环、t71 活体走 vnet 内部环），ADR-0005 执行 = pulse 环退役 + 纯协议面化（`forbid(unsafe_code)` 全 crate）+ allowlist 白名单清账。TCP 首割范围界定：协议面结构（段头编解码 + 状态机骨架 + 握手序号面，宿主对账测试），vnet 电气接线属后续批次（偏差登记挂账）。
+
+| 任务 | 内容 | 提交物 | 验收 |
+|---|---|---|---|
+| **M27-计划** ✅ | 本表落盘 + §三 M27 行 ⏸→🚧 标注 | ROADMAP | ✅ 本提交 |
+| **M27-N1** | ADR-0005 执行步：pulse::SpscRing 退役（环单一事实源归 ostd::sync::spsc；bedrock::sync 等价内联维持 M26-V1-c 例外登记）+ pulse 纯协议面化（SocketAddr 保留，`forbid(unsafe_code)` 全 crate）+ allowlist pulse unsafe 白名单条目清账 + lint 台账对账 | crates/pulse + tools/xtask/allowlist.toml | 宿主全绿 + lint 零违规 |
+| **M27-R1** | t73 丢帧类收口（主攻）：rx_service 排水限流——drain 批量受环余量约束（headroom = PULSE_CAP − 占用，余项滞留 used 环下拍续排，丢帧变延迟 fail-preserve）+ 残帧显形（RX_SHORT 计数 + diag 行，长度闸拒收从静默转 fail-visible）+ 交接面零丢弃结构 | kernel::vnet | t73 连跑 ≥5 全绿 + PULSE_MISS 增量恒 0 |
+| **M27-U1** | UDP 数据面首割（pulse 协议面承接）：UDP 头编解码 + 校验和（RFC 768 伪头，IPv4 面复用 ICMP 校验和语义）+ 端口绑定表（定容零堆，fail-visible 重复绑定/未绑定拒收）+ 数据报收发纯函数面 | crates/pulse | 宿主测试全绿（往返/校验和负例/端口表域） |
+| **M27-N2** | kernel::vnet UDP 接线 + t78 回环活体（ARP→ICMP→UDP 活体链）：内核内 UDP 回环通路（组帧 → 环回注入 RX 通路 → 端口表投递 → 载荷对账）+ PU-P03 回环延迟口径挂接（TSC 差打点，TCG 基线口径）+ SELFTEST_TOTAL 77→78 双端同步 | kernel::vnet + main.rs + METRICS | t78 全绿 78/78 + METRICS PU 行登记 |
+| **M27-T1** | TCP 首割（pulse 协议面）：TCP 段头编解码 + 连接状态机骨架（CLOSED/LISTEN/SYN_SENT/SYN_RCVD/ESTABLISHED/FIN_WAIT/TIME_WAIT/CLOSE）+ 三次握手序号推进面（宿主对账测试）；vnet 电气接线挂账偏差登记 | crates/pulse | 宿主测试全绿（握手序/序号窗/状态迁移负例） |
+| **M27-收尾** | ROADMAP/METRICS 对账 + README 全面更新（版本带正 + 组件面 + 自检计数）+ v0.25.0 定版八步（升版 → CHANGELOG → RELEASE_NOTES → tag → 双 tar → SHA256 → GitHub Release → ls-remote 回环） | README + 对账 + Release | tag + Release 回环四资产 |
+
+M27 退出口径：ADR-0005 执行步完成（pulse 纯协议面 + forbid + 白名单清账）+ t73 丢帧类收口（排水限流结构 + 连跑回归）+ UDP 数据面与端口表首割 + t78 回环活体全绿（78/78）+ PU-P03 口径挂接 + TCP 首割协议面（宿主对账）+ v0.25.0 定版发布。
 
 ---
 
