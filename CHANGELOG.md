@@ -26,6 +26,67 @@
 - **v0.13.0（M13）**：VFS 骨架移植入真链。
 - **v0.14.0–v0.15.0（真链定版）**：云盘包（打包时刻 2026-10-10）。
 
+## v0.26.0（2026-10-25）—— M29–M31 三季连发：Harbor libc + Weave 对象库 + 桌面骨架 + 自举预备
+
+> 三里程碑（M29 五笔 / M30 七笔 / M31 六笔）+ M32 计划笔连续落账；本版为
+> workspace 升版定版（v0.25.0 → v0.26.0），裸机自检 78 → **80** 项
+> （t79 desktop-skel / t80 bootprep 续编）。
+
+### M29（Harbor libc 首版 + Weave 对象库）
+- **ADR-0003 执行步**：kernel 内嵌堆分配器迁 ostd::heap（Bump + free-list，
+  冒烟 heap 行实录）+ harbor 重铸 libc 符号面身份——**H-P01 首批 57 符号**
+  （errno/string/ctype/stdlib，`forbid(unsafe_code)`）+ allowlist 政策边
+  销账三项（19→17）。
+- **Weave store 内容寻址对象库**：ObjectId = FNV-1a 64（经典向量锚定）+
+  put 去重同内容同身份 + 定容槽存满拒收 fail-visible + verify 重哈希校验
+  （位翻转检出 VerifyError）。
+- **WE-P02 断电注入框架**（journal）：GenRoot 双代际根槽轮换 + 提交点 =
+  活跃指针翻转 + PowerFault 四相注入矩阵（AfterPrepare/MidRootWrite 撕裂
+  残槽/BeforeFlip/AfterFlip）+ CRC32 IEEE 802.3 向量锚定 + 崩溃重试代龄
+  严格递增。
+- **恢复语义裁决**：Recovery 报库态不报事务命运（AfterPrepare 掉电后库态
+  与正常态不可区分——RolledBack 伪变体删除，事务命运归策略面）。
+
+### M30（桌面骨架：Loom Elm + Cascade shell + Glyph 渲染）
+- **Loom Elm 架构**（LO-P01 口径挂接）：App 消息折叠环（同序列确定性折叠
+  可重放）+ ViewBuf 定容零堆平面元素树（三索引链结构性防环 + 全闸
+  fail-visible）+ 约束求解布局（8px 网格闸 OffGrid/Overflow 溢出闸/Fill
+  余数归首子确定性）+ 虚拟化列表可见窗纯函数；布局产出 mirror::Rect
+  几何单一事实源延伸。
+- **Cascade shell 语义四面**（CA-P05 结构面）：四态机非法迁移拒收 +
+  Workspaces 定容工作区表（窗口全局唯一归属 AlreadyOpen）+ master-stack
+  平铺计划（保留域消费 loom 骨架常量，产出 mirror::Rect 供 prism 直接
+  消费）+ Dock 定容登记面（glyph 档位闸）；no_std+alloc 转换。
+- **Glyph 渲染库本体**：IconDef 静态注册表（24 源网格几何基元声明式图标）
+  + 同源缩放光栅化器（map_point 唯一合法路径——ADR-0007 勘误后合规模型
+  兑现）+ 描边随倍率 + 有界写入越界裁剪。
+- **t79 desktop-skel 活体**：六闸（shell 面/平铺 golden/Elm 布局同源对账
+  〔两套面同一几何〕/图标像素/prism 仲裁/fb 交盒哨兵）；自检 78 → 79。
+- 搭车件 M30-X1：pcap 滤波升级取证（t73 设备级 RX 选择性死亡第三形态
+  登记——netdev 75 帧 vs guest 10 帧，结构闸完好形态）。
+
+### M31（自举预备：驱动用户态化起步 + Weave 自举）
+- **驱动旁路台账首版成像**：kernel 内驱动面五清点（vnet 1,743/fb 953/
+  kbd 250/console 212/block 134）+ 策略面两区分（tty/shell）+ 电气面/
+  纯函数面/策略面三分缩编分级——每里程碑核销，缩编进度入 METRICS。
+- **morse 首割外移**：kbd scancode 集 1 翻译面 crate 化（translate/
+  shift_event/is_release 纯函数，零依赖 forbid unsafe）+ 宿主 7 例 +
+  match 体机械对账零漂移 + kernel::kbd 消费面切换；政策面 24→25。
+- **V-P05 首批注入矩阵**：vanguard 四相×不变式（越权派生/撤销后使用/
+  未安装槽两级语义/重复撤销）+ derive 链传播语义全枚举（宿主 3→5 例，
+  库本体零改动实现零缺陷显形）。
+- **Weave 自举装载面**：boot::bootstrap 幂等库态序列封装（gen1 基线恢复
+  + 三不变式四相复演 + store 根装载同源对账）+ BootReport 结构化报告 +
+  kernel 启动序列挂接 fail-visible + LUMINA-WEAVE-BOOT 证据行（xtask S8
+  必检行 5→6 机器可验）；宿主 18→21 例。
+- **t80 bootprep 活体**：三面贯通（V 注入矩阵结论 + Weave 自举装载证据 +
+  morse 外移面对账）；自检 79 → 80。
+
+### M32 起步（Aurora SDK/权限中心计划）
+- **ROADMAP 落盘**：§四 M32 七笔任务级分解（v0.26.0 定版前置 + 权限中心
+  四相面 + SDK 最小服务面 + AF-P01 基准口径 + t81 活体）+ §三 M32 行
+  🚧 + §1.1 P4 行刷新 + 远线行更新（M32 计划笔随开工裁决）。
+
 ## v0.25.0（2026-10-25）—— M25–M27 三季连发：兼容路径 + Crystal 文件系统 + 网络栈收口
 
 > 三里程碑（M25 六笔 / M26 十笔 / M28 七笔 + M27 七笔）连续落账；本版为

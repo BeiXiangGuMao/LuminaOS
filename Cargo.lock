@@ -4,15 +4,15 @@ version = 4
 
 [[package]]
 name = "aurora"
-version = "0.25.0"
+version = "0.26.0"
 
 [[package]]
 name = "bedrock"
-version = "0.25.0"
+version = "0.26.0"
 
 [[package]]
 name = "cascade"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "glyph",
  "loom",
@@ -21,14 +21,14 @@ dependencies = [
 
 [[package]]
 name = "conduit"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "bedrock",
 ]
 
 [[package]]
 name = "crystal"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "bedrock",
  "ostd",
@@ -36,22 +36,22 @@ dependencies = [
 
 [[package]]
 name = "glyph"
-version = "0.25.0"
+version = "0.26.0"
 
 [[package]]
 name = "harbor"
-version = "0.25.0"
+version = "0.26.0"
 
 [[package]]
 name = "loom"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "mirror",
 ]
 
 [[package]]
 name = "lumina-kernel"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "bedrock",
  "cascade",
@@ -71,7 +71,7 @@ dependencies = [
 
 [[package]]
 name = "meridian"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "crystal",
  "ostd",
@@ -79,43 +79,43 @@ dependencies = [
 
 [[package]]
 name = "mirror"
-version = "0.25.0"
+version = "0.26.0"
 
 [[package]]
 name = "morse"
-version = "0.25.0"
+version = "0.26.0"
 
 [[package]]
 name = "ostd"
-version = "0.25.0"
+version = "0.26.0"
 
 [[package]]
 name = "power"
-version = "0.25.0"
+version = "0.26.0"
 
 [[package]]
 name = "prism"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "mirror",
 ]
 
 [[package]]
 name = "pulse"
-version = "0.25.0"
+version = "0.26.0"
 
 [[package]]
 name = "ripple"
-version = "0.25.0"
+version = "0.26.0"
 
 [[package]]
 name = "vanguard"
-version = "0.25.0"
+version = "0.26.0"
 
 [[package]]
 name = "weave"
-version = "0.25.0"
+version = "0.26.0"
 
 [[package]]
 name = "xtask"
-version = "0.25.0"
+version = "0.26.0"

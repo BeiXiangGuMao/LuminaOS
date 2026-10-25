@@ -1,6 +1,6 @@
 # Lumina OS（曜光系统）
 
-**100% Rust framekernel 桌面操作系统**——x86_64 长模式裸机内核 + 18 组件 crate
+**100% Rust framekernel 桌面操作系统**——x86_64 长模式裸机内核 + 19 组件 crate
 workspace。内核可经 multiboot1 在 QEMU（`-smp 2`）上裸机启动，物理帧管理、四级
 页表（MMU 实机往返）、双核 SMP、抢占式调度、ring3 用户进程、SYSCALL/SYSRET
 系统调用、能力化 IPC、swap 换页、持久化存储面全部在环；键盘/TTY 交互、
@@ -8,7 +8,7 @@ workspace。内核可经 multiboot1 在 QEMU（`-smp 2`）上裸机启动，物�
 （UDP/TCP 协议栈）全部在环；crystal 格式 v1 文件系统（WAL/快照）在环；
 **80 项裸机自检全绿并自动验收**（QEMU 退出码 33）。
 
-当前状态：**v0.25.0（M31 自举预备季）** · ROADMAP 制度化（M24→M31 八里程碑逐笔
+当前状态：**v0.26.0（M32 Aurora SDK/权限中心季）** · ROADMAP 制度化（M24→M32 九里程碑逐笔
 落账）· 取证证据链全程落账（t 系活体 t66-t80 续编）· ADR 八项裁决在库
 （docs/adr/）。
 
@@ -35,7 +35,7 @@ workspace。内核可经 multiboot1 在 QEMU（`-smp 2`）上裸机启动，物�
 - IntWindow 调度锁纪律：42 调用点全量审计，同核 tick↔锁互等死锁族根因封死
 - 钉扎拾取护槽三件：Type A/B 簇败族（死者鬼影槽复用）结构性根因收口
 
-**IPC · 能力 · 组件策略（18 册 crate）**
+**IPC · 能力 · 组件策略（19 册 crate）**
 - 无锁 SPSC IPC 快速路径（BSP↔AP 双环基准）+ 能力化 IPC 系统调用面 + 定向门铃
 - bedrock 磐基（ABI/TLV/LXE1 + 自持同步原语）· harbor 港湾 libc 符号面
   （errno/string/ctype/stdlib，forbid unsafe）·
@@ -63,10 +63,10 @@ workspace。内核可经 multiboot1 在 QEMU（`-smp 2`）上裸机启动，物�
 
 ```
 lumina-os/                 ← 源码树（保持干爽，永不出现编译产物）
-├── Cargo.toml             workspace：18 组件 crate + xtask
+├── Cargo.toml             workspace：19 组件 crate + xtask
 ├── CHANGELOG.md           版本变更记录（v0.16.0 起详条目 + 早期沿革回溯补记）
 ├── LICENSE                MIT
-├── releases/              各版本发布说明（RELEASE_NOTES-v0.18.0 ~ v0.24.0）
+├── releases/              各版本发布说明（RELEASE_NOTES-v0.18.0 ~ v0.26.0）
 ├── .cargo/config.toml     target-dir → 源码树之外；内核目标 rustflags
 ├── rust-toolchain.toml    锁定 stable 1.99.0 + rustfmt/clippy
 ├── rustfmt.toml           行宽 100（DEV-002 4.1）
@@ -114,7 +114,7 @@ lumina-build/              ← 编译产物 + 日志 + 报告（源码树外，�
 ## 构建与门禁
 
 ```bash
-cargo build --workspace          # 全仓构建（18 crate）
+cargo build --workspace          # 全仓构建（19 crate）
 cargo test  --workspace          # 全仓测试（宿主）+ 80 项裸机自检（S8）
 cargo run -p xtask -- ci         # 十一阶段门禁（S1-S5 + S5b IDL 一致性 + S5c lint 台账 + S6/S7 + S8 冒烟 + S9 报告，fail-fast）
 cargo run -p xtask -- smoke      # 仅内核：lint + build + QEMU 裸机自检
@@ -144,7 +144,7 @@ qemu-system-x86_64 -L <seabios> -L <qemu-data> \
 
 或者直接：`cargo run -p xtask -- smoke`（自动完成上述全部步骤并断言结果）。
 
-## 版本谱系（v0.2.0 → v0.24.0 全谱 tag）
+## 版本谱系（v0.2.0 → v0.26.0 全谱 tag）
 
 git 历史按版本序自云盘 src 包逐字节展开重建（树内容与云盘包一致，作者统一
 BeiXiangGuMao）；M20-① / M22-① 两个开发提交按原时刻 cherry-pick 归位。
@@ -168,8 +168,9 @@ BeiXiangGuMao）；M20-① / M22-① 两个开发提交按原时刻 cherry-pick 
 | v0.23.0 | M22 | 稳定性收口季：census 败点名内化 + #GP/spawn/waitpid/[C] 三面/[X] 出口闸六族根因收口 + [B] 猎场 v2.2 |
 | v0.24.0 | M24 | 服务边界元年：v0.24.0 定版 + ADR 八篇裁决 + Meridian dispatcher 首割 + IDL 纪律 + lint-deps/unsafe 台账 + mirror 损伤细则 + vnet 背压/ICMP（t72-t74） |
 | v0.25.0 | M25–M27 | 兼容与栈收口三季连发：M25 Conduit abi-defs 20 结构/布局双闸 C-P04=0/25 调用绑定（t75）→ M26 Crystal 文件系统首割（格式 v1 + WAL + COW B-tree + O(1) 快照 + crash-fs ≥1000 注入，ADR-0002 vfs 迁移，t76）→ M27 网络栈收口（ADR-0005 环归位 + t73 丢帧类排水限流收口 + UDP 协议面 + t78 回环活体 + PU-P03 口径挂接 + TCP 首割） |
+| v0.26.0 | M29–M31 | 服务与桌面三季连发：M29 Harbor libc 首版（ADR-0003 分配器归 ostd::heap + H-P01 首批 57 符号 forbid unsafe）+ Weave 对象库/WE-P02 四相断电注入 → M30 桌面骨架（Loom Elm 架构 + Cascade shell 语义四面 + Glyph 同源渲染 + t79 活体）→ M31 自举预备（驱动旁路台账首版成像 + morse 翻译面外移首割 + V-P05 注入矩阵 + Weave 自举装载面 + t80 活体） |
 
-最新发布：**[Release v0.25.0](../../releases)**——src / artifacts（门禁日志 +
+最新发布：**[Release v0.26.0](../../releases)**——src / artifacts（门禁日志 +
 ci-summary 报告）/ RELEASE_NOTES / SHA256SUMS 四资产。
 
 ## 工程纪律（对指南的承接）
