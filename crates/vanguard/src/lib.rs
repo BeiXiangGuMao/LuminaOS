@@ -173,7 +173,7 @@ impl Capability {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::{CapError, Capability, CapabilityTable, Right};
+    use super::{CapError, Capability, CapabilityTable, Right, CAPACITY};
 
     #[test]
     fn derive_cannot_escalate() {
@@ -209,5 +209,197 @@ mod tests {
         assert!(Right::from_bits(0b11).is_none());
         assert!(Right::from_bits(1 << 9).is_none());
         assert!(Right::from_bits(Right::NET_BIND.bits()).is_some());
+    }
+
+    /// V-P05 首批注入矩阵 · 相组一：四相故障注入（仿 WE-P02 `we_p02_fault_matrix` 先例）。
+    ///
+    /// 逐相注入非法操作，断言错误显形（fail-visible）+ 表状态零副作用：
+    /// ① 越权派生 ② 撤销后使用 ③ 未安装槽访问 ④ 重复撤销。
+    #[test]
+    fn v_p05_injection_matrix() {
+        // ① 越权派生相：derive 请求父集外权限 → RightsEscalation。
+        let mut t = CapabilityTable::new();
+        t.install(
+            0,
+            Capability::new(7, Right::READ.bits() | Right::WRITE.bits()),
+        )
+        .expect("install root");
+        // 单位越权（EXEC 不在父集）
+        assert_eq!(
+            t.derive(0, Right::EXEC.bits()),
+            Err(CapError::RightsEscalation)
+        );
+        // 混合请求越权：含一位非法即全拒，不放行部分子集
+        assert_eq!(
+            t.derive(0, Right::READ.bits() | Right::EXEC.bits()),
+            Err(CapError::RightsEscalation)
+        );
+        // 全位越权与未定义位越权（bit 8+ 不在 ALL 内）均显形
+        assert_eq!(t.derive(0, Right::ALL), Err(CapError::RightsEscalation));
+        assert_eq!(t.derive(0, 1 << 8), Err(CapError::RightsEscalation));
+        // 零副作用不变式：拒绝派生不留痕——占用数不变、子槽仍空、父能力原样
+        assert_eq!(t.used(), 1);
+        assert_eq!(t.get(1), Err(CapError::SlotEmpty));
+        let root = t.get(0).expect("root intact");
+        assert!(root.has(Right::READ));
+        assert!(root.has(Right::WRITE));
+        assert!(!root.has(Right::EXEC));
+        // 边界合法态：空权限集 ⊆ 任意父集 → 零权限能力合法派生（最小组不变式）
+        let void_slot = t.derive(0, 0).expect("empty-rights derive is a subset");
+        let void_cap = t.get(void_slot).expect("void cap");
+        assert_eq!(void_cap.rights(), 0);
+        assert!(!void_cap.has(Right::READ));
+        // 对象传播不变式：子能力继承父 object
+        assert_eq!(void_cap.object(), 7);
+
+        // ② 撤销后使用相：撤销后的槽即死——读/为父派生全部显形 SlotEmpty。
+        let mut t = CapabilityTable::new();
+        t.install(0, Capability::new(1, Right::IPC_SEND.bits()))
+            .expect("install");
+        let child = t.derive(0, Right::IPC_SEND.bits()).expect("derive child");
+        t.revoke(0).expect("revoke parent");
+        assert_eq!(t.get(0), Err(CapError::SlotEmpty));
+        assert_eq!(
+            t.derive(0, Right::IPC_SEND.bits()),
+            Err(CapError::SlotEmpty),
+            "dead slot must not serve as derive parent"
+        );
+        // 值语义显形：撤销父不级联撤销子（子槽为派生时刻的快照）；
+        // 级联撤销属 Bedrock 内核侧引用计数面，能力表表面不承担。
+        assert!(t.get(child).is_ok());
+        assert!(t.get(child).expect("child alive").has(Right::IPC_SEND));
+
+        // ③ 未安装槽访问相：空槽（界内未安装）与越界槽全操作面显形，错误语义两级分明。
+        let mut t = CapabilityTable::new();
+        t.install(5, Capability::new(2, Right::READ.bits()))
+            .expect("install@5");
+        // 界内空槽 → SlotEmpty
+        assert_eq!(t.get(0), Err(CapError::SlotEmpty));
+        assert_eq!(t.derive(0, Right::READ.bits()), Err(CapError::SlotEmpty));
+        assert_eq!(t.revoke(0), Err(CapError::SlotEmpty));
+        // 越界槽 → NoSuchSlot（恰在界外 CAPACITY 与远界 999）
+        assert_eq!(t.get(CAPACITY), Err(CapError::NoSuchSlot));
+        assert_eq!(t.get(999), Err(CapError::NoSuchSlot));
+        assert_eq!(
+            t.install(CAPACITY, Capability::new(2, Right::READ.bits())),
+            Err(CapError::NoSuchSlot)
+        );
+        assert_eq!(t.revoke(CAPACITY), Err(CapError::NoSuchSlot));
+        // derive 以越界槽为父：错误语义随 get 传播 → NoSuchSlot
+        assert_eq!(
+            t.derive(CAPACITY, Right::READ.bits()),
+            Err(CapError::NoSuchSlot)
+        );
+        // 边界合法槽：首槽 0 与末槽 CAPACITY-1 可达
+        t.install(0, Capability::new(3, Right::EXEC.bits()))
+            .expect("first slot");
+        t.install(CAPACITY - 1, Capability::new(4, Right::NET_BIND.bits()))
+            .expect("last slot");
+        assert!(t.get(CAPACITY - 1).expect("last").has(Right::NET_BIND));
+
+        // ④ 重复撤销相：二次与 N 次撤销均显形 SlotEmpty，且不伤邻槽（隔离不变式）。
+        let mut t = CapabilityTable::new();
+        t.install(1, Capability::new(8, Right::WRITE.bits()))
+            .expect("install@1");
+        t.install(2, Capability::new(9, Right::READ.bits()))
+            .expect("install@2");
+        assert_eq!(t.used(), 2);
+        t.revoke(1).expect("first revoke");
+        assert_eq!(
+            t.revoke(1),
+            Err(CapError::SlotEmpty),
+            "double revoke must be visible"
+        );
+        assert_eq!(
+            t.revoke(1),
+            Err(CapError::SlotEmpty),
+            "n-th revoke stays visible"
+        );
+        assert!(t.get(2).expect("neighbor intact").has(Right::READ));
+        assert_eq!(t.used(), 1);
+    }
+
+    /// V-P05 首批注入矩阵 · 相组二：derive 链传播语义全枚举非法态。
+    ///
+    /// 任意深度不可回升（收窄单调）+ 对象同源 + 零权限链最小组 + 环满容量显形 + 链尾清账。
+    #[test]
+    fn v_p05_derive_chain_matrix() {
+        // 合法三级链：A(READ|WRITE) → B(READ) → C(READ)
+        let mut t = CapabilityTable::new();
+        t.install(
+            0,
+            Capability::new(42, Right::READ.bits() | Right::WRITE.bits()),
+        )
+        .expect("install A");
+        let b = t.derive(0, Right::READ.bits()).expect("A→B");
+        let c = t.derive(b, Right::READ.bits()).expect("B→C");
+        assert_eq!(t.used(), 3);
+        // 对象同源不变式：全链 object 同源
+        for s in [0usize, b, c] {
+            assert_eq!(t.get(s).expect("chain slot").object(), 42);
+        }
+        // 收窄单调不变式：链上权限不增
+        assert_eq!(t.get(b).expect("B").rights(), Right::READ.bits());
+        assert_eq!(t.get(c).expect("C").rights(), Right::READ.bits());
+
+        // 非法态全枚举：链中任意深度提权均显形拒绝
+        assert_eq!(
+            t.derive(b, Right::WRITE.bits()),
+            Err(CapError::RightsEscalation),
+            "mid-chain must not recover grandparent right"
+        );
+        assert_eq!(
+            t.derive(c, Right::EXEC.bits()),
+            Err(CapError::RightsEscalation),
+            "chain tail must not escalate"
+        );
+        assert_eq!(
+            t.derive(c, Right::READ.bits() | Right::WRITE.bits()),
+            Err(CapError::RightsEscalation),
+            "mixed request with one illegal bit is rejected whole"
+        );
+        assert_eq!(
+            t.derive(c, Right::ALL),
+            Err(CapError::RightsEscalation),
+            "full-rights request is rejected"
+        );
+        // 拒绝零副作用：链状态不变
+        assert_eq!(t.used(), 3);
+
+        // 零权限链：零权限能力仍可派生零权限，但不可凭空生权
+        let z = t.derive(c, 0).expect("zero-rights derive");
+        assert_eq!(t.get(z).expect("Z").rights(), 0);
+        assert_eq!(
+            t.derive(z, Right::READ.bits()),
+            Err(CapError::RightsEscalation),
+            "zero-rights chain stays powerless"
+        );
+
+        // 环满显形：填满 64 槽后再派生 → NoSuchSlot（容量不变式）；释放一槽后可复用
+        let mut full = CapabilityTable::new();
+        full.install(0, Capability::new(1, Right::ALL))
+            .expect("install root@0");
+        for i in 1..CAPACITY {
+            assert_eq!(full.derive(0, Right::READ.bits()), Ok(i), "fill slot {i}");
+        }
+        assert_eq!(full.used(), CAPACITY);
+        assert_eq!(
+            full.derive(0, Right::READ.bits()),
+            Err(CapError::NoSuchSlot),
+            "full table must refuse further derives"
+        );
+        full.revoke(CAPACITY - 1).expect("free last slot");
+        assert_eq!(
+            full.derive(0, Right::READ.bits()),
+            Ok(CAPACITY - 1),
+            "freed slot is reused"
+        );
+
+        // 链尾清账：逐环撤销（含零权限尾槽）后全表归空
+        t.revoke(c).expect("revoke C");
+        t.revoke(b).expect("revoke B");
+        t.revoke(z).expect("revoke Z");
+        t.revoke(0).expect("revoke A");
+        assert_eq!(t.used(), 0);
     }
 }
