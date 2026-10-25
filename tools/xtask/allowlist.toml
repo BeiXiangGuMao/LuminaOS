@@ -130,6 +130,21 @@ from = "cascade"
 to = "glyph"
 note = "Dock 登记面图标档位校验消费 glyph::scale_factor 单一事实源（24/48/96 三档，非档位拒收 fail-visible）；M30-C1"
 
+[[allowed_edges]]
+from = "lumina-kernel"
+to = "loom"
+note = "t79 桌面骨架活体消费 Elm 架构面（fold 折叠环 + 平面元素树 + 约束求解布局——骨架 Frame 与 cascade 平铺同源对账）；M30-T1"
+
+[[allowed_edges]]
+from = "lumina-kernel"
+to = "cascade"
+note = "t79 桌面骨架活体消费 shell 语义面（四态机 + 工作区 + master-stack 平铺计划产出 mirror::Rect）；M30-T1"
+
+[[allowed_edges]]
+from = "lumina-kernel"
+to = "glyph"
+note = "t79 桌面骨架活体消费图标渲染面（IconDef 注册表 + 同源缩放光栅化像素断言）；M30-T1"
+
 # -------------------------------------------------------- 债务面：依赖豁免
 
 

@@ -79,7 +79,7 @@ use crate::multiboot1::BOOT_MAGIC;
 const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
 /// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74）。
-const SELFTEST_TOTAL: usize = 78;
+const SELFTEST_TOTAL: usize = 79;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -4320,6 +4320,266 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t78, "udp-loop");
+
+    // ---- 79) M30-T1 桌面骨架活体（t79）：六闸——
+    //     (a) Cascade shell 语义面：四态机 Boot→LockScreen→Session（含
+    //         非法迁移拒收）+ workspace_available 谓词 + 工作区全局唯一
+    //         归属（跨区重复打开拒收）+ 焦点序 + Dock 三档闸
+    //     (b) Cascade 平铺 golden：焦点序 [2,1] → master-stack 双窗拆分
+    //         （content (0,48,1920,960) + master/stack 948 对分）
+    //     (c) Loom Elm 骨架布局：fold 消息折叠环建帧视图（骨架 pad 消费
+    //         PANEL/DOCK 常量）+ solve → 内容域与 cascade content 同源
+    //         对账（两套面同一几何）+ 等分窗槽 golden（956×960）
+    //     (d) Glyph 图标像素面：terminal@24 渲染（框角亮/中心空/下划线亮）
+    //     (e) prism 窗层仲裁：双窗 push z=1/2（焦点窗高层）→ 交盒内
+    //         胜出 + 界外 None
+    //     (f) fb 交盒上屏：stage 幂等 + master 窗域内损伤盒（320×200）+
+    //         SYS_FB_SYNC + compose_tick 读回 + 盒内窗域哨兵未触（损伤域
+    //         裁剪证据——窗域但盒外的像素不被本拍触碰）+ 二拍空账
+    let t79 = {
+        let mut ok = true;
+        // (a) shell 语义面
+        let mut sh = cascade::Shell::new();
+        ok &= sh.transition(cascade::ShellState::Session).is_err(); // Boot→Session 非法
+        ok &= sh.transition(cascade::ShellState::LockScreen).is_ok();
+        ok &= !sh.workspace_available();
+        ok &= sh.transition(cascade::ShellState::Session).is_ok();
+        ok &= sh.workspace_available();
+        let mut wst = cascade::workspace::Workspaces::new();
+        ok &= wst.open(1, 0).is_ok();
+        ok &= wst.open(2, 0).is_ok();
+        ok &= wst.open(3, 1).is_ok();
+        ok &= wst.open(1, 2) == Err(cascade::ShellError::AlreadyOpen);
+        ok &= wst.focused_in(0) == Ok(Some(2));
+        ok &= wst.locate(3) == Some(1);
+        let mut dock = cascade::dock::Dock::<8>::new();
+        ok &= dock.register(10, 24).is_ok();
+        ok &= dock.register(11, 96).is_ok();
+        ok &= dock.register(12, 32) == Err(cascade::ShellError::IllegalIcon);
+        ok &= dock.register(10, 24) == Err(cascade::ShellError::DuplicateApp);
+        // (b) 平铺 golden：窗口序 = 焦点序（焦点窗居 master）
+        let focus: &[u64] = match wst.stack_in(0) {
+            Ok(s) => s,
+            Err(_) => {
+                ok = false;
+                &[]
+            }
+        };
+        let plan = match cascade::tiling::tiling_plan(focus, (1920, 1080)) {
+            Ok(p) => {
+                ok &= p.content
+                    == mirror::Rect {
+                        x: 0,
+                        y: 48,
+                        w: 1920,
+                        h: 960,
+                    };
+                ok &= p.panes.len() == 2;
+                ok &= p.panes[0].0 == 2 && p.panes[1].0 == 1;
+                ok &= p.panes[0].1
+                    == mirror::Rect {
+                        x: 8,
+                        y: 56,
+                        w: 948,
+                        h: 944,
+                    };
+                ok &= p.panes[1].1
+                    == mirror::Rect {
+                        x: 964,
+                        y: 56,
+                        w: 948,
+                        h: 944,
+                    };
+                Some(p)
+            }
+            Err(_) => {
+                ok = false;
+                None
+            }
+        };
+        // (c) Loom Elm 骨架布局（骨架应用：窗数即 Model，view 投影骨架树）
+        struct SkelApp;
+        impl loom::elm::App for SkelApp {
+            type Model = u32;
+            type Msg = bool; // true = 开窗
+            fn init(&self) -> u32 {
+                0
+            }
+            fn update(&self, model: &mut u32, msg: bool) {
+                if msg {
+                    *model += 1;
+                }
+            }
+            fn view<const N: usize>(
+                &self,
+                model: &u32,
+                buf: &mut loom::elm::ViewBuf<N>,
+            ) -> Result<loom::elm::Id, loom::elm::ViewError> {
+                use loom::elm::{Dir, Kind, Main, Node};
+                let root = buf.push(Node {
+                    kind: Kind::Node,
+                    dir: Dir::Column,
+                    pad: [loom::PANEL_HEIGHT, 0, loom::DOCK_HEIGHT, 0],
+                    gap: 0,
+                    main: Main::Fill(1),
+                })?;
+                let content = buf.push(Node {
+                    kind: Kind::Node,
+                    dir: Dir::Row,
+                    pad: [0; 4],
+                    gap: loom::GRID,
+                    main: Main::Fill(1),
+                })?;
+                buf.attach(root, content)?;
+                for _ in 0..*model {
+                    let w = buf.push(Node {
+                        kind: Kind::Node,
+                        dir: Dir::Row,
+                        pad: [0; 4],
+                        gap: 0,
+                        main: Main::Fill(1),
+                    })?;
+                    buf.attach(content, w)?;
+                }
+                buf.set_root(root)?;
+                Ok(root)
+            }
+        }
+        let mut vbuf = loom::elm::ViewBuf::<16>::new();
+        let loom_ok = match loom::elm::fold(&SkelApp, [true, true], &mut vbuf) {
+            Ok((_model, _root)) => {
+                let mut lay = loom::layout::Layout::<16>::new();
+                match loom::layout::solve(&vbuf, (1920, 1080), &mut lay) {
+                    Ok(()) => {
+                        let content_r = lay.rect(loom::elm::Id(1));
+                        let mut good = content_r
+                            == Some(mirror::Rect {
+                                x: 0,
+                                y: 48,
+                                w: 1920,
+                                h: 960,
+                            });
+                        // 等分窗槽 golden：free=1920-8 → 各 956
+                        good &= lay.rect(loom::elm::Id(2))
+                            == Some(mirror::Rect {
+                                x: 0,
+                                y: 48,
+                                w: 956,
+                                h: 960,
+                            });
+                        good &= lay.rect(loom::elm::Id(3))
+                            == Some(mirror::Rect {
+                                x: 964,
+                                y: 48,
+                                w: 956,
+                                h: 960,
+                            });
+                        // 同源对账：loom 内容域 == cascade 平铺 content
+                        if let (Some(cr), Some(p)) = (content_r, &plan) {
+                            good &= cr == p.content;
+                        }
+                        good
+                    }
+                    Err(_) => false,
+                }
+            }
+            Err(_) => false,
+        };
+        ok &= loom_ok;
+        // (d) 图标像素面
+        let mut icon_ok = false;
+        if let Some(term) = glyph::raster::find("terminal") {
+            let mut cv = [0u32; 24 * 24];
+            if glyph::raster::render(term, 24, 0xFFFF_FFFF, &mut cv, 24).is_ok() {
+                icon_ok = cv[4 * 24 + 3] == 0xFFFF_FFFF
+                    && cv[20 * 24 + 21] == 0xFFFF_FFFF
+                    && cv[12 * 24 + 12] == 0
+                    && cv[13 * 24 + 14] == 0xFFFF_FFFF;
+            }
+        }
+        ok &= icon_ok;
+        // (e)+(f) 仲裁 + 交盒上屏（plan 在场才可执行）
+        let mut px: u64 = 0;
+        let mut px2: u64 = 0;
+        let mut eq_ok = false;
+        let mut sent_ok = false;
+        let arb_ok;
+        if let Some(p) = &plan {
+            // (e) 窗层仲裁：焦点窗（panes[0]，窗 2）z=2 高层胜出
+            let mut st = prism::Stack::new();
+            let _ = st.push(prism::Layer {
+                id: 1,
+                z: 1,
+                visible: true,
+                bounds: p.panes[1].1,
+            });
+            let _ = st.push(prism::Layer {
+                id: 2,
+                z: 2,
+                visible: true,
+                bounds: p.panes[0].1,
+            });
+            let (winner, _scan) = st.arbitrate_counted(500, 300);
+            arb_ok = winner == Some(2) && st.arbitrate(-5, -5).is_none();
+            // (f) stage 幂等 + 损伤盒（master 窗域内 320×200）
+            ok &= crate::fb::stage_init().is_some();
+            ok &= p.panes[0].1.contains(100, 100);
+            let dmg = mirror::Rect {
+                x: 100,
+                y: 100,
+                w: 320,
+                h: 200,
+            };
+            // 哨兵：Panel 域 / Dock 域 / 窗域但盒外（损伤域裁剪证据）
+            let sent_pts = [(4i32, 4i32), (1600, 1040), (500, 500)];
+            let mut sent_pre = [0u32; 3];
+            for (i, (x, y)) in sent_pts.iter().enumerate() {
+                let c = 0x0900_0000 | (i as u32 * 0x0101_0101);
+                crate::fb::fb_probe_px_write(*x, *y, c);
+                sent_pre[i] = c;
+            }
+            let stage_px = |x: i32, y: i32| -> u32 {
+                0x7900_0000 | (((x & 0xFF) as u32) << 16) | (((y & 0xFF) as u32) << 8) | 0x79
+            };
+            for y in dmg.y..dmg.y + dmg.h as i32 {
+                for x in dmg.x..dmg.x + dmg.w as i32 {
+                    crate::fb::stage_px_write(x, y, stage_px(x, y));
+                }
+            }
+            let sync_bytes =
+                crate::fb::sys_fb_sync(dmg.x as u64, dmg.y as u64, dmg.w as u64, dmg.h as u64);
+            ok &= sync_bytes == u64::from(dmg.w) * u64::from(dmg.h) * 4;
+            px = crate::fb::fb_compose_tick();
+            ok &= px == u64::from(dmg.w) * u64::from(dmg.h);
+            eq_ok = true;
+            for (x, y) in [
+                (dmg.x, dmg.y),
+                (dmg.x + dmg.w as i32 - 1, dmg.y + dmg.h as i32 - 1),
+                (360, 250),
+            ] {
+                if crate::fb::fb_probe_px_read(x, y) != stage_px(x, y) {
+                    eq_ok = false;
+                }
+            }
+            sent_ok = true;
+            for (i, (x, y)) in sent_pts.iter().enumerate() {
+                if crate::fb::fb_probe_px_read(*x, *y) != sent_pre[i] {
+                    sent_ok = false;
+                }
+            }
+            px2 = crate::fb::fb_compose_tick();
+            ok &= px2 == 0;
+        } else {
+            arb_ok = false;
+        }
+        ok &= arb_ok && eq_ok && sent_ok;
+        let _ = writeln!(
+            log,
+            "desktop-skel: ws=3+1 dock=2+2 plan=2 loom={loom_ok} icon={icon_ok} arb={arb_ok} px={px} eq={eq_ok} sent={sent_ok} tick2={px2} ok={ok}"
+        );
+        ok
+    };
+    report(&mut log, t79, "desktop-skel");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {

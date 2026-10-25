@@ -37,6 +37,11 @@ pulse.workspace = true
 # M28-K1：组合器执行器消费 prism 合成结构面（z 序仲裁/交盒逐像素裁决——
 # v0 单层 stage 面；PR-P02 内核承接口）
 prism.workspace = true
+# M30-T1：t79 桌面骨架活体消费三面——loom Elm 架构（fold+布局求解）、
+# cascade shell 语义（工作区+平铺计划）、glyph 图标渲染（同源光栅化）
+loom.workspace = true
+cascade.workspace = true
+glyph.workspace = true
 
 [[bin]]
 name = "lumina-kernel"
