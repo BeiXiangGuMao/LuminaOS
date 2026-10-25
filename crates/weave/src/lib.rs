@@ -7,10 +7,17 @@
 //! **no_std（M16-② 起）**：包容器格式（[`pkg`]）需随内核 EXEC 装载链运行，
 //! 本 crate 自 v0.17.0 起转为 `no_std + alloc`（宿主测试不受影响；原 std 面
 //! 仅用 `fmt`/`String`/`Vec`，均由 core/alloc 等价替代，如实记档）。
+//!
+//! **M29-W1 扩容**：[`store`] 内容寻址对象库（FNV-1a 64 身份、定容槽位、
+//! 重哈希校验）与 [`journal`] WE-P02 断电注入框架（双代际根槽、提交路径
+//! 四相注入、恢复不变式宿主矩阵）落位；事务策略面（本文件
+//! `Transaction`）的机制承载即 [`journal::GenRoot`]。
 #![no_std]
 extern crate alloc;
 
+pub mod journal;
 pub mod pkg;
+pub mod store;
 
 use alloc::string::String;
 use alloc::vec::Vec;

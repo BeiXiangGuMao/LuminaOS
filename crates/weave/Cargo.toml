@@ -1,6 +1,6 @@
 [package]
 name = "weave"
-description = "Weave 织流 —— 声明式包管理：内容寻址 / 原子事务 / 快照回滚 / 构建隔离（现状：清单解析 + 代际事务状态机）"
+description = "Weave 织流 —— 声明式包管理：内容寻址对象库 + 代际事务 + WE-P02 断电注入框架（M29-W1；清单解析/容器格式在库）"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
