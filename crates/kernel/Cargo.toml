@@ -32,6 +32,9 @@ vanguard.workspace = true
 weave.workspace = true
 mirror.workspace = true
 conduit.workspace = true
+# M28-K1：组合器执行器消费 prism 合成结构面（z 序仲裁/交盒逐像素裁决——
+# v0 单层 stage 面；PR-P02 内核承接口）
+prism.workspace = true
 
 [[bin]]
 name = "lumina-kernel"

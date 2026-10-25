@@ -304,6 +304,23 @@ pub const SYS_FB_TEXT: u64 = 37;
 /// shell 串行调用），多级管道与双缓冲属后续里程碑。
 pub const SYS_PIPE: u64 = 38;
 
+/// stage 合成面（v0.17，M28-K1）：内核后备缓冲映射请求。参数 = rsi：
+/// 用户虚地址（页对齐，[`STAGE_VA_BASE`] 域内——与 LFB 显示窗同处
+/// PDPT[1] 用户态分支；v0 单面契约：内核侧仅受理恰为 [`STAGE_VA_BASE`]
+/// 的映射请求，多 Surface 表扩容挂账）。
+///
+/// 语义：ring3 写 stage（内核帧后备）→ [`SYS_FB_SYNC`] 记账损伤 →
+/// 内核合成器帧边界 drain 计划、经 prism 仲裁把 stage 交盒局部上屏
+/// LFB（胜者单写；交盒外字节零触碰）。ADR-0004 双轨：未登记 stage
+/// 时合成退化为无操作，[`SYS_FB_MAP`] 直写路径不受影响。
+pub const SYS_FB_STAGE: u64 = 39;
+
+/// stage 映射窗基址（用户态；与 [`FB_VA_BASE`] LFB 窗同域并存）。
+pub const STAGE_VA_BASE: u64 = 0x5000_0000;
+/// stage 映射窗上限（256 MiB 窗——v0 单面仅用 [`STAGE_VA_BASE`] 起
+/// LFB_BYTES 一段，余量给多 Surface 扩容）。
+pub const STAGE_VA_LIMIT: u64 = 0x6000_0000;
+
 /// [`SYS_FCNTL`] 命令：复制句柄（rdx = 新句柄号下界）。
 pub const F_DUPFD: u64 = 0;
 /// [`SYS_FCNTL`] 命令：读描述符旗标。
@@ -339,7 +356,9 @@ pub const OPEN_MODE_MASK: u64 = 0b1_1111;
 /// 无独立用户空间 → `ERR_CAP`；帧耗尽 → `ERR_NOMEM(9)`。
 pub const SYS_EXEC: u64 = 17;
 
-/// 系统调用 ABI 版本（v0.16 = M24-A1：新增 SYS_PIPE(38) shell 管道/
+/// 系统调用 ABI 版本（v0.17 = M28-K1：新增 SYS_FB_STAGE(39) stage 合成面
+/// （内核后备缓冲映射 + 损伤驱动局部上屏，ADR-0004 直写双轨共存）；
+/// v0.16 = M24-A1：新增 SYS_PIPE(38) shell 管道/
 /// 分页面（捕获武装/排水/分页重放/弃置四操作——单级 `|` 雏形 + `more`
 /// 内核承接面）；v0.15 = M23-S2：新增 SYS_FB_TEXT(37) 内核侧文本
 /// 渲染服务（8x16 位图字体 + 底黑前景白 + 越屏裁剪）；v0.14 = M23-S1：新增 SYS_FB_MAP(35)/SYS_FB_SYNC(36)
@@ -354,7 +373,7 @@ pub const SYS_EXEC: u64 = 17;
 /// v0.16 = M15：目录面五落点 MKDIR/REMOVE/READDIR/MOUNT/UMOUNT +
 /// 句柄面深化 DUP/FCNTL（CLOEXEC）+ NANOSLEEP 参数语义升级为 TSC 纳秒。
 /// v0.8 = SYS_QUOTA；v0.7 = 文件面六落点 + NANOSLEEP + 统一句柄面）。
-pub const ABI_VERSION: (u16, u16) = (0, 16);
+pub const ABI_VERSION: (u16, u16) = (0, 17);
 
 /// ---------------------------------------------------------------------------
 /// LXE1 v0 错误码表（具名化事实源，M25-C1）：
@@ -637,6 +656,11 @@ pub enum Syscall {
         /// 字节数（≤ 512）。
         len: u64,
     },
+    /// stage 合成面（v0.17，M28-K1；见 [`SYS_FB_STAGE`]）。
+    FbStage {
+        /// 用户虚地址（页对齐，[`STAGE_VA_BASE`] 域内）。
+        va: u64,
+    },
     /// shell 管道/分页面（v0.24，M24-A1；见 [`SYS_PIPE`]）。
     Pipe {
         /// 操作码（0 捕获武装 / 1 排水 / 2 分页重放 / 3 弃置）。
@@ -756,6 +780,10 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
             len: a3,
         }),
         SYS_FB_TEXT => Err(AbiError::BadArgs),
+        SYS_FB_STAGE if (STAGE_VA_BASE..STAGE_VA_LIMIT).contains(&a1) && a1 & 0xFFF == 0 => {
+            Ok(Syscall::FbStage { va: a1 })
+        }
+        SYS_FB_STAGE => Err(AbiError::BadArgs),
         SYS_PIPE if a0 <= 3 => Ok(Syscall::Pipe { op: a0 }),
         SYS_PIPE => Err(AbiError::BadArgs),
         _ => Err(AbiError::UnknownSyscall),
@@ -1128,7 +1156,7 @@ mod tests {
         assert_eq!(super::SYS_DUP, 31);
         assert_eq!(super::SYS_FCNTL, 32);
         assert_eq!(super::SYS_IMAGE_ENUM, 33);
-        assert_eq!(super::ABI_VERSION, (0, 16));
+        assert_eq!(super::ABI_VERSION, (0, 17));
         assert_eq!(super::SYS_TTY_GETCH, 34);
         assert_eq!(
             super::parse(super::SyscallRegs {
@@ -1140,7 +1168,9 @@ mod tests {
         );
         assert_eq!(super::SYS_FB_MAP, 35);
         assert_eq!(super::SYS_FB_SYNC, 36);
+        assert_eq!(super::SYS_FB_TEXT, 37);
         assert_eq!(super::SYS_PIPE, 38);
+        assert_eq!(super::SYS_FB_STAGE, 39);
         assert_eq!(
             super::parse(super::SyscallRegs {
                 num: super::SYS_PIPE,
@@ -1197,6 +1227,25 @@ mod tests {
                 len: 15
             }),
             "文本服务四参透传"
+        );
+        // FB_STAGE：va 域结构校验（STAGE_VA_BASE 域内 + 页对齐；
+        // 域外/不对齐 BadArgs——v0.17 M28-K1）
+        assert_eq!(
+            super::parse(r(super::SYS_FB_STAGE, [0, super::STAGE_VA_BASE, 0, 0, 0])),
+            Ok(Syscall::FbStage {
+                va: super::STAGE_VA_BASE
+            }),
+            "stage 基址受理"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_FB_STAGE, [0, 0x5000_1800, 0, 0, 0])),
+            Err(AbiError::BadArgs),
+            "stage 页不对齐拒"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_FB_STAGE, [0, 0x1000, 0, 0, 0])),
+            Err(AbiError::BadArgs),
+            "stage 域外拒"
         );
         assert_eq!(
             super::parse(r(super::SYS_FB_TEXT, [0, 0, 0, 513, 0])),

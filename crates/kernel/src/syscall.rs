@@ -417,6 +417,13 @@ extern "C" fn lumina_syscall_dispatch(frame: &mut SyscallFrame) -> u64 {
             // LUMINA-FB-TEXT；shell 文本上屏基座）
             crate::fb::sys_fb_text(x, y, buf, len)
         }
+        Syscall::FbStage { va } => {
+            task::count_syscall(2);
+            // M28-K1 组合器服务化：stage 后备缓冲登记 + 调用方任务根
+            // 映射（v0 单面恰址契约；证据行 LUMINA-FB-STAGE，合成模式
+            // 登记后 fb_compose_tick 承担帧边界局部上屏）
+            crate::fb::sys_fb_stage(va)
+        }
         Syscall::Pipe { op } => {
             task::count_syscall(2);
             // M24-A1 shell 管道/分页面：捕获武装/排水/分页重放/弃置

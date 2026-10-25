@@ -55,6 +55,7 @@ dependencies = [
  "meridian",
  "mirror",
  "ostd",
+ "prism",
  "vanguard",
  "weave",
 ]

@@ -3635,6 +3635,14 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     };
     report(&mut log, t72, "mirror-damage-spec");
 
+    // M28-K1 组合器执行器在环热身：stage 未激活 → drain 空账（t72 已
+    // 复位）静默返回 0（直写双轨共存——无操作即正确语义）。执行器可达
+    // 性在此建立；t77（M28-T1）起承载 stage 登记与交盒局部上屏断言。
+    {
+        let warm = crate::fb::fb_compose_tick();
+        let _ = writeln!(log, "compose-warm: skip px={warm}");
+    }
+
     // 73) M24-C1 vnet RX 背压/水位 + ICMP echo reply（t73）：五相位——
     //     (a) 预备清场：pulse 环排空 + 排水面归位（占用 0 基线）；
     //     (b) 背压投入：ARP 突发逐发逐排不消费 → 占用越 HI(6) → 停臂
@@ -3749,8 +3757,14 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
             {
                 break;
             }
-            let mut spin = 0u64;
-            while spin < vnet::NET_SPIN_BUDGET && !gw_echo {
+            // 回声窗拍钟化（M28-K1 计划外搭车件，M25-C1-a「CI 挂账三次
+            // 复发→计划外加固」先例）：slirp 反射延迟属宿主时间量，拍数
+            // 预算在慢宿主上系统性失准（本会话 4/5 挂实录：回声帧晚于
+            // 整个 spin 预算落地）。改 100 Hz tick 死线（GW_ECHO_TICKS
+            // = 50 拍 = 0.5 s/发，宿主速度无关）；3 发 + 1 排水拍 ≤ 2 s
+            // 不破 S8 杀线。背压相位 (b)/(c) 设备侧行为绿稳不动。
+            let deadline = ostd::time::now() + vnet::GW_ECHO_TICKS;
+            while ostd::time::now() < deadline && !gw_echo {
                 vnet::rx_pump();
                 while let Some(fl) = vnet::pulse_rx_pop(&mut buf) {
                     // slirp who-has 我在场即应答（反射回包 ARP 解析解阻塞）
@@ -3791,7 +3805,6 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                     );
                     gw_echo = payload_ok && ic_ck_ok && ip_ck_ok;
                 }
-                spin += 1;
                 core::hint::spin_loop();
             }
         }

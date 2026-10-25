@@ -18,7 +18,7 @@
 //! 端口 IO 一律经 [`ostd::hw::ports`] 白名单原语，VRAM 访问逐处携带
 //! SAFETY 注释并做界内断言（像素坐标先钳制后寻址，无越界写路径）。
 
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use mirror::{DamageTracker, Rect};
 use ostd::hw::control::read_cr3;
 use ostd::hw::ports;
@@ -501,6 +501,281 @@ pub fn sys_fb_sync(x: u64, y: u64, w: u64, h: u64) -> u64 {
     n = put(&mut buf, n, if full_flip { b"1" } else { b"0" });
     crate::console::serial_log_bytes(&buf[..n]);
     bytes
+}
+
+// ---- M28-K1 组合器服务化：stage 后备缓冲 + 损伤驱动局部上屏 ----
+//
+// 双轨语义（ADR-0004）：SYS_FB_MAP 直写路径不动（ring3 写 VRAM、SYNC 记账
+// 仅显形）；stage 面登记后（SYS_FB_STAGE）ring3 改写内核后备缓冲，合成
+// 执行器在帧边界 drain 损伤计划、经 prism 仲裁把 stage 交盒局部上屏——
+// 交盒外字节零触碰（t77 哨兵面证）。v0 单层（stage 全屏覆盖），多 Surface
+// 表扩容挂账。
+
+/// stage 页帧表容量（页数上限：1080p LFB = 2026 页 < 2048，M28-R1 切换
+/// 后仍容纳；u64 × 2048 = 16 KiB 静态域）。
+const STAGE_MAX_PAGES: usize = 2048;
+
+/// stage 页帧表（物理基址逐页；stage_init 装填后不可变——读面用
+/// Relaxed 免伪共享开销，装填/消费以 [`STAGE_PAGES`] 计数发布/订阅）。
+static STAGE_FRAMES: [AtomicU64; STAGE_MAX_PAGES] = [const { AtomicU64::new(0) }; STAGE_MAX_PAGES];
+/// 已装填页数（0 = 未登记；发布Latch：置位前帧表全部就绪）。
+static STAGE_PAGES: AtomicU64 = AtomicU64::new(0);
+/// stage 登记占用哨兵（CAS 契约同 [`SURFACE_OWNER`]；v0 单面）。
+static STAGE_OWNER: AtomicU64 = AtomicU64::new(SURFACE_FREE);
+/// stage 激活旗（ADR-0004 双轨开关：false = 直写路径，合成器无操作）。
+static STAGE_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// 合成 tick 计数（证据行取证域）。
+static COMPOSE_TICKS: AtomicU64 = AtomicU64::new(0);
+/// 累计上屏像素（证据行取证域）。
+static COMPOSE_PX: AtomicU64 = AtomicU64::new(0);
+
+/// stage 页帧登记（内核侧初始化面，[`sys_fb_stage`] 与 t77 裸机活体同
+/// 源）：帧分配器取 LFB_BYTES 页 + 低 1 GiB 恒等域逐帧断言（fail-closed，
+/// 违域即整体放弃）+ 全零清洁（确定性基线——t77 哨兵/等值断言依赖）。
+/// 幂等：已登记返回既有首帧基址。失败返回 None。
+pub fn stage_init() -> Option<u64> {
+    let n = STAGE_PAGES.load(Ordering::Acquire);
+    if n > 0 {
+        return Some(STAGE_FRAMES[0].load(Ordering::Acquire));
+    }
+    let alloc = crate::vmm::global_frames()?;
+    let pages = (LFB_BYTES / 4096) as usize;
+    if pages == 0 || pages > STAGE_MAX_PAGES {
+        return None;
+    }
+    for slot in STAGE_FRAMES.iter().take(pages) {
+        let Some(p) = alloc.alloc() else {
+            // 帧耗尽：装填 Latch 归零回滚（fail-closed）
+            STAGE_PAGES.store(0, Ordering::Release);
+            return None;
+        };
+        // 恒等域断言：帧分配器必须落低 1 GiB 恒等区（stage 内容读面
+        // 以物理地址直取——与 [`or_user_chain`] 同一物理语义）。
+        if p == 0 || p >= 0x4000_0000 {
+            STAGE_PAGES.store(0, Ordering::Release);
+            return None;
+        }
+        slot.store(p, Ordering::Release);
+    }
+    STAGE_PAGES.store(pages as u64, Ordering::Release);
+    // 全零清洁（逐 u32 volatile 写；确定性基线）
+    for slot in STAGE_FRAMES.iter().take(pages) {
+        let phys = slot.load(Ordering::Relaxed);
+        for off in (0..4096).step_by(4) {
+            let addr = (phys + off) as usize;
+            // SAFETY: 前置条件 —— phys 自帧分配器出且 < 0x4000_0000（恒等
+            //          区），addr = phys+off < 页界；页内 4 字节对齐。
+            // 不变式 —— write_volatile 防合并；零化仅在装填 Latch 置位后
+            //          消费前（单线程初始化窗口）。
+            unsafe {
+                core::ptr::write_volatile(addr as *mut u32, 0);
+            }
+        }
+    }
+    Some(STAGE_FRAMES[0].load(Ordering::Acquire))
+}
+
+/// stage 字节偏移 → 恒等区线性地址（散帧翻译：页号查 [`STAGE_FRAMES`]）。
+/// 越域（≥ 已装填域）返回 None。
+#[inline]
+fn stage_addr(pages: u64, byte_off: u64) -> Option<usize> {
+    if pages == 0 || byte_off >= pages * 4096 {
+        return None;
+    }
+    let phys = STAGE_FRAMES[(byte_off >> 12) as usize].load(Ordering::Relaxed);
+    if phys == 0 {
+        return None;
+    }
+    Some((phys + (byte_off & 0xFFF)) as usize)
+}
+
+/// stage 像素读（合成执行器消费面；(x,y) 须屏内——compose 交盒裁剪保证）。
+#[inline]
+fn stage_px_read(pages: u64, stride: u32, x: i32, y: i32) -> u32 {
+    let off = (y as u64) * stride as u64 + (x as u64) * 4;
+    let Some(addr) = stage_addr(pages, off) else {
+        return 0;
+    };
+    // SAFETY: 前置条件 —— addr 自 stage_addr 界内翻译（页帧恒等映射，
+    //          stage_init 域断言）；4 字节对齐（页对齐帧 + 像素步长）。
+    // 不变式 —— read_volatile 防删除/合并；越域路径不可达（前置 None）。
+    unsafe { core::ptr::read_volatile(addr as *const u32) }
+}
+
+/// SYS_FB_STAGE 主体（M28-K1）：stage 后备缓冲登记 + 调用方任务根映射。
+///
+/// 返回 0；无 fb → `ENODEV(19)`；va ≠ 基址 → `EFAULT(14)`；二次登记 →
+/// `EEXIST(17)`；帧耗尽/映射半程 → `ENOMEM(9)`。
+///
+/// - v0 单面契约：va 恰为 [`bedrock::abi::STAGE_VA_BASE`]（abi parse 层
+///   已检窗 + 页对齐，此处双检 + 恰址收紧；多 Surface 扩容挂账）；
+/// - 页帧一次登记（[`stage_init`] 幂等）+ 逐页映射进调用方任务根
+///   （P|W|U，[`or_user_chain`] 走查链 USER 补齐——[`sys_fb_map`] 同款）；
+/// - 成功置 [`STAGE_ACTIVE`]（合成执行器启用；直写路径不受影响）。
+pub fn sys_fb_stage(va: u64) -> u64 {
+    const EFAULT: u64 = 14;
+    const EEXIST: u64 = 17;
+    const ENODEV: u64 = 19;
+    const ENOMEM: u64 = 9;
+    if FB_BASE.load(Ordering::Acquire) == 0 {
+        return ENODEV;
+    }
+    if va != bedrock::abi::STAGE_VA_BASE {
+        return EFAULT;
+    }
+    // 单面 CAS 登记（首请求者独占）
+    if STAGE_OWNER
+        .compare_exchange(
+            SURFACE_FREE,
+            crate::procs::current_pid(),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return EEXIST;
+    }
+    if stage_init().is_none() {
+        STAGE_OWNER.store(SURFACE_FREE, Ordering::Release);
+        return ENOMEM;
+    }
+    let Some(frames) = crate::vmm::global_frames() else {
+        STAGE_OWNER.store(SURFACE_FREE, Ordering::Release);
+        return ENOMEM;
+    };
+    let user_root = crate::task::current_user_root();
+    if user_root == 0 {
+        STAGE_OWNER.store(SURFACE_FREE, Ordering::Release);
+        return EFAULT;
+    }
+    let pages = STAGE_PAGES.load(Ordering::Acquire) as usize;
+    let mut walker = Walker {
+        mem: &mut IdentityAccess,
+        alloc_table: || frames.alloc(),
+    };
+    let mut mapped = 0u64;
+    for (i, slot) in STAGE_FRAMES.iter().enumerate().take(pages) {
+        match walker.map(
+            user_root,
+            va + i as u64 * 4096,
+            slot.load(Ordering::Acquire),
+            Entry::PRESENT | Entry::WRITABLE | Entry::USER,
+        ) {
+            Ok(()) => mapped += 1,
+            Err(_) => break,
+        }
+    }
+    if mapped != pages as u64 {
+        // 半程不回滚（任务根私有分支，页表留存无全局副作用；页帧保留
+        // ——幂等重试仅补映射，语义同 [`sys_fb_map`] 注记）。
+        STAGE_OWNER.store(SURFACE_FREE, Ordering::Release);
+        crate::console::serial_log_bytes(b"LUMINA-FB-STAGE-ERR");
+        return ENOMEM;
+    }
+    or_user_chain(user_root, va, va + pages as u64 * 4096);
+    STAGE_ACTIVE.store(true, Ordering::Release);
+    // 证据行单调用交付
+    let mut buf = [0u8; 96];
+    let mut n = put(&mut buf, 0, b"LUMINA-FB-STAGE pid=");
+    n = put_udec(&mut buf, n, crate::procs::current_pid());
+    n = put(&mut buf, n, b" va=");
+    n = put_udec(&mut buf, n, va);
+    n = put(&mut buf, n, b" pages=");
+    n = put_udec(&mut buf, n, pages as u64);
+    n = put(&mut buf, n, b" bytes=");
+    n = put_udec(&mut buf, n, pages as u64 * 4096);
+    crate::console::serial_log_bytes(&buf[..n]);
+    0
+}
+
+/// 合成执行器（M28-K1 帧边界消费面）：drain [`SYNC_DAMAGE`] 计划 →
+/// prism::Stack 单层仲裁（v0：stage 全屏覆盖层）→ stage→VRAM 交盒
+/// 局部上屏（交盒外字节零触碰）。stage 未激活/未登记时静默清账返回 0
+/// （直写双轨共存——直写像素已在屏，无操作即正确语义）。返回本次
+/// 上屏像素数（活体断言域）。
+pub fn fb_compose_tick() -> u64 {
+    let plan = SYNC_DAMAGE.lock().drain_plan();
+    if plan.is_skip() {
+        return 0;
+    }
+    let Some(fb) = fb_handle() else {
+        return 0;
+    };
+    let pages = STAGE_PAGES.load(Ordering::Acquire);
+    if pages == 0 || !STAGE_ACTIVE.load(Ordering::Acquire) {
+        return 0;
+    }
+    // prism 仲裁栈（v0 单层：stage 全屏；PR-P02 内核承接口）
+    let mut stack = prism::Stack::new();
+    let _ = stack.push(prism::Layer {
+        id: 1,
+        z: 0,
+        visible: true,
+        bounds: Rect {
+            x: 0,
+            y: 0,
+            w: fb.w,
+            h: fb.h,
+        },
+    });
+    let full = Rect {
+        x: 0,
+        y: 0,
+        w: fb.w,
+        h: fb.h,
+    };
+    let mut px = 0u64;
+    if plan.full {
+        px = compose_one(&stack, &fb, pages, &full);
+    } else {
+        for r in &plan.rects {
+            px += compose_one(&stack, &fb, pages, r);
+        }
+    }
+    let ticks = COMPOSE_TICKS.fetch_add(1, Ordering::AcqRel) + 1;
+    COMPOSE_PX.fetch_add(px, Ordering::AcqRel);
+    // 证据行单调用交付
+    let mut buf = [0u8; 96];
+    let mut n = put(&mut buf, 0, b"LUMINA-FB-COMPOSE rects=");
+    n = put_udec(
+        &mut buf,
+        n,
+        if plan.full {
+            1
+        } else {
+            plan.rects.len() as u64
+        },
+    );
+    n = put(&mut buf, n, b" full=");
+    n = put(&mut buf, n, if plan.full { b"1" } else { b"0" });
+    n = put(&mut buf, n, b" px=");
+    n = put_udec(&mut buf, n, px);
+    n = put(&mut buf, n, b" ticks=");
+    n = put_udec(&mut buf, n, ticks);
+    crate::console::serial_log_bytes(&buf[..n]);
+    px
+}
+
+/// 单交盒合成：prism 仲裁逐像素裁决 → stage→VRAM 拷写（胜者单写）。
+/// 交盒先与屏幅求交（几何单一事实源），空交盒返回 0。
+fn compose_one(stack: &prism::Stack, fb: &Framebuffer, pages: u64, r: &Rect) -> u64 {
+    let full = Rect {
+        x: 0,
+        y: 0,
+        w: fb.w,
+        h: fb.h,
+    };
+    let Some(clip) = full.intersection(r) else {
+        return 0;
+    };
+    let stride = fb.stride;
+    let mut n = 0u64;
+    stack.compose(clip, |x, y, _| {
+        let c = stage_px_read(pages, stride, x, y);
+        fb.px(x, y, c);
+        n += 1;
+    });
+    n
 }
 
 /// 片段拷入栈缓冲（界内截断；证据行组装专用）。

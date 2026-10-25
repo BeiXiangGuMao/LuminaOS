@@ -715,6 +715,11 @@ pub const ICMP_ECHO_ID: u16 = 0x4C4D;
 
 /// t73 轮询预算（与 [`ARP_SPIN_BUDGET`] 同源；多相位各相位独立预算）。
 pub const NET_SPIN_BUDGET: u64 = ARP_SPIN_BUDGET;
+/// t73 网关回声窗（M28-K1 搭车件）：100 Hz tick 死线（50 拍 = 0.5 s/发）。
+/// slirp 反射延迟是**宿主时间量**——拍数预算（spin loop count）在慢宿主
+/// 上系统性失准（回声帧晚于整个预算落地）；tick 窗随宿主墙钟推进
+/// （hostlink 联测 `READ_TIMEOUT_TICKS` 同款纪律），宿主速度无关。
+pub const GW_ECHO_TICKS: u64 = 50;
 
 /// pulse 环槽：单帧值语义（`Copy` 搬运、无堆无引用——环槽契约定式）。
 #[derive(Clone, Copy)]

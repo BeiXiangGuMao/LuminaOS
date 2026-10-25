@@ -107,6 +107,11 @@ from = "prism"
 to = "mirror"
 note = "几何单一事实源：prism 合成结构面复用 mirror::Rect（交集/包含/面积），损伤计划由 mirror::DamageTracker 产出、prism::Stack::compose 消费；ADR-0006 名字归位（M28-F1）"
 
+[[allowed_edges]]
+from = "lumina-kernel"
+to = "prism"
+note = "组合器执行器消费 prism::Stack 合成结构面（SYS_FB_STAGE stage 面：drain 损伤计划 → 仲裁 → VRAM 交盒局部上屏）；ADR-0006 + M28-K1"
+
 # -------------------------------------------------------- 债务面：依赖豁免
 
 
