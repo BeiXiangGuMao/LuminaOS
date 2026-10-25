@@ -42,6 +42,9 @@ prism.workspace = true
 loom.workspace = true
 cascade.workspace = true
 glyph.workspace = true
+# M31-N1：scancode set 1 翻译面单一事实源消费（驱动旁路缩编首割——
+# 纯函数零依赖外移，电气/机制面留 kernel::kbd 本体）
+morse.workspace = true
 
 [[bin]]
 name = "lumina-kernel"

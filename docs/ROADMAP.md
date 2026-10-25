@@ -232,6 +232,8 @@ M30 退出口径：Loom Elm 架构面在环（App 折叠环 + 平面元素树 + 
 | **M31-T1** | t80 自举预备活体：kernel 自检段新相位（V 注入矩阵结论在环 + Weave 自举装载证据 + 驱动外移面对账三面贯通）+ SELFTEST_TOTAL 79→80 双端同步 | crates/kernel + xtask | t80 全绿 80/80 |
 | **M31-收尾** | ROADMAP/METRICS 对账（V-P02/03/05 行扩记注入矩阵 + WE 行扩记自举面 + §1.2 vanguard/weave/kernel 行刷新）+ README 组件面对账 + 挂账六项复核注 + 近线转 §三 远线首项（M32 计划随收尾裁决） | 对账提交 | 本提交 |
 
+> **驱动旁路台账首版（M31-N1 成像，缩编起点——每里程碑核销，进度入 METRICS）**：kernel 内驱动面五清点 + 策略面两区分——① `vnet` 1,743 行：virtio-net 电气面（modern 探测/bring-up/vring DMA/水位背压/ICMP/UDP 回环）；② `fb` 953 行：stdvga dispi LFB + SYS_FB 服务面；③ `kbd` 250 行：PS/2 电气/机制面（IRQ1 桩钩子/环形缓冲/Shift 态寄存/注入面）+ 翻译面（本轮外移）；④ `console` 212 行：串口电气面；⑤ `block` 134 行：ATA PIO 电气面；策略面区分：`tty`（行规程）与 `shell`（交互分派）——非驱动本体，随用户态终端/服务面批次。分类三分与缩编路径分级：**电气面**（vnet/fb/console/block——MMIO/IRQ/DMA 直持，待用户态驱动进程基础设施〔IPC 能力面/调度〕成熟分批，M31 不动）→ **纯函数面**（kbd 翻译——零 IO 零依赖，crate 化外移先行）→ **策略面**（tty/shell——随服务化批次）。首割登记：kbd scancode 集 1 翻译面 → `morse` crate（M31-N1，纯函数 + 宿主测试全谱；命名按在库意象序列自定——细则 PDF 失联 §七 5，重取后对账）。
+
 M31 退出口径：驱动旁路清单首版成像（五面分类 + 缩编路径分级）+ 首割外移面在环（kernel 消费面切换 + 冒烟不破）+ V-P05 首批注入矩阵全枚举在环 + Weave 自举装载面在环（journal 重放三不变式 + store 根装载）+ t80 活体 80/80 + 宿主全谱绿 + 冒烟 80/80。
 
 ---

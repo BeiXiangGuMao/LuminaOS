@@ -14,6 +14,7 @@ members = [
     "crates/pulse",
     "crates/weave",
     "crates/power",
+    "crates/morse",
     "crates/loom",
     "crates/ripple",
     "crates/glyph",
@@ -43,6 +44,8 @@ crystal = { path = "crates/crystal" }
 pulse = { path = "crates/pulse" }
 weave = { path = "crates/weave" }
 power = { path = "crates/power" }
+# M31-N1：scancode set 1 翻译面（驱动旁路缩编首割，纯函数零依赖）
+morse = { path = "crates/morse" }
 loom = { path = "crates/loom" }
 ripple = { path = "crates/ripple" }
 glyph = { path = "crates/glyph" }

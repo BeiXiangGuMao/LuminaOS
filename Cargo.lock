@@ -61,6 +61,7 @@ dependencies = [
  "loom",
  "meridian",
  "mirror",
+ "morse",
  "ostd",
  "prism",
  "pulse",
@@ -78,6 +79,10 @@ dependencies = [
 
 [[package]]
 name = "mirror"
+version = "0.25.0"
+
+[[package]]
+name = "morse"
 version = "0.25.0"
 
 [[package]]

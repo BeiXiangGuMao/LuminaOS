@@ -1,0 +1,12 @@
+[package]
+name = "morse"
+description = "Morse 电键 —— scancode set 1 翻译面：PS/2 击键信号到 ASCII 控制面字节的纯函数翻译器（驱动旁路缩编首割，M31-N1）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

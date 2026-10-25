@@ -145,6 +145,11 @@ from = "lumina-kernel"
 to = "glyph"
 note = "t79 桌面骨架活体消费图标渲染面（IconDef 注册表 + 同源缩放光栅化像素断言）；M30-T1"
 
+[[allowed_edges]]
+from = "lumina-kernel"
+to = "morse"
+note = "kernel::kbd 消费 scancode set 1 翻译面单一事实源（驱动旁路缩编首割——纯函数零依赖外移，电气/机制面留 kernel 本体；ADR-0004 混合态渐进）；M31-N1"
+
 # -------------------------------------------------------- 债务面：依赖豁免
 
 
