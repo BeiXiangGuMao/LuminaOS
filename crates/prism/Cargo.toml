@@ -1,0 +1,16 @@
+[package]
+name = "prism"
+description = "Prism 棱镜 —— GPU/显示栈：合成结构面（PR-P02：z 序仲裁 / 损伤交盒裁剪 / 逐像素裁决）+ 显示输出协同（现状：M28-F1 结构面首割）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# 几何单一事实源：矩形域全量复用 mirror::Rect（交集/包含/面积），
+# 损伤策略面（mirror::DamageTracker）与本仲裁面同源对接（ADR-0006
+# 名字归位后的显示栈首条政策边，lint 台账 allowed_edges 已登记）。
+mirror = { workspace = true }

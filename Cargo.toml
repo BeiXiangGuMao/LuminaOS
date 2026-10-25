@@ -20,6 +20,7 @@ members = [
     "crates/mirror",
     "crates/cascade",
     "crates/aurora",
+    "crates/prism",
     "crates/kernel",
     "tools/xtask",
 ]
@@ -46,6 +47,7 @@ loom = { path = "crates/loom" }
 ripple = { path = "crates/ripple" }
 glyph = { path = "crates/glyph" }
 mirror = { path = "crates/mirror" }
+prism = { path = "crates/prism" }
 cascade = { path = "crates/cascade" }
 aurora = { path = "crates/aurora" }
 # 内核映像二进制（不被其他 crate 依赖；仅 S6 内核构建阶段单独编译）

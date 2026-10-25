@@ -80,6 +80,13 @@ name = "power"
 version = "0.24.0"
 
 [[package]]
+name = "prism"
+version = "0.24.0"
+dependencies = [
+ "mirror",
+]
+
+[[package]]
 name = "pulse"
 version = "0.24.0"
 

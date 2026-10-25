@@ -102,6 +102,11 @@ from = "lumina-kernel"
 to = "meridian"
 note = "SYS_OPEN..SYS_MOUNT 文件面改道 meridian::vfs（挂载策略 + 全量门面聚合）；ADR-0002 补篇 + ADR-0004 混合态（M26-V1）"
 
+[[allowed_edges]]
+from = "prism"
+to = "mirror"
+note = "几何单一事实源：prism 合成结构面复用 mirror::Rect（交集/包含/面积），损伤计划由 mirror::DamageTracker 产出、prism::Stack::compose 消费；ADR-0006 名字归位（M28-F1）"
+
 # -------------------------------------------------------- 债务面：依赖豁免
 
 
