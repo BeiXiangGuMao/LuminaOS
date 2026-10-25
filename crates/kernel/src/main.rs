@@ -79,7 +79,7 @@ use crate::multiboot1::BOOT_MAGIC;
 const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
 /// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74）。
-const SELFTEST_TOTAL: usize = 77;
+const SELFTEST_TOTAL: usize = 78;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -4181,6 +4181,141 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t77, "compose-spec");
+
+    // ---- 78) M27-N2 UDP 回环活体（t78）：六闸——
+    //     (a) 端口绑定域（bind ok / 重复绑定拒 / 未绑解绑拒）
+    //     (b) 回环三发（载荷 1/64/1472 = MAX_PAYLOAD 三态边界）→ 交接环
+    //         （回环注入点与真实 RX 通路共享段）→ udp_dispatch 全闸 →
+    //         端口路由 → 接收槽 → 载荷+源端口对账
+    //     (c) 校验和负例（翻 UDP 校验和 1 位拒收 + bad_cs 增量显形）
+    //     (d) 未绑定端口拒投（no_port 增量显形，fail-visible）
+    //     (e) PU-P03 回环延迟打点（三发 ostd::time 差样本，TCG 基线口径）
+    //     (f) 解绑后拒投 + 复绑（路由失效/恢复证据）
+    // ARP→ICMP→UDP 活体链收官：t69 ARP / t73 ICMP / t78 UDP。
+    let t78 = {
+        let mut ok = true;
+        // (a) 绑定域
+        ok &= vnet::udp_bind(7777).is_ok();
+        ok &= vnet::udp_bind(7777) == Err(pulse::udp::BindError::AlreadyBound);
+        ok &= vnet::udp_unbind(8888) == Err(pulse::udp::BindError::NotBound);
+        // (b) 回环三发（载荷三态边界）
+        let mut rtt_min = u64::MAX;
+        let mut rtt_max = 0u64;
+        let payload = [0xA7u8; pulse::udp::MAX_PAYLOAD];
+        let lens: [usize; 3] = [1, 64, pulse::udp::MAX_PAYLOAD];
+        for (i, &n) in lens.iter().enumerate() {
+            let src_port = 7000 + i as u16;
+            let t0 = ostd::time::tsc_clock::now_ns().unwrap_or(0);
+            let sent = vnet::udp_loopback_tx(src_port, 7777, &payload[..n]);
+            if !sent {
+                ok = false;
+                break;
+            }
+            // 消费：交接环 pop（预算 40M 轮兜底，fail-closed）
+            let mut frame = [0u8; vnet::PULSE_FRAME_MAX];
+            let mut got = None;
+            let mut spin = 0u64;
+            while spin < 40_000_000 {
+                if let Some(fl) = vnet::pulse_rx_pop(&mut frame) {
+                    got = Some(fl);
+                    break;
+                }
+                spin += 1;
+                core::hint::spin_loop();
+            }
+            let Some(fl) = got else {
+                ok = false;
+                break;
+            };
+            let dispatched = vnet::udp_dispatch(&frame[..fl]).is_some();
+            let mut rxb = [0u8; pulse::udp::MAX_PAYLOAD];
+            let recv = vnet::udp_recv(&mut rxb);
+            let t1 = ostd::time::tsc_clock::now_ns().unwrap_or(0);
+            ok &= dispatched;
+            match recv {
+                Some((sp, rl)) => {
+                    ok &= sp == src_port && rl == n && rxb[..n] == payload[..n];
+                }
+                None => ok = false,
+            }
+            let rtt = t1.saturating_sub(t0);
+            rtt_min = rtt_min.min(rtt);
+            rtt_max = rtt_max.max(rtt);
+        }
+        // (c) 校验和负例：好帧注入 → pop → 翻 UDP 校验和 1 位 → 拒收
+        let s0 = vnet::udp_stats();
+        let payload32 = [0x5Au8; 32];
+        let injected = vnet::udp_loopback_tx(7003, 7777, &payload32);
+        let mut frame = [0u8; vnet::PULSE_FRAME_MAX];
+        let mut got = None;
+        let mut spin = 0u64;
+        while spin < 40_000_000 {
+            if let Some(fl) = vnet::pulse_rx_pop(&mut frame) {
+                got = Some(fl);
+                break;
+            }
+            spin += 1;
+            core::hint::spin_loop();
+        }
+        let mut rejected = false;
+        if let Some(fl) = got {
+            const UDP_CS_OFF: usize = 14 + 20 + 6; // 以太 + IPv4 头 + UDP cs 域
+            frame[UDP_CS_OFF] ^= 0x01;
+            rejected = vnet::udp_dispatch(&frame[..fl]).is_none();
+        }
+        let s1 = vnet::udp_stats();
+        ok &= injected && rejected && s1.bad_cs == s0.bad_cs + 1;
+        // (d) 未绑定端口拒投（9999 从未绑定）
+        let injected2 = vnet::udp_loopback_tx(7004, 9999, &payload32);
+        let mut got2 = None;
+        let mut spin = 0u64;
+        while spin < 40_000_000 {
+            if let Some(fl) = vnet::pulse_rx_pop(&mut frame) {
+                got2 = Some(fl);
+                break;
+            }
+            spin += 1;
+            core::hint::spin_loop();
+        }
+        let mut rejected2 = false;
+        if let Some(fl) = got2 {
+            rejected2 = vnet::udp_dispatch(&frame[..fl]).is_none();
+        }
+        let s2 = vnet::udp_stats();
+        ok &= injected2 && rejected2 && s2.no_port == s1.no_port + 1;
+        // (e) PU-P03 打点行（TCG 基线口径；环境 B 实测挂账 METRICS）
+        ok &= s2.accepted == 3 && s2.injected == 5;
+        // (f) 解绑后拒投 + 复绑（路由失效/恢复证据）
+        ok &= vnet::udp_unbind(7777).is_ok();
+        let injected3 = vnet::udp_loopback_tx(7005, 7777, &payload32);
+        let mut got3 = None;
+        let mut spin = 0u64;
+        while spin < 40_000_000 {
+            if let Some(fl) = vnet::pulse_rx_pop(&mut frame) {
+                got3 = Some(fl);
+                break;
+            }
+            spin += 1;
+            core::hint::spin_loop();
+        }
+        let mut rejected3 = false;
+        if let Some(fl) = got3 {
+            rejected3 = vnet::udp_dispatch(&frame[..fl]).is_none();
+        }
+        let s3 = vnet::udp_stats();
+        ok &= injected3 && rejected3 && s3.no_port == s2.no_port + 1;
+        ok &= vnet::udp_bind(7777).is_ok();
+        let _ = writeln!(
+            log,
+            "udp-loop: inj={} acc={} bad_cs={} no_port={} rtt_min_ns={rtt_min} rtt_max_ns={rtt_max} ok={ok}",
+            s3.injected,
+            s3.accepted,
+            s3.bad_cs,
+            s3.no_port,
+        );
+        ok
+    };
+    report(&mut log, t78, "udp-loop");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {

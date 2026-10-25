@@ -30,6 +30,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use ostd::mm::frame::FrameAllocator;
 use ostd::mm::page::{Entry, IdentityAccess, PageError, Walker};
 use ostd::sync::spsc::SpscRing;
+use pulse::udp::{PortTable, MAX_PAYLOAD, PROTO_UDP};
 
 /// virtio 现代 PCI 供应商 ID。
 const VIRTIO_VENDOR: u16 = 0x1AF4;
@@ -1274,6 +1275,212 @@ pub fn icmp_echo_reply(request: &[u8]) -> Option<usize> {
     unsafe { tx_frame(st, &out[..n], n) };
     ICMP_REPLIES.fetch_add(1, Ordering::Relaxed);
     Some(n)
+}
+
+// ===================== M27-N2：UDP 回环面（pulse::udp 消费） =====================
+
+/// 端口绑定表容量（t78 活体 + 未来网络服务预留域）。
+const UDP_PORT_CAP: usize = 16;
+
+/// 端口绑定表（单语境 static；[`PortTable::new`] 为 const——无 init 序
+/// 问题。访问纪律同 [`NET_STATE`]：kmain 自检串行段 + &raw 手法）。
+static mut UDP_PORTS: PortTable<UDP_PORT_CAP> = PortTable::new();
+
+/// 端口表句柄（&raw 手法统一入口；static 直挂无缺失态——None 结构性
+/// 不可达，match 保 fail-visible 形状）。
+fn udp_ports_mut() -> Option<&'static mut PortTable<UDP_PORT_CAP>> {
+    // SAFETY: 单语境（kmain 自检串行段）独占访问；&raw 手法不建立
+    //         static 引用（static_mut_refs 免疫）。
+    unsafe { (&raw mut UDP_PORTS).as_mut() }
+}
+
+/// UDP 接收槽（v0 单槽最近报——多报队列扩容挂账偏差登记，M27-T1 后
+/// 随服务化批次重审）。t78 单发单收语义恰好承载。
+struct UdpRxSlot {
+    /// 源端口（回环发方）。
+    src_port: u16,
+    /// 载荷长。
+    len: usize,
+    /// 载荷（UDP 段 data 域原样）。
+    data: [u8; MAX_PAYLOAD],
+}
+
+/// 接收槽（单语境 static；None = 空）。
+static mut UDP_RX_SLOT: Option<UdpRxSlot> = None;
+
+/// 接收槽句柄（&raw 手法同款纪律）。
+fn udp_slot_take() -> Option<UdpRxSlot> {
+    // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+    unsafe { (&raw mut UDP_RX_SLOT).as_mut()?.take() }
+}
+
+/// 回环注入计数（交接环 send 成功）。
+static UDP_INJECTED: AtomicU64 = AtomicU64::new(0);
+/// 分派采纳计数（全闸通过 + 端口命中 + 槽写入）。
+static UDP_ACCEPTED: AtomicU64 = AtomicU64::new(0);
+/// 校验和拒收计数（fail-visible：伪头验证不过）。
+static UDP_BAD_CS: AtomicU64 = AtomicU64::new(0);
+/// 未绑定端口拒投计数（fail-visible：路由失败不静默）。
+static UDP_NO_PORT: AtomicU64 = AtomicU64::new(0);
+
+/// UDP 面统计快照（t78 证据行同源；累计口径）。
+#[derive(Debug, Clone, Copy)]
+pub struct UdpStats {
+    /// 回环注入数。
+    pub injected: u64,
+    /// 分派采纳数。
+    pub accepted: u64,
+    /// 校验和拒收数。
+    pub bad_cs: u64,
+    /// 未绑定端口拒投数。
+    pub no_port: u64,
+}
+
+/// UDP 面统计读出。
+pub fn udp_stats() -> UdpStats {
+    UdpStats {
+        injected: UDP_INJECTED.load(Ordering::Relaxed),
+        accepted: UDP_ACCEPTED.load(Ordering::Relaxed),
+        bad_cs: UDP_BAD_CS.load(Ordering::Relaxed),
+        no_port: UDP_NO_PORT.load(Ordering::Relaxed),
+    }
+}
+
+/// 绑定 UDP 端口（pulse [`PortTable`] 消费面）。
+pub fn udp_bind(port: u16) -> Result<(), pulse::udp::BindError> {
+    match udp_ports_mut() {
+        Some(t) => t.bind(port),
+        // 结构性不可达（static 直挂）；形状保 fail-visible
+        None => Err(pulse::udp::BindError::Reserved),
+    }
+}
+
+/// 解绑 UDP 端口。
+pub fn udp_unbind(port: u16) -> Result<(), pulse::udp::BindError> {
+    match udp_ports_mut() {
+        Some(t) => t.unbind(port),
+        None => Err(pulse::udp::BindError::Reserved),
+    }
+}
+
+/// UDP 帧级分派（接收路径同构逻辑，t78 回环消费者调用）：闸链
+/// 0800 / IPv4 / IHL / proto 17 / IP 总长对账 / IP 校验和 / 寻我 →
+/// pulse 段解析 + 伪头校验和验证 → 端口表路由 → 接收槽写入。
+/// 返回采纳载荷长；任一闸不过 None（计数分域 fail-visible）。
+pub fn udp_dispatch(frame: &[u8]) -> Option<usize> {
+    if frame.len() < 14 + 20 + 8 {
+        return None;
+    }
+    if u16::from_be_bytes([frame[12], frame[13]]) != 0x0800 {
+        return None;
+    }
+    if frame[14] >> 4 != 4 {
+        return None;
+    }
+    let ihl = usize::from(frame[14] & 0x0F) * 4;
+    if ihl < 20 || frame.len() < 14 + ihl + 8 {
+        return None;
+    }
+    if frame[23] != PROTO_UDP {
+        return None;
+    }
+    if u16::from_be_bytes([frame[16], frame[17]]) as usize != frame.len() - 14 {
+        return None; // IP 总长与帧长对账
+    }
+    if !cksum_ok(&frame[14..14 + ihl]) {
+        return None; // IP 校验和
+    }
+    if frame[30..34] != MY_IP {
+        return None; // 不寻我
+    }
+    let src_ip = [frame[26], frame[27], frame[28], frame[29]];
+    let seg = &frame[14 + ihl..];
+    let (h, payload) = pulse::udp::UdpHdr::parse(seg)?;
+    if !pulse::udp::verify(src_ip, MY_IP, seg) {
+        UDP_BAD_CS.fetch_add(1, Ordering::Relaxed);
+        return None;
+    }
+    let bound = udp_ports_mut().is_some_and(|t| t.is_bound(h.dst_port));
+    if !bound {
+        UDP_NO_PORT.fetch_add(1, Ordering::Relaxed);
+        return None;
+    }
+    // 槽写入（v0 单槽最近报；越界载荷已被 parse 的 length 对账闸拒）
+    let mut slot = UdpRxSlot {
+        src_port: h.src_port,
+        len: payload.len(),
+        data: [0; MAX_PAYLOAD],
+    };
+    slot.data[..payload.len()].copy_from_slice(payload);
+    // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+    unsafe {
+        if let Some(s) = (&raw mut UDP_RX_SLOT).as_mut() {
+            *s = Some(slot);
+        }
+    }
+    UDP_ACCEPTED.fetch_add(1, Ordering::Relaxed);
+    Some(payload.len())
+}
+
+/// UDP 回环击发（t78 相位面）：pulse 段组帧 + 伪头校验和 → 完整以太帧
+/// （以太 + IPv4，dst MAC/IP = 本机自环）→ 交接环直注（回环注入点 =
+/// [`PULSE_RX`]——与真实 RX 通路共享交接段，设备 DMA 之外的完全同构；
+/// R1 限流后真实通路结构零丢弃，回环面 send Err 同为结构违背显形）。
+/// 返回 false = 态缺失/组帧越界/环满（fail-closed）。
+pub fn udp_loopback_tx(src_port: u16, dst_port: u16, payload: &[u8]) -> bool {
+    if net_state_mut().is_none() {
+        return false;
+    }
+    let mut seg = [0u8; MAX_PAYLOAD + 8];
+    let Some(seg_len) = pulse::udp::UdpHdr::encode(src_port, dst_port, payload, &mut seg) else {
+        return false;
+    };
+    let cs = pulse::udp::checksum(MY_IP, MY_IP, &seg[..seg_len]);
+    seg[6..8].copy_from_slice(&cs.to_be_bytes());
+    let ip_total = 20 + seg_len;
+    let flen = 14 + ip_total;
+    if flen > PULSE_FRAME_MAX {
+        return false;
+    }
+    let mut f = [0u8; PULSE_FRAME_MAX];
+    let st_mac = net_state_mut().map(|st| st.mac).unwrap_or([0; 6]);
+    f[0..6].copy_from_slice(&st_mac); // 回环：dst = 本机
+    f[6..12].copy_from_slice(&st_mac); // src = 本机
+    f[12..14].copy_from_slice(&0x0800u16.to_be_bytes());
+    f[14] = 0x45;
+    f[16..18].copy_from_slice(&(ip_total as u16).to_be_bytes());
+    f[22] = 64;
+    f[23] = PROTO_UDP;
+    f[26..30].copy_from_slice(&MY_IP);
+    f[30..34].copy_from_slice(&MY_IP); // 回环：dst IP = 本机
+    let ip_ck = cksum16(&f[14..34]);
+    f[24..26].copy_from_slice(&ip_ck.to_be_bytes());
+    f[34..34 + seg_len].copy_from_slice(&seg[..seg_len]);
+    let slot = FrameSlot {
+        len: flen as u16,
+        _pad: [0; 6],
+        data: {
+            let mut d = [0u8; PULSE_FRAME_MAX];
+            d[..flen].copy_from_slice(&f[..flen]);
+            d
+        },
+    };
+    match PULSE_RX.send(slot) {
+        Ok(()) => {
+            UDP_INJECTED.fetch_add(1, Ordering::Relaxed);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// UDP 接收（消费面）：取接收槽（take 语义，逐报消费）——载荷拷入
+/// `out`，返回 (源端口, 载荷长)；None = 槽空。
+pub fn udp_recv(out: &mut [u8]) -> Option<(u16, usize)> {
+    let slot = udp_slot_take()?;
+    let n = slot.len.min(out.len());
+    out[..n].copy_from_slice(&slot.data[..n]);
+    Some((slot.src_port, slot.len))
 }
 
 /// ARP 回声活体成果（t69 断言域）。

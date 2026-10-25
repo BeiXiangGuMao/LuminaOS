@@ -68,6 +68,11 @@ to = "conduit"
 note = "内核冒烟自检消费 conduit 布局快照/转换器活体（C-P04/C-P01 在环证据，M25-T1 起）"
 
 [[allowed_edges]]
+from = "lumina-kernel"
+to = "pulse"
+note = "内核消费 UDP 段面单一事实源（UdpHdr 编解码 + RFC768 伪头校验和 + 端口表，M27-N2 起；ADR-0005 pulse 纯协议面归位后的首个内核消费边）"
+
+[[allowed_edges]]
 from = "conduit"
 to = "bedrock"
 note = "兼容层转换器消费 LXE1 事实源（abi 调用号/错误码表）；细则第 4 章 Conduit 定位（M25-C1 起）"
