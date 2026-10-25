@@ -299,37 +299,55 @@ fn smoke_inner() -> bool {
     //    超时由下方看门狗直接杀 QEMU 本体（timeout 包裹会漏杀孤儿进程）
     let swap_drive = format!("file={SWAP_IMG},format=raw,if=ide,index=2,media=disk");
     let disk_drive = format!("file={DISK_IMG},format=raw,if=ide,index=1,media=disk");
+    // M30-X1 t73 取证升级（滤波升级）：LUMINA_S8_PCAP 环境门控 filter-dump
+    // 全账捕获——"1" 用默认路径，其余值为显式路径；unset 时零行为变化
+    // （默认参数面不变）。捕获层在 netdev 侧，客户机 RX 通路设备级死亡
+    // （M27-R1 实证「used 回写 ≠ 交付 netdev」B 面）与 A 面回声窗都在账。
+    let pcap_path = match std::env::var("LUMINA_S8_PCAP") {
+        Ok(v) if v == "1" => Some("/home/z/my-project/lumina-build/logs/t73-hunt.pcap".to_string()),
+        Ok(v) if !v.is_empty() => Some(v),
+        _ => None,
+    };
+    let mut qemu_args: Vec<String> = vec![
+        "-L",
+        QEMU_BIOS_SEABIOS,
+        "-L",
+        QEMU_BIOS_DATA,
+        "-kernel",
+        KERNEL_BIN,
+        "-drive",
+        disk_drive.as_str(),
+        "-drive",
+        swap_drive.as_str(),
+        "-m",
+        "256M",
+        "-smp",
+        "2",
+        "-display",
+        "none",
+        "-no-reboot",
+        "-serial",
+        "stdio",
+        "-device",
+        "isa-debug-exit,iobase=0xf4,iosize=0x04",
+        // M24-⓪ 对账：网络面自检（t68-t71）需 virtio-net-pci 在场，
+        // 参数与 demo_m23b_driver.py 批跑面对齐；缺设备时 net 三项恒
+        // FAIL，ci 门禁面失真（本先例 71/71 全绿后才可提交）。
+        "-device",
+        "virtio-net-pci,netdev=n0,disable-legacy=on",
+        "-netdev",
+        "user,id=n0",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    if let Some(path) = &pcap_path {
+        qemu_args.push("-object".into());
+        qemu_args.push(format!("filter-dump,id=pcapf0,netdev=n0,file={path}"));
+        println!("[S8-smoke] pcap 滤波捕获在案：{path}");
+    }
     let mut child = match Command::new(QEMU_BIN)
-        .args([
-            "-L",
-            QEMU_BIOS_SEABIOS,
-            "-L",
-            QEMU_BIOS_DATA,
-            "-kernel",
-            KERNEL_BIN,
-            "-drive",
-            disk_drive.as_str(),
-            "-drive",
-            swap_drive.as_str(),
-            "-m",
-            "256M",
-            "-smp",
-            "2",
-            "-display",
-            "none",
-            "-no-reboot",
-            "-serial",
-            "stdio",
-            "-device",
-            "isa-debug-exit,iobase=0xf4,iosize=0x04",
-            // M24-⓪ 对账：网络面自检（t68-t71）需 virtio-net-pci 在场，
-            // 参数与 demo_m23b_driver.py 批跑面对齐；缺设备时 net 三项恒
-            // FAIL，ci 门禁面失真（本先例 71/71 全绿后才可提交）。
-            "-device",
-            "virtio-net-pci,netdev=n0,disable-legacy=on",
-            "-netdev",
-            "user,id=n0",
-        ])
+        .args(&qemu_args)
         .env("LD_LIBRARY_PATH", QEMU_LIB)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
