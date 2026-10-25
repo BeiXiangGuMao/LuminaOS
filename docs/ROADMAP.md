@@ -82,7 +82,7 @@
 | **M28** | 显示栈闭环：Mirror 合成管线 + 用户态显示面——**✅ 关账**（M28-收尾核验：prism 合成结构面 + drain_plan 消费面 + SYS_FB_STAGE(39) 组合器服务化 + 1080p 切换 + t77 活体 77/77；七笔对账见 §四 M28 子节） | P3 | MI-P01 结构面；1080p@60 合成冒烟 | mirror/kernel::fb/prism |
 | **M29** | Harbor libc 首版 + Weave 对象库——**✅ 关账**（M29-收尾核验：ADR-0003 执行步分配器迁 ostd::heap + H-P01 首批 57 符号 forbid(unsafe_code) + WE-P02 断电注入框架 + 冒烟 78/78；五笔对账见 §四 M29 子节） | P2 补课 | H-P01 首批 ≥50 符号垂直切片；WE-P02 断电注入框架 | harbor/weave |
 | **M30** | 桌面骨架：Loom Elm 架构 + Cascade shell 语义——**✅ 关账**（M30-收尾核验：LO-P01 Elm 架构面 + CA-P05 shell 语义四面 + glyph 渲染库本体 + t79 活体 79/79 首跑即绿 + pcap 取证搭车件；七笔对账见 §四 M30 子节） | P4 | LO-P01 口径挂接；CA-P05 结构面 | loom/cascade/glyph |
-| **M31** | 自举预备：驱动用户态化起步 + Weave 自举 | P5 | V-P05 首批注入矩阵；驱动旁路清单缩编 | vanguard/drivers |
+| **M31** | 自举预备：驱动用户态化起步 + Weave 自举——**🚧 进行中**（M31-计划：六笔分解落盘，见 §四 M31 子节） | P5 | V-P05 首批注入矩阵；驱动旁路清单缩编 | vanguard/drivers |
 
 远线（M31 后）：Aurora SDK/权限中心、Linux 静态 busybox 全功能 24h（P1 末 DoD 收口）、1080p@60/72h 长稳、五维成熟度指数首评。
 
@@ -218,6 +218,21 @@ M29 退出口径：ADR-0003 执行步完成（分配器归 ostd::heap + kernel �
 M30 退出口径：Loom Elm 架构面在环（App 折叠环 + 平面元素树 + 布局求解 + 虚拟化列表）+ Cascade shell 语义四面（工作区/平铺计划/Dock/四态机不破）+ Glyph 渲染库本体（同源光栅化三档对账）+ t79 桌面骨架活体 79/79 + 宿主全谱绿 + 冒烟 79/79。
 
 > **收尾核验（M30-收尾）**：五项全达——① LO-P01 口径挂接（Elm 架构面：App 折叠环〔同序列确定性折叠可重放〕+ ViewBuf 定容零堆平面元素树〔自顶向下建树结构性防环 + 全闸 fail-visible〕+ 约束求解布局〔8px 网格闸 + Overflow 溢出闸 + Fill 余数归首子确定性分配 + 子链三遍走零堆〕+ 虚拟化列表可见窗纯函数；布局产出 mirror::Rect 几何单一事实源延伸——loom 只产出不运算代数；宿主 24 例）；② CA-P05 结构面（shell 语义四面：四态机 + workspace_available 谓词 + Workspaces 定容工作区表〔全局唯一归属 AlreadyOpen + 全闸 fail-visible〕+ master-stack tiling_plan〔保留域消费 loom PANEL/DOCK/GRID 常量 + 余数归首块与 loom Fill 纪律同构〕+ Dock 定容登记面〔glyph::scale_factor 闸〕；cascade 转 no_std+alloc crystal 先例；宿主 18 例）；③ glyph 渲染库本体（IconDef 注册表四枚 + map_point 唯一合法路径光栅化〔非同源重绘禁令工程面兑现〕+ 描边随倍率 + 有界写入越界裁剪不 panic；宿主 10 例含同源锚点全档位不变式）；④ t79 桌面骨架活体首跑即绿（六闸：shell 面/平铺 golden/Elm 布局同源对账〔loom 内容域 == cascade content——两套面同一几何〕/图标像素/prism 仲裁/fb 交盒哨兵〔窗域但盒外未触 = 损伤域裁剪证据〕；px=64000，79/79，CENSUS f0）+ 宿主全谱绿（loom 24 + cascade 18 + glyph 10）+ 台账机检政策面 24 条零违规；⑤ 挂账六项随行复核：t73 设备级残余（**本轮猎捕升级**：pcap 滤波取证搭车件落库 X1，首窗即捕——netdev 侧 req/reply 全账完整〔3/3/4，seq=3 双 reply 首录〕零孤儿 + guest miss=0/short=0 结构闸完好 + netdev 75 帧 vs guest 10 帧、ICMP reply 4→1 = 设备级 RX 选择性死亡〔virtio 后端→RX 环写入段，内核可见面之下〕——死亡点三形态登记〔A RX 长度闸拒短帧 / 环满 miss / RX 环写入段选择性死亡〕，环境时序面定性不变，非语义面阻塞）/ TCP 电气接线（M27-T1 偏差不变）/ PR-P04 电源协同显示侧（未启动不变）/ alpha 混合与多 Surface 表（v0 偏差不变）/ 细则 PDF 重取逐条对账（介质失联不变；本轮 Loom/Cascade/Glyph 结构面按在库引用面承接——重取后补 LO/CA/GL 逐条）/ harbor C ABI 链接层（M29-H1 登记，不变）。M30 七笔（计划 6492808 / L1 e698c51 / C1 de71a77 / X1 e2ff755 搭车件 / G1 a2cb1d3 / T1 0f7e6fd / 收尾本提交）关账，近线转入 M31（自举预备：驱动用户态化起步 + Weave 自举）。
+
+### M31 任务级分解（🚧 进行中）
+
+> 主题：自举预备——驱动用户态化起步 + Weave 自举（P5）。验收锚：V-P05 首批注入矩阵（Vanguard 第 8 章口径，细则 PDF 介质失联以在库引用面为准——§七 5）+ 驱动旁路清单缩编（§二 P5 行权威口径：内核态驱动 fb/vnet/kbd 即 P5 要移除的旁路）。主战场 vanguard/drivers。结构界定：① 驱动用户态化遵循 ADR-0004 混合态渐进（机制留 kernel，旁路面分批外移）——首版旁路清单成像即缩编起点（每里程碑可核销，缩编进度入 METRICS），首割只动纯函数面（电气面/策略面不动，冒烟 79/79 不破原则）；② Weave 自举 = journal 重放恢复语义（M29-W1 三不变式：活跃指针胜出 / 回滚不残留 / 撕裂残槽显形丢弃）接入内核启动序列 + store 根装载面；WE-P03/07（多事务并发/介质落盘）随 crystal 块域挂账不动；③ V-P05 注入矩阵仿 WE-P02 `we_p02_fault_matrix` 先例（四相×不变式，全枚举非法态 fail-visible）。台账随行：新 crate 政策边先改台账再动清单。**挂账六项随行**（M30 收尾移交逐项复核，非本轮主攻）：① t73 设备级残余（pcap 取证工具已入库 e2ff755——撞窗蹲守即捕，环境时序面定性不变）② TCP 电气接线（M27-T1 偏差不变；M31 主战场自举预备，网络电气面不纳入本轮）③ PR-P04 电源协同显示侧 ④ alpha 混合与多 Surface 表 ⑤ 细则 PDF 重取逐条对账（本轮 V/自举结构面按在库引用面承接——重取后补 V/WE 逐条）⑥ harbor C ABI 链接层（M29-H1 登记）。
+
+| 任务 | 内容 | 提交物 | 验收 |
+|---|---|---|---|
+| **M31-计划** | 本表落盘 + §三 M31 行 🚧 标注 + 范围界定注（ADR-0004 渐进线 + 旁路缩编口径 + Weave 自举形态 + V-P05 矩阵形态）+ 挂账六项随行登记 | ROADMAP | 本提交 |
+| **M31-N1** | 驱动旁路清单成像 + 用户态化首割：kernel 内驱动面全清点（vnet 1,743 / fb 953 / kbd / console / block + tty/shell 策略面区分）→ 旁路台账首版（分类：纯函数面/电气面/策略面 → 缩编路径分级：纯函数面 crate 化外移先行，电气面待用户态驱动进程基础设施〔IPC/能力面〕成熟分批）+ 首割最小切片（kbd scancode 集 1 翻译面 crate 化外移——纯函数面零电气依赖，kernel 消费面切换在环，电气面不动）+ allowlist 新边 | docs/ROADMAP + 新独立 crate（命名执行时对齐细则域）+ crates/kernel + allowlist | 宿主全绿 + clippy 零警告 + 冒烟 79/79 不破 |
+| **M31-V1** | V-P05 首批注入矩阵：vanguard 能力面四相×不变式矩阵（越权派生〔derive 请求父集外权限〕/撤销后使用/未安装槽访问/重复撤销 + derive 链传播语义全枚举非法态）+ 不变式断言库（仿 WE-P02 四相矩阵先例）+ 宿主测试全谱（derive_cannot_escalate / revoke_and_slot_errors 扩容入矩阵） | crates/vanguard | 宿主全绿 + clippy 零警告 |
+| **M31-W1** | Weave 自举：journal 重放恢复语义接入内核启动序列（boot 后 recover 库态语义挂接——活跃指针胜出/回滚不残留/撕裂残槽显形丢弃三不变式在环）+ store 根装载面 + 冒烟自举装载证据行；介质落盘随 crystal 块域挂账维持（WE-P03/07 不动） | crates/kernel + crates/weave | 宿主全绿 + clippy 零警告 |
+| **M31-T1** | t80 自举预备活体：kernel 自检段新相位（V 注入矩阵结论在环 + Weave 自举装载证据 + 驱动外移面对账三面贯通）+ SELFTEST_TOTAL 79→80 双端同步 | crates/kernel + xtask | t80 全绿 80/80 |
+| **M31-收尾** | ROADMAP/METRICS 对账（V-P02/03/05 行扩记注入矩阵 + WE 行扩记自举面 + §1.2 vanguard/weave/kernel 行刷新）+ README 组件面对账 + 挂账六项复核注 + 近线转 §三 远线首项（M32 计划随收尾裁决） | 对账提交 | 本提交 |
+
+M31 退出口径：驱动旁路清单首版成像（五面分类 + 缩编路径分级）+ 首割外移面在环（kernel 消费面切换 + 冒烟不破）+ V-P05 首批注入矩阵全枚举在环 + Weave 自举装载面在环（journal 重放三不变式 + store 根装载）+ t80 活体 80/80 + 宿主全谱绿 + 冒烟 80/80。
 
 ---
 
