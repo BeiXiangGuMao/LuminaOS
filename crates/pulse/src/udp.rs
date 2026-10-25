@@ -79,7 +79,7 @@ impl UdpHdr {
 }
 
 /// RFC 1071 折叠求和（16 位反码和），跨 16 位字累加末尾高 16 位回卷。
-fn fold16(mut sum: u32, bytes: &[u8]) -> u32 {
+pub(crate) fn fold16(mut sum: u32, bytes: &[u8]) -> u32 {
     let (chunks, rem) = bytes.as_chunks::<2>();
     for c in chunks {
         sum += u32::from(u16::from_be_bytes(*c));
@@ -93,16 +93,16 @@ fn fold16(mut sum: u32, bytes: &[u8]) -> u32 {
     sum
 }
 
-/// UDP 校验和（RFC 768 伪头版）：IPv4 伪头 + 段（头校验和域须为基线 0
-/// ——[`UdpHdr::encode`] 保证）。
+/// RFC 768/9293 伪头校验和（UDP/TCP 共用核心，proto 参数化）：IPv4 伪头
+/// + 段（头校验和域须为基线 0——encode 面保证）。
 ///
-/// 返回 0 时规范化为 0xFFFF（RFC 768 传输规则）。
+/// 返回 0 时规范化为 0xFFFF（RFC 768 传输规则，TCP 同款语义）。
 #[must_use]
-pub fn checksum(src_ip: [u8; 4], dst_ip: [u8; 4], seg: &[u8]) -> u16 {
+pub(crate) fn checksum_pseudo(src_ip: [u8; 4], dst_ip: [u8; 4], proto: u8, seg: &[u8]) -> u16 {
     let mut pseudo = [0u8; 12];
     pseudo[0..4].copy_from_slice(&src_ip);
     pseudo[4..8].copy_from_slice(&dst_ip);
-    pseudo[9] = PROTO_UDP;
+    pseudo[9] = proto;
     let ulen = seg.len() as u16;
     pseudo[10..12].copy_from_slice(&ulen.to_be_bytes());
     let sum = fold16(fold16(0, &pseudo), seg);
@@ -112,6 +112,15 @@ pub fn checksum(src_ip: [u8; 4], dst_ip: [u8; 4], seg: &[u8]) -> u16 {
     } else {
         cs
     }
+}
+
+/// UDP 校验和（RFC 768 伪头版）：IPv4 伪头 + 段（头校验和域须为基线 0
+/// ——[`UdpHdr::encode`] 保证）。
+///
+/// 返回 0 时规范化为 0xFFFF（RFC 768 传输规则）。
+#[must_use]
+pub fn checksum(src_ip: [u8; 4], dst_ip: [u8; 4], seg: &[u8]) -> u16 {
+    checksum_pseudo(src_ip, dst_ip, PROTO_UDP, seg)
 }
 
 /// 段校验和验证（接收闸）：`checksum == 0` = 发送方未计算直接通过
