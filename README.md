@@ -162,8 +162,8 @@ BeiXiangGuMao）；M20-① / M22-① 两个开发提交按原时刻 cherry-pick 
 | v0.24.0 | M24 | 服务边界元年：v0.24.0 定版 + ADR 八篇裁决 + Meridian dispatcher 首割 + IDL 纪律 + lint-deps/unsafe 台账 + mirror 损伤细则 + vnet 背压/ICMP（t72-t74） |
 | v0.25.0 | M25–M27 | 兼容与栈收口三季连发：M25 Conduit abi-defs 20 结构/布局双闸 C-P04=0/25 调用绑定（t75）→ M26 Crystal 文件系统首割（格式 v1 + WAL + COW B-tree + O(1) 快照 + crash-fs ≥1000 注入，ADR-0002 vfs 迁移，t76）→ M27 网络栈收口（ADR-0005 环归位 + t73 丢帧类排水限流收口 + UDP 协议面 + t78 回环活体 + PU-P03 口径挂接 + TCP 首割） |
 
-最新发布：**[Release v0.25.0](../../releases)**——src / artifacts（devlog S0–S83 +
-pf-hunt 台账）/ RELEASE_NOTES / SHA256SUMS 四资产。
+最新发布：**[Release v0.25.0](../../releases)**——src / artifacts（门禁日志 +
+ci-summary 报告）/ RELEASE_NOTES / SHA256SUMS 四资产。
 
 ## 工程纪律（对指南的承接）
 

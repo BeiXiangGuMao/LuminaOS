@@ -138,6 +138,6 @@ crash-fs ≥1000 断电注入，ADR-0002 vfs 迁移）；**显示栈闭环**（p
 | 资产 | 说明 |
 |---|---|
 | src.tar.gz | 源码树全量（git tag v0.25.0 字节对齐） |
-| artifacts.tar.gz | devlog S0–S83 + pf-hunt 台账 + t 系活体日志 |
+| artifacts.tar.gz | xtask 十一阶段门禁日志 + t 系活体冒烟日志（boot-smoke）+ ci-summary 报告；历史 devlog S0–S83 与 pf-hunt 台账随沙盒重置介质失联（ROADMAP §七 5 登记，见 v0.24.0 资产存档） |
 | RELEASE_NOTES-v0.25.0.md | 本文件 |
 | SHA256SUMS | 上列三资产校验和 |
