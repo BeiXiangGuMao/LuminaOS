@@ -81,7 +81,7 @@
 | **M27** | 网络栈收口：IP/ICMP/UDP + TCP 首割——**✅ 关账**（M27-收尾核验：ADR-0005 执行步 + t73 丢帧类排水限流收口 + UDP 协议面 + t78 回环活体 78/78 + PU-P03 口径挂接 + TCP 首割协议面 + v0.25.0 定版；七笔对账见 §四 M27 子节） | P2→P3 | PU-P03 回环延迟口径挂接；t 系列 ARP→ICMP→UDP 活体链 | pulse/kernel::vnet |
 | **M28** | 显示栈闭环：Mirror 合成管线 + 用户态显示面——**✅ 关账**（M28-收尾核验：prism 合成结构面 + drain_plan 消费面 + SYS_FB_STAGE(39) 组合器服务化 + 1080p 切换 + t77 活体 77/77；七笔对账见 §四 M28 子节） | P3 | MI-P01 结构面；1080p@60 合成冒烟 | mirror/kernel::fb/prism |
 | **M29** | Harbor libc 首版 + Weave 对象库——**✅ 关账**（M29-收尾核验：ADR-0003 执行步分配器迁 ostd::heap + H-P01 首批 57 符号 forbid(unsafe_code) + WE-P02 断电注入框架 + 冒烟 78/78；五笔对账见 §四 M29 子节） | P2 补课 | H-P01 首批 ≥50 符号垂直切片；WE-P02 断电注入框架 | harbor/weave |
-| **M30** | 桌面骨架：Loom Elm 架构 + Cascade shell 语义 | P4 | LO-P01 口径挂接；CA-P05 结构面 | loom/cascade/glyph |
+| **M30** | 桌面骨架：Loom Elm 架构 + Cascade shell 语义——**🚧 进行中**（M30-计划：六笔分解落盘，见 §四 M30 子节） | P4 | LO-P01 口径挂接；CA-P05 结构面 | loom/cascade/glyph |
 | **M31** | 自举预备：驱动用户态化起步 + Weave 自举 | P5 | V-P05 首批注入矩阵；驱动旁路清单缩编 | vanguard/drivers |
 
 远线（M31 后）：Aurora SDK/权限中心、Linux 静态 busybox 全功能 24h（P1 末 DoD 收口）、1080p@60/72h 长稳、五维成熟度指数首评。
@@ -200,6 +200,21 @@ M27 退出口径：ADR-0005 执行步完成（pulse 纯协议面 + forbid + 白�
 M29 退出口径：ADR-0003 执行步完成（分配器归 ostd::heap + kernel 切换 + allowlist 销账）+ H-P01 首批 ≥50 符号垂直切片（forbid(unsafe_code) 兑现）+ WE-P02 断电注入框架在环 + 宿主全谱绿 + 冒烟 78/78 不降。
 
 > **收尾核验（M29-收尾）**：五项全达——① ADR-0003 执行步（693 行纯移动迁 ostd::heap::{Bump,FreeList} + kernel #[global_allocator] 切换 + allowlist 销账三项〔harbor unsafe until=M29 到期 + lumina-kernel→harbor 边 + harbor→ostd 边〕政策面 19→17 + 冒烟 heap 行 ostd::heap::FreeList 实录 + 78/78 不降）；② H-P01 首批 57 符号垂直切片（errno 46 常量 Linux 号域对齐 + strerror 名称表 + ctype 16 值语义 extern C〔EOF 哨兵 + 超界判假 fail-visible 化〕+ string 18 切片面〔mem 族缓冲区+偏移对承载——safe Rust 别名 &mut 不可构造的诚实等价面；memcpy 重叠拒绝/memmove copy_within 方向感知〕+ stdlib 20〔strto* 基 0 自检测 + POSIX 溢出钳位 ERANGE + 0x 无位最长前缀规则 + strtoull 负号模取负 + qsort/bsearch + rand LCG〕+ crate 级 forbid(unsafe_code) 兑现零 raw pointer + 符号清点机检 ≥50 闸）；③ WE-P02 断电注入框架（GenRoot 双代际根槽 {gen,hash,CRC32} + PowerFault 四相矩阵 + 恢复库态语义裁决〔活跃指针胜出非最高代胜出 + 非活跃槽残留清零 = 回滚不残留机制承载 + 撕裂失配残槽显形丢弃〕+ CRC32/FNV-1a 手工向量锚定）+ 内容寻址对象库（FNV-1a 64 身份 + put 去重 + 定容拒收 + 重哈希校验位翻转检出）；④ 宿主全谱绿（ostd heap 9 + harbor 22 + weave 18）+ 冒烟 78/78（W1 首跑撞 t73 设备级残余 flake gw_echo=false，重跑全绿——重试口径如实登记）；⑤ 挂账五项随行复核：t73 设备级残余（环境时序面，B 面 TX 交付丢失猎场不变）/ TCP 电气接线（M27-T1 偏差不变）/ PR-P04 电源协同显示侧（未启动不变）/ alpha 混合与多 Surface 表（v0 偏差不变）/ 细则 PDF 重取逐条对账（介质失联不变；本轮 Harbor/Weave 结构面按在库引用面承接——重取后补 H/WE 逐条）。M29 五笔（计划 f0b029b / N1 ce40d45 / H1 0f1bb26 / W1 587b0e6 / 收尾本提交）关账，近线转入 M30（桌面骨架：Loom Elm 架构 + Cascade shell 语义）。挂账增补：harbor C ABI 链接层（no_mangle 导出 + raw ptr 指针层——待用户态链接面成形以外置方案补位，M29-H1 登记）。
+
+### M30 任务级分解（🚧 进行中）
+
+> 主题：桌面骨架——Loom Elm 架构 + Cascade shell 语义（P4）。验收锚：LO-P01 口径挂接（Elm 架构面：Model/Msg/update/view 消息折叠环 + 平面元素树 + 约束求解布局 + 虚拟化列表；视觉常量数值事实不变，与 ART-003 逐项一致纪律保持）+ CA-P05 结构面（工作区/窗口栈/平铺计划/Dock 登记四语义面；指标手册第 13 章口径，细则 PDF 介质失联以在库引用面为准——§七 5）。主战场 loom/cascade/glyph：glyph 渲染库本体随行落地（ADR-0007 勘误后合规模型——24 源网格 ×1/×2/×4 同源缩放光栅化，非同源重绘禁令兑现为「基元坐标只能经 map_point 变换」）。活体：t79 桌面骨架相位（cascade 平铺计划 → loom 布局求解 → prism::Stack 窗层仲裁 → glyph 图标像素面 → fb 交盒上屏哨兵对账）——计数 78→79 双端同步。结构界定：cascade 转 no_std+alloc（crystal 先例）承载工作区动态窗表；loom/glyph 保持零堆定容（const new，内核 static 可用）；几何单一事实源纪律延伸——cascade 平铺计划产出 mirror::Rect（prism::Stack 直接可消费）。台账随行：cascade→loom/mirror/glyph 三政策边 + lumina-kernel→loom/cascade/glyph 三政策边（先改台账再动清单）。**挂账六项随行**（复核登记，非本轮主攻）：① t73 设备级残余（环境时序面，B 面 TX 交付丢失猎场不变；若撞窗先做 pcap 滤波升级取证）② TCP 电气接线（M27-T1 偏差不变）③ PR-P04 电源协同显示侧 ④ alpha 混合与多 Surface 表 ⑤ 细则 PDF 重取逐条对账 ⑥ harbor C ABI 链接层（M29-H1 登记）。
+
+| 任务 | 内容 | 提交物 | 验收 |
+|---|---|---|---|
+| **M30-计划** | 本表落盘 + §三 M30 行 🚧 标注 + 挂账六项随行登记 | ROADMAP | 本提交 |
+| **M30-L1** | Loom Elm 架构首割（LO-P01 口径挂接素材）：App 三件套（init/update/view 消息折叠环 fold）+ ViewBuf 平面元素树（定容零堆 const new，first_child/next_sibling 索引链）+ 约束求解布局（单轴 Row/Column + 间距 8px 网格闸 fail-visible + Fixed/Fill 主轴 + 交盒裁剪）+ 虚拟化列表可见窗纯函数（首项/可见数/头部偏移 + 滚动钳位）+ 宿主测试全谱 | crates/loom | 宿主全绿 + clippy 零警告 |
+| **M30-C1** | Cascade shell 语义首割（CA-P05 结构面素材）：no_std+alloc 转换（crystal 先例，宿主测试面不破）+ Workspaces 定容工作区表（窗口归属/切换/跨区定位/焦点序随区）+ tiling_plan 平铺策略面（master-stack 纯函数，Panel/Dock 保留域消费 loom 骨架常量，间距 8px 网格）+ Dock 定容登记面（图标档位校验消费 glyph::scale_factor 单一事实源）+ allowlist 三边（cascade→loom/mirror/glyph）+ 宿主测试全谱 | crates/cascade + allowlist | 宿主全绿 + clippy 零警告 + 台账机检过 |
+| **M30-G1** | Glyph 渲染库本体（渲染面承接）：IconDef 静态注册表（24 源网格几何基元 Line/Rect/Circle 声明式图标集）+ 同源缩放光栅化器（map_point 唯一合法路径 ×1/×2/×4 + 描边随倍率 + 中点圆/Bresenham 线）+ 有界像素写入（越界裁剪不 panic fail-visible）+ 宿主测试全谱（三档同源像素对账） | crates/glyph | 宿主全绿 + clippy 零警告 |
+| **M30-T1** | t79 桌面骨架活体：kernel 自检段新相位（cascade Shell→Session + Workspaces 双窗平铺 → loom Element 骨架布局求解〔Panel 48/Dock 72 与 cascade 保留域同源对账〕→ prism::Stack 窗层仲裁 → glyph 图标渲染像素断言 → stage_px_write 窗域图案 + fb_compose_tick 交盒读回 + 交盒外哨兵对账）+ allowlist kernel 三边（loom/cascade/glyph）+ SELFTEST_TOTAL 78→79 双端同步 | crates/kernel + allowlist + xtask | t79 全绿 79/79 + 台账机检过 |
+| **M30-收尾** | ROADMAP/METRICS 对账（LO-P01 行扩记 Elm 架构面 + CA-P05 行新挂结构面 + GL 行扩记渲染库 + §1.2 loom/cascade/glyph 行刷新）+ README 组件面对账 + 挂账六项复核注 + 近线转 M31 | 对账提交 | 本提交 |
+
+M30 退出口径：Loom Elm 架构面在环（App 折叠环 + 平面元素树 + 布局求解 + 虚拟化列表）+ Cascade shell 语义四面（工作区/平铺计划/Dock/四态机不破）+ Glyph 渲染库本体（同源光栅化三档对账）+ t79 桌面骨架活体 79/79 + 宿主全谱绿 + 冒烟 79/79。
 
 ---
 
