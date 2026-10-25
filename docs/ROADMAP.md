@@ -79,7 +79,7 @@
 | **M25** | 兼容路径启动：Conduit abi-defs + 布局快照 + 首批转换器——**✅ 关账**（M25-收尾核验：C-P04=0 双闸挂闸；C-P01 首批 25 调用全绑定 ≥20；t75 活体 75/75 全绿；六笔对账见 §四 M25 子节） | P1 | C-P04=0 偏差；C-P01 首批 ≥20 调用全绑定用例 | conduit/bedrock::abi |
 | **M26** | Crystal 文件系统首割：格式 v1 + WAL + 快照常数时间——**✅ 关账**（M26-收尾核验：格式 v1 落盘 + crash-fs ≥1000 两态一致性 + CR-P05 常数时间跨规模实证 + ADR-0002 迁移步清账 + t76 活体 76/76；十笔对账见 §四 M26 子节） | P2 | CR-P05≤50ms（常数时间）；crash-fs 断电注入 ≥1000 次 | crystal/kernel::blk |
 | **M27** | 网络栈收口：IP/ICMP/UDP + TCP 首割——⏸ 顺延（偏差登记：两段会话窗口未产出提交，M28 先行；t73 flake ~10% 挂账随行） | P2→P3 | PU-P03 回环延迟口径挂接；t 系列 ARP→ICMP→UDP 活体链 | pulse/kernel::vnet |
-| **M28** | 显示栈闭环：Mirror 合成管线 + 用户态显示面——🚧 进行中（M28-计划 已落 §四，任务级分解七笔） | P3 | MI-P01 结构面；1080p@60 合成冒烟 | mirror/kernel::fb/prism |
+| **M28** | 显示栈闭环：Mirror 合成管线 + 用户态显示面——**✅ 关账**（M28-收尾核验：prism 合成结构面 + drain_plan 消费面 + SYS_FB_STAGE(39) 组合器服务化 + 1080p 切换 + t77 活体 77/77；七笔对账见 §四 M28 子节） | P3 | MI-P01 结构面；1080p@60 合成冒烟 | mirror/kernel::fb/prism |
 | **M29** | Harbor libc 首版 + Weave 对象库 | P2 补课 | H-P01 首批 ≥50 符号垂直切片；WE-P02 断电注入框架 | harbor/weave |
 | **M30** | 桌面骨架：Loom Elm 架构 + Cascade shell 语义 | P4 | LO-P01 口径挂接；CA-P05 结构面 | loom/cascade/glyph |
 | **M31** | 自举预备：驱动用户态化起步 + Weave 自举 | P5 | V-P05 首批注入矩阵；驱动旁路清单缩编 | vanguard/drivers |
@@ -155,15 +155,17 @@ M26 退出口径：格式 v1 落盘（规格书 + codec 防线四道）+ WAL/快
 
 | 任务 | 内容 | 提交物 | 验收 |
 |---|---|---|---|
-| **M28-计划** ✅ | 本表落盘 + §三 M27 顺延/M28 进行中标注 + §七 5 PDF 介质偏差登记 + prism 新建预注记（ADR-0006 名字归位） | ROADMAP | ✅ 本提交 |
-| **M28-F1** | prism crate 骨架（no_std + `forbid(unsafe_code)`，依赖仅 mirror）：Layer 栈 z 序仲裁 + 损伤交盒裁剪 + 逐像素裁决纯函数（PR-P02 结构面）+ overdraw 计数面 | crates/prism | 宿主 ≥6 例全绿 |
-| **M28-S1** | mirror 合成消费面：`drain_plan`（损伤计划读出复位一体，消费方原子取走——合成器帧边界吃计划）+ 与 prism 管线几何对账测试 | crates/mirror | 宿主 +2 例 |
-| **M28-K1** | kernel::fb 组合器服务化：SYS_FB_STAGE(39) stage 面（内核后备缓冲 ring3 映射，ADR-0004 双轨共存——SYS_FB_MAP 直写路径不动）+ 合成执行器（drain_plan → prism compose → VRAM 交盒局部上屏，交盒外字节零触碰）+ abi v0.17 注记 + conduit 绑定 +1（BINDINGS 26 ≥20 锚不破） | kernel::fb + bedrock::abi + conduit | CI-OK（76/76 不降） |
-| **M28-R1** | 1080p 模式切换：WIDTH/HEIGHT → 1920×1080（dispi 同参数域）+ LFB_BYTES 3,145,728→8,294,400 + 受影响断言对账（t67 三帧面/t72 全帧翻转字节数/t70 文本域）+ stage 后备缓冲随 LFB_BYTES 自适应 | kernel::fb | CI-OK（76/76 不降） |
-| **M28-T1** | t77 合成活体：stage 写入 → 合成前 VRAM 不变（哨兵像素）→ 合成后交盒内 == stage、交盒外哨兵未触（损伤域局部上屏电气证据）+ SELFTEST_TOTAL 76→77 双端同步 | t77 + 计数 | 77/77 全绿 |
-| **M28-收尾** | ROADMAP/METRICS 对账：MI-P01/02 + PR-P01/02/04 指标行登记（结构面口径，时限类标环境 B 待实测）+ 退出口径核验注 | 对账提交 | 关账 |
+| **M28-计划** ✅ | 本表落盘 + §三 M27 顺延/M28 进行中标注 + §七 5 PDF 介质偏差登记 + prism 新建预注记（ADR-0006 名字归位） | ROADMAP | ✅ a1e826b |
+| **M28-F1** ✅ | prism crate 骨架（no_std + `forbid(unsafe_code)`，依赖仅 mirror）：Layer 栈 z 序仲裁 + 损伤交盒裁剪 + 逐像素裁决纯函数（PR-P02 结构面）+ 仲裁扫描计数面（胜者单写模型 overdraw 恒 0——量化面转 scan_total，落地修正如实登记） | crates/prism | ✅ eabf26c：宿主 8 例 |
+| **M28-S1** ✅ | mirror 合成消费面：`drain_plan`（损伤计划读出复位一体，消费方原子取走——合成器帧边界吃计划）+ DrainPlan 三态面 + 与 prism 管线几何对账测试 | crates/mirror | ✅ 8db1e94：宿主 +2（mirror 7/7）+prism 管线对账 1 例（9/9） |
+| **M28-K1** ✅ | kernel::fb 组合器服务化：SYS_FB_STAGE(39) stage 面（内核后备缓冲 ring3 映射，ADR-0004 双轨共存——SYS_FB_MAP 直写路径不动）+ 合成执行器（drain_plan → prism compose → VRAM 交盒局部上屏，交盒外字节零触碰）+ abi v0.17 + 号域断言；计划修正：conduit 绑定表为 Linux 号域快照，fb_stage 无 Linux 对应号不入表（BINDINGS 恒 25，≥20 锚不破）；含搭车件（M25-C1-a 先例）：t73 回声窗拍钟化 GW_ECHO_TICKS=50 | kernel::fb + bedrock::abi | ✅ 8eaa0c2：CI-OK 76/76 |
+| **M28-R1** ✅ | 1080p 模式切换：WIDTH/HEIGHT → 1920×1080（dispi 同参数域）+ LFB_BYTES 3,145,728→8,294,400 + 受影响断言对账（t67 f1/t72 全帧翻转/t70 文本域不动）+ stage 后备缓冲随 LFB_BYTES 自适应（2026 页 < 2048 表容量） | kernel::fb | ✅ 3e5d520：CI-OK（冒烟实录 f1=8294400） |
+| **M28-T1** ✅ | t77 合成活体 compose-spec 相位：stage 登记 → 直写 VRAM 哨兵 → stage_px_write 组帧 → SYS_FB_SYNC 记账 → fb_compose_tick 交盒局部上屏 → 交盒内五点等值 + 交盒外哨兵四点未触 + 二拍空账直返 0 + SELFTEST_TOTAL 76→77 双端同步 | t77 + 计数 | ✅ af93d1c：77/77（实录 px=64000 eq=true sent=true tick2=0） |
+| **M28-收尾** ✅ | ROADMAP/METRICS 对账：MI-P01/02 + PR-P01/02 指标行登记（PR-P04 电源协同显示侧未启动挂账——结构面口径，时限类标环境 B 待实测）+ §三 关账标注 + t73 今日 pcap 取证登记（M27 猎场）+ 退出口径核验注 | 对账提交 | ✅ 本提交 |
 
 M28 退出口径：prism 合成结构面（PR-P02 z 序仲裁/交盒裁剪/逐像素裁决宿主全绿）+ mirror drain_plan 消费面 + kernel::fb 组合器服务化（stage 双轨共存 + 交盒局部上屏）+ 1080p 模式切换 + t77 冒烟活体全绿（77/77）+ METRICS 指标行登记。
+
+> **收尾核验（M28-收尾）**：五项全达——① prism 合成结构面（PR-P02：z 序仲裁/交盒裁剪/逐像素裁决/扫描计数宿主 9 例全绿，几何单一事实源全量复用 mirror::Rect）；② mirror drain_plan 消费面（三态计划读出复位一体 + 管线几何对账测试：visit 域 == 计划域）；③ kernel::fb 组合器服务化（SYS_FB_STAGE(39) abi v0.17 + stage 页帧表散帧方案 + fb_compose_tick 交盒局部上屏；ADR-0004 双轨共存实证：SYS_FB_MAP 直写路径 77/77 不降）；④ 1080p 模式切换（dispi 1920×1080@32 LFB 8294400 B；t67/t72 断言随动实录）；⑤ t77 冒烟活体全绿（77/77，compose-spec px=64000 eq=true sent=true tick2=0——交盒外字节零触碰电气证据）。M28 七笔（计划/F1/S1/K1/R1/T1/收尾）关账，近线转回 M27（网络栈收口，顺延已清账）。挂账延续：t73 丢帧类残余 flake——**今日 pcap 取证升级（filter-dump 实证）：slirp 反射恒达（3/3 回声帧离开 netdev），帧死于客户机 RX 通路的设备级（RX 长度闸拒短帧 + 环满 miss=1..3 双形态）；拍钟窗搭车件治延迟类、不治丢帧类——M27 网络栈收口按此猎场重访（virtio RX 环供给/缓冲池时序面）**；PR-P04 电源协同显示侧（未启动）；alpha 混合与多 Surface 表扩容（v0 偏差登记域）；细则 PDF 重取后 Prism/Mirror 逐条对账。
 
 ---
 
