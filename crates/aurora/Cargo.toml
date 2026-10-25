@@ -10,3 +10,6 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+# M32-A1 权限中心承接桥：消费 vanguard CapabilityTable/Right（能力模型单一事实源，
+# vanguard 本体零改动——M31-V1 先例；政策边 aurora→vanguard 台账先行 allowlist M32-A1）
+vanguard = { workspace = true }

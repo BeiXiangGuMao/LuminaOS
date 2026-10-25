@@ -150,6 +150,11 @@ from = "lumina-kernel"
 to = "morse"
 note = "kernel::kbd 消费 scancode set 1 翻译面单一事实源（驱动旁路缩编首割——纯函数零依赖外移，电气/机制面留 kernel 本体；ADR-0004 混合态渐进）；M31-N1"
 
+[[allowed_edges]]
+from = "aurora"
+to = "vanguard"
+note = "权限中心承接桥消费 vanguard CapabilityTable/Right（能力模型单一事实源，vanguard 本体零改动——M31-V1 先例）；M32-A1"
+
 # -------------------------------------------------------- 债务面：依赖豁免
 
 

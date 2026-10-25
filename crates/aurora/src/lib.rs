@@ -1,14 +1,28 @@
 //! Aurora 极光 —— 原生应用框架核心。
 //!
 //! 依据《指标与规范手册》第 16 章（Aurora 规范，AF 指标族）：AF-P01 要求框架冷
-//! 启动开销 ≤120 ms（P0 硬门禁），生命周期迁移 MUST 全部经过框架校验。本 crate
-//! 实现两个策略面：
+//! 启动开销 ≤120 ms（P0 硬门禁）；AF-P06 要求生命周期全迁移 MUST 经框架校验；
+//! AF-P03 要求生命周期拦截率 100%（P0）。本 crate 实现三个策略面：
 //!
-//! - [`LuappManifest`]：`.luapp` 清单的最小校验（应用 id 反向域名、能力声明）；
+//! - [`LuappManifest`]：`.luapp` 清单的最小校验（应用 id 反向域名、能力声明
+//!   逐条 schema 闸——M32-A1 能力域扩容）；
 //! - [`AppRuntime`]：六态生命周期状态机（Registered → Launching → Foreground →
-//!   Background → Suspended → Terminated），拦截率 100%（AF-P06，P0）。
+//!   Background → Suspended → Terminated），拦截率 100%（AF-P03，P0）；
+//! - [`perm`]：权限中心首割四相面（声明 schema 闸 → 安装时授予〔vanguard
+//!   CapabilityTable 承接桥〕→ 运行时检查拒绝显形 → 撤销后访问显形）。
 //!
-//! 能力权限的派生规则由 Vanguard 能力模型执行；意图路由与后台任务在 SDK 服务侧。
+//! 能力权限的派生规则由 Vanguard 能力模型执行（单一事实源——vanguard 本体
+//! 零改动，M32-A1 政策边 aurora→vanguard）；意图路由与后台任务在 SDK 服务侧。
+//!
+//! M32-A1 起 no_std + alloc（crystal/cascade 先例）：内核自检段（t81）直接
+//! 消费本 crate 的语义面；宿主测试经 test 模块照常运行。
+#![no_std]
+#![forbid(unsafe_code)]
+extern crate alloc;
+
+use alloc::{format, string::String, vec::Vec};
+
+pub mod perm;
 
 /// 应用生命周期六态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,7 +60,7 @@ impl AppRuntime {
         self.state
     }
 
-    /// 迁移生命周期；非法迁移被拦截并返回 Err（迁移必须可审计）。
+    /// 迁移生命周期；非法迁移被拦截并返回 Err（迁移必须可审计，AF-P03 拦截 100%）。
     pub fn transition(&mut self, to: Lifecycle) -> Result<(), String> {
         let ok = matches!(
             (self.state, to),
@@ -85,6 +99,9 @@ pub enum ManifestError {
     BadAppId,
     /// 能力声明为空（应用 MUST 显式声明所需能力，哪怕为只读最小集）。
     NoCapabilities,
+    /// 能力声明 schema 非法（`cap.<域>.<资源>.<动作>` 四段闸——M32-A1 能力域
+    /// 扩容；格式规则单一事实源在 [`perm::check_schema`]）。
+    BadCapability,
 }
 
 /// `.luapp` 应用清单（最小面；完整字段表见 LUM-DEV-AUR-001 附录）。
@@ -116,6 +133,10 @@ impl LuappManifest {
         if self.capabilities.is_empty() {
             return Err(ManifestError::NoCapabilities);
         }
+        // M32-A1 能力域扩容：逐条 schema 闸（格式规则单一事实源 perm::check_schema）
+        for cap in &self.capabilities {
+            perm::check_schema(cap).map_err(|_| ManifestError::BadCapability)?;
+        }
         Ok(())
     }
 }
@@ -123,7 +144,8 @@ impl LuappManifest {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::{AppRuntime, Lifecycle, LuappManifest};
+    use super::{AppRuntime, Lifecycle, LuappManifest, ManifestError};
+    use alloc::vec;
 
     #[test]
     fn full_lifecycle_walk() {
@@ -186,15 +208,19 @@ mod tests {
             app_id: "Notes".into(),
             ..good.clone()
         };
-        assert!(matches!(
-            bad_id.validate(),
-            Err(super::ManifestError::BadAppId)
-        ));
+        assert!(matches!(bad_id.validate(), Err(ManifestError::BadAppId)));
+
+        // M32-A1 能力域扩容：schema 非法声明逐条闸显形（三段缺资源段）
+        let bad_cap = LuappManifest {
+            capabilities: vec!["fs.documents.read".into()],
+            ..good.clone()
+        };
+        assert_eq!(bad_cap.validate(), Err(ManifestError::BadCapability));
 
         let no_cap = LuappManifest {
             capabilities: vec![],
             ..good
         };
-        assert_eq!(no_cap.validate(), Err(super::ManifestError::NoCapabilities));
+        assert_eq!(no_cap.validate(), Err(ManifestError::NoCapabilities));
     }
 }
