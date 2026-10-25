@@ -7,7 +7,7 @@
 |---|---|---|---|---|
 | B-P01…B-P07 | Bedrock（第 2 章） | `bedrock::abi`（v0 编号布局）、`bedrock::ipc`（快速路径数据结构面）；**M2：`kernel` 裸机启动路径执行 abi/ipc/tlv 在环自检** | 结构承接；2.5μs 往返待裸机基准（M3 挂接） | `abi::tests`、`ipc::tests`；S8 冒烟 7/7 |
 | B 表 19-1 P0 | Bedrock（第 19 章） | `kernel::boot`（multiboot1 → 长模式启动汇编）、`kernel::console`（VGA+串口）、`kernel::multiboot1`（信息块解析；**v0.3.0 修复 mmap 步进 size+4**） | **M2 达成：裸机可启动内核** | QEMU 退出码 33 + `LUMINA-SELFTEST-PASS 11/11` |
-| H-P01…H-P07 | Harbor（第 5 章） | 分配器面迁 `ostd::heap::{Bump, FreeList}`（ADR-0003 执行步 M29-N1：GlobalAlloc 契约 + 统计 + 启动期 rebind；**M2：内核堆 4 MiB 启动期绑定并在环验证**）；harbor 重铸 POSIX libc 符号面（H-P01 首批 ≥50 符号，M29-H1） | 契约承接；80ns 热路径需环境 B 基准 | ostd heap 宿主 9 例（对齐/OOM/统计/rebind/复用/合并/ZST/耗尽回收/模式完整性）；冒烟 heap-alloc-stats |
+| H-P01…H-P07 | Harbor（第 5 章） | 分配器面迁 `ostd::heap::{Bump, FreeList}`（ADR-0003 执行步 M29-N1：GlobalAlloc 契约 + 统计 + 启动期 rebind；**M2：内核堆 4 MiB 启动期绑定并在环验证**）；harbor 重铸 POSIX libc 符号面（**H-P01 首批 57 符号实录 ≥50 闸**，M29-H1：errno/string/ctype/stdlib 四域 + forbid(unsafe_code)） | 契约承接；80ns 热路径需环境 B 基准 | ostd heap 宿主 9 例（对齐/OOM/统计/rebind/复用/合并/ZST/耗尽回收/模式完整性）+ harbor 22 例（符号清点机检 ≥50 闸 + 四域全谱）；冒烟 heap-alloc-stats |
 | OSTD HW-01…03 | OSTD（第 17 章） | `ostd::hw::ports`（in/out）、`ostd::hw::vga_text`、`ostd::hw::phys`（volatile 直读/写/清零） | **M2 新增：硬件基元 unsafe 收口层** | 冒烟经 VGA/串口/端口退出验证 |
 | OSTD HW-04…08 | OSTD（第 17 章） | `ostd::hw::control`（CR3 读写）、`ostd::hw::intr`（cli/sti/hlt/lidt）、`ostd::hw::pic`（8259 重映射/EOI/IMR）、`ostd::hw::pit`（通道 0 编程）、`ostd::hw::phys::read/write_u64_virt`（当前页表虚拟地址 volatile） | **M3 新增：控制寄存器/中断/定时器基元** | 冒烟自检 10（中断链闭环：IDT+PIC+PIT+hlt 睡眠节拍推进） |
 | OSTD 内存基元（M3） | OSTD（第 17 章） | `ostd::mm::frame`（区间裁剪 + LIFO 空闲表 + 统计不变式）、`ostd::mm::page`（四级页表 map/translate/unmap，`PhysAccess` 双后端：裸机 IdentityAccess + 宿主伪造内存） | **M3 新增：物理帧管理 + 页表抽象** | 宿主 9 例（裁剪/LIFO/耗尽复用/位域/往返/大页/需求分配）+ 冒烟自检 8/9（含 CR3 切换 MMU 写读实机往返） |
@@ -27,7 +27,7 @@
 | RI 系列 | Ripple（第 11 章） | `ripple`（170/26、300/30、可打断可逆） | 物理常量承接（数值与 ART-003 一致） | 收敛/快慢/打断 3 例 |
 | LO-P01/02 | Loom（第 12 章） | `loom`（8px 网格、字号公式、48/72 骨架） | 视觉常量承接（数值与 ART-003 一致） | 网格/公式/骨架 |
 | GL-P06… | Glyph（第 14 章） | `glyph`（24/48/96 ×1/×2/×4、悬停 1.05×/120ms） | 同源缩放承接 | 三档换算 |
-| WE-P02/03/07 | Weave（第 15 章） | `weave`（一次性事务、^/= 依赖） | 状态机承接 | `transaction_is_one_shot` |
+| WE-P02/03/07 | Weave（第 15 章） | `weave::journal`（**WE-P02 断电注入框架**，M29-W1：GenRoot 双代际根槽 {gen,hash,CRC32} + PowerFault 四相注入矩阵 + 恢复不变式库态语义〔活跃指针胜出 + 回滚不残留〕）；`weave::store` 内容寻址对象库（FNV-1a 64 身份 + put 去重 + 定容拒收 + 重哈希校验）；`weave::Transaction` 一次性事务 + ^/= 依赖 | 状态机承接 + 注入框架在环（M29-W1）；多事务并发/介质落盘随 crystal 块域挂账 | `transaction_is_one_shot` + `we_p02_fault_matrix`（四相×不变式）+ store 全谱；宿主 18 例 |
 | AF-P01…P06 | Aurora（第 16 章） | `aurora::AppRuntime`（六态生命周期，AF-P03 拦截 100%）、`LuappManifest::validate` | 状态机承接；AF-P01 ≤120ms 冷启动需端到端基准 | 生命周期 3 例 + 清单校验 |
 
 | OSTD LAPIC 定时器（M6） | OSTD（第 17 章） | `ostd::hw::lapic::timer_*`（divide/ICR/CCR/LVT，周期模式）+ `TIMER_VECTOR`/`RESCHED_VECTOR` | **M6 新增：统一 per-CPU 抢占源（HW-13 扩展）** | 冒烟自检 22（AP 侧量子轮转） |

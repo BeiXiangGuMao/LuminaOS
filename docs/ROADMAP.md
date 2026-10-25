@@ -26,9 +26,9 @@
 |---|---|---|---|
 | kernel | 16,870 | framekernel 本体（boot/mm/task/syscall/vmm/swap/smp/fb/vnet/kbd/tty/shell） | 过渡态：M24 起按 ADR-0004 消解 |
 | bedrock | 5,909 | abi/ipc(FastPath)/tlv/exec(LXE1)/vfs(3.6k) | 部分成形 + **两处越界（见 ADR-0001/0002）** |
-| ostd | 4,509 | hw/mm/task/interrupt/sync unsafe 收口层 | 较成形，符合白名单制 |
-| harbor | 693 | HarborBump+FreeList 内核堆分配器 | **身份错位**（细则=POSIX libc）→ ADR-0003 |
-| weave | 532 | LWP1 包格式+Version/Manifest+事务策略 | 类型面成形，架构面（代际/对象库）未落地 |
+| ostd | 5,240 | hw/mm/heap/task/interrupt/sync unsafe 收口层（M29-N1 承接分配器面） | 较成形，符合白名单制 |
+| harbor | 1,390 | POSIX libc 符号面首批 57 符号（errno/string/ctype/stdlib，forbid unsafe；ADR-0003 重铸） | 身份归位（M29-H1；C ABI 链接层挂账） |
+| weave | 1,098 | 清单/容器 + 代际事务 + 内容寻址对象库 + WE-P02 断电注入框架 | 架构面落位（M29-W1；多事务并发/介质落盘挂账） |
 | vanguard | 213 | Right/Capability/CapabilityTable(64槽) | 原语较成形；协调器/SDK 空缺 |
 | pulse | 201 | SocketAddr+SpscRing（unsafe 集中） | 基础件成形；协议栈 0 → ADR-0005 |
 | aurora | 200 | 六态生命周期(9 迁移)+最小清单校验 | 骨架；AF-P03/P06 注释标号笔误待修 |
@@ -80,7 +80,7 @@
 | **M26** | Crystal 文件系统首割：格式 v1 + WAL + 快照常数时间——**✅ 关账**（M26-收尾核验：格式 v1 落盘 + crash-fs ≥1000 两态一致性 + CR-P05 常数时间跨规模实证 + ADR-0002 迁移步清账 + t76 活体 76/76；十笔对账见 §四 M26 子节） | P2 | CR-P05≤50ms（常数时间）；crash-fs 断电注入 ≥1000 次 | crystal/kernel::blk |
 | **M27** | 网络栈收口：IP/ICMP/UDP + TCP 首割——**✅ 关账**（M27-收尾核验：ADR-0005 执行步 + t73 丢帧类排水限流收口 + UDP 协议面 + t78 回环活体 78/78 + PU-P03 口径挂接 + TCP 首割协议面 + v0.25.0 定版；七笔对账见 §四 M27 子节） | P2→P3 | PU-P03 回环延迟口径挂接；t 系列 ARP→ICMP→UDP 活体链 | pulse/kernel::vnet |
 | **M28** | 显示栈闭环：Mirror 合成管线 + 用户态显示面——**✅ 关账**（M28-收尾核验：prism 合成结构面 + drain_plan 消费面 + SYS_FB_STAGE(39) 组合器服务化 + 1080p 切换 + t77 活体 77/77；七笔对账见 §四 M28 子节） | P3 | MI-P01 结构面；1080p@60 合成冒烟 | mirror/kernel::fb/prism |
-| **M29** | Harbor libc 首版 + Weave 对象库——**🚧 进行中**（ADR-0003 执行步前哨：分配器迁 ostd::heap + harbor 重铸 libc 面；任务级分解见 §四 M29 子节；挂账五项随行） | P2 补课 | H-P01 首批 ≥50 符号垂直切片；WE-P02 断电注入框架 | harbor/weave |
+| **M29** | Harbor libc 首版 + Weave 对象库——**✅ 关账**（M29-收尾核验：ADR-0003 执行步分配器迁 ostd::heap + H-P01 首批 57 符号 forbid(unsafe_code) + WE-P02 断电注入框架 + 冒烟 78/78；五笔对账见 §四 M29 子节） | P2 补课 | H-P01 首批 ≥50 符号垂直切片；WE-P02 断电注入框架 | harbor/weave |
 | **M30** | 桌面骨架：Loom Elm 架构 + Cascade shell 语义 | P4 | LO-P01 口径挂接；CA-P05 结构面 | loom/cascade/glyph |
 | **M31** | 自举预备：驱动用户态化起步 + Weave 自举 | P5 | V-P05 首批注入矩阵；驱动旁路清单缩编 | vanguard/drivers |
 
@@ -185,19 +185,21 @@ M27 退出口径：ADR-0005 执行步完成（pulse 纯协议面 + forbid + 白�
 
 > **收尾核验（M27-收尾）**：七项全达——① ADR-0005 执行步（pulse 环退役零消费实证 + forbid(unsafe_code) 全 crate 密度 0 + allowlist until=M27 销账）；② t73 丢帧类收口（rx_service 排水限流 headroom 前置约束——交接面 PULSE_MISS 结构性归零〔限流后为不变式破坏显形信号〕+ RX_SHORT 显形 + pcap 全账取证：slirp 反射恒达 + 设备级双面死亡〔A 面 reply 达 netdev 未达 guest / B 面 request used 回写未达 netdev〕登记环境时序面——版本对照铁证 + tx=thread/offloads-off 参数对照否决，设备级残余挂账延续）；③ UDP 数据面首割（UdpHdr 双闸 + RFC 768 伪头校验和手工向量双例 + PortTable 三闸，宿主 11 例）；④ t78 回环活体全绿（78/78：绑定域/回环三发载荷 1-64-1472 三态边界/校验和翻位拒收/未绑定拒投/解绑复绑，交接环共享段与真实 RX 通路同构）；⑤ PU-P03 口径挂接（TSC 纳秒打点 TCG 基线 rtt_min_ns=10142/rtt_max_ns=844691 实录，环境 B 挂账）+ METRICS PU 行扩记；⑥ TCP 首割协议面（TcpHdr 三闸 + 八态状态机 + 握手序号面宿主 8 例，vnet 电气接线挂账）；⑦ v0.25.0 定版发布（workspace 升版 + README 全面带正 + CHANGELOG + RELEASE_NOTES + tag + GitHub Release 四资产回环）。M27 七笔（计划/N1/R1/U1/N2/T1/收尾）关账，近线转入 M29（Harbor libc 首版 + Weave 对象库；M28 已关账——PR-P04 电源协同显示侧 + alpha 混合与多 Surface 表 + 细则 PDF 重取对账 + t73 设备级残余 + TCP 电气接线五项挂账随行）。
 
-### M29 任务级分解（🚧 进行中）
+### M29 任务级分解（✅ 关账）
 
 > 主题：Harbor libc 首版 + Weave 对象库（P2 补课）。验收锚：H-P01 首批 ≥50 符号垂直切片 + WE-P02 断电注入框架。提交物 harbor/weave（+ ostd::heap 迁移承接）。**ADR-0003 执行步为主攻前哨**：HarborBump/HarborFreeList 693 行迁 `ostd::heap`（模块化 `heap::bump`/`heap::freelist`），kernel `#[global_allocator]` 引用点切换，harbor 清库重铸为 POSIX libc 符号面（crate 级 `forbid(unsafe_code)` 兑现细则零 unsafe 政策）。范围界定：H-P01 首批 = errno + string + ctype + stdlib 四域纯 safe 垂直切片（值语义 extern "C" + 切片语义 safe 面）；C ABI 指针层（raw ptr 解引用需 unsafe）v0 偏差登记挂账——待用户态链接面成形后以外置方案补位，不破 crate 级 forbid 承诺。Weave 对象库 = 内容寻址 ObjectStore（blob 存取 + 重哈希校验 + 定容淘汰）；WE-P02 断电注入框架 = 事务注入点矩阵（提交路径分相注入）+ 双代际根槽恢复不变式宿主验证（回滚不残留/提交不可重复）。细则锚：《Harbor 港湾开发细则》v1.0.0 /《Weave 织流开发细则》第 15 章——细则 PDF 介质失联偏差见 §七 5，结构面以在库引用面（ADR-0003 / METRICS H·WE 编号 / 本表）为准。**挂账五项随行**（M27 收尾移交，本轮内逐项复核登记，非本轮主攻）：① t73 设备级残余（环境时序面，B 面 TX 交付丢失猎场）② TCP 电气接线（M27-T1 偏差）③ PR-P04 电源协同显示侧 ④ alpha 混合与多 Surface 表 ⑤ 细则 PDF 重取逐条对账。
 
 | 任务 | 内容 | 提交物 | 验收 |
 |---|---|---|---|
-| **M29-计划** | 本表落盘 + §三 M29 行 🚧 标注 + 挂账五项随行登记 | ROADMAP | 本提交 |
-| **M29-N1** | ADR-0003 执行步：HarborBump/HarborFreeList/AllocStats 693 行迁 `ostd::heap`（heap::bump/heap::freelist 模块化 + 宿主测试随迁 + SAFETY 注释纪律保持）+ kernel `#[global_allocator]`/bootstrap rebind 引用切换 + kernel Cargo.toml 去 harbor 依赖 + harbor 清库为过渡态 stub（ADR 指针头注）+ allowlist 销账三项（harbor unsafe 白名单 until=M29 到期销账 + lumina-kernel→harbor 政策边退役 + harbor→ostd 边随清库退役）+ METRICS H 行定位修正 + harbor Cargo.toml 描述对齐 libc 本体 | ostd::heap + kernel + allowlist | 宿主 ostd heap 全谱绿 + 冒烟 78/78 不降（heap-alloc-stats 承接） |
-| **M29-H1** | Harbor libc 首版（H-P01 首批 ≥50 符号垂直切片）：errno 域（AtomicI32 errno 面 + POSIX 错误名表 strerror）+ string 域（mem/str 语义 safe 切片面 ~20 符号）+ ctype 域（值语义 extern "C" 16 符号）+ stdlib 域（abs/div 族 extern "C" + strto* 切片面 + bsearch/qsort）+ crate 级 forbid(unsafe_code) + 宿主测试全谱 + C ABI 指针层 v0 偏差登记挂账 | crates/harbor | H-P01 ≥50 符号清点入账 + 宿主全绿 |
-| **M29-W1** | Weave 对象库 + WE-P02 断电注入框架：内容寻址 ObjectStore（put/get/has/verify + 64 位内容摘要寻址 + 定容零堆槽位 + 重哈希校验 fail-visible）+ 事务注入点矩阵（提交路径分相：prepare 后/根槽写入前/翻转前/翻转后）+ 双代际根槽恢复面（掉电重演 → 恢复不变式：已提交不丢/回滚不残留/半程截断可检出）+ 宿主注入矩阵全谱 | crates/weave | WE-P02 框架在环 + 宿主全绿 |
-| **M29-收尾** | ROADMAP/METRICS 对账（H/WE 行扩记 + §1.2 harbor/weave 行刷新）+ README 组件面对账 + 挂账五项复核注（状态不变项如实再登记） | 对账提交 | 本提交 |
+| **M29-计划** ✅ | 本表落盘 + §三 M29 行 🚧 标注 + 挂账五项随行登记 | ROADMAP | ✅ f0b029b |
+| **M29-N1** ✅ | ADR-0003 执行步：HarborBump/HarborFreeList/AllocStats 693 行迁 `ostd::heap`（heap::bump/heap::freelist 模块化 + 宿主测试随迁 + SAFETY 注释纪律保持）+ kernel `#[global_allocator]`/bootstrap rebind 引用切换 + kernel Cargo.toml 去 harbor 依赖 + harbor 清库为过渡态 stub（ADR 指针头注）+ allowlist 销账三项（harbor unsafe 白名单 until=M29 到期销账 + lumina-kernel→harbor 政策边退役 + harbor→ostd 边随清库退役）+ METRICS H 行定位修正 + harbor Cargo.toml 描述对齐 libc 本体 | ostd::heap + kernel + allowlist | ✅ ce40d45：宿主 ostd heap 9 例全绿 + 冒烟 78/78 不降（heap-alloc-stats 承接，kernel heap 行 ostd::heap::FreeList 实录）；政策面 19→17 |
+| **M29-H1** ✅ | Harbor libc 首版（H-P01 首批 ≥50 符号垂直切片）：errno 域（AtomicI32 errno 面 + POSIX 错误名表 strerror）+ string 域（mem/str 语义 safe 切片面）+ ctype 域（值语义 extern "C"）+ stdlib 域（abs/div 族 extern "C" + strto* 切片面 + qsort/bsearch）+ crate 级 forbid(unsafe_code) + 宿主测试全谱 + C ABI 指针层 v0 偏差登记挂账 | crates/harbor | ✅ 0f1bb26：57 符号清点机检入账（≥50 闸）+ 宿主 22 例全绿 + clippy 零警告 |
+| **M29-W1** ✅ | Weave 对象库 + WE-P02 断电注入框架：内容寻址 ObjectStore（put/get/has/verify + 64 位内容摘要寻址 + 定容零堆槽位 + 重哈希校验 fail-visible）+ 事务注入点矩阵（提交路径分相：prepare 后/根槽写入前/翻转前/翻转后）+ 双代际根槽恢复面（掉电重演 → 恢复不变式：已提交不丢/回滚不残留/半程截断可检出）+ 宿主注入矩阵全谱 | crates/weave | ✅ 587b0e6：WE-P02 四相矩阵在环 + 恢复库态语义裁决（活跃指针胜出）+ 宿主 18 例全绿 |
+| **M29-收尾** ✅ | ROADMAP/METRICS 对账（H/WE 行扩记 + §1.2 harbor/weave/ostd 行刷新）+ README 组件面对账 + 挂账五项复核注（状态不变项如实再登记） | 对账提交 | ✅ 本提交 |
 
 M29 退出口径：ADR-0003 执行步完成（分配器归 ostd::heap + kernel 切换 + allowlist 销账）+ H-P01 首批 ≥50 符号垂直切片（forbid(unsafe_code) 兑现）+ WE-P02 断电注入框架在环 + 宿主全谱绿 + 冒烟 78/78 不降。
+
+> **收尾核验（M29-收尾）**：五项全达——① ADR-0003 执行步（693 行纯移动迁 ostd::heap::{Bump,FreeList} + kernel #[global_allocator] 切换 + allowlist 销账三项〔harbor unsafe until=M29 到期 + lumina-kernel→harbor 边 + harbor→ostd 边〕政策面 19→17 + 冒烟 heap 行 ostd::heap::FreeList 实录 + 78/78 不降）；② H-P01 首批 57 符号垂直切片（errno 46 常量 Linux 号域对齐 + strerror 名称表 + ctype 16 值语义 extern C〔EOF 哨兵 + 超界判假 fail-visible 化〕+ string 18 切片面〔mem 族缓冲区+偏移对承载——safe Rust 别名 &mut 不可构造的诚实等价面；memcpy 重叠拒绝/memmove copy_within 方向感知〕+ stdlib 20〔strto* 基 0 自检测 + POSIX 溢出钳位 ERANGE + 0x 无位最长前缀规则 + strtoull 负号模取负 + qsort/bsearch + rand LCG〕+ crate 级 forbid(unsafe_code) 兑现零 raw pointer + 符号清点机检 ≥50 闸）；③ WE-P02 断电注入框架（GenRoot 双代际根槽 {gen,hash,CRC32} + PowerFault 四相矩阵 + 恢复库态语义裁决〔活跃指针胜出非最高代胜出 + 非活跃槽残留清零 = 回滚不残留机制承载 + 撕裂失配残槽显形丢弃〕+ CRC32/FNV-1a 手工向量锚定）+ 内容寻址对象库（FNV-1a 64 身份 + put 去重 + 定容拒收 + 重哈希校验位翻转检出）；④ 宿主全谱绿（ostd heap 9 + harbor 22 + weave 18）+ 冒烟 78/78（W1 首跑撞 t73 设备级残余 flake gw_echo=false，重跑全绿——重试口径如实登记）；⑤ 挂账五项随行复核：t73 设备级残余（环境时序面，B 面 TX 交付丢失猎场不变）/ TCP 电气接线（M27-T1 偏差不变）/ PR-P04 电源协同显示侧（未启动不变）/ alpha 混合与多 Surface 表（v0 偏差不变）/ 细则 PDF 重取逐条对账（介质失联不变；本轮 Harbor/Weave 结构面按在库引用面承接——重取后补 H/WE 逐条）。M29 五笔（计划 f0b029b / N1 ce40d45 / H1 0f1bb26 / W1 587b0e6 / 收尾本提交）关账，近线转入 M30（桌面骨架：Loom Elm 架构 + Cascade shell 语义）。挂账增补：harbor C ABI 链接层（no_mangle 导出 + raw ptr 指针层——待用户态链接面成形以外置方案补位，M29-H1 登记）。
 
 ---
 

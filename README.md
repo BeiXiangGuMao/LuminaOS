@@ -37,11 +37,12 @@ workspace。内核可经 multiboot1 在 QEMU（`-smp 2`）上裸机启动，物�
 
 **IPC · 能力 · 组件策略（18 册 crate）**
 - 无锁 SPSC IPC 快速路径（BSP↔AP 双环基准）+ 能力化 IPC 系统调用面 + 定向门铃
-- bedrock 磐基（ABI/TLV/LXE1 + 自持同步原语）· harbor 港湾分配器（free-list 回收）·
+- bedrock 磐基（ABI/TLV/LXE1 + 自持同步原语）· harbor 港湾 libc 符号面
+  （errno/string/ctype/stdlib，forbid unsafe）·
   vanguard 能力模型 · meridian 监管者（dispatcher + IDL 契约闸）·
   conduit 通衢（Linux UAPI 布局快照 + errno/flags 转换器）·
   crystal 晶簇文件系统（格式 v1 + WAL + COW B-tree + O(1) 快照）·
-  pulse 脉冲网络（UDP/TCP 协议数据面，forbid unsafe）· weave 包管理 ·
+  pulse 脉冲网络（UDP/TCP 协议数据面，forbid unsafe）· weave 包管理（对象库 + 代际事务 + 断电注入）·
   power 电源 · loom 网格 · ripple 弹簧 · glyph 图标 · mirror 合成 ·
   prism 显示栈合成（z 序仲裁）· cascade 外壳 · aurora 应用框架
 
@@ -70,13 +71,15 @@ lumina-os/                 ← 源码树（保持干爽，永不出现编译产�
 ├── rustfmt.toml           行宽 100（DEV-002 4.1）
 ├── targets/               x86_64-lumina.json 自定义目标规范
 ├── crates/
-│   ├── ostd/        unsafe 基元层（hw 基元 / mm / sync / time / task / IDT；
+│   ├── ostd/        unsafe 基元层（hw 基元 / mm / heap 分配器面〔Bump +
+│   │                free-list，ADR-0003 归位〕/ sync / time / task / IDT；
 │   │                SAFETY 四行模板，unsafe_op_in_unsafe_fn = deny）
 │   ├── kernel/      内核映像（启动汇编 + 中断子系统 + 调度 + 进程 + VFS 接线
 │   │                + crystal 装配 + fb stage 合成器 + vnet UDP/TCP 回环 + census
 │   │                败点名面 + 78 项自检）
 │   ├── bedrock/     磐基内核（syscall ABI、TLV、IPC 端点信箱、LXE1、自持同步原语）
-│   ├── harbor/      港湾分配器（Bump + free-list 回收 + 取证面，GlobalAlloc）
+│   ├── harbor/      港湾 libc 符号面（errno/string/ctype/stdlib 首批 57 符号
+│   │                垂直切片，forbid unsafe；ADR-0003 重铸，分配器归 ostd::heap）
 │   ├── vanguard/    前卫能力模型（权限位、派生收窄、撤销）
 │   ├── meridian/    经纬监管者（幂等恢复 + dispatcher 三层错误模型 + IDL 契约闸）
 │   ├── conduit/     通衢 ABI 快照（Linux 5.15 UAPI 20 结构布局双闸 + errno/flags
@@ -85,7 +88,8 @@ lumina-os/                 ← 源码树（保持干爽，永不出现编译产�
 │   │                O(1) 快照/子卷 + crash-fs 断电注入）
 │   ├── pulse/       脉冲网络协议面（SocketAddr + UDP/TCP 报文编解码与校验和 +
 │   │                端口绑定表；环机制归 ostd::sync〔ADR-0005〕；forbid unsafe）
-│   ├── weave/       织流包管理（语义版本、事务、LWP1 包容器，no_std）
+│   ├── weave/       织流包管理（语义版本、代际事务 + WE-P02 断电注入框架、
+│   │                内容寻址对象库、LWP1 包容器，no_std）
 │   ├── power/       电源策略纯函数（三阶段策略、低电量回退；M24 归位）
 │   ├── loom/        织机 token（8px 网格、字号公式）
 │   ├── ripple/      涟漪弹簧（170/26 与 300/30，半隐式欧拉）
