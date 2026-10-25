@@ -2,7 +2,8 @@
 //!
 //! M23-B 线：multiboot1 头未申请图形模式（flags 无 bit12），引导停在
 //! 80×25 文本模式；本模块由 64 位内核直编 QEMU stdvga 的 VBE dispi
-//! 寄存器（IO 0x1CE/0x1CF）设定 1024×768@32bpp 线性模式，经 PCI 配置
+//! 寄存器（IO 0x1CE/0x1CF）设定 1920×1080@32bpp 线性模式（M28-R1 起
+//! P3 目标分辨率；首帧 1024×768 时代见 v0.24.0），经 PCI 配置
 //! 空间探测 00:02.0 的 BAR0 取 VRAM 物理基址，沿 LAPIC MMIO 同款惯例
 //! （[`Walker`] + [`IdentityAccess`] + 帧分配器补中间表，见 `smp::pre_init`）
 //! 恒等映射进引导根。合成语义由 mirror 驱动（损伤盒裁剪 + 逐像素上屏），
@@ -37,9 +38,10 @@ const PCI_ADDR_PORT: u16 = 0xCF8;
 const PCI_DATA_PORT: u16 = 0xCFC;
 
 /// 首帧分辨率：宽（像素）。
-pub const WIDTH: u32 = 1024;
+/// 1080p（P3 显示栈闭环目标域，M28-R1）。
+pub const WIDTH: u32 = 1920;
 /// 首帧分辨率：高（像素）。
-pub const HEIGHT: u32 = 768;
+pub const HEIGHT: u32 = 1080;
 
 /// dispi 寄存器索引与使能位（bochs VBE DISPI 规范域）。
 mod dispi {

@@ -3243,7 +3243,8 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     report(&mut log, t66, "fb-vbe-lfb");
 
     // 67) M23-B mirror 首帧（损伤合成三帧面）：帧1 全量损伤 → 全幅上屏
-    //     （1024×768×4 = 3145728 B）；帧2 窗 A→B 挪位，旧∪新包围盒局部
+    //     （1920×1080×4 = 8294400 B，M28-R1；1024×768 时代 = 3145728 B）；
+    //     帧2 窗 A→B 挪位，旧∪新包围盒局部
     //     重绘（≈21% 字节）；帧3 零损伤 → bounding_box None → 跳帧 0 字节。
     //     四点读回断言：背景渐变 / 窗 B 主体 / 旧窗位已还原背景 / 窗 B 边框。
     let t67 = match &brought {
@@ -3346,7 +3347,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                 "LUMINA-MIRROR-OK px=[{:#010x},{:#010x},{:#010x},{:#010x}]",
                 p_bg, p_body, p_old, p_edge
             );
-            f1 == 3_145_728 && f2 == 665_600 && f3 == 0 && px_ok
+            f1 == 8_294_400 && f2 == 665_600 && f3 == 0 && px_ok
         }
         None => false,
     };
@@ -3482,7 +3483,8 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     //     (a) 并集合并：重叠对并成单包围盒、贴边对并成单块、分离对保留
     //         两块；
     //     (b) 上限 16 翻转（ROADMAP 钦定「损伤上限翻转用例」）：16 块
-    //         分离不翻；第 17 块入账即翻转全帧，全帧重绘实屏 3145728 字
+    //         分离不翻；第 17 块入账即翻转全帧，全帧重绘实屏 8294400 字
+    //         （M28-R1 1080p；1024×768 时代 3145728）
     //         节活体；全帧态吸收后续脏区，clear 复位；
     //     (c) 指针 16px 粒度：跨格两笔外扩吸附 16px 网格并累积成单块；
     //     (d) SYS_FB 面对账：两笔重叠 SYNC 经 syscall 面并集成单块、17
@@ -3576,7 +3578,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                 },
                 |x, y| ((x as u32 & 0x0F) << 16) | (y as u32 & 0x0F),
             );
-            ok &= full_bytes == 3_145_728;
+            ok &= full_bytes == 8_294_400;
             d.mark(mirror::Rect {
                 x: 1,
                 y: 1,
