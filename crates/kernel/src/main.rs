@@ -260,6 +260,34 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         lapic_base & (1 << 11) != 0
     );
 
+    // ---- M31-W1 Weave 自举：journal 重放恢复语义 + store 根装载 ----
+    // boot 后 recover 库态语义挂接：三不变式（活跃指针胜出/回滚不残留/
+    // 撕裂残槽显形丢弃）boot 期四相复演 + 内容寻址根装载同源对账；
+    // 介质落盘随 crystal 块域挂账维持（WE-P03/07 不动，v0 内存库态）。
+    // fail-visible：装载失败即退出（自举装载面破坏不进自检）。
+    let wb = weave::boot::bootstrap();
+    let _ = writeln!(
+        log,
+        "LUMINA-WEAVE-BOOT gen={} replay={}/{} residue={} store={} objs={} bytes={} root={} ok={}",
+        wb.gen,
+        wb.replay_pass,
+        wb.replay_total,
+        wb.residue_clean,
+        wb.store_ok,
+        wb.store_objects,
+        wb.store_bytes,
+        wb.root_ok,
+        wb.ok()
+    );
+    if !wb.ok() {
+        let _ = writeln!(
+            log,
+            "weave boot load failed: replay={}/{} residue={} store={} root={}",
+            wb.replay_pass, wb.replay_total, wb.residue_clean, wb.store_ok, wb.root_ok
+        );
+        kernel_exit(EXIT_FAILURE);
+    }
+
     // ---- 十五项自检 ----
     let mut pass: usize = 0;
     let mut report = |log: &mut DualLog, ok: bool, name: &str| {

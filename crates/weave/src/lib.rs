@@ -12,9 +12,14 @@
 //! 重哈希校验）与 [`journal`] WE-P02 断电注入框架（双代际根槽、提交路径
 //! 四相注入、恢复不变式宿主矩阵）落位；事务策略面（本文件
 //! `Transaction`）的机制承载即 [`journal::GenRoot`]。
+//!
+//! **M31-W1 扩容**：[`boot`] 自举装载面——boot 后 recover 库态语义挂接
+//! （三不变式四相复演 + store 根装载同源对账，结构化 [`boot::BootReport`]
+//! 供内核启动序列 fail-visible 消费；介质落盘随 crystal 块域挂账不动）。
 #![no_std]
 extern crate alloc;
 
+pub mod boot;
 pub mod journal;
 pub mod pkg;
 pub mod store;

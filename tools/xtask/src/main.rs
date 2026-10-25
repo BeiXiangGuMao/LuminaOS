@@ -479,13 +479,15 @@ fn smoke_inner() -> bool {
         return false;
     }
     // 3) 串口日志断言：启动标记 + 十五项自检 + 用户态标记 + TLV 双向
+    //    （M31-W1 起：Weave 自举装载证据行在环——机器可验）
     let selftest_marker = format!("LUMINA-SELFTEST-PASS {SELFTEST_EXPECTED}");
-    let required: [&[u8]; 5] = [
+    let required: [&[u8]; 6] = [
         b"LUMINA-BOOT-OK",
         selftest_marker.as_bytes(),
         b"LUMINA-TLV-OK",
         b"USER-OK",
         b"user done: exit=42",
+        b"LUMINA-WEAVE-BOOT",
     ];
     let mut ok = tlv_ok;
     for marker in required {
