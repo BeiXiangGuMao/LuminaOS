@@ -329,4 +329,50 @@ mod tests {
         let ids: std::vec::Vec<u32> = s2.iter().map(|x| x.id).collect();
         assert_eq!(ids, std::vec![2, 3, 1]);
     }
+
+    #[test]
+    fn pipeline_reconcile_drain_plan() {
+        use mirror::{DamageTracker, Rect as MRect};
+        // 生产侧：mirror 损伤策略（并集合并 → 不动点）产出计划
+        let mut tr = DamageTracker::new();
+        tr.mark(MRect {
+            x: 0,
+            y: 0,
+            w: 40,
+            h: 40,
+        });
+        tr.mark(MRect {
+            x: 20,
+            y: 20,
+            w: 40,
+            h: 40,
+        }); // 相交 → 并 (0,0,60,60)
+        tr.mark(MRect {
+            x: 100,
+            y: 0,
+            w: 10,
+            h: 10,
+        }); // 分离块保留
+        let plan = tr.drain_plan();
+        assert!(!plan.full);
+        assert_eq!(plan.rects.len(), 2);
+        // 消费侧：prism::Stack::compose 逐块吃计划，visit 域 == 计划域
+        let mut s = Stack::new();
+        s.push(l(7, 0, true, r(0, 0, 200, 100))).expect("push");
+        let mut visited = 0u64;
+        let mut total = 0u64;
+        for d in &plan.rects {
+            let st = s.compose(*d, |_, _, w| {
+                assert_eq!(w, Some(7));
+                visited += 1;
+            });
+            total += st.px_total;
+        }
+        assert_eq!(visited, total);
+        assert_eq!(
+            total,
+            plan.rects.iter().map(|d| d.area()).sum::<u64>(),
+            "visit domain must equal plan domain (geometric single source)"
+        );
+    }
 }

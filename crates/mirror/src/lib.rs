@@ -125,6 +125,24 @@ fn snap_grid(r: Rect) -> Rect {
     }
 }
 
+/// 损伤计划（合成器帧边界消费面，M28-S1）：三态——`full = true` 全帧
+/// 重绘（`rects` 恒空，消费方勿二次解读矩形域）；`full = false` 且
+/// `rects` 空 = 跳帧快速通道；否则按列表逐块局部重绘（账目两两分离）。
+#[derive(Debug, Default)]
+pub struct DrainPlan {
+    /// 全帧翻转标志。
+    pub full: bool,
+    /// 分离矩形列表（全帧态恒空）。
+    pub rects: Vec<Rect>,
+}
+
+impl DrainPlan {
+    /// 是否跳帧（空计划——预算面最重要的省略路径）。
+    pub fn is_skip(&self) -> bool {
+        !self.full && self.rects.is_empty()
+    }
+}
+
 /// 损伤跟踪器：聚合本帧全部脏区并给出重绘计划（M24-S1 细则策略面）。
 ///
 /// 三态计划：[`Self::is_empty`] → 跳帧；[`Self::is_full`] → 全帧重绘；
@@ -238,6 +256,17 @@ impl DamageTracker {
     pub fn clear(&mut self) {
         self.rects.clear();
         self.full = false;
+    }
+
+    /// 损伤计划读出复位一体（M28-S1 合成器消费面）：一次调用取走当前
+    /// 计划并清账——消费方帧边界原子取走，下一次 [`Self::mark`] 自
+    /// 干净账本累积。全帧态取走后 `full` 一并复位（与 [`Self::clear`
+    /// ] 同一复位面）；取走的 [`DrainPlan`] 三态语义见其结构体注记。
+    pub fn drain_plan(&mut self) -> DrainPlan {
+        let full = self.full;
+        let rects = core::mem::take(&mut self.rects);
+        self.full = false;
+        DrainPlan { full, rects }
     }
 }
 
@@ -454,5 +483,80 @@ mod tests {
         assert_eq!((bb.x, bb.y, bb.w, bb.h), (10, 10, 80, 40));
         t.clear();
         assert!(t.bounding_box().is_none());
+    }
+
+    #[test]
+    fn drain_plan_takes_and_resets() {
+        use super::DamageTracker as T;
+        let mut t = T::new();
+        // 空账 drain → 跳帧计划
+        assert!(t.drain_plan().is_skip());
+        // 三块分离脏区 → 计划带三块，取走后账本净空
+        t.mark(Rect {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+        });
+        t.mark(Rect {
+            x: 20,
+            y: 0,
+            w: 10,
+            h: 10,
+        });
+        t.mark(Rect {
+            x: 40,
+            y: 0,
+            w: 10,
+            h: 10,
+        });
+        let plan = t.drain_plan();
+        assert!(!plan.full);
+        assert_eq!(plan.rects.len(), 3);
+        assert!(t.is_empty(), "drain must reset ledger");
+        assert!(t.bounding_box().is_none());
+        // 二次 drain → 跳帧（无残账无重复取走）
+        assert!(t.drain_plan().is_skip());
+        // 取走后新 mark 自干净账本累积（不带旧账）
+        t.mark(Rect {
+            x: 100,
+            y: 100,
+            w: 5,
+            h: 5,
+        });
+        let plan2 = t.drain_plan();
+        assert_eq!(plan2.rects.len(), 1);
+        assert_eq!((plan2.rects[0].x, plan2.rects[0].y), (100, 100));
+    }
+
+    #[test]
+    fn drain_plan_full_flip_semantics() {
+        use super::{DamageTracker as T, DAMAGE_MAX_RECTS};
+        let mut t = T::new();
+        // 17 笔两两分离 → 翻转全帧
+        for i in 0..(DAMAGE_MAX_RECTS as i32 + 1) {
+            t.mark(Rect {
+                x: i * 100,
+                y: 0,
+                w: 10,
+                h: 10,
+            });
+        }
+        assert!(t.is_full());
+        // drain：full 单旗成立 + rects 恒空（勿二次解读）+ 复位归零
+        let plan = t.drain_plan();
+        assert!(plan.full);
+        assert!(plan.rects.is_empty());
+        assert!(t.is_empty(), "drain resets full flag too");
+        assert!(!t.is_full());
+        // 复位后回归常规三态
+        t.mark(Rect {
+            x: 1,
+            y: 1,
+            w: 2,
+            h: 2,
+        });
+        let plan2 = t.drain_plan();
+        assert!(!plan2.full && plan2.rects.len() == 1);
     }
 }
