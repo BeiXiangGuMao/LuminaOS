@@ -574,6 +574,7 @@ pub fn stage_init() -> Option<u64> {
             }
         }
     }
+    STAGE_ACTIVE.store(true, Ordering::Release);
     Some(STAGE_FRAMES[0].load(Ordering::Acquire))
 }
 
@@ -602,6 +603,36 @@ fn stage_px_read(pages: u64, stride: u32, x: i32, y: i32) -> u32 {
     //          stage_init 域断言）；4 字节对齐（页对齐帧 + 像素步长）。
     // 不变式 —— read_volatile 防删除/合并；越域路径不可达（前置 None）。
     unsafe { core::ptr::read_volatile(addr as *const u32) }
+}
+
+/// VRAM 直写探针（t77 哨兵面——合成执行器交盒外零触碰的对照写入；
+/// (x,y) 屏内由调用方保证）。
+pub fn fb_probe_px_write(x: i32, y: i32, color: u32) {
+    if let Some(fb) = fb_handle() {
+        fb.px(x, y, color);
+    }
+}
+
+/// VRAM 直读探针（t77 等值/哨兵断言面；屏外读返 0）。
+pub fn fb_probe_px_read(x: i32, y: i32) -> u32 {
+    fb_handle().map_or(0, |fb| fb.px_read(x, y))
+}
+
+/// stage 像素写（t77 裸机活体组帧面——ring3 写后备缓冲语义的内核侧
+/// 等价写入；(x,y) 屏内由调用方保证，越界静默丢弃）。
+pub fn stage_px_write(x: i32, y: i32, color: u32) {
+    let pages = STAGE_PAGES.load(Ordering::Acquire);
+    if pages == 0 || x < 0 || y < 0 {
+        return;
+    }
+    let stride = WIDTH * 4;
+    let off = (y as u64) * stride as u64 + (x as u64) * 4;
+    if let Some(addr) = stage_addr(pages, off) {
+        // SAFETY: 前置条件 —— addr 自 stage_addr 界内翻译（页帧恒等映射，
+        //          stage_init 域断言）；4 字节对齐（页对齐帧 + 像素步长）。
+        // 不变式 —— write_volatile 防合并/重排；越域路径不可达（None 已滤）。
+        unsafe { core::ptr::write_volatile(addr as *mut u32, color) };
+    }
 }
 
 /// SYS_FB_STAGE 主体（M28-K1）：stage 后备缓冲登记 + 调用方任务根映射。
@@ -675,7 +706,6 @@ pub fn sys_fb_stage(va: u64) -> u64 {
         return ENOMEM;
     }
     or_user_chain(user_root, va, va + pages as u64 * 4096);
-    STAGE_ACTIVE.store(true, Ordering::Release);
     // 证据行单调用交付
     let mut buf = [0u8; 96];
     let mut n = put(&mut buf, 0, b"LUMINA-FB-STAGE pid=");

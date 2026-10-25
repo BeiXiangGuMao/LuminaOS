@@ -79,7 +79,7 @@ use crate::multiboot1::BOOT_MAGIC;
 const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
 /// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74）。
-const SELFTEST_TOTAL: usize = 76;
+const SELFTEST_TOTAL: usize = 77;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -4109,6 +4109,78 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t76, "crystal-compat");
+
+    // 77) M28-T1 stage 合成活体（t77）：stage 登记（幂等 = 合成模式激活）
+    //     → 直写 VRAM 哨兵域（交盒外零触碰的对照面）→ stage 组帧（ring3
+    //     写后备缓冲语义的内核侧等价）→ SYS_FB_SYNC 记账损伤（ring3 同体）
+    //     → fb_compose_tick 拍内 drain→仲裁→交盒局部上屏：交盒内读回 ==
+    //     stage 图案、交盒外哨兵逐字节未触（损伤域局部上屏电气证据）+
+    //     二拍空账直返 0（跳帧快速通道）。
+    let t77 = {
+        let mut ok = true;
+        // (1) stage 登记（幂等；2026 页帧 + 恒等域 + 清零 + 激活）
+        let stage_ok = crate::fb::stage_init().is_some();
+        ok &= stage_ok;
+        let dmg = mirror::Rect {
+            x: 200,
+            y: 150,
+            w: 320,
+            h: 200,
+        };
+        // (2) 哨兵直写（VRAM 直接面——合成执行器不得触碰）
+        let mut sent_pre = [0u32; 4];
+        let sent_pts = [(40i32, 40i32), (95, 95), (1500, 900), (1595, 995)];
+        for (i, (x, y)) in sent_pts.iter().enumerate() {
+            let c = 0x0100_0000 | (i as u32 * 0x0101_0101);
+            crate::fb::fb_probe_px_write(*x, *y, c);
+            sent_pre[i] = c;
+        }
+        // (3) stage 组帧（交盒域确定性图案）
+        let stage_px = |x: i32, y: i32| -> u32 {
+            0x5500_0000 | (((x & 0xFF) as u32) << 16) | (((y & 0xFF) as u32) << 8) | 0x5A
+        };
+        for y in dmg.y..dmg.y + dmg.h as i32 {
+            for x in dmg.x..dmg.x + dmg.w as i32 {
+                crate::fb::stage_px_write(x, y, stage_px(x, y));
+            }
+        }
+        // (4) 记账损伤（SYS_FB_SYNC 主体——ring3 同体路径）
+        let sync_bytes =
+            crate::fb::sys_fb_sync(dmg.x as u64, dmg.y as u64, dmg.w as u64, dmg.h as u64);
+        ok &= sync_bytes == u64::from(dmg.w) * u64::from(dmg.h) * 4;
+        // (5) 合成一拍：交盒局部上屏
+        let px = crate::fb::fb_compose_tick();
+        ok &= px == u64::from(dmg.w) * u64::from(dmg.h);
+        // (6) 等值断言：交盒内 VRAM == stage；交盒外哨兵未触
+        let mut eq_ok = true;
+        for (x, y) in [
+            (dmg.x, dmg.y),
+            (dmg.x + dmg.w as i32 - 1, dmg.y),
+            (dmg.x, dmg.y + dmg.h as i32 - 1),
+            (dmg.x + dmg.w as i32 - 1, dmg.y + dmg.h as i32 - 1),
+            (360, 250),
+        ] {
+            if crate::fb::fb_probe_px_read(x, y) != stage_px(x, y) {
+                eq_ok = false;
+            }
+        }
+        let mut sent_ok = true;
+        for (i, (x, y)) in sent_pts.iter().enumerate() {
+            if crate::fb::fb_probe_px_read(*x, *y) != sent_pre[i] {
+                sent_ok = false;
+            }
+        }
+        ok &= eq_ok && sent_ok;
+        // (7) 二拍空账（drain 复位语义——跳帧快速通道）
+        let px2 = crate::fb::fb_compose_tick();
+        ok &= px2 == 0;
+        let _ = writeln!(
+            log,
+            "compose-spec: stage={stage_ok} sync={sync_bytes} px={px} eq={eq_ok} sent={sent_ok} tick2={px2} ok={ok}"
+        );
+        ok
+    };
+    report(&mut log, t77, "compose-spec");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {
