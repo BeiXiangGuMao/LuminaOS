@@ -1,8 +1,47 @@
-//! Cascade 流域 —— 桌面环境外壳状态。
+//! Cascade 流域 —— 桌面环境外壳语义。
 //!
 //! 依据《指标与规范手册》第 13 章：Cascade 管理桌面骨架（Panel/Dock/窗口栈）。
 //! 本 crate 实现外壳状态机与窗口焦点序两个策略面；布局的双态引擎在服务侧，
 //! 视觉规格由《美术设计指南》第四章与第七章定义。
+//!
+//! M30-C1 起 shell 语义四面归位（CA-P05 结构面，ROADMAP M30）：
+//!
+//! - [`ShellState`]/[`Shell`]：四态外壳状态机（Boot/LockScreen/Session/Overview）；
+//! - [`FocusList`]：窗口焦点序（LRU 前置）；
+//! - [`workspace::Workspaces`]：定容工作区表（窗口归属/切换/跨区定位）；
+//! - [`tiling::tiling_plan`]：master-stack 平铺计划（产出 [`mirror::Rect`]
+//!   几何单一事实源，保留域消费 `loom` 骨架常量）；
+//! - [`dock::Dock`]：定容 Dock 登记面（图标档位校验消费 `glyph::scale_factor`）。
+//!
+//! M30-C1 起 no_std + alloc（crystal/mirror 先例）：内核自检段（t79）直接
+//! 消费本 crate 的语义面；宿主测试经 test 模块照常运行。
+#![no_std]
+extern crate alloc;
+
+use alloc::{format, string::String, vec::Vec};
+
+pub mod dock;
+pub mod tiling;
+pub mod workspace;
+
+/// 外壳语义面错误集（fail-visible，无静默吞并）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellError {
+    /// 工作区索引越界。
+    WorkspaceRange,
+    /// 窗口已存在于任一工作区（重复打开拒收）。
+    AlreadyOpen,
+    /// 窗口未在指定工作区打开。
+    NotOpen,
+    /// 应用已在 Dock 登记。
+    DuplicateApp,
+    /// Dock 容量满。
+    DockFull,
+    /// 图标尺寸不在 24/48/96 档位（glyph::scale_factor 闸）。
+    IllegalIcon,
+    /// 视口不可承载桌面骨架（零维或小于 Panel+Dock+双倍网格保留域）。
+    Viewport,
+}
 
 /// 外壳全局状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +102,14 @@ impl Shell {
             ))
         }
     }
+
+    /// 外壳是否处于可操作工作区的状态（Session/Overview 语义面）。
+    ///
+    /// Boot/LockScreen 不暴露工作区操作——组合契约：`Workspaces` 自身不感知
+    /// 外壳状态，由调用方（组合层/自检段）以本谓词把门。
+    pub fn workspace_available(&self) -> bool {
+        matches!(self.state, ShellState::Session | ShellState::Overview)
+    }
 }
 
 /// 窗口焦点序：最后激活的窗口在最前。
@@ -72,9 +119,9 @@ pub struct FocusList {
 }
 
 impl FocusList {
-    /// 创建空焦点序。
-    pub fn new() -> Self {
-        Self::default()
+    /// 创建空焦点序（const，供工作区表定容初始化）。
+    pub const fn new() -> Self {
+        Self { order: Vec::new() }
     }
 
     /// 激活窗口（不存在则加入）。
@@ -122,6 +169,19 @@ mod tests {
             .expect("session -> overview");
         sh.transition(ShellState::LockScreen)
             .expect("overview -> lock");
+    }
+
+    #[test]
+    fn workspace_gate_follows_shell_state() {
+        // 组合契约谓词：Boot/LockScreen 不暴露工作区
+        let mut sh = Shell::new();
+        assert!(!sh.workspace_available());
+        sh.transition(ShellState::LockScreen).expect("boot -> lock");
+        assert!(!sh.workspace_available());
+        sh.transition(ShellState::Session).expect("lock -> session");
+        assert!(sh.workspace_available());
+        sh.transition(ShellState::Overview).expect("-> overview");
+        assert!(sh.workspace_available());
     }
 
     #[test]

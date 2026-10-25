@@ -115,6 +115,21 @@ from = "loom"
 to = "mirror"
 note = "布局求解产出几何单一事实源 mirror::Rect（Elm 架构 view 树的 Frame 骨架坐标面——cascade 平铺计划/prism::Stack 同源消费；几何代数〔交/并〕仍独占归 mirror，loom 只产出不运算）；M30-L1"
 
+[[allowed_edges]]
+from = "cascade"
+to = "loom"
+note = "平铺保留域消费 loom 骨架常量（PANEL_HEIGHT 48 / DOCK_HEIGHT 72 / GRID 8——视觉常量单一事实源，数值与 ART-003 一致纪律）；M30-C1"
+
+[[allowed_edges]]
+from = "cascade"
+to = "mirror"
+note = "平铺计划产出几何单一事实源 mirror::Rect（master-stack 窗矩形，prism::Stack 直接可消费——与 loom 布局产出同源对账）；M30-C1"
+
+[[allowed_edges]]
+from = "cascade"
+to = "glyph"
+note = "Dock 登记面图标档位校验消费 glyph::scale_factor 单一事实源（24/48/96 三档，非档位拒收 fail-visible）；M30-C1"
+
 # -------------------------------------------------------- 债务面：依赖豁免
 
 

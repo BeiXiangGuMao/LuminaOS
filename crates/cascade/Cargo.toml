@@ -10,3 +10,6 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+glyph = { workspace = true }
+loom = { workspace = true }
+mirror = { workspace = true }
