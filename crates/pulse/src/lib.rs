@@ -12,6 +12,8 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+pub mod udp;
+
 /// 网络地址。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SocketAddr {
