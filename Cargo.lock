@@ -36,9 +36,6 @@ version = "0.25.0"
 [[package]]
 name = "harbor"
 version = "0.25.0"
-dependencies = [
- "ostd",
-]
 
 [[package]]
 name = "loom"
@@ -51,7 +48,6 @@ dependencies = [
  "bedrock",
  "conduit",
  "crystal",
- "harbor",
  "meridian",
  "mirror",
  "ostd",

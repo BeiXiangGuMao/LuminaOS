@@ -22,10 +22,8 @@ ledger_version = 1
 
 # -------------------------------------------------------- 政策面：允许边
 
-[[allowed_edges]]
-from = "harbor"
-to = "ostd"
-note = "细则依赖方向：ostd → {harbor, vanguard} → bedrock"
+# ADR-0003（M29-N1）销账注：原 harbor→ostd 边随分配器迁出 + harbor 清库退役；
+# harbor 重铸为 POSIX libc 符号面（纯 safe 零依赖），细则依赖方向声明不变。
 
 [[allowed_edges]]
 from = "vanguard"
@@ -36,11 +34,6 @@ note = "细则依赖方向同上"
 from = "lumina-kernel"
 to = "ostd"
 note = "内核消费机制层"
-
-[[allowed_edges]]
-from = "lumina-kernel"
-to = "harbor"
-note = "内核消费堆分配器（#[global_allocator]）"
 
 [[allowed_edges]]
 from = "lumina-kernel"
@@ -141,9 +134,6 @@ note = "全仓唯一 unsafe 白名单 crate（收口层，ROADMAP §1.2；ADR-00
 crate = "lumina-kernel"
 note = "内核态本体（ring0 边界面：中断/任务/页表/端口 I/O）"
 
-[[unsafe_allow]]
-crate = "harbor"
-path = "src/lib.rs"
-note = "内核堆分配器（HarborBump/FreeList：unsafe impl Sync/GlobalAlloc + 裸指针操作），待迁 ostd::heap（M29 Harbor libc 首版同批清库重铸）"
-adr = "ADR-0003"
-until = "M29"
+# ADR-0003（M29-N1）销账注：原 harbor 文件级 unsafe 白名单（until=M29）到期销账——
+# 分配器已迁 ostd::heap（ostd 全 crate 允许层承接），harbor 重铸后 crate 级
+# forbid(unsafe_code)，无 unsafe 容忍面。

@@ -26,7 +26,7 @@ meridian.workspace = true
 crystal.workspace = true
 
 ostd.workspace = true
-harbor.workspace = true
+# ADR-0003（M29-N1）：harbor 依赖退役——堆分配器归 ostd::heap，harbor 重铸 POSIX libc
 bedrock.workspace = true
 vanguard.workspace = true
 weave.workspace = true

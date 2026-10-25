@@ -11,6 +11,8 @@
 //!   CR3（HW-04）、cli/sti/hlt/lidt（HW-05）、PIC（HW-06）、PIT（HW-07）；
 //! - [`mm`]：物理帧分配器（区间裁剪 + LIFO 空闲表）与四级页表抽象
 //!   （map/translate/unmap，经 PhysAccess 抽象零 unsafe 遍历）；
+//! - [`heap`]：内核堆分配器面（bump + free-list，ADR-0003 自 harbor 归位，
+//!   M29-N1；`GlobalAlloc` 契约 + 统计 + 启动期 rebind）；
 //! - [`time`]：PIT 节拍计数与低功耗等待；
 //! - [`task`]：协作式上下文切换（CONTEXT-01，callee-saved + rsp 交换）；
 //! - [`interrupt`]：IDT 门描述符与装载（x86-interrupt ABI 注册）。
@@ -28,6 +30,7 @@ extern crate alloc;
 pub mod acpi;
 pub mod boot;
 pub mod console;
+pub mod heap;
 #[cfg(target_arch = "x86_64")]
 pub mod hw;
 #[cfg(target_arch = "x86_64")]

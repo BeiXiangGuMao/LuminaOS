@@ -8,8 +8,8 @@
 //! - **unsafe 扫描**：逐 crate 扫描 src/**/*.rs 的 unsafe 使用行（词边界 +
 //!   后随 `{`/`fn `/`impl `/`trait `/`mod `；注释行跳过——行级近似，硬保证
 //!   仍靠 forbid attribute 随批次落地），对照台账容忍面：全 crate 允许层
-//!   （ostd/lumina-kernel）、文件级白名单（harbor/pulse，引 ADR）、其余
-//!   零 unsafe 层（bedrock 等十八包）。
+//!   （ostd/lumina-kernel/bedrock）、其余零 unsafe 层（含 harbor——ADR-0003
+//!   M29-N1 重铸后 forbid(unsafe_code)；pulse——ADR-0005 M27-N1 同款）。
 //!
 //! 台账自检：债务面条目（dep_exemptions / module_overreach / 带 until 的
 //! unsafe_allow）缺 adr 字段即 lint 失败——无裁决背书的债务不入账。

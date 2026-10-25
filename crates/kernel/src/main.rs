@@ -67,7 +67,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use bedrock::ipc::Endpoint;
 use bedrock::tlv;
-use harbor::HarborFreeList;
+use ostd::heap::FreeList;
 use ostd::mm::frame::{FrameAllocator, Region, FRAME_SIZE};
 use ostd::mm::page::{Entry, IdentityAccess, PageError, Walker};
 use ostd::sync::SpinLock;
@@ -105,10 +105,11 @@ static mut KERNEL_HEAP: KernelHeap = KernelHeap {
     bytes: [0; HEAP_SIZE],
 };
 
-/// 全局分配器：kmain 早期 rebind 到静态内核堆（Harbor 启动惯用法）。
-/// M21-③：由 HarborBump 升级为 HarborFreeList（first-fit + 合并复用面）。
+/// 全局分配器：kmain 早期 rebind 到静态内核堆（启动惯用法）。
+/// M21-③：由 Bump 升级为 FreeList（first-fit + 合并复用面）。
+/// ADR-0003（M29-N1）：分配器自 harbor 迁 ostd::heap，harbor 让位 POSIX libc。
 #[global_allocator]
-static ALLOC: HarborFreeList = HarborFreeList::new_unbacked();
+static ALLOC: FreeList = FreeList::new_unbacked();
 
 /// 首批进程共享的交错序列日志（自检 11 的判定证据）。
 static ORDER_LOG: SpinLock<Vec<&'static str>> = SpinLock::new(Vec::new());
@@ -162,7 +163,10 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ALLOC.rebind(heap_ptr, HEAP_SIZE),
         "kernel heap rebind failed"
     );
-    let _ = writeln!(log, "kernel heap: {HEAP_SIZE} bytes bound (HarborFreeList)");
+    let _ = writeln!(
+        log,
+        "kernel heap: {HEAP_SIZE} bytes bound (ostd::heap::FreeList)"
+    );
 
     // ---- 引导信息解析 ----
     let summary = multiboot1::summarize(info);
