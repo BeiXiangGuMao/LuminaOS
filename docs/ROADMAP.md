@@ -80,7 +80,7 @@
 | **M26** | Crystal 文件系统首割：格式 v1 + WAL + 快照常数时间——**✅ 关账**（M26-收尾核验：格式 v1 落盘 + crash-fs ≥1000 两态一致性 + CR-P05 常数时间跨规模实证 + ADR-0002 迁移步清账 + t76 活体 76/76；十笔对账见 §四 M26 子节） | P2 | CR-P05≤50ms（常数时间）；crash-fs 断电注入 ≥1000 次 | crystal/kernel::blk |
 | **M27** | 网络栈收口：IP/ICMP/UDP + TCP 首割——**✅ 关账**（M27-收尾核验：ADR-0005 执行步 + t73 丢帧类排水限流收口 + UDP 协议面 + t78 回环活体 78/78 + PU-P03 口径挂接 + TCP 首割协议面 + v0.25.0 定版；七笔对账见 §四 M27 子节） | P2→P3 | PU-P03 回环延迟口径挂接；t 系列 ARP→ICMP→UDP 活体链 | pulse/kernel::vnet |
 | **M28** | 显示栈闭环：Mirror 合成管线 + 用户态显示面——**✅ 关账**（M28-收尾核验：prism 合成结构面 + drain_plan 消费面 + SYS_FB_STAGE(39) 组合器服务化 + 1080p 切换 + t77 活体 77/77；七笔对账见 §四 M28 子节） | P3 | MI-P01 结构面；1080p@60 合成冒烟 | mirror/kernel::fb/prism |
-| **M29** | Harbor libc 首版 + Weave 对象库 | P2 补课 | H-P01 首批 ≥50 符号垂直切片；WE-P02 断电注入框架 | harbor/weave |
+| **M29** | Harbor libc 首版 + Weave 对象库——**🚧 进行中**（ADR-0003 执行步前哨：分配器迁 ostd::heap + harbor 重铸 libc 面；任务级分解见 §四 M29 子节；挂账五项随行） | P2 补课 | H-P01 首批 ≥50 符号垂直切片；WE-P02 断电注入框架 | harbor/weave |
 | **M30** | 桌面骨架：Loom Elm 架构 + Cascade shell 语义 | P4 | LO-P01 口径挂接；CA-P05 结构面 | loom/cascade/glyph |
 | **M31** | 自举预备：驱动用户态化起步 + Weave 自举 | P5 | V-P05 首批注入矩阵；驱动旁路清单缩编 | vanguard/drivers |
 
@@ -184,6 +184,20 @@ M28 退出口径：prism 合成结构面（PR-P02 z 序仲裁/交盒裁剪/逐�
 M27 退出口径：ADR-0005 执行步完成（pulse 纯协议面 + forbid + 白名单清账）+ t73 丢帧类收口（排水限流结构 + 连跑回归）+ UDP 数据面与端口表首割 + t78 回环活体全绿（78/78）+ PU-P03 口径挂接 + TCP 首割协议面（宿主对账）+ v0.25.0 定版发布。
 
 > **收尾核验（M27-收尾）**：七项全达——① ADR-0005 执行步（pulse 环退役零消费实证 + forbid(unsafe_code) 全 crate 密度 0 + allowlist until=M27 销账）；② t73 丢帧类收口（rx_service 排水限流 headroom 前置约束——交接面 PULSE_MISS 结构性归零〔限流后为不变式破坏显形信号〕+ RX_SHORT 显形 + pcap 全账取证：slirp 反射恒达 + 设备级双面死亡〔A 面 reply 达 netdev 未达 guest / B 面 request used 回写未达 netdev〕登记环境时序面——版本对照铁证 + tx=thread/offloads-off 参数对照否决，设备级残余挂账延续）；③ UDP 数据面首割（UdpHdr 双闸 + RFC 768 伪头校验和手工向量双例 + PortTable 三闸，宿主 11 例）；④ t78 回环活体全绿（78/78：绑定域/回环三发载荷 1-64-1472 三态边界/校验和翻位拒收/未绑定拒投/解绑复绑，交接环共享段与真实 RX 通路同构）；⑤ PU-P03 口径挂接（TSC 纳秒打点 TCG 基线 rtt_min_ns=10142/rtt_max_ns=844691 实录，环境 B 挂账）+ METRICS PU 行扩记；⑥ TCP 首割协议面（TcpHdr 三闸 + 八态状态机 + 握手序号面宿主 8 例，vnet 电气接线挂账）；⑦ v0.25.0 定版发布（workspace 升版 + README 全面带正 + CHANGELOG + RELEASE_NOTES + tag + GitHub Release 四资产回环）。M27 七笔（计划/N1/R1/U1/N2/T1/收尾）关账，近线转入 M29（Harbor libc 首版 + Weave 对象库；M28 已关账——PR-P04 电源协同显示侧 + alpha 混合与多 Surface 表 + 细则 PDF 重取对账 + t73 设备级残余 + TCP 电气接线五项挂账随行）。
+
+### M29 任务级分解（🚧 进行中）
+
+> 主题：Harbor libc 首版 + Weave 对象库（P2 补课）。验收锚：H-P01 首批 ≥50 符号垂直切片 + WE-P02 断电注入框架。提交物 harbor/weave（+ ostd::heap 迁移承接）。**ADR-0003 执行步为主攻前哨**：HarborBump/HarborFreeList 693 行迁 `ostd::heap`（模块化 `heap::bump`/`heap::freelist`），kernel `#[global_allocator]` 引用点切换，harbor 清库重铸为 POSIX libc 符号面（crate 级 `forbid(unsafe_code)` 兑现细则零 unsafe 政策）。范围界定：H-P01 首批 = errno + string + ctype + stdlib 四域纯 safe 垂直切片（值语义 extern "C" + 切片语义 safe 面）；C ABI 指针层（raw ptr 解引用需 unsafe）v0 偏差登记挂账——待用户态链接面成形后以外置方案补位，不破 crate 级 forbid 承诺。Weave 对象库 = 内容寻址 ObjectStore（blob 存取 + 重哈希校验 + 定容淘汰）；WE-P02 断电注入框架 = 事务注入点矩阵（提交路径分相注入）+ 双代际根槽恢复不变式宿主验证（回滚不残留/提交不可重复）。细则锚：《Harbor 港湾开发细则》v1.0.0 /《Weave 织流开发细则》第 15 章——细则 PDF 介质失联偏差见 §七 5，结构面以在库引用面（ADR-0003 / METRICS H·WE 编号 / 本表）为准。**挂账五项随行**（M27 收尾移交，本轮内逐项复核登记，非本轮主攻）：① t73 设备级残余（环境时序面，B 面 TX 交付丢失猎场）② TCP 电气接线（M27-T1 偏差）③ PR-P04 电源协同显示侧 ④ alpha 混合与多 Surface 表 ⑤ 细则 PDF 重取逐条对账。
+
+| 任务 | 内容 | 提交物 | 验收 |
+|---|---|---|---|
+| **M29-计划** | 本表落盘 + §三 M29 行 🚧 标注 + 挂账五项随行登记 | ROADMAP | 本提交 |
+| **M29-N1** | ADR-0003 执行步：HarborBump/HarborFreeList/AllocStats 693 行迁 `ostd::heap`（heap::bump/heap::freelist 模块化 + 宿主测试随迁 + SAFETY 注释纪律保持）+ kernel `#[global_allocator]`/bootstrap rebind 引用切换 + kernel Cargo.toml 去 harbor 依赖 + harbor 清库为过渡态 stub（ADR 指针头注）+ allowlist 销账三项（harbor unsafe 白名单 until=M29 到期销账 + lumina-kernel→harbor 政策边退役 + harbor→ostd 边随清库退役）+ METRICS H 行定位修正 + harbor Cargo.toml 描述对齐 libc 本体 | ostd::heap + kernel + allowlist | 宿主 ostd heap 全谱绿 + 冒烟 78/78 不降（heap-alloc-stats 承接） |
+| **M29-H1** | Harbor libc 首版（H-P01 首批 ≥50 符号垂直切片）：errno 域（AtomicI32 errno 面 + POSIX 错误名表 strerror）+ string 域（mem/str 语义 safe 切片面 ~20 符号）+ ctype 域（值语义 extern "C" 16 符号）+ stdlib 域（abs/div 族 extern "C" + strto* 切片面 + bsearch/qsort）+ crate 级 forbid(unsafe_code) + 宿主测试全谱 + C ABI 指针层 v0 偏差登记挂账 | crates/harbor | H-P01 ≥50 符号清点入账 + 宿主全绿 |
+| **M29-W1** | Weave 对象库 + WE-P02 断电注入框架：内容寻址 ObjectStore（put/get/has/verify + 64 位内容摘要寻址 + 定容零堆槽位 + 重哈希校验 fail-visible）+ 事务注入点矩阵（提交路径分相：prepare 后/根槽写入前/翻转前/翻转后）+ 双代际根槽恢复面（掉电重演 → 恢复不变式：已提交不丢/回滚不残留/半程截断可检出）+ 宿主注入矩阵全谱 | crates/weave | WE-P02 框架在环 + 宿主全绿 |
+| **M29-收尾** | ROADMAP/METRICS 对账（H/WE 行扩记 + §1.2 harbor/weave 行刷新）+ README 组件面对账 + 挂账五项复核注（状态不变项如实再登记） | 对账提交 | 本提交 |
+
+M29 退出口径：ADR-0003 执行步完成（分配器归 ostd::heap + kernel 切换 + allowlist 销账）+ H-P01 首批 ≥50 符号垂直切片（forbid(unsafe_code) 兑现）+ WE-P02 断电注入框架在环 + 宿主全谱绿 + 冒烟 78/78 不降。
 
 ---
 
