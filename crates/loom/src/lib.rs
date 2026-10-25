@@ -1,4 +1,4 @@
-//! Loom 织机 —— 主题系统与设计 token 消费面。
+//! Loom 织机 —— Elm 架构 GUI 框架与设计 token 消费面。
 //!
 //! 依据《美术设计指南》(LUM-ART-003)：色彩 token、间距刻度与字号公式由美术指南
 //! 定义，Loom 是它们的工程消费方；性能上限见《指标与规范手册》Loom 章。
@@ -8,7 +8,19 @@
 //! - 字号公式 `16 + vw/100`（逻辑像素，随窗口宽度呼吸）；
 //! - 骨架常量：Panel 高 48 px、Dock 高 72 px；
 //! - 主题 token 的最小类型（颜色 + 语义别名）。
+//!
+//! M30-L1 起 Elm 架构面归位（LO-P01 口径挂接，ROADMAP M30）：Model/Msg/
+//! update/view 消息折叠环（[`elm::App`] + [`elm::fold`]）、定容零堆平面元素
+//! 树（[`elm::ViewBuf`]，const new 内核 static 可用）、约束求解布局
+//! （[`layout::solve`]，间距 8px 网格闸 fail-visible，产出
+//! [`mirror::Rect`] 几何单一事实源）与虚拟化列表可见窗纯函数（[`vlist`]）。
+//! 布局只产出坐标不运算几何代数（交/并独占归 mirror）。
 #![no_std]
+#![forbid(unsafe_code)]
+
+pub mod elm;
+pub mod layout;
+pub mod vlist;
 
 /// 基础网格（逻辑像素）。
 pub const GRID: u32 = 8;

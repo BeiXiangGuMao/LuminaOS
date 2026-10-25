@@ -40,6 +40,9 @@ version = "0.25.0"
 [[package]]
 name = "loom"
 version = "0.25.0"
+dependencies = [
+ "mirror",
+]
 
 [[package]]
 name = "lumina-kernel"

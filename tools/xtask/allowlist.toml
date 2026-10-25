@@ -110,6 +110,11 @@ from = "lumina-kernel"
 to = "prism"
 note = "组合器执行器消费 prism::Stack 合成结构面（SYS_FB_STAGE stage 面：drain 损伤计划 → 仲裁 → VRAM 交盒局部上屏）；ADR-0006 + M28-K1"
 
+[[allowed_edges]]
+from = "loom"
+to = "mirror"
+note = "布局求解产出几何单一事实源 mirror::Rect（Elm 架构 view 树的 Frame 骨架坐标面——cascade 平铺计划/prism::Stack 同源消费；几何代数〔交/并〕仍独占归 mirror，loom 只产出不运算）；M30-L1"
+
 # -------------------------------------------------------- 债务面：依赖豁免
 
 
