@@ -675,10 +675,11 @@ pub fn diag(w: &mut impl core::fmt::Write) {
         let _ = writeln!(w, "LUMINA-NETDIAG rxbuf0 {buf:02x?}");
         let _ = writeln!(
             w,
-            "LUMINA-NETDIAG pulse pushed={} popped={} miss={}",
+            "LUMINA-NETDIAG pulse pushed={} popped={} miss={} short={}",
             PULSE_PUSHED.load(Ordering::Relaxed),
             PULSE_POPPED.load(Ordering::Relaxed),
             PULSE_MISS.load(Ordering::Relaxed),
+            RX_SHORT.load(Ordering::Relaxed),
         );
         let _ = writeln!(
             w,
@@ -739,8 +740,13 @@ static PULSE_RX: SpscRing<FrameSlot, PULSE_CAP> = SpscRing::new();
 static PULSE_PUSHED: AtomicU64 = AtomicU64::new(0);
 /// pulse 消费统计。
 static PULSE_POPPED: AtomicU64 = AtomicU64::new(0);
-/// 环满丢弃计数（fail-visible：交接面不静默吞帧）。
+/// 环满丢弃计数（M27-R1 限流后为结构违背显形信号：headroom 前置约束
+/// 下 send 恒 Ok，非零即限流不变式被破——fail-visible 不静默）。
 static PULSE_MISS: AtomicU64 = AtomicU64::new(0);
+
+/// 残帧拒收计数（M27-R1 显形面：M28 取证「长度闸拒短帧」形态的观测
+/// 口——长度闸拒收从静默转 fail-visible，diag 行同源）。
+static RX_SHORT: AtomicU64 = AtomicU64::new(0);
 
 /// C1 背压投入态（滞回标志；[`rx_service`] 单语境读写，原子面仅为
 /// diag/快照可读）。
@@ -780,11 +786,17 @@ unsafe fn peek_bytes(buf: u64, off: usize, out: &mut [u8]) {
 
 /// RX 排水面：used 环排水 → 帧喂 pulse 环 → 水位重臂（M24-C1 背压）。
 ///
+/// **M27-R1 排水限流（t73 丢帧类收口）**：drain 批量受环余量约束
+/// （headroom = 环容量 − 占用，上限 [`RX_POST`]）——余项滞留 used 环
+/// 下拍续排，交接面**零丢弃**（丢帧变延迟，fail-preserve；M28 取证
+/// 定案：环满 miss 形态根因 = 旧结构「先全量排水后喂环、环满即丢」）。
+/// 余量耗尽即自然停排：used 完成项滞留 = desc 不归还 = 设备自由缓冲
+/// 赤字 = 线级背压（与滞回投入态同构，语义升级无新增机制）。
+///
 /// 背压滞回（[`RX_HI_WATERMARK`]/[`RX_LO_WATERMARK`]）：占用 ≥ HI →
-/// 投入——本拍已排水 desc 全部停臂入 pending（设备自由缓冲递减 →
-/// 线上级背压），后续拍短路（不排水不重臂）；占用 ≤ LO → 解除——
-/// pending 一揽子重臂（缓冲池复位，零泄漏账本）。残帧/越界 id 拒收
-/// （fail-closed），环满丢弃计数（fail-visible）。
+/// 投入——后续拍短路（不排水不重臂）；占用 ≤ LO → 解除——pending
+/// 一揽子重臂（缓冲池复位，零泄漏账本）。残帧/越界 id 拒收
+/// （fail-closed）且计数显形（[`RX_SHORT`]，M27-R1 起禁静默）。
 /// SAFETY: 前置 —— vring 三表/rx_bufs 自 bring_up 装配（界内）；单语境
 ///         串行（kmain 自检段）。返回喂环成功数。
 unsafe fn rx_service(st: &mut NetState) -> usize {
@@ -797,8 +809,14 @@ unsafe fn rx_service(st: &mut NetState) -> usize {
             return 0; // 仍投入：不排水不重臂（设备侧背压保持）
         }
     }
+    // M27-R1 限流：本拍排水量 ≤ 环余量——喂环必成功（容量约束前置），
+    // 余项滞留 used 环下拍续排。残帧消耗排水名额但不喂环（批内余量
+    // 虚占 → 好帧至多延迟一拍，语义登记）。
+    let headroom = PULSE_CAP
+        .saturating_sub(PULSE_RX.len())
+        .min(RX_POST as usize);
     let mut elems = [Done { id: 0, len: 0 }; RX_POST as usize];
-    let n = unsafe { drain_used(&mut st.rx, &mut elems) };
+    let n = unsafe { drain_used(&mut st.rx, &mut elems[..headroom]) };
     let mut fed = 0usize;
     for e in elems.iter().take(n) {
         let idx = e.id as usize;
@@ -809,6 +827,8 @@ unsafe fn rx_service(st: &mut NetState) -> usize {
         st.rx_pending[idx] = true;
         let full = e.len as usize;
         if !(VNET_HDR + 14..=4096).contains(&full) {
+            // M27-R1：残帧显形（M28 取证「长度闸拒短帧」形态的观测口）
+            RX_SHORT.fetch_add(1, Ordering::Relaxed);
             continue; // 残帧（以太头不足）/ 设备写长越界拒收
         }
         let flen = full - VNET_HDR;
@@ -822,6 +842,8 @@ unsafe fn rx_service(st: &mut NetState) -> usize {
         };
         // SAFETY: rx_bufs[idx] 恒等映射帧内（VNET_HDR + flen ≤ 4096 界内）。
         unsafe { peek_bytes(st.rx_bufs[idx], VNET_HDR, &mut slot.data[..flen]) };
+        // headroom 前置约束下 send 恒 Ok；Err 分支保留为结构违背显形
+        // 信号（命中即限流不变式被破，fail-visible 不静默）。
         match PULSE_RX.send(slot) {
             Ok(()) => {
                 PULSE_PUSHED.fetch_add(1, Ordering::Relaxed);
