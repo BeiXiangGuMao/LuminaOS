@@ -78,8 +78,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 内核堆大小：4 MiB（M3 任务栈/日志/TLV 充足；帧管理独立于本堆）。
 const HEAP_SIZE: usize = 4 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80）。
-const SELFTEST_TOTAL: usize = 80;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81）。
+const SELFTEST_TOTAL: usize = 81;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -4669,6 +4669,95 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t80, "bootprep");
+
+    // t81) aurora 活体（M32-T1）：三面内核态收口——① 权限四相（perm 声明闸/
+    // 承接授予/运行时检查/撤销显形——A1 四相面的内核态首演）② 生命周期
+    // 拦截矩阵（AF-P03 拦截 100% + AF-P06 合法路径 + 终态为汇）③ 清单闸
+    //（validate 四态：合法/BadAppId/NoCapabilities/BadCapability）。
+    let t81 = {
+        // 面① 权限四相内核态收口：相① 声明闸（合法形态过 + 非法矩阵显形：
+        // 缺前缀/缺段/超段/大写/空段）→ 相② 承接授予（首空槽确定性 +
+        // 八动作目录映射闭集）→ 相③ 运行时检查（合法过 + 越权 Denied +
+        // 确定性失败序目录闸先于槽位闸）→ 相④ 撤销显形（死槽访问
+        // SlotEmpty + 重复撤销显形）。
+        let p_ok = {
+            let mut p = aurora::perm::PermCenter::new();
+            let s_ok = aurora::perm::check_schema("cap.fs.docs.read").is_ok()
+                && aurora::perm::check_schema("fs.docs.read").is_err()
+                && aurora::perm::check_schema("cap.fs.docs").is_err()
+                && aurora::perm::check_schema("cap.fs.docs.read.more").is_err()
+                && aurora::perm::check_schema("cap.fs.Docs.read").is_err()
+                && aurora::perm::check_schema("cap..docs.read").is_err();
+            let g_ok = p.grant("cap.fs.docs.read", 1) == Ok(0)
+                && p.grant("cap.net.sock.send", 2) == Ok(1)
+                && aurora::perm::action_right("send") == Some(vanguard::Right::IPC_SEND)
+                && aurora::perm::action_right("fsroot") == Some(vanguard::Right::FS_ROOT)
+                && aurora::perm::action_right("dance").is_none();
+            let c_ok = p.check(0, "read").is_ok()
+                && p.check(0, "write") == Err(aurora::perm::PermError::Denied)
+                && p.check(0, "dance") == Err(aurora::perm::PermError::UnknownAction)
+                && p.check(vanguard::CAPACITY, "read") == Err(aurora::perm::PermError::NoSuchSlot);
+            let r_ok = p.revoke(0).is_ok()
+                && p.check(0, "read") == Err(aurora::perm::PermError::SlotEmpty)
+                && p.revoke(0) == Err(aurora::perm::PermError::SlotEmpty);
+            s_ok && g_ok && c_ok && r_ok
+        };
+        // 面② 生命周期拦截矩阵：非法直达拦截显形（Registered→Foreground/
+        // Registered→Terminated——AF-P03 拦截 100%）+ 合法全迁移路径
+        //（AF-P06 经框架唯一入口）+ 终态为汇。
+        let l_ok = {
+            let mut a = aurora::AppRuntime::new();
+            let mut ok = a.state() == aurora::Lifecycle::Registered;
+            ok &= a.transition(aurora::Lifecycle::Foreground).is_err();
+            ok &= a.transition(aurora::Lifecycle::Terminated).is_err();
+            for st in [
+                aurora::Lifecycle::Launching,
+                aurora::Lifecycle::Foreground,
+                aurora::Lifecycle::Background,
+                aurora::Lifecycle::Suspended,
+                aurora::Lifecycle::Terminated,
+            ] {
+                ok &= a.transition(st).is_ok();
+            }
+            ok &= a.state() == aurora::Lifecycle::Terminated;
+            ok &= a.transition(aurora::Lifecycle::Launching).is_err();
+            ok
+        };
+        // 面③ 清单闸四态：合法过 + 反向域名坏形 BadAppId + 能力空
+        // NoCapabilities + 能力 schema 非法 BadCapability（A1 能力域扩容闸
+        // ——单一事实源 perm::check_schema）。
+        let m_ok = {
+            let good = aurora::LuappManifest {
+                app_id: alloc::string::String::from("org.lumina.notes"),
+                display_name: alloc::string::String::from("Notes"),
+                version: alloc::string::String::from("0.3.1"),
+                capabilities: alloc::vec![alloc::string::String::from("cap.fs.documents.read")],
+            };
+            let bad_id = aurora::LuappManifest {
+                app_id: alloc::string::String::from("Notes"),
+                ..good.clone()
+            };
+            let no_cap = aurora::LuappManifest {
+                capabilities: alloc::vec![],
+                ..good.clone()
+            };
+            let bad_cap = aurora::LuappManifest {
+                capabilities: alloc::vec![alloc::string::String::from("fs.documents.read")],
+                ..good.clone()
+            };
+            good.validate().is_ok()
+                && bad_id.validate() == Err(aurora::ManifestError::BadAppId)
+                && no_cap.validate() == Err(aurora::ManifestError::NoCapabilities)
+                && bad_cap.validate() == Err(aurora::ManifestError::BadCapability)
+        };
+        let ok = p_ok && l_ok && m_ok;
+        let _ = writeln!(
+            log,
+            "aurora: perm={p_ok} lifecycle={l_ok} manifest={m_ok} ok={ok}"
+        );
+        ok
+    };
+    report(&mut log, t81, "aurora");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {

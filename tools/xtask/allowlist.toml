@@ -66,6 +66,11 @@ to = "pulse"
 note = "内核消费 UDP 段面单一事实源（UdpHdr 编解码 + RFC768 伪头校验和 + 端口表，M27-N2 起；ADR-0005 pulse 纯协议面归位后的首个内核消费边）"
 
 [[allowed_edges]]
+from = "lumina-kernel"
+to = "aurora"
+note = "内核 t81 自检消费 aurora 框架三面——perm 权限四相内核态收口/AppRuntime 生命周期拦截矩阵/LuappManifest 清单闸（M32-T1 起；aurora no_std+alloc 形态，A1 转换即为此内核消费铺路）"
+
+[[allowed_edges]]
 from = "conduit"
 to = "bedrock"
 note = "兼容层转换器消费 LXE1 事实源（abi 调用号/错误码表）；细则第 4 章 Conduit 定位（M25-C1 起）"

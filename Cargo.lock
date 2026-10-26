@@ -56,6 +56,7 @@ dependencies = [
 name = "lumina-kernel"
 version = "0.26.0"
 dependencies = [
+ "aurora",
  "bedrock",
  "cascade",
  "conduit",

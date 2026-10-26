@@ -45,6 +45,10 @@ glyph.workspace = true
 # M31-N1：scancode set 1 翻译面单一事实源消费（驱动旁路缩编首割——
 # 纯函数零依赖外移，电气/机制面留 kernel::kbd 本体）
 morse.workspace = true
+# M32-T1：t81 aurora 活体消费三面——perm 权限四相（内核态收口首演）、
+# AppRuntime 生命周期拦截矩阵（AF-P03/P06）、LuappManifest 清单闸
+#（aurora no_std+alloc 形态——A1 转换即为此内核消费铺路）
+aurora.workspace = true
 
 [[bin]]
 name = "lumina-kernel"
