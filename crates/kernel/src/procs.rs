@@ -419,11 +419,13 @@ pub fn sys_exec(image: u64, frame: &mut crate::syscall::SyscallFrame) -> u64 {
         return ERR_IMAGE;
     };
     EXEC_VFS_BYTES.store(blob.len() as u64, Ordering::Release);
-    // M16-② Weave 包源映像解包（EXEC 第 2+ 消费者）：直接 LXE1 魔数
-    // 走原链；非 LXE1 → LWP1 结构面解包取载荷（载荷合法性仍由
-    // 装载器 parse 承担）；双重失败 → ERR_IMAGE
+    // M16-② Weave 包源映像解包（EXEC 第 2+ 消费者）；M33-E1 三分流：
+    // ELF 魔数 → ELF 链（bedrock::elf，Linux 兼容装载）；LXE1 魔数 →
+    // 原链；否则 → LWP1 结构面解包取载荷（载荷合法性仍由装载器
+    // parse 承担）；三重失败 → ERR_IMAGE
+    let is_elf = bedrock::elf::probe(&blob);
     let lwp_payload;
-    let blob: &[u8] = if bedrock::exec::parse_probe(&blob) {
+    let blob: &[u8] = if is_elf || bedrock::exec::parse_probe(&blob) {
         &blob
     } else {
         match weave::pkg::parse(&blob) {
@@ -443,15 +445,44 @@ pub fn sys_exec(image: u64, frame: &mut crate::syscall::SyscallFrame) -> u64 {
     };
     let es = {
         let mut alloc = || frames.alloc();
-        match crate::user::build_user_space_lxe(blob, &mut alloc) {
-            Ok(es) => es,
-            Err(crate::user::UserSpaceError::BadImage) => {
-                EXEC_RESULT.store(ERR_IMAGE, Ordering::Release);
-                return ERR_IMAGE;
+        if is_elf {
+            // M33-E1 ELF 链：缺省 argv/envp（execve 参数面随 M33-P1 扩）；
+            // random = TSC 纪元拆字节（AT_RANDOM 熵面，口到 t82/P1 扩强熵）
+            const ELF_DEFAULT_ARGV: &[&str] = &["main"];
+            let t = ostd::time::tsc_now();
+            let mut random = [0u8; 16];
+            for (i, b) in random.iter_mut().enumerate() {
+                *b = (t >> ((i % 8) * 8)) as u8 ^ (i as u8).rotate_left(3);
             }
-            Err(_) => {
-                EXEC_RESULT.store(ERR_NOMEM, Ordering::Release);
-                return ERR_NOMEM;
+            match crate::user::build_user_space_elf(
+                blob,
+                ELF_DEFAULT_ARGV,
+                &[],
+                random,
+                "main",
+                &mut alloc,
+            ) {
+                Ok(es) => es,
+                Err(crate::user::UserSpaceError::BadImage) => {
+                    EXEC_RESULT.store(ERR_IMAGE, Ordering::Release);
+                    return ERR_IMAGE;
+                }
+                Err(_) => {
+                    EXEC_RESULT.store(ERR_NOMEM, Ordering::Release);
+                    return ERR_NOMEM;
+                }
+            }
+        } else {
+            match crate::user::build_user_space_lxe(blob, &mut alloc) {
+                Ok(es) => es,
+                Err(crate::user::UserSpaceError::BadImage) => {
+                    EXEC_RESULT.store(ERR_IMAGE, Ordering::Release);
+                    return ERR_IMAGE;
+                }
+                Err(_) => {
+                    EXEC_RESULT.store(ERR_NOMEM, Ordering::Release);
+                    return ERR_NOMEM;
+                }
             }
         }
     };
@@ -467,7 +498,9 @@ pub fn sys_exec(image: u64, frame: &mut crate::syscall::SyscallFrame) -> u64 {
     task::set_user_root(caller, es.root);
     ostd::hw::control::write_cr3(es.root);
     frame.rip = es.entry;
-    frame.user_rsp = es.stack_top;
+    // M33-E1：ELF 链 rsp = 初始栈构造面（argc/argv/envp/auxv 已写栈顶帧）；
+    // LXE1 链 rsp = 0 → 旧语义 stack_top
+    frame.user_rsp = if es.rsp != 0 { es.rsp } else { es.stack_top };
     frame.rdi = 0;
     frame.rsi = 0;
     frame.rdx = 0;

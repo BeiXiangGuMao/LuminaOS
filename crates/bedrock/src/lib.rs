@@ -7,7 +7,10 @@
 //! - [`abi`]：系统调用号与寄存器布局（v0 ABI）；
 //! - [`tlv`]：内核测试与 IPC 载荷的 TLV 编帧（QEMU 宿主-客户机协议约定）；
 //! - [`ipc`]：端点信箱（快速路径的数据结构面）；
-//! - [`exec`]：LXE1 多段可执行映像格式结构面（M14-①；放置策略归内核装载器）。
+//! - [`exec`]：LXE1 多段可执行映像格式结构面（M14-①；放置策略归内核装载器）；
+//! - [`elf`]：ELF64 静态映像格式 + Linux 初始栈布局面（M33-E1；busybox
+//!   兼容装载路径的结构层——解析防线与 argv/envp/auxv 排布，放置策略
+//!   归内核装载器）。
 //!
 //! ADR-0002 迁移步（M26）：原 vfs 模块整体外移——fd/物理面/契约入
 //! `crystal::vfs`，挂载策略面入 `meridian::vfs`；本 crate 回归通信与契约域。
@@ -22,6 +25,7 @@ extern crate alloc;
 
 pub mod abi;
 pub mod block;
+pub mod elf;
 pub mod exec;
 pub mod ipc;
 pub mod sync;

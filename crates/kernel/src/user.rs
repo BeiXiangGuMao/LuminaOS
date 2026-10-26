@@ -541,6 +541,9 @@ pub struct ExecSpace {
     pub entry: u64,
     /// 栈顶（0x403000 遗留或 [`STACK_TOP_GROW`] 增长栈）。
     pub stack_top: u64,
+    /// Linux 初始栈 rsp（M33-E1）：0 = 旧语义（rsp = stack_top）；
+    /// 非 0 = ELF 链初始栈构造后的 rsp（argc/argv/envp/auxv 已写栈顶帧）。
+    pub rsp: u64,
     /// 段帧表 (vaddr, frame)：每段首帧一条（v0 段均单帧预算内）。
     pub seg_frames: Vec<(u64, u64)>,
     /// 首个 W 段的首帧（哨兵轮询取证；无 W 段 = 0）。
@@ -716,6 +719,158 @@ where
         root,
         entry: img.entry,
         stack_top,
+        rsp: 0,
+        seg_frames,
+        data_frame,
+    })
+}
+
+/// ELF64 静态映像装载（M33-E1）：Linux 兼容路径（bedrock::elf）。
+///
+/// 策略（结构校验已在 parse 完成——含段间页区间交检；此处放置域）：
+/// - 段 vaddr ∈ [[`FRESH_BASE`], [`FRESH_LIMIT`))（PD6[0]→PT 全新
+///   分支，页槽互斥；**制备面重基址构建口径**——「Linux 静态
+///   busybox」由 linker script 落 FRESH_BASE，PD[2] 恒等镜像禁区
+///   S55 不触碰）；
+/// - entry 必须落于某 X 段；
+/// - 栈 = 增长栈域（PD6[1]→pt_stack，顶帧预映射）；
+/// - **Linux 初始栈**（argc/argv/envp/auxv）构造于栈顶帧
+///   （bedrock::elf::build_initial_stack 顶帧镜像缓冲一次落帧），
+///   rsp 经 [`ExecSpace::rsp`] 下发（消费面 sys_exec）。
+///
+/// 映射纪律：W 段 USER|WRITABLE、其余 USER（none 目标 NX 未启用，
+/// RO/RX 同型——v0 口径如实记档）；帧内容经 `ostd::hw::phys` 直写
+/// （file 部分拷贝、mem_len 尾部保持清零——bss 语义）。
+/// 失败路径：已分配帧按 v0 存续期语义不回收（LXE1 同款如实记档）。
+#[allow(clippy::too_many_arguments)]
+pub fn build_user_space_elf<F>(
+    blob: &[u8],
+    argv: &[&str],
+    envp: &[&str],
+    random: [u8; 16],
+    exec_fn: &str,
+    alloc_frame: &mut F,
+) -> Result<ExecSpace, UserSpaceError>
+where
+    F: FnMut() -> Option<u64>,
+{
+    use bedrock::elf::{build_initial_stack, parse, AuxSys, PF_W, PF_X};
+    let img = parse(blob).map_err(|_| UserSpaceError::BadImage)?;
+    // 放置域预检：FRESH 域 + 页槽互斥 + entry 落 X 段
+    let mut slots = [false; 512];
+    let mut entry_ok = false;
+    for seg in img.loads.iter().take(img.load_count) {
+        let end = seg.vaddr + seg.mem_len;
+        if seg.vaddr < FRESH_BASE || end > FRESH_LIMIT {
+            return Err(UserSpaceError::BadImage);
+        }
+        for q in 0..seg.mem_len.div_ceil(FRAME_SIZE) {
+            let slot = ((seg.vaddr - FRESH_BASE) / FRAME_SIZE + q) as usize;
+            if slots[slot] {
+                return Err(UserSpaceError::BadImage);
+            }
+            slots[slot] = true;
+        }
+        if seg.flags & PF_X != 0 && img.entry >= seg.vaddr && img.entry < end {
+            entry_ok = true;
+        }
+    }
+    if !entry_ok {
+        return Err(UserSpaceError::BadImage);
+    }
+    // 4 表骨架 + PD6 双支（段区 pt_seg = pd6[0]、栈区 pt_stack = pd6[1]）
+    let (root, pdpt, _pd, _pt) = build_space_tables(alloc_frame)?;
+    let Some(pd6) = alloc_frame() else {
+        return Err(UserSpaceError::FramesExhausted);
+    };
+    ostd::hw::phys::write_zero(pd6, FRAME_SIZE);
+    let Some(pt_seg) = alloc_frame() else {
+        return Err(UserSpaceError::FramesExhausted);
+    };
+    ostd::hw::phys::write_zero(pt_seg, FRAME_SIZE);
+    let Some(pt_stack) = alloc_frame() else {
+        return Err(UserSpaceError::FramesExhausted);
+    };
+    ostd::hw::phys::write_zero(pt_stack, FRAME_SIZE);
+    let slot6 = (FRESH_BASE >> 30) & 0x1FF;
+    ostd::hw::phys::write_u64(pdpt + slot6 * 8, Entry::table(pd6).bits() | Entry::USER);
+    ostd::hw::phys::write_u64(pd6, Entry::table(pt_seg).bits() | Entry::USER); // pd6[0]
+    ostd::hw::phys::write_u64(pd6 + 8, Entry::table(pt_stack).bits() | Entry::USER); // pd6[1]
+                                                                                     // 逐段逐页装载（file 拷贝 + bss 清零零帧）
+    let mut seg_frames: Vec<(u64, u64)> = Vec::new();
+    let mut data_frame = 0u64;
+    for i in 0..img.load_count {
+        let seg = img.loads[i];
+        let bytes = img.seg_bytes(i);
+        let frames_n = seg.mem_len.div_ceil(FRAME_SIZE);
+        for k in 0..frames_n {
+            let Some(f) = alloc_frame() else {
+                return Err(UserSpaceError::FramesExhausted);
+            };
+            ostd::hw::phys::write_zero(f, FRAME_SIZE);
+            let start = (k * FRAME_SIZE) as usize;
+            let end = (start + FRAME_SIZE as usize).min(bytes.len());
+            if start < end {
+                ostd::hw::phys::write_bytes(f, &bytes[start..end]);
+            }
+            let flags = if seg.flags & PF_W != 0 {
+                Entry::USER | Entry::WRITABLE
+            } else {
+                Entry::USER
+            };
+            let slot = ((seg.vaddr - FRESH_BASE) / FRAME_SIZE + k) as usize;
+            ostd::hw::phys::write_u64(pt_seg + slot as u64 * 8, Entry::page(f, flags).bits());
+            if k == 0 {
+                seg_frames.push((seg.vaddr, f));
+                if seg.flags & PF_W != 0 && data_frame == 0 {
+                    data_frame = f;
+                }
+            }
+        }
+    }
+    // 增长栈顶帧预映射（LXE1 增长栈同款）
+    let Some(stack) = alloc_frame() else {
+        return Err(UserSpaceError::FramesExhausted);
+    };
+    ostd::hw::phys::write_zero(stack, FRAME_SIZE);
+    ostd::hw::phys::write_u64(
+        pt_stack + 511 * 8,
+        Entry::page(stack, Entry::USER | Entry::WRITABLE).bits(),
+    );
+    // Linux 初始栈：顶帧镜像缓冲构造 → 一次落帧；AT_PHDR = 映像基 + phoff
+    let img_base = img.loads[..img.load_count]
+        .iter()
+        .map(|s| s.vaddr)
+        .min()
+        .unwrap_or(FRESH_BASE);
+    let aux = AuxSys {
+        pagesz: FRAME_SIZE,
+        entry: img.entry,
+        phdr: img_base + img.phoff,
+        phent: bedrock::elf::PHDR_LEN as u64,
+        phnum: img.phnum,
+        clktck: 100,
+    };
+    let region_base = STACK_TOP_GROW - FRAME_SIZE;
+    let mut region = alloc::vec![0u8; FRAME_SIZE as usize];
+    let region_top = region.len();
+    let rsp = build_initial_stack(
+        &mut region,
+        region_base,
+        region_top,
+        argv,
+        envp,
+        &random,
+        exec_fn,
+        &aux,
+    )
+    .map_err(|_| UserSpaceError::BadImage)?;
+    ostd::hw::phys::write_bytes(stack, &region);
+    Ok(ExecSpace {
+        root,
+        entry: img.entry,
+        stack_top: STACK_TOP_GROW,
+        rsp,
         seg_frames,
         data_frame,
     })
