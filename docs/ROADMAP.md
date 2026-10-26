@@ -70,7 +70,7 @@
 
 ---
 
-## 三、里程碑总规划（M24 → M32）
+## 三、里程碑总规划（M24 → M33）
 
 > 节奏：单人执行，每里程碑 8-12 笔 commit，任务级拆解仅展开近线两个里程碑；远线保持主题粒度。规范手册日历（P1=2026-03—06 等）已滞后于实际，登记为日历偏差：**以里程碑序列为准，阶段 DoD 指标编号为验收锚**。
 
@@ -84,9 +84,10 @@
 | **M29** | Harbor libc 首版 + Weave 对象库——**✅ 关账**（M29-收尾核验：ADR-0003 执行步分配器迁 ostd::heap + H-P01 首批 57 符号 forbid(unsafe_code) + WE-P02 断电注入框架 + 冒烟 78/78；五笔对账见 §四 M29 子节） | P2 补课 | H-P01 首批 ≥50 符号垂直切片；WE-P02 断电注入框架 | harbor/weave |
 | **M30** | 桌面骨架：Loom Elm 架构 + Cascade shell 语义——**✅ 关账**（M30-收尾核验：LO-P01 Elm 架构面 + CA-P05 shell 语义四面 + glyph 渲染库本体 + t79 活体 79/79 首跑即绿 + pcap 取证搭车件；七笔对账见 §四 M30 子节） | P4 | LO-P01 口径挂接；CA-P05 结构面 | loom/cascade/glyph |
 | **M31** | 自举预备：驱动用户态化起步 + Weave 自举——**✅ 关账**（M31-收尾核验：驱动旁路台账首版成像〔五清点+策略面两区分+三分分级〕+ morse 首割外移在环 + V-P05 首批注入矩阵 + Weave 自举装载面〔boot::bootstrap + LUMINA-WEAVE-BOOT 证据行机器可验〕+ t80 活体 80/80；六笔对账见 §四 M31 子节） | P5 | V-P05 首批注入矩阵；驱动旁路清单缩编 | vanguard/drivers |
-| **M32** | Aurora SDK/权限中心：权限中心首割 + SDK 最小服务面——**✅ 关账**（七笔闭账：计划 d1d4494 / ⓪ 定版 3d3e65b+搭车件 905aad2 / A1 f777d31 / S1 952859d / B1 3a86001 / T1 4048e45 / 收尾本提交） | P4 | AF-P03/P06 拦截校验在环 + 权限四相在环（vanguard 本体零改动）；AF-P01 宿主基准口径登记；t81 活体 81/81；CA-P02/04/06 细则失联按在库面承接 | aurora/vanguard |
+| **M32** | Aurora SDK/权限中心：权限中心首割 + SDK 最小服务面——**✅ 关账**（七笔闭账：计划 d1d4494 / ⓪ 定版 3d3e65b+搭车件 905aad2 / A1 f777d31 / S1 952859d / B1 3a86001 / T1 4048e45 / 收尾本提交；*注：哈希为改写前锚，M31/M32 十四笔身份改写后新锚尾段 3740c95，登记备查不回改*） | P4 | AF-P03/P06 拦截校验在环 + 权限四相在环（vanguard 本体零改动）；AF-P01 宿主基准口径登记；t81 活体 81/81；CA-P02/04/06 细则失联按在库面承接 | aurora/vanguard |
+| **M33** | P1 末 DoD 收口：busybox Linux 兼容路径 + 长稳面板 + 五维首评——**🚧 进行中**（计划见 §四 M33 子节） | P1 收口 | busybox 静态运行 24h（P1 末 DoD）；1080p@60/72h 长稳口径；五维成熟度指数首评；t82 活体 | kernel::user/conduit/xtask |
 
-远线（M33）：Linux 静态 busybox 全功能 24h（P1 末 DoD 收口）、1080p@60/72h 长稳、五维成熟度指数首评。（Aurora SDK/权限中心 M32 已关账——§四 M32 子节收尾核验注；近线转 M33，计划随开工裁决）
+远线：M33 已近线开工（P1 末 DoD 收口——§四 M33 子节）；M34+ 后续里程碑随 M33 收口裁决（候选方向：P2/P3 剩余 DoD 深化 + 驱动服务化批次 + busybox 兼容覆盖度扩容）。
 
 ---
 
@@ -257,6 +258,24 @@ M31 退出口径：驱动旁路清单首版成像（五面分类 + 缩编路径�
 M32 退出口径：权限中心四相面在环（声明闸 + 授予 + 检查 + 撤销显形；vanguard 零改动）+ manifest 能力域闸 + SDK 最小面（注册折叠 + 意图路由）+ AF-P01 基准口径登记 + t81 活体 81/81 + 宿主全谱绿 + 冒烟 81/81。
 
 > **收尾核验（M32-收尾）**：退出口径逐项全达——① 权限四相面在环（perm 声明闸恰四段非法矩阵 + 承接授予〔vanguard CapabilityTable 桥，八动作满映射闭集，grant_manifest 两遍扫描原子授予 V-P05 同构〕+ check 确定性失败序 + 撤销显形死槽语义；**vanguard 本体零改动** M31-V1 先例兑现，政策边 aurora→vanguard 台账在案）；② manifest 能力域闸在环（validate 逐条 check_schema 单一事实源 + BadCapability 新目，t81 清单闸四态内核态收口）；③ SDK 最小面在环（AppDecl 声明式注册折叠〔fold_register 两遍扫描原子性〕+ transition 生命周期框架面〔AF-P06 唯一入口 + 终态权限收口 + AF-P03 拦截 100%〕+ IntentRouter 意图路由骨架〔UnknownIntent 显形拒收 + owner 活性闸〕）；④ AF-P01 口径登记在环（bench 宿主框架面基准桩：三段口径库面零时钟依赖 + 满载 16 应用×48 能力实测 0.18ms〔预算余量 663 倍〕+ ≤120ms 口径闸；端到端基准随用户态进程基础设施挂账）；⑤ t81 活体首跑即绿（三面内核态收口：perm 四相首演 + 生命周期拦截矩阵 + 清单闸；SELFTEST_TOTAL 80→81 双端同步，81/81 CENSUS n81 p81 f0）；⑥ 宿主全谱绿（aurora 19 例：lib 4 + perm 7 + sdk 6 + bench 2）+ 政策面 27 条零违规（A1 边 aurora→vanguard + T1 边 lumina-kernel→aurora）+ aurora 零 unsafe。**挂账六项随行复核**：t73 设备级残余（本轮 B1/T1 两轮 S8 全绿 35s/22s 无撞窗，两案在录定性环境时序面不变）/ TCP 电气接线（M27-T1 偏差不变；M32 全轮 Aurora 面，网络电气面不纳入）/ PR-P04 电源协同显示侧（未启动不变）/ alpha 混合与多 Surface 表（v0 偏差不变）/ 细则 PDF 重取逐条对账（介质失联不变；本轮 AF 结构面按在库引用面承接——AF-P01 基准桩口径与 METRICS 行对账在案，重取后补 AF 逐条）/ harbor C ABI 链接层（M29-H1 登记，不变）。M32 七笔（计划 d1d4494 / ⓪ 3d3e65b+905aad2 / A1 f777d31 / S1 952859d / B1 3a86001 / T1 4048e45 / 收尾本提交）关账，近线转 M33（远线首项：Linux 静态 busybox 全功能 24h——P1 末 DoD 收口；计划随开工裁决）。
+
+### M33 任务级分解（🚧 进行中）
+
+> 主题：P1 末 DoD 收口——busybox Linux 兼容路径 + 长稳面板 + 五维首评（§三 远线首项转近线）。验收锚：P1 行「busybox 静态运行 24h」+ P3「1080p@60/72h」长稳口径 + 五维成熟度指数首评。主战场 kernel::user/conduit/xtask/docs。**技术路径盘点**（M32 关账基线）：用户程序现状 = LXE1 自有格式手写桩 + 构建期镜像表（exec_images_gen）+ SYS_EXEC(17) 切换 + 用户页表全新四级表 ring3 进入；busybox 距离 = ① ELF64 静态映像装载（ET_EXEC/PT_LOAD/bss 清零，与 LXE1 双格式并行零破坏）② Linux ABI 初始栈（argc/argv/envp/auxv AT_ 哨兵集——busybox 解析命令行硬依赖）③ Linux syscall 转换层（M25 conduit BINDINGS 25 调用绑定面兑现为执行面：Linux 号域 → 内核 SYS_* 执行路径，首批 busybox 硬需集 ~20 调用：read/write/writev/openat/close/lseek/fstat/ioctl/mmap/brk/exit_group/getpid/clock_gettime/uname/set_tid_address/rt_sigaction/rt_sigprocmask/getdents64/dup/fcntl）④ 进程族面（fork 地址空间复制 + execve ELF 接线 + wait4→waitpid(12) 编码对账 + exit_group）⑤ 制备面（ramfs 根挂载 + busybox 二进制介质装载 multiboot module → /bin/busybox）。**口径裁决注**：① 「busybox 全功能」范围 = M33 首批以最小 applet 集（echo/ls/cat 级）内核态活体为准，全功能覆盖度随转换层批次扩容挂账（不虚报达标，覆盖度成像随 T1 实证收敛）；② 24h/72h 长稳 = harness 机制面在环（xtask S10-longrun 可选阶段 + 心跳/退出码/取证）+ 短窗实证 + 正式 24h/72h 门禁记录待真机窗口（风险登记册既定裁决：TCG 回归基线制，环境 B 级实测标记「待真机窗口」）；③ 五维成熟度指数定义随细则 PDF 失联——按在库引用面重建口径（五维 = 功能完备/稳定性/性能效率/安全健壮/工程治理，0-10 分制，每维证据锚在库面：自检基线/门禁 11 阶段/政策面/基准登记/挂账密度），重取后对账（§七 5 先例）。**挂账七项随行**（M32 收尾移交逐项复核，非本轮主攻）：① t73 设备级残余 ② TCP 电气接线 ③ PR-P04 电源协同显示侧 ④ alpha 混合与多 Surface 表 ⑤ 细则 PDF 重取逐条对账 ⑥ harbor C ABI 链接层 ⑦ busybox 全功能覆盖度扩容（本轮新登记，随转换层批次）。
+
+| 任务 | 内容 | 提交物 | 验收 |
+|---|---|---|---|
+| **M33-计划**（笔①） 🚧 | 本表落盘 + §三 M33 行 🚧 标注 + 远线行更新 + 范围界定注（ELF64 加载器 + Linux 初始栈 + syscall 转换层 + 进程族 + 制备面 + t82 活体 + 长稳 harness 双面板 + 五维首评口径重建）+ 挂账七项随行登记 | ROADMAP | ✅ 本提交 |
+| **M33-E1**（笔②） | ELF64 静态加载器：ET_EXEC 头/程序头解析防线（魔数/位宽/端序/段越界 fail-visible）+ PT_LOAD 装载 + bss 清零 + 入口面 + Linux 初始栈布局（argc/argv/envp/auxv AT_RANDOM/AT_PAGESZ 等哨兵集，16B 对齐）——LXE1 老桩零改动双格式并行 | crates/kernel（user/elf 面） | 宿主解析/装载/栈布局对账例 + 冒烟 81/81 不破 |
+| **M33-L1**（笔③） | Linux syscall 转换层首割：conduit::translate（Linux 号域 → 内核执行路径映射，首批硬需集 ~20 调用）+ kernel syscall 分发 Linux 段接线 + C-P01 BINDINGS 对账（绑定面 ↔ 执行面同源） | crates/conduit + crates/kernel | 转换矩阵宿主例（合法映射/未实现显形拒绝）+ 冒烟不破 |
+| **M33-P1**（笔④） | 进程族面：fork（用户页表复制路径）+ execve（ELF 装载接线 + argv/envp 传递）+ wait4（waitpid 编码对账）+ exit_group 收口 | crates/kernel | 进程族活体例（spawn→exec→wait 链）+ 冒烟不破 |
+| **M33-F1**（笔⑤） | 文件与制备面：ramfs 根挂载（MOUNT 面接线）+ busybox 二进制介质装载（multiboot module → ramfs /bin/busybox）+ getdents64 目录读面 | crates/kernel::vfs + xtask | 冒烟制备证据行（module 装载 + 挂载 + 路径可达） |
+| **M33-T1**（笔⑥） | t82 busybox 活体：kernel 自检新相位（ELF 装载 → Linux syscall 面 → 最小 applet 实跑〔echo/ls 级〕串口取证）+ SELFTEST_TOTAL 81→82 双端同步 | crates/kernel + xtask | 82/82 CENSUS n82 p82 f0；allowlist 零新边（kernel 内聚）则台账复核 |
+| **M33-R1**（笔⑦） | 长稳 harness：xtask S10-longrun 可选阶段（24h busybox 循环面板 + 72h 1080p@60 显示 tick 面板 + 心跳日志/退出码/取证面）+ 短窗实证（分钟级采样）+ METRICS 口径登记（正式 24h/72h 待真机窗口挂账） | tools/xtask + docs/METRICS | 短窗实证日志 + S10 机制面在环 + 口径登记 |
+| **M33-X1**（笔⑧） | 五维成熟度指数首评：docs/MATURITY.md 成像（口径重建注 + 五维分项评分 + 证据锚在库面引用）+ METRICS 登记 | docs/MATURITY.md + docs/METRICS | 五维全锚在库证据可溯 + 首评分值成像 |
+| **M33-收尾**（笔⑨） | ROADMAP/METRICS/README 对账 + 挂账七项复核注 + P1 末 DoD 收口核验 + 近线 M34 | 对账提交 | ✅ 本提交 |
+
+M33 退出口径：ELF64 静态加载器在环（双格式并行 LXE1 零破坏）+ Linux syscall 转换层首批硬需集在环（未实现显形拒绝 fail-visible）+ 进程族面（fork/execve/wait4/exit_group）在环 + busybox 活体 t82（最小 applet 实跑取证）+ 长稳 harness 双面板机制面 + 短窗实证 + 五维首评成像 + 冒烟 82/82。
 
 ---
 
