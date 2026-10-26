@@ -6,10 +6,10 @@ workspace。内核可经 multiboot1 在 QEMU（`-smp 2`）上裸机启动，物�
 系统调用、能力化 IPC、swap 换页、持久化存储面全部在环；键盘/TTY 交互、
 显示面（1080p LFB/Surface 服务化/文本渲染/stage 合成器）、virtio-net 网络面
 （UDP/TCP 协议栈）全部在环；crystal 格式 v1 文件系统（WAL/快照）在环；
-**80 项裸机自检全绿并自动验收**（QEMU 退出码 33）。
+**81 项裸机自检全绿并自动验收**（QEMU 退出码 33）。
 
 当前状态：**v0.26.0（M32 Aurora SDK/权限中心季）** · ROADMAP 制度化（M24→M32 九里程碑逐笔
-落账）· 取证证据链全程落账（t 系活体 t66-t80 续编）· ADR 八项裁决在库
+落账）· 取证证据链全程落账（t 系活体 t66-t81 续编）· ADR 八项裁决在库
 （docs/adr/）。
 
 ## 特性一览
@@ -77,7 +77,7 @@ lumina-os/                 ← 源码树（保持干爽，永不出现编译产�
 │   │                SAFETY 四行模板，unsafe_op_in_unsafe_fn = deny）
 │   ├── kernel/      内核映像（启动汇编 + 中断子系统 + 调度 + 进程 + VFS 接线
 │   │                + crystal 装配 + fb stage 合成器 + vnet UDP/TCP 回环 + census
-│   │                败点名面 + bootprep 自举预备活体 + 80 项自检）
+│   │                败点名面 + bootprep 自举预备活体 + 81 项自检）
 │   ├── bedrock/     磐基内核（syscall ABI、TLV、IPC 端点信箱、LXE1、自持同步原语）
 │   ├── harbor/      港湾 libc 符号面（errno/string/ctype/stdlib 首批 57 符号
 │   │                垂直切片，forbid unsafe；ADR-0003 重铸，分配器归 ostd::heap）
@@ -100,7 +100,7 @@ lumina-os/                 ← 源码树（保持干爽，永不出现编译产�
 │   ├── mirror/      映境合成（损伤包围盒/并集合并/16 块翻转/drain_plan 消费面）
 │   ├── prism/       棱镜显示栈合成（z 序仲裁、交盒裁剪、逐像素裁决；M28 归位）
 │   ├── cascade/     流域外壳（四态机、工作区表、master-stack 平铺计划、Dock 登记、焦点序 LRU）
-│   └── aurora/      极光应用框架（.luapp 校验、六态生命周期）
+│   └── aurora/      极光应用框架（.luapp 校验、六态生命周期、权限中心四相、SDK 注册折叠/意图路由、AF-P01 基准桩）
 ├── tools/xtask/           CI 门禁编排（宿主六阶段 + 内核 lint/build/冒烟 + 报告）+ IDL 生成器
 ├── docs/METRICS.md        指标 → 代码位置映射
 └── scripts/               pf-hunt 守候、QEMU 运行时重建、报告图生成
@@ -115,7 +115,7 @@ lumina-build/              ← 编译产物 + 日志 + 报告（源码树外，�
 
 ```bash
 cargo build --workspace          # 全仓构建（19 crate）
-cargo test  --workspace          # 全仓测试（宿主）+ 80 项裸机自检（S8）
+cargo test  --workspace          # 全仓测试（宿主）+ 81 项裸机自检（S8）
 cargo run -p xtask -- ci         # 十一阶段门禁（S1-S5 + S5b IDL 一致性 + S5c lint 台账 + S6/S7 + S8 冒烟 + S9 报告，fail-fast）
 cargo run -p xtask -- smoke      # 仅内核：lint + build + QEMU 裸机自检
 cargo run -p xtask -- check      # 仅宿主快速门禁（fmt + clippy + 测试 + 文档 + IDL 一致性 + lint 台账）
@@ -136,7 +136,7 @@ objcopy -O binary \
   <target-dir>/x86_64-unknown-none/release/lumina-kernel \
   <target-dir>/x86_64-unknown-none/release/lumina-kernel.bin
 
-# 裸机启动（串口落盘 + isa-debug-exit 自动退出，退出码 33 = 自检全过[80 项]）
+# 裸机启动（串口落盘 + isa-debug-exit 自动退出，退出码 33 = 自检全过[81 项]）
 qemu-system-x86_64 -L <seabios> -L <qemu-data> \
   -kernel lumina-kernel.bin -m 256M -display none -no-reboot \
   -serial file:boot.log -device isa-debug-exit,iobase=0xf4,iosize=0x04
