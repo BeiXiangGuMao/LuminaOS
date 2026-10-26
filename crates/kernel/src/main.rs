@@ -44,6 +44,7 @@ mod hostlink;
 mod interrupts;
 mod ipc;
 mod kbd;
+mod linux;
 mod multiboot1;
 mod procs;
 mod selftest;

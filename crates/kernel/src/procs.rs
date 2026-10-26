@@ -496,6 +496,9 @@ pub fn sys_exec(image: u64, frame: &mut crate::syscall::SyscallFrame) -> u64 {
     // 切换：先登记任务面（后续派发/清算面读到新根），再写 CR3，
     // 最后改写系统调用帧（返回即入新映像）
     task::set_user_root(caller, es.root);
+    // M33-L1：ABI 标志随装载链切换（ELF 链 = Linux 语义；LXE1 链 =
+    // 原生语义——LXE1 映像可入 ELF 任务（双格式并行），标志随链定）
+    task::set_lin_abi(caller, is_elf);
     ostd::hw::control::write_cr3(es.root);
     frame.rip = es.entry;
     // M33-E1：ELF 链 rsp = 初始栈构造面（argc/argv/envp/auxv 已写栈顶帧）；

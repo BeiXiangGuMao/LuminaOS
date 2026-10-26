@@ -200,6 +200,13 @@ unsafe extern "C" {
 /// 本任务栈上跨调度点存续（per-CPU 槽只服务「入场」时刻，不承载窗口态）。
 #[no_mangle]
 extern "C" fn lumina_syscall_dispatch(frame: &mut SyscallFrame) -> u64 {
+    // M33-L1：Linux ABI 任务分流（ELF 链装载任务 = lin_abi 标志）——
+    // 号域原生重叠（Linux 0..450 ∩ Lumina 0..39），按任务标志分流，
+    // 不按号判源（单号域双语义 = 误判源）；映射归 conduit::translate，
+    // 执行归 kernel::linux::lin_dispatch。
+    if task::current_lin_abi() {
+        return crate::linux::lin_dispatch(frame);
+    }
     let regs = SyscallRegs {
         num: frame.num,
         args: [frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8],

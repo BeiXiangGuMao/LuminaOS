@@ -225,6 +225,10 @@ struct Task {
     /// 修复「借根窗口被 PIT 抢占 → 恢复点落引导根 → 后继访存致命
     /// #PF」的根因（M9 靠 timer_mask 屏蔽遮挡，M10 的 PIT 不可屏蔽）。
     kernel_cr3: u64,
+    /// Linux ABI 标志（M33-L1）：ELF 链装载的任务 = true，派发器头部
+    /// 按此分流至 `kernel::linux::lin_dispatch`（号域原生重叠，不按
+    /// 号判源——单号域双语义 = 误判源）。
+    lin_abi: bool,
 }
 
 impl Task {
@@ -257,6 +261,7 @@ impl Task {
             exit_code: u64::MAX,
             kernel_cr3: 0,
             hflags: [0; HANDLE_MAX],
+            lin_abi: false,
         }
     }
 
@@ -327,6 +332,7 @@ impl Task {
             wait: None,
             exit_code: u64::MAX,
             kernel_cr3: 0,
+            lin_abi: false,
         }
     }
 }
@@ -1243,6 +1249,30 @@ pub fn set_user_root(id: usize, root: u64) {
     let mut s = sched_lock!();
     if let Some(t) = s.tasks.get_mut(id).and_then(|t| t.as_mut()) {
         t.user_root = root;
+    }
+}
+
+/// 当前核任务 Linux ABI 标志（M33-L1 派发分流面）。
+pub fn current_lin_abi() -> bool {
+    let cpu = my_cpu();
+    let cur = CURRENT[cpu].load(Ordering::Relaxed);
+    if cur == IDLE {
+        return false;
+    }
+    let _w = IntWindow::new();
+    let s = sched_lock!();
+    s.tasks
+        .get(cur)
+        .and_then(|t| t.as_ref())
+        .is_some_and(|t| t.lin_abi)
+}
+
+/// 设任务 Linux ABI 标志（M33-E1 ELF 链装载点调用；M33-L1 消费）。
+pub fn set_lin_abi(id: usize, on: bool) {
+    let _w = IntWindow::new();
+    let mut s = sched_lock!();
+    if let Some(t) = s.tasks.get_mut(id).and_then(|t| t.as_mut()) {
+        t.lin_abi = on;
     }
 }
 

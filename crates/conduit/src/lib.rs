@@ -16,6 +16,7 @@
 pub mod convert;
 pub mod defs;
 pub mod layout;
+pub mod translate;
 
 /// 兼容目标 Linux 版本。
 pub const LINUX_ABI_VERSION: (u16, u16, u16) = (5, 15, 0);
