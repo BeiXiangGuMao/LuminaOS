@@ -12,7 +12,10 @@
 //!   CapabilityTable 承接桥〕→ 运行时检查拒绝显形 → 撤销后访问显形）；
 //! - [`sdk`]：SDK 最小服务面（App 声明式注册折叠〔清单 + 生命周期回调单环
 //!   折叠，loom Elm fold 纪律同构〕+ 意图路由骨架〔intent 命名域 + 定容
-//!   路由表 + 未注册意图显形拒收〕——M32-S1）。
+//!   路由表 + 未注册意图显形拒收〕——M32-S1）；
+//! - [`bench`]：AF-P01 宿主框架冷启动基准桩（M32-B1：清单装载 + 注册折叠 +
+//!   Registered→Foreground 全迁移路径三段口径，≤120 ms 闸 + 分段实测记录——
+//!   库面零时钟依赖，计时宿主注入；端到端基准随用户态进程基础设施挂账）。
 //!
 //! 能力权限的派生规则由 Vanguard 能力模型执行（单一事实源——vanguard 本体
 //! 零改动，M32-A1 政策边 aurora→vanguard）；意图路由随 M32-S1 落 [`sdk`]
@@ -26,6 +29,7 @@ extern crate alloc;
 
 use alloc::{format, string::String, vec::Vec};
 
+pub mod bench;
 pub mod perm;
 pub mod sdk;
 
