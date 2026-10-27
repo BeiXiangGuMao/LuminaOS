@@ -511,8 +511,9 @@ pub const STACK_GROW_WINDOW: usize = 32;
 /// 种子 = 0x00B0_0001（gen 脚本 SEED_MAGIC 对账）——仅生成器与映像
 /// 字节引用，内核侧不直接取用（dead-code 门禁同步删除锚点常量）。
 pub const PROG_RESULT_MAGIC: u64 = 0x00B0_0091;
-/// LXE 映像装载预算（read_image 上限；v0 静态映像均 ≤ 256B，宽留余量）。
-pub const EXEC_IMAGE_MAX: usize = 8 * 1024;
+/// LXE 映像装载预算（read_image 上限；M33-F1 起 busybox 介质 ~1 MiB
+/// 在账——8 KiB 级静态映像之外，介质面同走 read_image 通道）。
+pub const EXEC_IMAGE_MAX: usize = 4 * 1024 * 1024;
 
 /// 构建用户地址空间：4 张中间表 + 代码帧 + 栈帧；返回根与帧地址。
 ///

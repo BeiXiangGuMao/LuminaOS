@@ -176,6 +176,14 @@ pub const O_CREAT: u32 = 0o100;
 pub const O_EXCL: u32 = 0o200;
 /// Linux `O_TRUNC`（0o1000）。
 pub const O_TRUNC: u32 = 0o1000;
+/// Linux `O_DIRECTORY`（0o200000；M33-F1 收录：目录语义由内核侧
+/// metadata 判定承担，旗标位收下不映射——v0 口径如实记档；
+/// busybox ls 打开目录硬依赖）。
+pub const O_DIRECTORY: u32 = 0o200000;
+/// Linux `O_CLOEXEC`（0o2000000；M33-F1 收录：open 时置位随
+/// fcntl F_SETFD 面挂账，旗标位收下不映射——v0 口径如实记档；
+/// musl 开盘路径常规携带）。
+pub const O_CLOEXEC: u32 = 0o2000000;
 
 /// LXE1 open 模式域 → Linux O_* 旗标集。
 ///
@@ -212,11 +220,12 @@ pub fn open_mode_to_flags(mode: u64) -> Option<u32> {
 
 /// Linux O_* 旗标集 → LXE1 open 模式域。
 ///
-/// 首批仅支持访问类（低 2 位）+ [`O_CREAT`]/[`O_EXCL`]/[`O_TRUNC`]；
-/// 其余旗标（O_APPEND/O_NONBLOCK/O_CLOEXEC…）→ `None`（不支持旗标集
-/// fail-visible，兼容层慢路径须先清旗标再进 LXE1 域）。
+/// 首批仅支持访问类（低 2 位）+ [`O_CREAT`]/[`O_EXCL`]/[`O_TRUNC`] +
+/// [`O_DIRECTORY`]/[`O_CLOEXEC`]（M33-F1 收录——收下不映射）；其余旗标
+/// （O_APPEND/O_NONBLOCK…）→ `None`（不支持旗标集 fail-visible，
+/// 兼容层慢路径须先清旗标再进 LXE1 域）。
 pub fn flags_to_open_mode(flags: u32) -> Option<u64> {
-    let known = O_RDONLY | O_WRONLY | O_RDWR | O_CREAT | O_EXCL | O_TRUNC;
+    let known = O_RDONLY | O_WRONLY | O_RDWR | O_CREAT | O_EXCL | O_TRUNC | O_DIRECTORY | O_CLOEXEC;
     if flags & !known != 0 {
         return None; // 首批不支持的旗标集
     }
@@ -420,7 +429,10 @@ pub const BINDINGS: &[SyscallBinding] = &[
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::{err_to_errno, errno_to_err, flags_to_open_mode, open_mode_to_flags, BINDINGS};
+    use super::{
+        err_to_errno, errno_to_err, flags_to_open_mode, open_mode_to_flags, BINDINGS, O_CLOEXEC,
+        O_DIRECTORY, O_RDONLY, O_RDWR,
+    };
     use crate::{errno_name, linux_syscall_name};
     use bedrock::abi;
 
@@ -488,6 +500,13 @@ mod tests {
         assert_eq!(flags_to_open_mode(0o2000), None);
         assert_eq!(flags_to_open_mode(0o4000), None);
         assert_eq!(flags_to_open_mode(0o2_0000), None);
+        // M33-F1 收录：O_DIRECTORY 0o200000 / O_CLOEXEC 0o2000000 收下不映射
+        assert_eq!(flags_to_open_mode(O_DIRECTORY | O_RDONLY), Some(0b01));
+        assert_eq!(
+            flags_to_open_mode(O_DIRECTORY | O_RDONLY | O_CLOEXEC),
+            Some(0b01)
+        );
+        assert_eq!(flags_to_open_mode(O_CLOEXEC | O_RDWR), Some(0b11));
         // 全域往返（双向映射旗标集内无损）
         for mode in [0b01u64, 0b10, 0b11, 0b0111, 0b1011, 0b1_0011, 0b1_1111] {
             let flags = open_mode_to_flags(mode).unwrap();

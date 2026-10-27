@@ -76,8 +76,10 @@ use ostd::sync::SpinLock;
 use crate::console::DualLog;
 use crate::multiboot1::BOOT_MAGIC;
 
-/// 内核堆大小：4 MiB（M3 任务栈/日志/TLV 充足；帧管理独立于本堆）。
-const HEAP_SIZE: usize = 4 * 1024 * 1024;
+/// 内核堆大小：16 MiB（M3 任务栈/日志/TLV 充足；M33-F1 busybox 介质
+/// ~1 MiB + 装载面峰值余量扩容；帧管理独立于本堆，kernel span 预留
+/// 随 kern_end 动态扩）。
+const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
 /// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81）。
 const SELFTEST_TOTAL: usize = 81;
@@ -234,6 +236,38 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         usable.len(),
         kernel_size / 1024
     );
+
+    // ---- M33-F1 制备介质：multiboot module[0] → ramfs 媒体暂存面 ----
+    // QEMU `-initrd` 在 multiboot1 装载面即首 module（busybox 介质契约，
+    // xtask S8 参数面注入）。拷贝经 phys::read_u64 步进（低 1 GiB 恒等
+    // 映射域）；无 module 防御式降级（t82 路径探针 fail-visible 兑底）。
+    match multiboot1::module_span(info, 0) {
+        Some((start, end)) => {
+            let mut media = Vec::with_capacity((end - start) as usize);
+            let mut p = start;
+            while p + 8 <= end {
+                media.extend_from_slice(&ostd::hw::phys::read_u64(p).to_le_bytes());
+                p += 8;
+            }
+            while p < end {
+                media.push(ostd::hw::phys::read_u32(p) as u8);
+                p += 1;
+            }
+            let n = media.len();
+            vfs::stage_media(media);
+            let _ = writeln!(
+                log,
+                "vfs: busybox media staged (module 0: {:#x}..{:#x}, {n} bytes)",
+                start, end
+            );
+        }
+        None => {
+            let _ = writeln!(
+                log,
+                "vfs: no multiboot module media (mods_count=0 或防御拒收) — /bin/busybox 缺位"
+            );
+        }
+    }
 
     // ---- M6-A SMP 前置：LAPIC 提前上线 + 探测 + 门钩子注册 ----
     // （调度器 per-CPU 语义依赖 LAPIC id；先于任何 task::init/spawn）
@@ -680,6 +714,19 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     // M14-①：文件面/命名空间启动期初始化（原 t44 内惰性 init 迁出——
     // EXEC 装载器经 VFS 取段后，t42 及全部映像面依赖必须先于自检就位）
     vfs::init();
+    // M33-F1 制备证据：根 ramfs 挂载 + /bin/busybox 路径可达探针
+    match vfs::read_image("/bin/busybox") {
+        Some(b) => {
+            let _ = writeln!(
+                log,
+                "vfs: root ramfs mounted, /bin/busybox reachable ({} bytes)",
+                b.len()
+            );
+        }
+        None => {
+            let _ = writeln!(log, "vfs: /bin/busybox probe MISS (介质缺位或播种失败)");
+        }
+    }
     let t20 = vmm::demand_paging_check(&mut log, frames);
     report(&mut log, t20, "demand-paging-caps");
 

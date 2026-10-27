@@ -16,7 +16,8 @@
 //! ④ **M33-P1 进程族面收录**：fork（COW + 子代定点 rax=0）/ execve
 //! （路径解析 + argv/envp 传递 + 三格式装载切换公共核）/ dup2（
 //! F_DUP2FD 精确槽位安装）/ wait4 pid 归一化（-1/0 → 任意子）——
-//! getdents64（随 M33-F1 制备面接）/ clone（vfork 旗标面随后续
+//! **M33-F1 收录 getdents64**（dirent64 页打包 + ramfs 媒体面，
+//! execve 路径解析同步接真）；clone（vfork 旗标面随后续
 //! 批次）仍 ENOSYS 显形（覆盖度分批不虚报——M33-计划 裁决注）。
 
 use crate::syscall::{validate_user_slice, validate_user_slice_mut, SyscallFrame};
@@ -120,7 +121,11 @@ pub fn lin_dispatch(frame: &mut SyscallFrame) -> u64 {
         LinAction::UName => lin_uname(frame.rdi),
         LinAction::GetCwd => lin_getcwd(frame.rdi, frame.rsi),
         LinAction::ClockGetTime => lin_clock_gettime(frame.rdi, frame.rsi),
-        LinAction::GetDents64 => err(ENOSYS), // 随 M33-F1 制备面接
+        LinAction::GetDents64 => {
+            // M33-F1 收录（L1 挂账兑现）：getdents64(fd, buf, count) →
+            // Linux dirent64 页打包（vfs::readdir64_page 单一事实源）
+            lin_getdents64(frame)
+        }
         LinAction::Dup2 => {
             // M33-P1 收录（L1 挂账兑现）：dup2(oldfd, newfd) → F_DUP2FD
             // 精确槽位安装（vfs dup2_impl：目标占用静默关闭 + 定号装车）
@@ -375,11 +380,9 @@ fn lin_execve(frame: &mut SyscallFrame) -> u64 {
     let Ok(path) = core::str::from_utf8(path_bytes) else {
         return err(ENOENT);
     };
-    // 2) 路径解析：构建期映像表精确匹配（ramfs 随 M33-F1）
-    let Some(img_path) = crate::user::EXEC_IMAGES.iter().find(|p| **p == path) else {
-        return err(ENOENT);
-    };
-    let Some(blob) = crate::vfs::read_image(img_path) else {
+    // 2) 路径解析：命名空间真实走查（M33-F1 接线——/bin/busybox 媒体面
+    // 即由此可达；原 v0 构建期映像表精确匹配退役，ramfs 根挂载面承担）
+    let Some(blob) = crate::vfs::read_image(path) else {
         return err(ENOENT);
     };
     // 3) argv/envp 步进（owned 化隔离借用域）
@@ -399,6 +402,23 @@ fn lin_execve(frame: &mut SyscallFrame) -> u64 {
         Ok(_) => 0, // 成功不返回（新映像自入口执行）
         Err(crate::user::UserSpaceError::BadImage) => err(ENOEXEC),
         Err(_) => err(ENOMEM),
+    }
+}
+
+/// getdents64(fd, buf, count)（M33-F1）：目录枚举 → Linux dirent64
+/// 页打包（[`crate::vfs::readdir64_page`]：半项不落盘 + cookie 游标
+/// 推进）。返回交付字节数；0 = 枚举尽（Linux 语义）。
+fn lin_getdents64(frame: &mut SyscallFrame) -> u64 {
+    let (fd, buf, count) = (frame.rdi, frame.rsi, frame.rdx);
+    if count == 0 {
+        return err(EINVAL);
+    }
+    let Some(dst) = validate_user_slice_mut(buf, count) else {
+        return err(14); // EFAULT
+    };
+    match crate::vfs::readdir64_page(fd, dst) {
+        Ok(n) => n as u64,
+        Err(e) => err(e),
     }
 }
 

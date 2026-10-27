@@ -196,7 +196,9 @@ pub fn stamps() -> (u64, u64, u64, u64, u64, u64, u64) {
 /// - `/files/selftest.lxe` = [`crate::user::USER_PROGRAM`] 的 LXE1
 ///   运行时包装（t42 exec(0) 经 VFS 装载——行为等价、来源换 VFS）；
 /// - `/files/prog.lxe` = 双段映像（t47）；
-/// - `/files/grow.lxe` = 增长栈映像（t48）。
+/// - `/files/grow.lxe` = 增长栈映像（t48）；
+/// - `/bin/busybox` = 制备介质（M33-F1：multiboot module → 暂存面 →
+///   播种；t82 busybox 活体 + execve("/bin/busybox") 路径可达基座）。
 pub fn init() {
     let fs = Arc::new(RamFs::new());
     // 播种失败即初始化失败（确定性种子，容错无意义）：防御式跳过而非 panic。
@@ -249,6 +251,15 @@ pub fn init() {
             let _ = fs.write_at(h, 0, &crate::user::DEEP_LXE);
         });
     });
+    // M33-F1：制备介质播种——/bin/busybox（module 暂存面 → 媒体文件；
+    // 播种失败防御式跳过，t82 活体路径探针 fail-visible 兜底）
+    if let Some(media) = take_media() {
+        let _ = fs.create(files, "bin", NodeKind::Dir).map(|bin| {
+            let _ = fs.create(bin, "busybox", NodeKind::File).map(|h| {
+                let _ = fs.write_at(h, 0, &media);
+            });
+        });
+    }
     let mut ns = NAMESPACE.lock();
     *ns = Some(Namespace::new(fs));
     let mut tab = FILES.lock();
@@ -264,12 +275,20 @@ pub fn init() {
 /// 拒绝（None）。锁序：NAMESPACE → FileSystem 内部锁（既有单向嵌套）。
 pub fn read_image(path: &str) -> Option<alloc::vec::Vec<u8>> {
     let path = PathBuf::normalize(path).ok()?;
-    let resolved = {
+    let (resolved, size) = {
         let ns = NAMESPACE.lock();
         let ns = ns.as_ref()?;
-        ns.resolve(&path).ok()?
+        let resolved = ns.resolve(&path).ok()?;
+        // M33-F1：元数据预容量（busybox ~1 MiB 介质面——几何扩容峰值
+        // 2× 在账避免；metadata 缺失降级空容量走旧几何路径）
+        let size = resolved
+            .fs
+            .metadata(resolved.vnode)
+            .map(|m| m.size as usize)
+            .unwrap_or(0);
+        (resolved, size)
     };
-    let mut out = alloc::vec::Vec::new();
+    let mut out = alloc::vec::Vec::with_capacity(size);
     let mut chunk = [0u8; 256];
     loop {
         let n = resolved
@@ -292,6 +311,86 @@ pub fn files_usage() -> (usize, usize) {
     let files = FILES.lock();
     let used = files.iter().filter(|f| f.is_some()).count();
     (used, MAX_FILES)
+}
+
+// ---- M33-F1：制备介质通道（multiboot module → ramfs 媒体面） ----
+
+/// 制备介质暂存：kmain 引导期把 module 字节域拷贝落此（帧分配器就绪
+/// 后、[`init`] 前），[`init`] 一次性取走播种 `/bin/busybox`。
+static STAGED_MEDIA: ostd::sync::SpinLock<Option<alloc::vec::Vec<u8>>> =
+    ostd::sync::SpinLock::new(None);
+
+/// 暂存制备介质（multiboot module 字节域拷贝产物；init 播种消费）。
+pub fn stage_media(bytes: alloc::vec::Vec<u8>) {
+    *STAGED_MEDIA.lock() = Some(bytes);
+}
+
+/// 取走暂存介质（[`init`] 一次性消费；None = 引导期无 module 介质）。
+fn take_media() -> Option<alloc::vec::Vec<u8>> {
+    STAGED_MEDIA.lock().take()
+}
+
+/// M33-F1：Linux dirent64 页打包（kernel::linux getdents64 消费面）。
+///
+/// 布局：d_ino(8) + d_off(8) + d_reclen(2) + d_type(1) + name + NUL，
+/// 8 字节对齐收尾（Linux x86_64 同构；d_off = 稳定 cookie，v0 口径
+/// 如实记档——offset 语义本为 telldir 回锚，cookie 即稳定锚）。逐项
+/// 试装（半项不落盘纪律同 native 面）；成功交付项推进 OFD cookie
+/// 游标。d_ino = vnode 号（免二次 lookup），d_type 映射见 [`dt_type64`]。
+/// 返回交付字节数（0 = 枚举尽——Linux 语义返回 0 非错误）。
+pub fn readdir64_page(handle: u64, buf: &mut [u8]) -> Result<usize, u64> {
+    const DT_HDR: usize = 19; // 8 + 8 + 2 + 1
+    let Some((_slot, cap, idx)) = resolve_file_object(handle) else {
+        return Err(EBADF);
+    };
+    if cap.rights() & Right::READ.bits() == 0 {
+        return Err(EBADF); // 目录枚举对齐 read：须以读方式打开
+    }
+    let mut files = FILES.lock();
+    let f = files[idx].as_mut().ok_or(EBADF)?;
+    let meta = f.fs.metadata(f.vnode).map_err(|e| e.errno())?;
+    if !meta.kind.is_dir() {
+        return Err(ENOTDIR);
+    }
+    let items = f.fs.readdir_from(f.vnode, f.pos).map_err(|e| e.errno())?;
+    let mut off = 0usize;
+    let mut last_cookie: Option<u64> = None;
+    for it in &items {
+        let name = it.entry.name.as_bytes();
+        if name.len() > 255 {
+            continue; // d_reclen 16 位域 + 名字单字节域防御（ramfs 单段名）
+        }
+        let reclen = (DT_HDR + name.len() + 1).div_ceil(8) * 8;
+        if off + reclen > buf.len() {
+            break; // 半项不落盘
+        }
+        buf[off..off + 8].copy_from_slice(&it.entry.vnode.0.to_le_bytes());
+        buf[off + 8..off + 16].copy_from_slice(&it.cookie.to_le_bytes());
+        buf[off + 16..off + 18].copy_from_slice(&(reclen as u16).to_le_bytes());
+        buf[off + 18] = dt_type64(&it.entry.kind);
+        buf[off + DT_HDR..off + DT_HDR + name.len()].copy_from_slice(name);
+        buf[off + DT_HDR + name.len()] = 0;
+        for b in &mut buf[off + DT_HDR + name.len() + 1..off + reclen] {
+            *b = 0;
+        }
+        off += reclen;
+        last_cookie = Some(it.cookie);
+    }
+    if let Some(c) = last_cookie {
+        f.pos = c;
+    }
+    Ok(off)
+}
+
+/// NodeKind → Linux d_type（DT_*：FIFO 1/CHR 2/DIR 4/REG 8/LNK 7）。
+fn dt_type64(kind: &NodeKind) -> u8 {
+    match kind {
+        NodeKind::File => 8,
+        NodeKind::Dir => 4,
+        NodeKind::CharDev { .. } => 2,
+        NodeKind::Pipe => 1,
+        NodeKind::Symlink => 7,
+    }
 }
 
 /// 节点类型编码（SYS_STAT kind 域）：委托 bedrock 单一事实源

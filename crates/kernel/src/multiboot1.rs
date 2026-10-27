@@ -1,8 +1,10 @@
 //! multiboot1 信息块解析（内存面）。
 //!
 //! 依据 multiboot1 规范：flags 位 0 提供 mem_lower/mem_upper（KiB），
-//! 位 6 提供内存映射表（条目布局 size/addr/len/type，size 含自身 4 字节）。
-//! 全部读取经由 [`ostd::hw::phys`] 的 volatile 包装，本模块零 unsafe。
+//! 位 3 提供 mods_count/mods_addr（module 数组：mod_start/mod_end/
+//! cmdline/reserved 四 u32，16 字节/条），位 6 提供内存映射表（条目布局
+//! size/addr/len/type，size 含自身 4 字节）。全部读取经由
+//! [`ostd::hw::phys`] 的 volatile 包装，本模块零 unsafe。
 
 use alloc::vec::Vec;
 
@@ -12,8 +14,15 @@ use ostd::hw::phys;
 pub const BOOT_MAGIC: u32 = 0x2BADB002;
 /// flags 位 0：mem_lower/mem_upper 有效。
 const FLAG_MEM: u32 = 0x1;
+/// flags 位 3：mods_count/mods_addr 有效（M33-F1 制备介质通道——
+/// QEMU `-initrd` 在 multiboot1 装载面即首 module）。
+const FLAG_MODS: u32 = 0x8;
 /// flags 位 6：mmap_length/mmap_addr 有效。
 const FLAG_MMAP: u32 = 0x40;
+/// module 条目结构长度（mod_start/mod_end/cmdline/reserved 四 u32）。
+const MOD_ENT_SIZE: u64 = 16;
+/// 介质字节数上界（M33-F1：busybox ~1 MiB；防御环值，QEMU 256M 预算内）。
+pub const MODULE_MAX_BYTES: u64 = 8 * 1024 * 1024;
 /// mmap 条目类型：可用内存。
 const TYPE_USABLE: u32 = 1;
 /// mmap 条目 size 字段的最小合法值（addr+len+type 三域 20 字节；
@@ -104,4 +113,27 @@ pub fn usable_regions(info: u32, out: &mut Vec<Region>) {
         }
         off += size + 4;
     }
+}
+
+/// 第 `index` 个 module 的物理区间 `(start, end)`（mod_start/mod_end；
+/// 越界/零长/超 [`MODULE_MAX_BYTES`] 防御环值 → None）。
+///
+/// 口径（M33-F1）：QEMU `-initrd` = 首 module，介质字节域
+/// `[mod_start, mod_end)`；cmdline 字段不消费（v0 单介质契约）。
+pub fn module_span(info: u32, index: u32) -> Option<(u64, u64)> {
+    let base = info as u64;
+    if phys::read_u32(base) & FLAG_MODS == 0 {
+        return None;
+    }
+    if index >= phys::read_u32(base + 20) {
+        return None;
+    }
+    let mods_addr = phys::read_u32(base + 24) as u64;
+    let ent = mods_addr + (index as u64) * MOD_ENT_SIZE;
+    let start = phys::read_u32(ent) as u64;
+    let end = phys::read_u32(ent + 4) as u64;
+    if end <= start || end - start > MODULE_MAX_BYTES {
+        return None;
+    }
+    Some((start, end))
 }

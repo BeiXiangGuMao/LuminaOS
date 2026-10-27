@@ -270,6 +270,11 @@ const SWAP_IMG: &str = "/home/z/my-project/lumina-build/runtime/swap.img";
 /// 介质起步（格式化路径确定性覆盖；持久化断言在盘内跨卸载重挂）。
 const DISK_IMG: &str = "/home/z/my-project/lumina-build/runtime/disk.img";
 
+/// M33-F1：busybox 介质路径（multiboot module 通道 = QEMU `-initrd`）。
+/// 缺位时 S8 fail-visible（制备证据链必修；一次性获取 =
+/// scripts/busybox-fetch.sh）。
+const BUSYBOX_MEDIA: &str = "/home/z/my-project/lumina-build/runtime/busybox/busybox";
+
 /// S8 实体；返回是否全部断言通过。
 fn smoke_inner() -> bool {
     // 0) swap 盘就位（M7-B 自检 27 的 ATA PIO 探测/读写对象；每次重建）
@@ -285,6 +290,18 @@ fn smoke_inner() -> bool {
         eprintln!("[FAIL] S8-smoke：LFS1 数据盘创建失败：{DISK_IMG}");
         return false;
     }
+    // 0c) M33-F1 busybox 介质就位检查（fail-visible：S8 起制备链必修）
+    let busybox_ok = std::path::Path::new(BUSYBOX_MEDIA)
+        .metadata()
+        .map(|m| m.len() > 0)
+        .unwrap_or(false);
+    if !busybox_ok {
+        eprintln!(
+            "[FAIL] S8-smoke：busybox 介质缺位：{BUSYBOX_MEDIA}（一次性获取：sh scripts/busybox-fetch.sh）"
+        );
+        return false;
+    }
+    eprintln!("[S8-smoke] busybox 介质在位：{BUSYBOX_MEDIA}");
     // 1) objcopy 产出裸映像（QEMU multiboot1 仅接受 32 位可装载映像）
     let code = run_logged(
         "S8-smoke",
@@ -315,6 +332,8 @@ fn smoke_inner() -> bool {
         QEMU_BIOS_DATA,
         "-kernel",
         KERNEL_BIN,
+        "-initrd",
+        BUSYBOX_MEDIA,
         "-drive",
         disk_drive.as_str(),
         "-drive",
