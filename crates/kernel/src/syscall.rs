@@ -60,7 +60,8 @@ const MSR_FMASK: u32 = 0xC000_0084;
 /// FMASK：清 TF(0x100) | IF(0x200) | DF(0x400)。
 const FMASK_VALUE: u64 = 0x700;
 
-/// 9 槽系统调用帧（入口桩布局；与汇编偏移严格对应）。
+/// 15 槽系统调用帧（入口桩布局；与汇编偏移严格对应；M33-P1 扩 callee-saved
+/// 快照域——fork 子代全量寄存器焊接源，参 Linux 子代 rax=0 定点返回协议）。
 #[repr(C)]
 pub struct SyscallFrame {
     /// 用户 RFLAGS（r11 原值）。
@@ -81,20 +82,59 @@ pub struct SyscallFrame {
     pub user_rsp: u64,
     /// 系统调用编号（rax 原值）。
     pub num: u64,
+    /// 用户 RBX（callee-saved 快照，M33-P1）。
+    pub rbx: u64,
+    /// 用户 RBP（callee-saved 快照，M33-P1）。
+    pub rbp: u64,
+    /// 用户 R12（callee-saved 快照，M33-P1）。
+    pub r12: u64,
+    /// 用户 R13（callee-saved 快照，M33-P1）。
+    pub r13: u64,
+    /// 用户 R14（callee-saved 快照，M33-P1）。
+    pub r14: u64,
+    /// 用户 R15（callee-saved 快照，M33-P1）。
+    pub r15: u64,
 }
 
-const _: () = assert!(size_of::<SyscallFrame>() == 72);
+const _: () = assert!(size_of::<SyscallFrame>() == 120);
+
+impl SyscallFrame {
+    /// 帧槽序快照（M33-P1 fork 子代焊接源；槽序 = repr(C) 字段序，
+    /// 槽 8 = num/rax——焊接侧改写为 0 即 Linux fork 子代返回协议）。
+    pub fn slots(&self) -> [u64; 15] {
+        [
+            self.rflags,
+            self.rip,
+            self.rdi,
+            self.rsi,
+            self.rdx,
+            self.r10,
+            self.r8,
+            self.user_rsp,
+            self.num,
+            self.rbx,
+            self.rbp,
+            self.r12,
+            self.r13,
+            self.r14,
+            self.r15,
+        ]
+    }
+}
 
 // 系统调用入口桩（SYSCALL-01 白名单；M8-A 无状态 per-CPU 栈接线）。
 //
-// 帧区 128 字节（栈顶 16 对齐 - 128 保持对齐，call 压返回址后
-// 派发器入口 rsp%16==8，符合 SysV 约定）。r9 为 ABI 之外的自由
+// 帧区 192 字节（栈顶 16 对齐 - 192 保持对齐，call 压返回址后
+// 派发器入口 rsp%16==8，符合 SysV 约定；15 槽帧 120 B + 五元组
+// 40 B + 余量，M33-P1 callee-saved 快照域扩展如实记档）。r9 为 ABI 之外的自由
 // 寄存器（v0 五参数占 rdi/rsi/rdx/r10/r8），用作用户 rsp 暂存。
 //
 // 现场保全顺序（定位舞步会占用 rcx/rdx）：先把用户 rcx/rdx 暂存到
 // 用户栈 rsp-8/-16（红区语义，页内既有映射；若该页已被换出，#PF 经
 // M8-B 回收链 swap-in 后重执行本指令，全链自洽），再做 LAPIC 定位，
-// 切核栈后从暂存区回填帧槽。栈定位纪律见模块文档（swapgs 纪律定版）。
+// 切核栈后从暂存区回填帧槽；callee-saved（rbx/rbp/r12-r15）于帧
+// 扩展域就地入槽（M33-P1：派发链 Rust ABI 保全语义不变，帧槽为
+// fork 子代焊接源 + 尾声对称恢复双消费）。栈定位纪律见模块文档（swapgs 纪律定版）。
 //
 // 开发期缺陷二（SYSRET 边缘交付，TCG 隐患族收口）：YIELD 路径的
 // yield_now 恢复点无条件 sti（内核任务 IF 约定），使系统调用尾声
@@ -129,7 +169,7 @@ global_asm! {
     "    shl edx, 3",
     "    lea rsp, [rip + LUMINA_PERCPU_KSTACK]",
     "    mov rsp, [rsp + rdx]",
-    "    sub rsp, 128",
+    "    sub rsp, 192",
     "    mov rcx, [r9 - 8]",
     "    mov rdx, [r9 - 16]",
     "    mov [rsp + 0], r11",
@@ -141,21 +181,33 @@ global_asm! {
     "    mov [rsp + 48], r8",
     "    mov [rsp + 56], r9",
     "    mov [rsp + 64], rax",
+    "    mov [rsp + 72], rbx",
+    "    mov [rsp + 80], rbp",
+    "    mov [rsp + 88], r12",
+    "    mov [rsp + 96], r13",
+    "    mov [rsp + 104], r14",
+    "    mov [rsp + 112], r15",
     "    mov rdi, rsp",
     "    call lumina_syscall_dispatch",
     // ---- v0.10.1：iretq 返回（SYSRET 边缘竞态的 TCG 侧根治，见上注）----
-    // 五元组就地构造在帧尾（num 槽之后，128 字节帧区余量充足）：
-    //   [rsp+72]=RIP  [rsp+80]=CS(0x1B)  [rsp+88]=RFLAGS
-    //   [rsp+96]=RSP  [rsp+104]=SS(0x23)
+    // 五元组就地构造在帧尾（callee-saved 槽之后，192 字节帧区余量充足）：
+    //   [rsp+120]=RIP  [rsp+128]=CS(0x1B)  [rsp+136]=RFLAGS
+    //   [rsp+144]=RSP  [rsp+152]=SS(0x23)
     "    mov [rsp + 64], rax",                 // 返回值暂存 num 槽
     "    mov rax, [rsp + 8]",
-    "    mov [rsp + 72], rax",                 // RIP ← rcx 槽
-    "    mov qword ptr [rsp + 80], 0x1B",      // CS（ucode|3；显式段检查路径）
+    "    mov [rsp + 120], rax",                // RIP ← rcx 槽
+    "    mov qword ptr [rsp + 128], 0x1B",     // CS（ucode|3；显式段检查路径）
     "    mov rax, [rsp + 0]",
-    "    mov [rsp + 88], rax",                 // RFLAGS ← r11 槽（IF=1，出环即开）
+    "    mov [rsp + 136], rax",                // RFLAGS ← r11 槽（IF=1，出环即开）
     "    mov rax, [rsp + 56]",
-    "    mov [rsp + 96], rax",                 // RSP ← 用户 rsp
-    "    mov qword ptr [rsp + 104], 0x23",     // SS
+    "    mov [rsp + 144], rax",                // RSP ← 用户 rsp
+    "    mov qword ptr [rsp + 152], 0x23",     // SS
+    "    mov rbx, [rsp + 72]",
+    "    mov rbp, [rsp + 80]",
+    "    mov r12, [rsp + 88]",
+    "    mov r13, [rsp + 96]",
+    "    mov r14, [rsp + 104]",
+    "    mov r15, [rsp + 112]",
     "    mov rdi, [rsp + 16]",
     "    mov rsi, [rsp + 24]",
     "    mov rdx, [rsp + 32]",
@@ -164,7 +216,7 @@ global_asm! {
     "    mov rax, [rsp + 64]",                 // 返回值 → rax
     "    mov rcx, [rsp + 8]",
     "    mov r11, [rsp + 0]",
-    "    add rsp, 72",                         // 栈顶 = 五元组 RIP 槽
+    "    add rsp, 120",                        // 栈顶 = 五元组 RIP 槽
     "    iretq",
 }
 

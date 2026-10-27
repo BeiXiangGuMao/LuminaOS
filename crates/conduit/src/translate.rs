@@ -25,6 +25,14 @@ pub const ENOTTY: u64 = 25;
 pub const ENOMEM: u64 = 12;
 /// errno：坏文件描述符。
 pub const EBADF: u64 = 9;
+/// errno：操作不允许（fork 在无用户空间上下文——防御面）。
+pub const EPERM: u64 = 1;
+/// errno：路径不存在（execve 路径解析未命中）。
+pub const ENOENT: u64 = 2;
+/// errno：参数列表过长（argv/envp 步进越容）。
+pub const E2BIG: u64 = 7;
+/// errno：可执行文件格式错误（execve 三格式探针全败）。
+pub const ENOEXEC: u64 = 8;
 
 /// Linux 执行类别（映射产物；执行面归 kernel::linux）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +75,10 @@ pub enum LinAction {
     Fcntl,
     /// exit(60) / exit_group(231)：组终结 v0 按单任务口径
     Exit,
+    /// fork(57)：COW 地址空间复制 + 子代定点返回（rax=0 协议）
+    Fork,
+    /// execve(59)：路径解析 + argv/envp 传递 + ELF 装载接线
+    Execve,
     // ---- 合成桩档（返回合成成功值；语义实体挂账） ----
     /// rt_sigaction(13) / rt_sigprocmask(14)：信号面挂账，合成 0
     StubOk,
@@ -92,6 +104,8 @@ pub fn translate(num: u64) -> LinAction {
         20 => LinAction::WriteV,
         33 => LinAction::Dup2,
         39 => LinAction::GetPid,
+        57 => LinAction::Fork,
+        59 => LinAction::Execve,
         60 | 231 => LinAction::Exit, // exit / exit_group
         61 => LinAction::Wait4,
         63 => LinAction::UName,
@@ -109,7 +123,31 @@ pub fn translate(num: u64) -> LinAction {
 pub const AT_FDCWD: u64 = (-100i64) as u64;
 
 /// 映射面覆盖度成像（数与 [`translate`] 首批收录一致；测试对账断言）。
-pub const COVERED: usize = 22;
+pub const COVERED: usize = 24;
+
+/// wait4 wstatus 编码（M33-P1 对账单一事实源）：Lumina SYS_WAIT_PID
+/// 退出码 → Linux wstatus = `(exit_code & 0xFF) << 8`（WEXITSTATUS 域；
+/// 信号终结位域随信号面挂账）。kernel::linux::lin_wait4 消费面同源。
+#[inline]
+pub fn wstatus_encode(exit_code: u64) -> u32 {
+    ((exit_code & 0xFF) as u32) << 8
+}
+
+/// wait4 pid 归一化（M33-P1 对账单一事实源）：Linux 语义 → Lumina
+/// wait_scan 域。pid = -1（任意子）→ 0（wait_scan want=0 同义）；
+/// pid = 0（同进程组——v0 无进程组，同义任意子）→ 0；pid > 0 → 原值；
+/// pid < -1（进程组等待——v0 未收录）→ `Err(EINVAL)`。
+#[inline]
+pub fn wait4_pid_normalize(pid: u64) -> Result<u64, u64> {
+    let signed = pid as i64;
+    if signed > 0 {
+        Ok(pid)
+    } else if signed == 0 || signed == -1 {
+        Ok(0)
+    } else {
+        Err(EINVAL)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -139,8 +177,9 @@ mod tests {
         assert_eq!(translate(14), LinAction::StubOk);
         assert_eq!(translate(218), LinAction::StubTid);
         // 显形拒绝（未收录）
-        assert_eq!(translate(56), LinAction::Err(ENOSYS)); // clone
-        assert_eq!(translate(59), LinAction::Err(ENOSYS)); // execve（随 M33-P1 收录）
+        assert_eq!(translate(56), LinAction::Err(ENOSYS)); // clone（M33-P1 后仍挂账——vfork/clone 旗标面随后续批次）
+        assert_eq!(translate(59), LinAction::Execve); // M33-P1 收录
+        assert_eq!(translate(57), LinAction::Fork); // M33-P1 收录
         assert_eq!(translate(9999), LinAction::Err(ENOSYS));
         // ioctl 非终端语义
         assert_eq!(translate(16), LinAction::Err(ENOTTY));
@@ -162,6 +201,8 @@ mod tests {
             (20, LinAction::WriteV),
             (33, LinAction::Dup2),
             (39, LinAction::GetPid),
+            (57, LinAction::Fork),
+            (59, LinAction::Execve),
             (60, LinAction::Exit),
             (61, LinAction::Wait4),
             (63, LinAction::UName),
@@ -179,5 +220,32 @@ mod tests {
         assert_eq!(ENOTTY, 25);
         assert_eq!(EINVAL, 22);
         assert_eq!(AT_FDCWD, u64::MAX - 99); // -100 的补码形态
+                                             // M33-P1 errno 事实源对账
+        assert_eq!(EPERM, 1);
+        assert_eq!(ENOENT, 2);
+        assert_eq!(E2BIG, 7);
+        assert_eq!(ENOEXEC, 8);
+    }
+
+    #[test]
+    fn wait4_wstatus_encoding_golden() {
+        // M33-P1 编码对账：WEXITSTATUS 域 = (code & 0xFF) << 8
+        assert_eq!(wstatus_encode(0), 0x0000);
+        assert_eq!(wstatus_encode(42), 0x2A00);
+        assert_eq!(wstatus_encode(255), 0xFF00);
+        assert_eq!(wstatus_encode(256), 0x0000); // 8 位域截断（Linux 同构）
+        assert_eq!(wstatus_encode(0x1FF), 0xFF00);
+    }
+
+    #[test]
+    fn wait4_pid_normalize_golden() {
+        // M33-P1 pid 语义对账：-1/0 → 0（任意子）；>0 原值；<-1 EINVAL
+        assert_eq!(wait4_pid_normalize((-1i64) as u64), Ok(0));
+        assert_eq!(wait4_pid_normalize(0), Ok(0));
+        assert_eq!(wait4_pid_normalize(7), Ok(7));
+        assert_eq!(wait4_pid_normalize(4096), Ok(4096));
+        assert_eq!(wait4_pid_normalize((-5i64) as u64), Err(EINVAL));
+        assert_eq!(wait4_pid_normalize(u64::MAX), Ok(0)); // u64::MAX = -1（补码）= 任意子
+        assert_eq!(wait4_pid_normalize(u64::MAX - 1), Err(EINVAL)); // -2 = 进程组等待（未收录）
     }
 }

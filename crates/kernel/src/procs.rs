@@ -374,31 +374,95 @@ pub fn exec_loader_stamps() -> (u64, u64, u64) {
     )
 }
 
-/// SYS_EXEC 主体（M12-B 立，M14-① 重构；**M16-② Weave 包源映像**）：
+/// 三格式装载 + 切换公共核（M33-P1 单一事实源抽取）：blob 探针分流
+/// （ELF 魔数 → ELF 链 / LXE1 魔数 → 原链 / LWP1 包解包取载荷）→
+/// 地址空间构建（ELF 链携带 argv/envp/AT_RANDOM 熵，LXE1 链忽略——
+/// 双格式并行语义）→ CLOEXEC 消费 → 任务面登记（user_root + lin_abi
+/// 标志随链）→ CR3 切换 → 系统调用帧改写（ELF 链 rsp = 初始栈构造
+/// 面；LXE1 链 = 旧语义 stack_top；参数寄存器清零——现场全量内核
+/// 构造）。
+///
+/// sys_exec（映像号面）与 kernel::linux::lin_execve（路径 + argv/envp
+/// 面）共用；错误映射归调用方（ERR_IMAGE/ERR_NOMEM vs ENOEXEC/ENOMEM）。
+/// 成功返回 `(段数, 首数据帧)`（取证面）；失败返回 [`UserSpaceError`]。
+pub(crate) fn exec_load_switch(
+    caller: usize,
+    blob: &[u8],
+    argv: &[&str],
+    envp: &[&str],
+    frame: &mut crate::syscall::SyscallFrame,
+) -> Result<(u64, u64), crate::user::UserSpaceError> {
+    let is_elf = bedrock::elf::probe(blob);
+    let lwp_payload;
+    let blob: &[u8] = if is_elf || bedrock::exec::parse_probe(blob) {
+        blob
+    } else {
+        match weave::pkg::parse(blob) {
+            Ok(pkg) => {
+                lwp_payload = pkg.payload().to_vec();
+                &lwp_payload
+            }
+            Err(_) => return Err(crate::user::UserSpaceError::BadImage),
+        }
+    };
+    let Some(frames) = crate::vmm::global_frames() else {
+        return Err(crate::user::UserSpaceError::FramesExhausted);
+    };
+    let es = {
+        let mut alloc = || frames.alloc();
+        if is_elf {
+            // random = TSC 纪元拆字节（AT_RANDOM 熵面，口到 t82/P1 扩强熵）
+            let t = ostd::time::tsc_now();
+            let mut random = [0u8; 16];
+            for (i, b) in random.iter_mut().enumerate() {
+                *b = (t >> ((i % 8) * 8)) as u8 ^ (i as u8).rotate_left(3);
+            }
+            crate::user::build_user_space_elf(blob, argv, envp, random, "main", &mut alloc)?
+        } else {
+            crate::user::build_user_space_lxe(blob, &mut alloc)?
+        }
+    };
+    // M15-② CLOEXEC 消费（成功路径；失败路径不消费——POSIX exec 失败
+    // 语义）：关闭全部 CLOEXEC 置位句柄 + 孤儿文件对象 reap，取证落戳
+    // （t51 断言面；fd 继承语义——未置位句柄跨 exec 存续）。
+    let closed = task::close_cloexec_handles(caller);
+    EXEC_CLOEXEC_CLOSED.store(closed as u64, Ordering::Release);
+    EXEC_SEGS.store(es.seg_frames.len() as u64, Ordering::Release);
+    EXEC_DATA_FRAME.store(es.data_frame, Ordering::Release);
+    // 切换：先登记任务面（后续派发/清算面读到新根），再写 CR3，
+    // 最后改写系统调用帧（返回即入新映像）
+    task::set_user_root(caller, es.root);
+    // M33-L1：ABI 标志随装载链切换（ELF 链 = Linux 语义；LXE1 链 =
+    // 原生语义——LXE1 映像可入 ELF 任务（双格式并行），标志随链定）
+    task::set_lin_abi(caller, is_elf);
+    ostd::hw::control::write_cr3(es.root);
+    frame.rip = es.entry;
+    // M33-E1：ELF 链 rsp = 初始栈构造面（argc/argv/envp/auxv 已写栈顶帧）；
+    // LXE1 链 rsp = 0 → 旧语义 stack_top
+    frame.user_rsp = if es.rsp != 0 { es.rsp } else { es.stack_top };
+    frame.rdi = 0;
+    frame.rsi = 0;
+    frame.rdx = 0;
+    frame.r10 = 0;
+    frame.r8 = 0;
+    Ok((es.seg_frames.len() as u64, es.data_frame))
+}
+
+/// SYS_EXEC 主体（M12-B 立，M14-① 重构；**M16-② Weave 包源映像**；
+/// **M33-P1 三格式装载核抽取至 [`exec_load_switch`] 单一事实源**）：
 /// 调用方地址空间以 **VFS 取段的 LXE1 多段映像**重建
 /// （[`crate::user::EXEC_IMAGES`] 路径表 → [`crate::vfs::read_image`]
-/// 整读 → 直接 LXE1 或 Weave 包解包 → [`crate::user::build_user_space_lxe`]
-/// 装载）。
-///
-/// **Weave 包源映像（M16-②，EXEC 第 2+ 消费者，v0.15 候补转正）**：
-/// 取段 blob 非 LXE1 魔数时尝试 [`weave::pkg::parse`]（LWP1 结构面）
-/// ——合法包取其载荷进入同一 LXE1 装载链（载荷合法性仍由
-/// [`crate::user::build_user_space_lxe`] 的 parse 承担，单一事实源）；
-/// 双重失败 → ERR_IMAGE(10)。EXEC_VFS_BYTES 戳记录原始取段字节长
-/// （包体积含 LWP1 头 + 名字区）。
+/// 整读 → 三格式探针分流装载）。
 ///
 /// 全链（调用方任务上下文，串行）：
 /// 1. 门禁：调用方必须持有独立用户空间（否则 ERR_CAP）；映像号越界
 ///    → ERR_IMAGE(10)；
 /// 2. VFS 取段：路径解析 + 整读（缺失/超预算 → ERR_IMAGE，VFS 字节
 ///    戳落 0/实际值区分）；
-/// 3. 新空间构建：LXE1 parse + 放置策略 + PDPT[6] 分支映射
-///    （BadImage → ERR_IMAGE；帧耗尽 → ERR_NOMEM；旧空间帧按 v0
-///    存续期语义不回收，如实记档）；
-/// 4. 切换：CR3 写新根 + 任务面 user_root 登记 + 系统调用帧改写
-///    （RIP = LXE 头 entry、RSP = 头 stack_top 对应栈顶、参数寄存器
-///    清零——现场全量内核构造）；r12–r15 经派发器 callee-saved 语义
-///    自然往返（r14 遗传细胞 = 父 pid 保持——exec 不改父子链）。
+/// 3. 三格式装载 + 切换（公共核：ELF/LXE1/LWP1 探针 → 构建 →
+///    CLOEXEC → CR3 → 帧改写；旧空间帧按 v0 存续期语义不回收，如实记档）；
+/// 4. ELF 链缺省 argv = ["main"] / envp = []（execve 参数面随 M33-P1
+///    经 kernel::linux 扩）。
 ///
 /// 成功不返回（新映像自入口执行）；失败返回错误码。
 pub fn sys_exec(image: u64, frame: &mut crate::syscall::SyscallFrame) -> u64 {
@@ -419,99 +483,23 @@ pub fn sys_exec(image: u64, frame: &mut crate::syscall::SyscallFrame) -> u64 {
         return ERR_IMAGE;
     };
     EXEC_VFS_BYTES.store(blob.len() as u64, Ordering::Release);
-    // M16-② Weave 包源映像解包（EXEC 第 2+ 消费者）；M33-E1 三分流：
-    // ELF 魔数 → ELF 链（bedrock::elf，Linux 兼容装载）；LXE1 魔数 →
-    // 原链；否则 → LWP1 结构面解包取载荷（载荷合法性仍由装载器
-    // parse 承担）；三重失败 → ERR_IMAGE
-    let is_elf = bedrock::elf::probe(&blob);
-    let lwp_payload;
-    let blob: &[u8] = if is_elf || bedrock::exec::parse_probe(&blob) {
-        &blob
-    } else {
-        match weave::pkg::parse(&blob) {
-            Ok(pkg) => {
-                lwp_payload = pkg.payload().to_vec();
-                &lwp_payload
-            }
-            Err(_) => {
-                EXEC_RESULT.store(ERR_IMAGE, Ordering::Release);
-                return ERR_IMAGE;
-            }
+    // M33-E1：ELF 链缺省 argv/envp（execve 参数面随 M33-P1 经 linux::lin_execve 扩）
+    const ELF_DEFAULT_ARGV: &[&str] = &["main"];
+    match exec_load_switch(caller, &blob, ELF_DEFAULT_ARGV, &[], frame) {
+        Ok(_) => {
+            EXEC_RESULT.store(0, Ordering::Release);
+            EXEC_IMAGE.store(image, Ordering::Release);
+            EXEC_OK_BIT | image
         }
-    };
-    let Some(frames) = crate::vmm::global_frames() else {
-        EXEC_RESULT.store(ERR_NOMEM, Ordering::Release);
-        return ERR_NOMEM;
-    };
-    let es = {
-        let mut alloc = || frames.alloc();
-        if is_elf {
-            // M33-E1 ELF 链：缺省 argv/envp（execve 参数面随 M33-P1 扩）；
-            // random = TSC 纪元拆字节（AT_RANDOM 熵面，口到 t82/P1 扩强熵）
-            const ELF_DEFAULT_ARGV: &[&str] = &["main"];
-            let t = ostd::time::tsc_now();
-            let mut random = [0u8; 16];
-            for (i, b) in random.iter_mut().enumerate() {
-                *b = (t >> ((i % 8) * 8)) as u8 ^ (i as u8).rotate_left(3);
-            }
-            match crate::user::build_user_space_elf(
-                blob,
-                ELF_DEFAULT_ARGV,
-                &[],
-                random,
-                "main",
-                &mut alloc,
-            ) {
-                Ok(es) => es,
-                Err(crate::user::UserSpaceError::BadImage) => {
-                    EXEC_RESULT.store(ERR_IMAGE, Ordering::Release);
-                    return ERR_IMAGE;
-                }
-                Err(_) => {
-                    EXEC_RESULT.store(ERR_NOMEM, Ordering::Release);
-                    return ERR_NOMEM;
-                }
-            }
-        } else {
-            match crate::user::build_user_space_lxe(blob, &mut alloc) {
-                Ok(es) => es,
-                Err(crate::user::UserSpaceError::BadImage) => {
-                    EXEC_RESULT.store(ERR_IMAGE, Ordering::Release);
-                    return ERR_IMAGE;
-                }
-                Err(_) => {
-                    EXEC_RESULT.store(ERR_NOMEM, Ordering::Release);
-                    return ERR_NOMEM;
-                }
-            }
+        Err(crate::user::UserSpaceError::BadImage) => {
+            EXEC_RESULT.store(ERR_IMAGE, Ordering::Release);
+            ERR_IMAGE
         }
-    };
-    EXEC_SEGS.store(es.seg_frames.len() as u64, Ordering::Release);
-    EXEC_DATA_FRAME.store(es.data_frame, Ordering::Release);
-    // M15-② CLOEXEC 消费（成功路径；失败路径不消费——POSIX exec 失败
-    // 语义）：关闭全部 CLOEXEC 置位句柄 + 孤儿文件对象 reap，取证落戳
-    // （t51 断言面；fd 继承语义——未置位句柄跨 exec 存续）。
-    let closed = task::close_cloexec_handles(caller);
-    EXEC_CLOEXEC_CLOSED.store(closed as u64, Ordering::Release);
-    // 切换：先登记任务面（后续派发/清算面读到新根），再写 CR3，
-    // 最后改写系统调用帧（返回即入新映像）
-    task::set_user_root(caller, es.root);
-    // M33-L1：ABI 标志随装载链切换（ELF 链 = Linux 语义；LXE1 链 =
-    // 原生语义——LXE1 映像可入 ELF 任务（双格式并行），标志随链定）
-    task::set_lin_abi(caller, is_elf);
-    ostd::hw::control::write_cr3(es.root);
-    frame.rip = es.entry;
-    // M33-E1：ELF 链 rsp = 初始栈构造面（argc/argv/envp/auxv 已写栈顶帧）；
-    // LXE1 链 rsp = 0 → 旧语义 stack_top
-    frame.user_rsp = if es.rsp != 0 { es.rsp } else { es.stack_top };
-    frame.rdi = 0;
-    frame.rsi = 0;
-    frame.rdx = 0;
-    frame.r10 = 0;
-    frame.r8 = 0;
-    EXEC_RESULT.store(0, Ordering::Release);
-    EXEC_IMAGE.store(image, Ordering::Release);
-    EXEC_OK_BIT | image
+        Err(_) => {
+            EXEC_RESULT.store(ERR_NOMEM, Ordering::Release);
+            ERR_NOMEM
+        }
+    }
 }
 
 /// HANDLE_QUERY/ENUM 成功标记位：`(1 << 32) | ...`（与错误码域隔离）。

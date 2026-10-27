@@ -13,19 +13,22 @@
 //! → 串口、read → tty 游标非阻塞、fstat → 字符设备合成、close 桩）；
 //! ② 匿名内存两区（[`MMAP_BASE`] / [`BRK_BASE`] = pd6[2]/pd6[3]）立
 //! 即帧分配映射（v0 不做延迟映射/ZAP 回收）；③ brk 只扩不缩；
-//! ④ getdents64 / dup2 精确语义 / execve / clone 未收录 → ENOSYS 显
-//! 形（覆盖度分批不虚报——M33-计划 裁决注；getdents64 随 M33-F1 制
-//! 备面接，execve/clone 随 M33-P1 进程族笔）。
+//! ④ **M33-P1 进程族面收录**：fork（COW + 子代定点 rax=0）/ execve
+//! （路径解析 + argv/envp 传递 + 三格式装载切换公共核）/ dup2（
+//! F_DUP2FD 精确槽位安装）/ wait4 pid 归一化（-1/0 → 任意子）——
+//! getdents64（随 M33-F1 制备面接）/ clone（vfork 旗标面随后续
+//! 批次）仍 ENOSYS 显形（覆盖度分批不虚报——M33-计划 裁决注）。
 
 use crate::syscall::{validate_user_slice, validate_user_slice_mut, SyscallFrame};
-use conduit::translate::{translate, LinAction};
+use conduit::translate::{
+    translate, LinAction, E2BIG, EBADF, EINVAL, ENOENT, ENOEXEC, ENOMEM, ENOSYS, ENOTTY, EPERM,
+};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 /// EFAULT（errno 14；conduit::translate 未导出，字面值对账 defs 快照）。
 const EFAULT: u64 = 14;
 
 // ---- errno 事实源引用（conduit::translate；负值协议在 err()） ----
-use conduit::translate::{EBADF, EINVAL, ENOMEM, ENOSYS, ENOTTY};
 
 const _: () = {
     // errno 字面值对账锚（conduit 事实源快照）：14=EFAULT/9=EBADF/22=EINVAL
@@ -110,13 +113,23 @@ pub fn lin_dispatch(frame: &mut SyscallFrame) -> u64 {
         LinAction::WriteV => lin_writev(frame),
         LinAction::FStat => lin_fstat(frame.rdi, frame.rsi),
         LinAction::Wait4 => lin_wait4(frame),
+        LinAction::Fork => lin_fork(frame),
+        LinAction::Execve => lin_execve(frame),
         LinAction::Brk => lin_brk(frame.rdi),
         LinAction::MMapAnon => lin_mmap_anon(frame),
         LinAction::UName => lin_uname(frame.rdi),
         LinAction::GetCwd => lin_getcwd(frame.rdi, frame.rsi),
         LinAction::ClockGetTime => lin_clock_gettime(frame.rdi, frame.rsi),
         LinAction::GetDents64 => err(ENOSYS), // 随 M33-F1 制备面接
-        LinAction::Dup2 => err(ENOSYS),       // 精确 newfd 语义随 M33-P1
+        LinAction::Dup2 => {
+            // M33-P1 收录（L1 挂账兑现）：dup2(oldfd, newfd) → F_DUP2FD
+            // 精确槽位安装（vfs dup2_impl：目标占用静默关闭 + 定号装车）
+            lumina_to_linux(crate::vfs::sys_fcntl(
+                frame.rdi,
+                bedrock::abi::F_DUP2FD,
+                frame.rsi,
+            ))
+        }
         LinAction::Fcntl => {
             // F_GETFD(1)/F_SETFD(2)/F_GETFL(3)/F_SETFL(4) → Lumina 面
             if (1..=4).contains(&frame.rsi) {
@@ -235,11 +248,18 @@ fn lin_fstat(fd: u64, statbuf: u64) -> u64 {
 
 /// wait4(pid, status, options, rusage)：SYS_WAIT_PID 编码 → Linux
 /// wstatus（退出码 << 8）+ 返回子 pid；rusage 忽略（v0）。
+/// M33-P1 对账：pid 归一化与 wstatus 编码单一事实源 =
+/// `conduit::translate::wait4_pid_normalize` / `wstatus_encode`
+/// （宿主对账例同源；pid = -1/0 → 任意子——busybox sh wait 硬依赖）。
 fn lin_wait4(frame: &mut SyscallFrame) -> u64 {
-    let (pid, status_ptr) = (frame.rdi, frame.rsi);
+    let status_ptr = frame.rsi;
     if frame.r8 != 0 {
         return err(EINVAL); // rusage 指针非空未收录（v0）
     }
+    let pid = match conduit::translate::wait4_pid_normalize(frame.rdi) {
+        Ok(p) => p,
+        Err(e) => return err(e),
+    };
     let r = crate::procs::sys_wait_pid(pid);
     if r >> 32 != 1 {
         return err(r.min(ENOSYS));
@@ -249,9 +269,137 @@ fn lin_wait4(frame: &mut SyscallFrame) -> u64 {
     let Some(dst) = validate_user_slice_mut(status_ptr, 4) else {
         return err(14);
     };
-    let wstatus = ((code & 0xFF) as u32) << 8; // WEXITSTATUS 域
+    let wstatus = conduit::translate::wstatus_encode(code); // WEXITSTATUS 域
     dst[0..4].copy_from_slice(&wstatus.to_le_bytes());
     child
+}
+
+/// fork()（M33-P1）：COW 地址空间复制（[`crate::user::
+/// clone_user_space_cow`] 零拷贝共享）+ 子代全量寄存器快照定点恢复。
+///
+/// 子代身份协议 = rax：父返回子 pid（本函数返回值经派发器尾声入父
+/// rax）；子代首派发经 trampoline fork 分流 → [`crate::user::
+/// enter_fork_child`] 定点 iretq（rip/rsp = 父 syscall 返回点，
+/// callee-saved 逐槽恢复，rax = 0）——快照源 = 15 槽帧扩展域
+/// （M33-P1 入桩 callee-saved 入槽）。锁窗纪律：快照在
+/// `spawn_fork_child` 创建时点焊入（入队前），首派发窗口零竞态。
+///
+/// 成功返回子 pid（Linux 原值协议，非 OK 位封装）；失败 -errno。
+fn lin_fork(frame: &mut SyscallFrame) -> u64 {
+    let caller = crate::task::current_task_id();
+    let parent_root = crate::task::current_user_root();
+    if parent_root == 0 {
+        return err(EPERM); // 无独立用户空间（内核任务/主任务）不可派生
+    }
+    let Some(frames) = crate::vmm::global_frames() else {
+        return err(ENOMEM);
+    };
+    let cs = {
+        let mut alloc = || frames.alloc();
+        match crate::user::clone_user_space_cow(parent_root, &mut alloc) {
+            Ok(cs) => cs,
+            Err(_) => return err(ENOMEM),
+        }
+    };
+    // 子代快照：父帧全槽拷贝 + rax 槽（槽 8）归零（Linux 子代返回协议）
+    let mut slots = frame.slots();
+    slots[8] = 0;
+    let id = crate::task::spawn_fork_child("forked", cs.root, caller, slots);
+    if id == usize::MAX {
+        // 槽位耗尽：子表归还 + 父侧 COW 降级回滚（sys_spawn 同款回滚序）
+        for f in [cs.root, cs.pdpt, cs.pd, cs.pt] {
+            frames.dealloc(f);
+        }
+        crate::user::rollback_cow_demote(parent_root);
+        return err(ENOMEM);
+    }
+    id as u64
+}
+
+/// argv/envp 指针数组步进（char** → owned String 列表）：64 槽容闸
+/// （E2BIG——Linux ARG_MAX 语义的 v0 定容版）+ 每串 NUL 扫描（≤256 B）
+/// + UTF-8 校验（非 UTF-8 → EINVAL）。NULL 基指针 = 空（Linux 宽容
+///   语义）。owned 化隔离用户内存借用域（装载链消费 &str 引用集）。
+fn lin_ptr_strings(base: u64) -> Result<alloc::vec::Vec<alloc::string::String>, u64> {
+    const ARGV_MAX: u64 = 64;
+    let mut out = alloc::vec::Vec::new();
+    if base == 0 {
+        return Ok(out);
+    }
+    let mut i = 0u64;
+    loop {
+        if i >= ARGV_MAX {
+            return Err(E2BIG);
+        }
+        let Some(cell) = validate_user_slice(base + i * 8, 8) else {
+            return Err(EFAULT);
+        };
+        let p = u64::from_le_bytes(cell[0..8].try_into().unwrap_or([0; 8]));
+        if p == 0 {
+            return Ok(out);
+        }
+        let Some(slen) = lin_strlen(p) else {
+            return Err(EFAULT);
+        };
+        let Some(sb) = validate_user_slice(p, slen) else {
+            return Err(EFAULT);
+        };
+        match core::str::from_utf8(sb) {
+            Ok(s) => out.push(alloc::string::String::from(s)),
+            Err(_) => return Err(EINVAL),
+        }
+        i += 1;
+    }
+}
+
+/// execve(path, argv, envp)（M33-P1）：路径解析（v0 = 构建期映像表
+/// 精确匹配——ramfs 真路径面随 M33-F1 承接）+ argv/envp 用户内存
+/// 步进（[`lin_ptr_strings`] 64 槽容闸）+ 三格式装载切换公共核
+/// （[`crate::procs::exec_load_switch`]——ELF 链携带 argv/envp，
+/// CLOEXEC 消费，lin_abi 标志随链，帧改写 = 新映像入口）。
+///
+/// 错误映射：路径未命中 → ENOENT；三格式探针全败 → ENOEXEC；
+/// 帧耗尽/槽位耗尽 → ENOMEM；参数域违规 → E2BIG/EINVAL/EFAULT。
+/// 成功不返回（新映像自入口执行，返回值无消费方）。
+fn lin_execve(frame: &mut SyscallFrame) -> u64 {
+    if crate::task::current_user_root() == 0 {
+        return err(EPERM);
+    }
+    // 1) 路径：NUL 扫描 → UTF-8 校验
+    let Some(plen) = lin_strlen(frame.rdi) else {
+        return err(14); // EFAULT
+    };
+    let Some(path_bytes) = validate_user_slice(frame.rdi, plen) else {
+        return err(14);
+    };
+    let Ok(path) = core::str::from_utf8(path_bytes) else {
+        return err(ENOENT);
+    };
+    // 2) 路径解析：构建期映像表精确匹配（ramfs 随 M33-F1）
+    let Some(img_path) = crate::user::EXEC_IMAGES.iter().find(|p| **p == path) else {
+        return err(ENOENT);
+    };
+    let Some(blob) = crate::vfs::read_image(img_path) else {
+        return err(ENOENT);
+    };
+    // 3) argv/envp 步进（owned 化隔离借用域）
+    let argv = match lin_ptr_strings(frame.rsi) {
+        Ok(v) => v,
+        Err(e) => return err(e),
+    };
+    let envp = match lin_ptr_strings(frame.rdx) {
+        Ok(v) => v,
+        Err(e) => return err(e),
+    };
+    let argv_ref: alloc::vec::Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
+    let envp_ref: alloc::vec::Vec<&str> = envp.iter().map(|s| s.as_str()).collect();
+    // 4) 三格式装载切换公共核（单一事实源 = procs::exec_load_switch）
+    let caller = crate::task::current_task_id();
+    match crate::procs::exec_load_switch(caller, &blob, &argv_ref, &envp_ref, frame) {
+        Ok(_) => 0, // 成功不返回（新映像自入口执行）
+        Err(crate::user::UserSpaceError::BadImage) => err(ENOEXEC),
+        Err(_) => err(ENOMEM),
+    }
 }
 
 /// brk(addr)：brk(0) 查询 / 区内扩展映射 / 收缩拒绝（返回现值）。

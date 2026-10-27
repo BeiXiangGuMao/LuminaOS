@@ -229,6 +229,15 @@ struct Task {
     /// 按此分流至 `kernel::linux::lin_dispatch`（号域原生重叠，不按
     /// 号判源——单号域双语义 = 误判源）。
     lin_abi: bool,
+    /// fork 子代标志（M33-P1）：Linux fork 语义子代 = true，首派发经
+    /// trampoline 分流至 [`lumina_enter_user_fork`]（定点 iretq：父
+    /// syscall 返回点 + rax=0 协议）。非 fork 子代恒 false。
+    fork_child: bool,
+    /// fork 子代全量寄存器快照（M33-P1；槽序 = SyscallFrame repr(C)
+    /// 布局 15 槽，槽 8 = num/rax 已焊接为 0——Linux 子代返回协议）。
+    /// 非 fork 子代无义（全零）。spawn_fork_child 锁窗内焊接（与遗传
+    /// 细胞同窗纪律：入队前落位，首派发窗口零竞态）。
+    fork_frame: [u64; 15],
 }
 
 impl Task {
@@ -262,6 +271,8 @@ impl Task {
             kernel_cr3: 0,
             hflags: [0; HANDLE_MAX],
             lin_abi: false,
+            fork_child: false,
+            fork_frame: [0; 15],
         }
     }
 
@@ -333,6 +344,8 @@ impl Task {
             exit_code: u64::MAX,
             kernel_cr3: 0,
             lin_abi: false,
+            fork_child: false,
+            fork_frame: [0; 15],
         }
     }
 }
@@ -1129,6 +1142,43 @@ pub fn spawn_prio(name: &'static str, entry: Entry, prio: u8) -> usize {
         return IDLE;
     };
     enqueue(&mut s.ready, id, prio.min((PRIO_LEVELS - 1) as u8));
+    kick_other();
+    id
+}
+
+/// 派生 fork 子任务（M33-P1）：Linux fork 语义——COW 地址空间 + 全量
+/// 寄存器快照定点恢复（rax=0 子代协议）。
+///
+/// 与 [`spawn_user_child`] 同锁窗纪律：快照在任务创建时点（锁窗内、
+/// 入队前）焊入 [`Task::fork_frame`]——首派发窗口零竞态（快照晚于
+/// 入队 = 快拾取读旧旗的经典竞态，结构性封死）。
+///
+/// 返回槽位号；槽位耗尽返回 `usize::MAX`（调用方回滚地址空间）。
+pub fn spawn_fork_child(
+    name: &'static str,
+    user_root: u64,
+    parent: usize,
+    frame_slots: [u64; 15],
+) -> usize {
+    let _w = IntWindow::new();
+    let mut s = sched_lock!();
+    let mut t = Task::new_user(
+        name,
+        crate::user_noop,
+        user_root,
+        0,
+        Some(parent),
+        trampoline_user,
+    );
+    // M33-P1：fork 快照焊接（遗传细胞 ctx.r14 同窗已焊，fork 子代
+    // 不消费细胞——r14 随快照恢复为父用户原值，rax=0 协议定子代身份）。
+    t.fork_child = true;
+    t.fork_frame = frame_slots;
+    let Some(id) = alloc_slot(&mut s, t) else {
+        return usize::MAX;
+    };
+    let prio = s.tasks[id].as_ref().map_or(PRIO_NORMAL, |t| t.prio);
+    enqueue(&mut s.ready, id, prio);
     kick_other();
     id
 }
@@ -2148,16 +2198,32 @@ extern "C" fn trampoline_user() -> ! {
     // cell = 任务创建时登记的父链（ctx.r14 焊接同源）；根父/内核面
     // None → 0。桥面不再二次读 CURRENT（round-585/664 竞态根治：
     // 派发侧读面单一，两次读之间的额外裸窗不复存在）。
-    let (entry, cell): (Entry, u64) = {
+    // M33-P1：fork 子代同窗分流——快照在 spawn_fork_child 锁窗内已焊
+    // （入队前落位），此处读取零竞态；快照值拷入本栈局部后脱锁，
+    // 定点恢复桩消费（全量 GPR 装载 + iretq，见 user::lumina_enter_user_fork）。
+    let (entry, cell, fork_snap): (Entry, u64, Option<[u64; 15]>) = {
         let _w = IntWindow::new();
         let s = sched_lock!();
         let cpu = my_cpu();
         let cur = CURRENT[cpu].load(Ordering::Relaxed);
         match s.tasks[cur].as_ref() {
-            Some(t) => (t.entry, t.parent.map_or(0, |p| p as u64)),
-            None => (main_entry_stub, 0),
+            Some(t) => (
+                t.entry,
+                t.parent.map_or(0, |p| p as u64),
+                if t.fork_child {
+                    Some(t.fork_frame)
+                } else {
+                    None
+                },
+            ),
+            None => (main_entry_stub, 0, None),
         }
     };
+    if let Some(slots) = fork_snap {
+        // M33-P1 fork 子代：绕过标准桥（USER_CODE_VIRT 入口属 LXE1
+        // spawn 语义），定点恢复父 syscall 返回点（rax=0 协议）。
+        crate::user::enter_fork_child(&slots);
+    }
     let _ = entry;
     let bridge = USER_ENTRY_BRIDGE.load(Ordering::Acquire);
     debug_assert_ne!(bridge, 0, "user entry bridge must be registered");

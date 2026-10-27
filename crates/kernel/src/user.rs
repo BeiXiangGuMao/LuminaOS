@@ -164,6 +164,57 @@ pub extern "C" fn enter_user_bridge(cell: u64) -> ! {
     unsafe { lumina_enter_user(entry, stack, cell) }
 }
 
+// fork 子代定点进入桩（M33-P1；USER-01 白名单同族——iretq 降权面）：
+// rdi = 全量寄存器快照指针（SyscallFrame repr(C) 槽序 15 槽）。
+//
+// Linux fork 子代返回协议：rip/rsp/rflags 取自快照（父 syscall 返回
+// 点），callee-saved（rbx/rbp/r12-r15）逐槽恢复（musl/busybox 子代
+// 跨 fork 活跃局部量保真面），rax = 0 定子代身份。参数寄存器
+// （rdi/rsi/rdx/r10/r8/r9/rcx/r11）不恢复——SysV caller-saved 语义
+// 用户态不跨 syscall 依赖（Linux 内核侧亦只保 callee-saved 面）。
+//
+// 栈序：SS/RSP/RFLAGS/CS/RIP 五元组自高址向低址压入（iretq 期望序）。
+//
+// SAFETY（调用方义务）：
+// - CR3 已为该子任务的用户根（调度器 prepare_dispatch 保证——COW 克
+//   隆根与父同构，快照中的 rip/rsp 虚地址天然有效）；
+// - slots 指针在 iretq 前持续有效（调用方栈局部存活至本函数永不返回）；
+// - 中断前置条件与 lumina_enter_user 同（trampoline_user 已 enable）。
+global_asm! {
+    ".text",
+    ".globl lumina_enter_user_fork",
+    "lumina_enter_user_fork:",
+    "    push 0x23",            // SS
+    "    mov rax, [rdi + 56]", // 用户 RSP 槽
+    "    push rax",            // RSP
+    "    mov rax, [rdi + 0]",  // RFLAGS 槽（IF=1 同源）
+    "    push rax",            // RFLAGS
+    "    push 0x1B",           // CS
+    "    push qword ptr [rdi + 8]", // RIP（父 syscall 返回点）
+    "    mov rbx, [rdi + 72]",
+    "    mov rbp, [rdi + 80]",
+    "    mov r12, [rdi + 88]",
+    "    mov r13, [rdi + 96]",
+    "    mov r14, [rdi + 104]",
+    "    mov r15, [rdi + 112]",
+    "    xor eax, eax",        // Linux fork 子代返回协议：rax = 0
+    "    iretq",
+}
+
+unsafe extern "C" {
+    /// 见上方 global_asm 契约（rdi = 快照指针；永不返回）。
+    fn lumina_enter_user_fork(slots: *const u64) -> !;
+}
+
+/// fork 子代定点进入（M33-P1）：task.rs `trampoline_user` fork 分流
+/// 消费面。SAFETY：slots 为调用方栈局部（trampoline 帧存活至 iretq）；
+/// 桩契约见 global_asm 文档。
+pub fn enter_fork_child(slots: &[u64; 15]) -> ! {
+    // SAFETY: 前置条件 —— CR3/GDT/中断由调度器与 trampoline_user 保证；
+    //         slots 指针跨 iretq 存活（本函数永不返回，调用方帧冻结）。
+    unsafe { lumina_enter_user_fork(slots.as_ptr()) }
+}
+
 /// 用户地址空间构造结果。
 pub struct UserSpace {
     /// 用户页表根物理地址。
