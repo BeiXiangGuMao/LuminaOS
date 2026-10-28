@@ -18,6 +18,13 @@ boot = []
 # 进入交互面（halt 命令终结 → INIT_EXIT 透传 kernel_exit）。批跑/回归
 # 构建不用本特性（默认路径自检后立即退出，pf-hunt 判定面零扰动）。
 interactive = []
+# M33-R1 longrun 面：自检通过后不关机，进入 1080p 扫描带 compose tick
+# 循环（S10-longrun Panel B 长稳显示 tick 面板）——每 16 拍心跳行串口
+# 取证，同步字节/交盒像素任一失配即失败退出（fail-visible）。与
+# interactive 互斥（同给时 interactive 优先——外层 cfg(not(interactive))
+# 收束）；批跑/回归构建不用本特性，S8 门禁路径零扰动。60fps 实时率
+# 口径归真机窗口（TCG 下宿主记录实测 fps 信息面不设闸——M33-R1）。
+longrun = []
 
 [dependencies]
 # ADR-0002 迁移步（M26）：SYS 文件面改道 meridian::vfs（挂载策略 + 门面聚合）

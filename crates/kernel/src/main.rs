@@ -4934,8 +4934,68 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         }
         #[cfg(not(feature = "interactive"))]
         {
-            interrupts::disable();
-            kernel_exit(EXIT_SUCCESS);
+            // ---- M33-R1：长稳显示 tick 面板（--features longrun，S10 Panel B）----
+            // 自检 82/82 全绿后进入 1080p 扫描带 compose tick 循环：每拍一条
+            // 1920×108 损伤带（10 拍无缝覆盖全屏）经 stage 写 → damage 标记
+            // → compose 交盒全链上屏（t79-f 同构复用），同步字节/交盒像素
+            // 任一失配 = fault 显形即失败退出（fail-visible，不静默续跑）；
+            // 每 16 拍心跳行串口取证（宿主 S10-longrun harness 到时强杀，
+            // 按心跳单调/连续/零故障判定）。与 interactive 互斥（同给时
+            // interactive 优先——外层 cfg(not(interactive)) 收束）；批跑/
+            // 回归构建不用本特性，S8 门禁路径零扰动。60fps 实时率口径归
+            // 真机窗口（TCG 下宿主记录实测 fps 信息面不设闸——M33-R1 登记）。
+            #[cfg(feature = "longrun")]
+            {
+                let _ = writeln!(
+                    log,
+                    "LUMINA-LONGRUN-B-ON w={} h={} band=108 hb=16",
+                    crate::fb::WIDTH,
+                    crate::fb::HEIGHT
+                );
+                let Some(_) = crate::fb::stage_init() else {
+                    interrupts::disable();
+                    kernel_exit(EXIT_FAILURE);
+                };
+                let w: i32 = crate::fb::WIDTH as i32;
+                let h: i32 = crate::fb::HEIGHT as i32;
+                let band: i32 = 108;
+                let hb_every: u64 = 16;
+                let mut tick: u64 = 0;
+                loop {
+                    // 带起点恒 < h 且随 tick 循环扫描（u64 步进取模——72h
+                    // 满窗 tick×band 不溢出 i32 域）；色调随 tick 轮换
+                    // （活体可辨），行内低字节随 xx 抖动（逐拍像素证据
+                    // 非纯色块——交盒/裁剪证据可读）。
+                    let y = ((tick * band as u64) % h as u64) as i32;
+                    let tone = (tick & 0xFF) as u32;
+                    let paint = 0x7900_0000u32 | (tone << 16) | (tone << 8) | tone;
+                    for yy in y..y + band {
+                        for xx in 0..w {
+                            crate::fb::stage_px_write(xx, yy, paint ^ (xx as u32 & 0xFF));
+                        }
+                    }
+                    let bytes = crate::fb::sys_fb_sync(0, y as u64, w as u64, band as u64);
+                    let px = crate::fb::fb_compose_tick();
+                    let want = w as u64 * band as u64;
+                    if bytes != want * 4 || px != want {
+                        let _ = writeln!(
+                            log,
+                            "LUMINA-LONGRUN-B-FAULT tick={tick} bytes={bytes} px={px}"
+                        );
+                        interrupts::disable();
+                        kernel_exit(EXIT_FAILURE);
+                    }
+                    tick += 1;
+                    if tick.is_multiple_of(hb_every) {
+                        let _ = writeln!(log, "LUMINA-LONGRUN-B tick={tick} px={px} fault=0");
+                    }
+                }
+            }
+            #[cfg(not(feature = "longrun"))]
+            {
+                interrupts::disable();
+                kernel_exit(EXIT_SUCCESS);
+            }
         }
     } else {
         let _ = writeln!(log, "LUMINA-SELFTEST-FAIL {pass}/{SELFTEST_TOTAL}");
