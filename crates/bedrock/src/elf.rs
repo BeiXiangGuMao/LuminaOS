@@ -277,7 +277,11 @@ pub fn parse(blob: &[u8]) -> Result<ElfImage<'_>, ElfError> {
         if p_memsz < p_filesz {
             return Err(ElfError::BadSeg);
         }
-        if p_vaddr % PAGE != 0 {
+        // ELF 规范同余式 p_offset ≡ p_vaddr (mod PAGE)（Linux load_elf_binary
+        // 同款语义）。vaddr 页对齐强校验退役（M33-T1 实录）：Alpine 官方
+        // 静态介质尾段 vaddr = 0x4f7450 页内余 0x450 是 ld 常规布局（file
+        // 偏移与 vaddr 同页内余），强对齐拒绝与「官方介质直载」制备契约相斥。
+        if (p_vaddr % PAGE) != (p_offset % PAGE) {
             return Err(ElfError::BadSeg);
         }
         if load_count >= ELF_MAX_LOADS {
@@ -476,11 +480,14 @@ fn alloc_vec_str(s: &str) -> alloc::vec::Vec<u8> {
 mod tests {
     use super::*;
 
-    /// 手编最小 ELF64 映像：ELF 头 64B + 2 程序头 112B + 两段载荷。
-    /// 段① RX @0x180000000（8 字节代码），段② RW @0x180001000
-    /// （4 字节数据 + memsz 2 页 = bss 一页余）。
+    /// 手编最小 ELF64 映像：ELF 头 64B + 2 程序头 112B + 页对齐载荷。
+    /// 段① RX @0x180000000（8 字节代码，offset 0x1000），段② RW
+    /// @0x180001000（4 字节数据 + memsz 2 页 = bss 一页余，offset 0x2000）。
+    /// M33-T1 同余式校验对齐注：p_offset ≡ p_vaddr (mod PAGE)——golden
+    /// 载荷 offset 页对齐化（真实 ld 布局同款；原 176/184 非对齐 offset
+    /// 与 0 页内余 vaddr 违反同余式，构造瑕疵如实修正）。
     fn min_elf() -> alloc::vec::Vec<u8> {
-        let mut v = alloc::vec![0u8; EHDR_LEN + 2 * PHDR_LEN + 8 + 4];
+        let mut v = alloc::vec![0u8; 0x2000 + 4];
         // ident
         v[0..4].copy_from_slice(&ELF_MAGIC);
         v[4] = ELFCLASS64;
@@ -495,25 +502,26 @@ mod tests {
         // e_phentsize / e_phnum
         v[0x36..0x38].copy_from_slice(&(PHDR_LEN as u16).to_le_bytes());
         v[0x38..0x3A].copy_from_slice(&2u16.to_le_bytes());
-        // 程序头①：RX 代码 @0x180000000，offset = 176，filesz 8
+        // 程序头①：RX 代码 @0x180000000，offset = 0x1000（页对齐），filesz 8
         let p1 = EHDR_LEN;
         v[p1..p1 + 4].copy_from_slice(&PT_LOAD.to_le_bytes());
         v[p1 + 4..p1 + 8].copy_from_slice(&(PF_R | PF_X).to_le_bytes());
-        v[p1 + 8..p1 + 16].copy_from_slice(&((EHDR_LEN + 2 * PHDR_LEN) as u64).to_le_bytes());
+        v[p1 + 8..p1 + 16].copy_from_slice(&0x1000u64.to_le_bytes());
         v[p1 + 16..p1 + 24].copy_from_slice(&0x1_8000_0000u64.to_le_bytes());
         v[p1 + 32..p1 + 40].copy_from_slice(&8u64.to_le_bytes());
         v[p1 + 40..p1 + 48].copy_from_slice(&8u64.to_le_bytes());
-        // 程序头②：RW 数据+bss @0x180001000，offset = 184，filesz 4 / memsz 0x2000
+        // 程序头②：RW 数据+bss @0x180001000，offset = 0x2000（页对齐），
+        // filesz 4 / memsz 0x2000
         let p2 = EHDR_LEN + PHDR_LEN;
         v[p2..p2 + 4].copy_from_slice(&PT_LOAD.to_le_bytes());
         v[p2 + 4..p2 + 8].copy_from_slice(&(PF_R | PF_W).to_le_bytes());
-        v[p2 + 8..p2 + 16].copy_from_slice(&((EHDR_LEN + 2 * PHDR_LEN + 8) as u64).to_le_bytes());
+        v[p2 + 8..p2 + 16].copy_from_slice(&0x2000u64.to_le_bytes());
         v[p2 + 16..p2 + 24].copy_from_slice(&0x1_8000_1000u64.to_le_bytes());
         v[p2 + 32..p2 + 40].copy_from_slice(&4u64.to_le_bytes());
         v[p2 + 40..p2 + 48].copy_from_slice(&0x2000u64.to_le_bytes());
-        // 载荷
-        v[176..184].copy_from_slice(&[0xB8, 0x2A, 0x00, 0x00, 0x0F, 0x05, 0xCC, 0x90]);
-        v[184..188].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        // 载荷（offset 同步页对齐化）
+        v[0x1000..0x1008].copy_from_slice(&[0xB8, 0x2A, 0x00, 0x00, 0x0F, 0x05, 0xCC, 0x90]);
+        v[0x2000..0x2004].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
         v
     }
 

@@ -36,11 +36,12 @@ const _: () = {
     // /12=ENOMEM/25=ENOTTY/38=ENOSYS
 };
 
-/// mmap 匿名区基址（pd6[2]；2 MiB 窗口——busybox 峰值内存预算内）。
+/// mmap 匿名区基址（pd6[8]；2 MiB 窗口——busybox 峰值内存预算内）。
 pub const MMAP_BASE: u64 = 0x1_8100_0000;
 /// mmap 匿名区上界。
 pub const MMAP_LIMIT: u64 = MMAP_BASE + 0x20_0000;
-/// brk 区基址（pd6[3]；2 MiB 窗口）。
+/// brk 区基址（pd6[12]；2 MiB 窗口——槽号按 VA>>21 & 0x1FF 实算，
+/// 「pd6[3]」旧注为笔误修正：0x181800000 >> 21 = pd 槽 12）。
 pub const BRK_BASE: u64 = 0x1_8180_0000;
 /// brk 区上界。
 pub const BRK_LIMIT: u64 = BRK_BASE + 0x20_0000;
@@ -146,6 +147,7 @@ pub fn lin_dispatch(frame: &mut SyscallFrame) -> u64 {
         LinAction::Exit => crate::task::exit_current(frame.rdi),
         LinAction::StubOk => 0,
         LinAction::StubTid => crate::procs::current_pid(),
+        LinAction::ArchPrctl => lin_arch_prctl(frame.rdi, frame.rsi),
         LinAction::Err(e) => {
             let _ = (EBADF, ENOTTY); // 事实源引用锚（errno 值域单源）
             err(e)
@@ -309,7 +311,9 @@ fn lin_fork(frame: &mut SyscallFrame) -> u64 {
     // 子代快照：父帧全槽拷贝 + rax 槽（槽 8）归零（Linux 子代返回协议）
     let mut slots = frame.slots();
     slots[8] = 0;
-    let id = crate::task::spawn_fork_child("forked", cs.root, caller, slots);
+    // lin_abi = true：lin_fork 仅在 Linux 派发链可达（结构性正确——
+    // 子代与父同 ABI 链，Linux fork 语义继承面；P1 缺口 T1 顺手收口）
+    let id = crate::task::spawn_fork_child("forked", cs.root, caller, slots, true);
     if id == usize::MAX {
         // 槽位耗尽：子表归还 + 父侧 COW 降级回滚（sys_spawn 同款回滚序）
         for f in [cs.root, cs.pdpt, cs.pd, cs.pt] {
@@ -546,6 +550,70 @@ fn lin_clock_gettime(clk: u64, tp: u64) -> u64 {
     0
 }
 
+/// arch_prctl(op, base)（M33-T1 收录）：x86_64 TLS 基址面——musl 静态
+/// 二进制 `__set_thread_area` 初始化链硬依赖（glibc 版同号但语义面超
+/// musl 口径裁决弃用，F1 实录）。
+///
+/// 收录域：ARCH_SET_FS(0x1002) = 写 IA32_FS_BASE MSR（用户 TLS 段基址，
+/// ring0 代写合法——Linux 内核同款）；ARCH_GET_FS(0x1003) = 读回现值
+/// （16 字节用户内存，与 Linux uapi int 域同形）。其余 op 显形 EINVAL。
+///
+/// v0 口径如实记档：① FS base 为 per-CPU MSR，不在调度器上下文切换面
+/// （GPR+CR3 面外）——单 Linux 任务活体口径安全，per-task 保存恢复随
+/// 进程族批次挂账；② 无 CFI/沙箱面（用户基址直写 MSR——Linux 同权）。
+fn lin_arch_prctl(op: u64, base: u64) -> u64 {
+    const ARCH_SET_FS: u64 = 0x1002;
+    const ARCH_GET_FS: u64 = 0x1003;
+    match op {
+        ARCH_SET_FS => {
+            wrmsr_fs_base(base);
+            0
+        }
+        ARCH_GET_FS => {
+            let Some(dst) = validate_user_slice_mut(base, 8) else {
+                return err(14); // EFAULT
+            };
+            let cur = rdmsr_fs_base();
+            dst[0..8].copy_from_slice(&cur.to_le_bytes());
+            0
+        }
+        _ => err(EINVAL),
+    }
+}
+
+/// IA32_FS_BASE MSR 写（0xC0000100；`wrmsr` ecx=MSR 号 / edx:eax=值）。
+#[inline]
+fn wrmsr_fs_base(base: u64) {
+    // SAFETY: MSR 写为 ring0 专属指令；本函数仅经 lin_arch_prctl 派发
+    //         （内核态）可达；ecx/edx/eax 显式入参，无内存副作用。
+    unsafe {
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") 0xC000_0100u32,
+            in("eax") (base & 0xFFFF_FFFF) as u32,
+            in("edx") (base >> 32) as u32,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+}
+
+/// IA32_FS_BASE MSR 读（`rdmsr` edx:eax 出参拼装）。
+#[inline]
+fn rdmsr_fs_base() -> u64 {
+    let (lo, hi): (u32, u32);
+    // SAFETY: MSR 读为 ring0 专属指令；同 wrmsr_fs_base 无内存副作用。
+    unsafe {
+        core::arch::asm!(
+            "rdmsr",
+            in("ecx") 0xC000_0100u32,
+            out("eax") lo,
+            out("edx") hi,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    ((hi as u64) << 32) | lo as u64
+}
+
 /// NUL 扫描（路径指针 → 长度；≤256 B 窗口防御——路径上界）。
 fn lin_strlen(ptr: u64) -> Option<u64> {
     if ptr == 0 {
@@ -575,10 +643,18 @@ fn map_user_page(root: u64, va: u64, frame: u64, writable: bool) -> bool {
                 flags |= PTE_RW;
             }
             ostd::hw::phys::write_u64(table + off, (frame & PTE_ADDR_MASK) | flags);
+            // 本核 TLB flush（Linux set_pte_at + flush_tlb_page 同款）：
+            // QEMU TCG softmmu 不追踪 guest 页表内存写——运行期 PTE 改写
+            // 无 invlpg 时旧翻译残留（M33-T1 实录：brk 扩页 P|RW|US 落表
+            // 后 ring3 访问仍 #PF err=0x7 且叶 A 位未置——翻译未重走）。
+            ostd::hw::control::invlpg(va);
             return true;
         }
         if ent & PTE_P == 0 {
-            // 缺中间表：申请建表（全零 + P|US）
+            // 缺中间表：申请建表（全零 + P|RW|US——M33-T1 实录：漏 RW
+            // 时中间层 RW=0 按权限位 AND 组合语义压全域只读，内核态
+            // CR0.WP=0 绕过如常、ring3 写 #PF err=P|W|U——busybox brk
+            // 堆页实录；构建期 Entry::table|USER 同构带 RW 对账）
             let Some(frames) = crate::vmm::global_frames() else {
                 return false;
             };
@@ -586,7 +662,7 @@ fn map_user_page(root: u64, va: u64, frame: u64, writable: bool) -> bool {
                 return false;
             };
             ostd::hw::phys::write_zero(t, 0x1000);
-            ostd::hw::phys::write_u64(table + off, (t & PTE_ADDR_MASK) | PTE_P | PTE_US);
+            ostd::hw::phys::write_u64(table + off, (t & PTE_ADDR_MASK) | PTE_P | PTE_RW | PTE_US);
             table = t;
         } else {
             table = ent & PTE_ADDR_MASK;

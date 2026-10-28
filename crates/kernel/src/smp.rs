@@ -417,7 +417,9 @@ core::arch::global_asm! {
     "    movl 0x7628, %eax",
     "    movl %eax, %cr3",
     "    movl %cr4, %eax",
-    "    orl $0x00000020, %eax",
+    // PAE | OSFXSR | OSXMMEXCPT（M33-T1：ring3 SSE 使能，BSP boot.rs
+    // 同款——AP 双路径对称）
+    "    orl $0x00000620, %eax",
     "    movl %eax, %cr4",
     "    movl %cr0, %eax",
     "    orl $0x80000000, %eax",

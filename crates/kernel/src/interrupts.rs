@@ -138,6 +138,32 @@ fn fault_hook(vector: u64, rip: u64, aux: u64) -> ! {
     if vector == 14 {
         // #PF 取证：CR2 = 故障线性地址（HW-04 扩展面；定位桩/表路径缺页）
         let _ = writeln!(serial, "  cr2={:#x}", ostd::hw::control::read_cr2());
+        // M33-T1 四级表项取证（免分配 phys 直读）：P=1 写拒绝类故障的
+        // 叶项定性（present/RW/US/COW 位与中间层 U 位链全显形）
+        let cr2 = ostd::hw::control::read_cr2();
+        let root = ostd::hw::control::read_cr3() & !0xFFF;
+        let idx = |s: u32| ((cr2 >> s) & 0x1FF) * 8;
+        const ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
+        let e4 = ostd::hw::phys::read_u64(root + idx(39));
+        let e3 = if e4 & 1 != 0 {
+            ostd::hw::phys::read_u64((e4 & ADDR_MASK) + idx(30))
+        } else {
+            0
+        };
+        let e2 = if e3 & 1 != 0 {
+            ostd::hw::phys::read_u64((e3 & ADDR_MASK) + idx(21))
+        } else {
+            0
+        };
+        let e1 = if e3 & 1 != 0 && e2 & 1 != 0 && e2 & 0x80 == 0 {
+            ostd::hw::phys::read_u64((e2 & ADDR_MASK) + idx(12))
+        } else {
+            0
+        };
+        let _ = writeln!(
+            serial,
+            "  pf-walk pml4e={e4:#x} pdpte={e3:#x} pde={e2:#x} pte={e1:#x}"
+        );
     }
     let aux_sane = (0x1000..0x1000_0000).contains(&aux) && aux & 7 == 0;
     if aux != 0 && !aux_sane {

@@ -79,6 +79,10 @@ pub enum LinAction {
     Fork,
     /// execve(59)：路径解析 + argv/envp 传递 + ELF 装载接线
     Execve,
+    /// arch_prctl(158)：ARCH_SET_FS 落 FS base MSR（musl TLS 硬依赖——
+    /// x86_64 musl __set_thread_area 初始化链；ARCH_GET_FS 返回现值，
+    /// 其余 op 显形 EINVAL）。执行档（MSR 面在 kernel::linux）。
+    ArchPrctl,
     // ---- 合成桩档（返回合成成功值；语义实体挂账） ----
     /// rt_sigaction(13) / rt_sigprocmask(14)：信号面挂账，合成 0
     StubOk,
@@ -109,6 +113,7 @@ pub fn translate(num: u64) -> LinAction {
         60 | 231 => LinAction::Exit, // exit / exit_group
         61 => LinAction::Wait4,
         63 => LinAction::UName,
+        158 => LinAction::ArchPrctl, // M33-T1 收录（musl TLS 初始化链）
         72 => LinAction::Fcntl,
         79 => LinAction::GetCwd,
         217 => LinAction::GetDents64,
@@ -172,6 +177,8 @@ mod tests {
         // exit / exit_group 同执行面
         assert_eq!(translate(60), LinAction::Exit);
         assert_eq!(translate(231), LinAction::Exit);
+        // M33-T1 收录：arch_prctl 执行档（musl TLS 初始化链）
+        assert_eq!(translate(158), LinAction::ArchPrctl);
         // 合成桩档（musl 启动序列）
         assert_eq!(translate(13), LinAction::StubOk);
         assert_eq!(translate(14), LinAction::StubOk);

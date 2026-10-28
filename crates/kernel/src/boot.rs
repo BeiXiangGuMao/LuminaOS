@@ -76,7 +76,12 @@ global_asm! {
     "    loop 1b",
     // PAE → CR3 → EFER.LME → CR0.PG
     "    movl %cr4, %eax",
-    "    orl $0x00000020, %eax",      // PAE
+    // PAE(bit5) | OSFXSR(bit9) | OSXMMEXCPT(bit10)——M33-T1：ring3 SSE
+    // 使能面（OSFXSR=0 时 SSE SIMD 指令 #UD，busybox musl memcpy 链
+    // movq/punpcklqdq 实录；OSXMMEXCPT=1 保 #XF 走正规路径）。内核态
+    // 本体编译期禁 SIMD（no_std 裸机），XMM 用户态独占——上下文切换
+    // 不保 XMM 的单用户口径与 FS base per-task 同批挂账。
+    "    orl $0x00000620, %eax",
     "    movl %eax, %cr4",
     "    movl $pml4_table, %eax",
     "    movl %eax, %cr3",

@@ -1159,6 +1159,7 @@ pub fn spawn_fork_child(
     user_root: u64,
     parent: usize,
     frame_slots: [u64; 15],
+    lin_abi: bool,
 ) -> usize {
     let _w = IntWindow::new();
     let mut s = sched_lock!();
@@ -1174,6 +1175,10 @@ pub fn spawn_fork_child(
     // 不消费细胞——r14 随快照恢复为父用户原值，rax=0 协议定子代身份）。
     t.fork_child = true;
     t.fork_frame = frame_slots;
+    // M33-T1：ABI 标志随链（入队前落位——首派发窗口零竞态，与快照焊接
+    // 同窗纪律；P1 缺口修复：fork 子代继承父 ABI 链，lin_fork 恒 true，
+    // 缺位则子代恢复后 Linux 号域走 Lumina 原生派发语义错乱）。
+    t.lin_abi = lin_abi;
     let Some(id) = alloc_slot(&mut s, t) else {
         return usize::MAX;
     };

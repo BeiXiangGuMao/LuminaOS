@@ -249,8 +249,8 @@ const KERNEL_ELF: &str =
 const KERNEL_BIN: &str =
     "/home/z/my-project/lumina-build/target/x86_64-unknown-none/release/lumina-kernel.bin";
 
-/// 自检标记总数（与内核 SELFTEST_TOTAL 同步；M12 完成态 = 43，M13-② 起 46，M15 起 52，M16 起 55，M17 起 58，M18 起 62，M21-③ 起 63，M23 起 65，M23-B 起 67，M23-C1 起 68，M23-C2 起 69，M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M25-T1 起 75，M26-T1 起 76，M28-T1 起 77，M27-N2 起 78，M31-T1 起 80，M32-T1 起 81）。
-const SELFTEST_EXPECTED: &str = "81/81";
+/// 自检标记总数（与内核 SELFTEST_TOTAL 同步；M12 完成态 = 43，M13-② 起 46，M15 起 52，M16 起 55，M17 起 58，M18 起 62，M21-③ 起 63，M23 起 65，M23-B 起 67，M23-C1 起 68，M23-C2 起 69，M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M25-T1 起 75，M26-T1 起 76，M28-T1 起 77，M27-N2 起 78，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82）。
+const SELFTEST_EXPECTED: &str = "82/82";
 
 /// TLV 请求帧：tag 0x0007，value = b"lumina-m5"。
 const TLV_REQ: &[u8] = &[
@@ -360,6 +360,14 @@ fn smoke_inner() -> bool {
     .into_iter()
     .map(String::from)
     .collect();
+    // M33-T1 取证门控：LUMINA_QEMU_INT=1 → QEMU -d int 异常级 trace
+    // （QEMU 视角的 #PF err/cr2/walk 落盘，页表层取证对账用；unset 零行为）
+    if std::env::var("LUMINA_QEMU_INT").as_deref() == Ok("1") {
+        qemu_args.push("-d".into());
+        qemu_args.push("int".into());
+        qemu_args.push("-D".into());
+        qemu_args.push("/home/z/my-project/lumina-build/logs/qemu-int.log".into());
+    }
     if let Some(path) = &pcap_path {
         qemu_args.push("-object".into());
         qemu_args.push(format!("filter-dump,id=pcapf0,netdev=n0,file={path}"));
@@ -500,13 +508,16 @@ fn smoke_inner() -> bool {
     // 3) 串口日志断言：启动标记 + 十五项自检 + 用户态标记 + TLV 双向
     //    （M31-W1 起：Weave 自举装载证据行在环——机器可验）
     let selftest_marker = format!("LUMINA-SELFTEST-PASS {SELFTEST_EXPECTED}");
-    let required: [&[u8]; 6] = [
+    let required: [&[u8]; 7] = [
         b"LUMINA-BOOT-OK",
         selftest_marker.as_bytes(),
         b"LUMINA-TLV-OK",
         b"USER-OK",
         b"user done: exit=42",
         b"LUMINA-WEAVE-BOOT",
+        // M33-T1：busybox echo applet 串口取证（ELF 装载 → Linux syscall
+        // 面 → musl 初始化全链活体；介质缺位时 S8 前置检查已 fail-visible）
+        b"LUMINA-T82-OK",
     ];
     let mut ok = tlv_ok;
     for marker in required {

@@ -81,8 +81,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81）。
-const SELFTEST_TOTAL: usize = 81;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82）。
+const SELFTEST_TOTAL: usize = 82;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -4806,6 +4806,95 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t81, "aurora");
+
+    // t82) busybox Linux 兼容路径活体（M33-T1）：ELF 装载（Alpine 官方
+    //      静态介质原生基址直载，PD[2] 槽域）→ Linux 初始栈（argc/argv/
+    //      envp/auxv，E1 面）→ 定点进入 ring3（fork 桩同族快照，lin_abi
+    //      随链）→ musl 初始化（TLS arch_prctl 面 T1 收录 + set_tid_address
+    //      桩 + brk/mmap 匿名区）→ busybox echo applet → write(1) 串口
+    //      取证 → exit_group(0) → waitpid 收割对账（t36 同款全链）。
+    let t82 = {
+        let mut ok = true;
+        match vfs::read_image("/bin/busybox") {
+            Some(blob) => match vmm::global_frames() {
+                Some(frames) => {
+                    let argv = ["/bin/busybox", "echo", "LUMINA-T82-OK"];
+                    let envp = ["PATH=/bin"];
+                    // AT_RANDOM 熵：TSC 纪元拆字节（exec_load_switch ELF 链同款）
+                    let t = ostd::time::tsc_now();
+                    let mut random = [0u8; 16];
+                    for (i, b) in random.iter_mut().enumerate() {
+                        *b = (t >> ((i % 8) * 8)) as u8 ^ (i as u8).rotate_left(3);
+                    }
+                    match user::build_user_space_elf(
+                        &blob,
+                        &argv,
+                        &envp,
+                        random,
+                        "busybox",
+                        &mut || frames.alloc(),
+                    ) {
+                        Ok(es) => {
+                            let _ = writeln!(
+                                log,
+                                "busybox: ELF loaded entry={:#x} rsp={:#x} segs={} root={:#x}",
+                                es.entry,
+                                es.rsp,
+                                es.seg_frames.len(),
+                                es.root
+                            );
+                            // 定点进入快照（fork 桩同族 15 槽）：rflags=IF /
+                            // rip=entry / rsp=初始栈构造面；callee-saved 与
+                            // rax 槽零值（初始进入无跨域状态可保）。
+                            let mut slots = [0u64; 15];
+                            slots[0] = 0x202; // RFLAGS：IF=1（iretq 恢复中断开放）
+                            slots[1] = es.entry;
+                            slots[7] = es.rsp;
+                            let id = task::spawn_fork_child(
+                                "busybox",
+                                es.root,
+                                task::current_task_id(),
+                                slots,
+                                true,
+                            );
+                            if id == usize::MAX {
+                                let _ = writeln!(log, "busybox: task slot exhausted");
+                                ok = false;
+                            } else {
+                                // 收割（waitpid 阻塞语义；AP 核拾取 busybox，
+                                // exit_group → 唤醒 → 重扫收割——t36 同款全链）
+                                let r = procs::sys_wait_pid(id as u64);
+                                let rpid = (r >> 16) & 0xFFFF;
+                                let code = r & 0xFFFF;
+                                let _ = writeln!(
+                                    log,
+                                    "busybox: reaped pid={rpid} (slot {id}) exit={code}"
+                                );
+                                ok &= r >> 32 == 1; // WAITPID_OK_BIT（procs 契约）
+                                ok &= rpid == id as u64; // 收割对象对账
+                                ok &= code == 0; // busybox echo 成功退出
+                                ok &= !task::task_alive(id); // 收割后槽位释放
+                            }
+                        }
+                        Err(e) => {
+                            let _ = writeln!(log, "busybox: user space build failed ({e:?})");
+                            ok = false;
+                        }
+                    }
+                }
+                None => {
+                    let _ = writeln!(log, "busybox: frame service unreachable");
+                    ok = false;
+                }
+            },
+            None => {
+                let _ = writeln!(log, "busybox: /bin/busybox media MISS");
+                ok = false;
+            }
+        }
+        ok
+    };
+    report(&mut log, t82, "busybox-lin");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {

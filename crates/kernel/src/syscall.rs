@@ -501,14 +501,23 @@ fn error_code(e: AbiError) -> u64 {
     }
 }
 
-/// 用户缓冲区校验：限定低 1 GiB 恒等映射区、去空指针、限长。
-/// 返回物理可直读的切片视图（恒等映射下虚拟=物理）。
+/// 用户缓冲区校验：域白名单（低 1 GiB 恒等映射区 + PD6 Linux 用户区）、
+/// 去空指针、限长；返回内核态可解引用的切片视图（当前 CR3 借根语义）。
 pub(crate) fn validate_user_slice(ptr: u64, len: u64) -> Option<&'static [u8]> {
     const IDENT_LIMIT: u64 = 0x4000_0000;
+    // M33-T1 域扩展：PD6 Linux 用户域（增长栈 / mmap 匿名区 / brk 区
+    // ——Alpine busybox musl 面：stdio 缓冲落 mmap 区、错误消息落栈
+    // 区，实证双 EFAULT 后收口）。内核态经当前 CR3 借根访问（syscall
+    // 窗口内 CR3 不切换——切片存续期语义），域白名单 + MMU 页表可达
+    // 双防线（野值指针走 not-present #PF 致命路径，与恒等域同构）。
+    const PD6_LO: u64 = 0x1_8000_0000;
+    const PD6_HI: u64 = 0x1_81A0_0000; // STACK_TOP_GROW 顶 .. BRK_LIMIT
     if len == 0 || len > 512 {
         return None;
     }
-    if !(0x1000..IDENT_LIMIT).contains(&ptr) || ptr.checked_add(len)? > IDENT_LIMIT {
+    let ident_ok = (0x1000..IDENT_LIMIT).contains(&ptr) && ptr.checked_add(len)? <= IDENT_LIMIT;
+    let pd6_ok = (PD6_LO..PD6_HI).contains(&ptr) && ptr.checked_add(len)? <= PD6_HI;
+    if !ident_ok && !pd6_ok {
         return None;
     }
     // SAFETY: 前置条件 —— 区间已校验（恒等映射内、非空、限长）。
@@ -523,10 +532,15 @@ pub(crate) fn validate_user_slice(ptr: u64, len: u64) -> Option<&'static [u8]> {
 /// 用户缓冲区可写校验（IPC RECV 路径）：同一区间纪律的可变视图。
 pub(crate) fn validate_user_slice_mut(ptr: u64, len: u64) -> Option<&'static mut [u8]> {
     const IDENT_LIMIT: u64 = 0x4000_0000;
+    // M33-T1 域扩展：同 validate_user_slice（PD6 Linux 用户域）。
+    const PD6_LO: u64 = 0x1_8000_0000;
+    const PD6_HI: u64 = 0x1_81A0_0000;
     if len == 0 || len > 512 {
         return None;
     }
-    if !(0x1000..IDENT_LIMIT).contains(&ptr) || ptr.checked_add(len)? > IDENT_LIMIT {
+    let ident_ok = (0x1000..IDENT_LIMIT).contains(&ptr) && ptr.checked_add(len)? <= IDENT_LIMIT;
+    let pd6_ok = (PD6_LO..PD6_HI).contains(&ptr) && ptr.checked_add(len)? <= PD6_HI;
+    if !ident_ok && !pd6_ok {
         return None;
     }
     // SAFETY: 前置条件 —— 区间已校验（恒等映射内、非空、限长）。
