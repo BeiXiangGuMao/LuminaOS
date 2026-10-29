@@ -290,7 +290,7 @@ M33 退出口径：ELF64 静态加载器在环（双格式并行 LXE1 零破坏�
 |---|---|---|---|
 | **M34-计划**（笔①） | 本表落盘 + §三 M34 行 🚧 标注 + 远线行更新 + 范围界定注（四候选方向技术路径盘点 + 口径裁决六注）+ 挂账七项随行登记（③⑦ 转主攻注） | ROADMAP | ✅ 本提交 |
 | **M34-H1**（笔②） | harbor libc 符号扩容 57→≥150：unistd/time/search 新域纯 safe 面（值语义 + 切片语义）+ H-P01 闸 50→150 机检双端同步 + 宿主对账测试扩容 + METRICS H-P01 行扩记 | crates/harbor + docs/METRICS | 待落 |
-| **M34-P4**（笔③） | PR-P04 电源协同显示侧首割：power 显示协同语义面（blank/unblank/亮度档位契约 + 状态机 fail-visible）+ kernel fb 挂接结构面（SYS 面或内部接线，随结构收敛）+ 宿主对账 + METRICS PR-P04 行扩记（DPMS 电气面真机窗口挂账不变） | crates/power + crates/kernel + docs/METRICS | 待落 |
+| **M34-P4**（笔③） | PR-P04 电源协同显示侧首割：power 显示协同语义面（blank/unblank/亮度档位契约 + 状态机 fail-visible）+ kernel fb 挂接结构面（SYS 面或内部接线，随结构收敛）+ 宿主对账 + METRICS PR-P04 行扩记（DPMS 电气面真机窗口挂账不变） | crates/power + crates/kernel + docs/METRICS | ✅ 本提交（代码面 282ac81） |
 | **M34-B1**（笔④） | busybox 覆盖度扩容批次一：conduit::translate 次批硬需集（pipe2/dup2/fstatat64/unlinkat/getcwd/chdir 等，随 applet 依赖实证收敛）+ kernel linux.rs 执行面接线 + C-P01 对账 + 未收录 ENOSYS 显形纪律保持 | crates/conduit + crates/kernel | 待落 |
 | **M34-B2**（笔⑤） | busybox applet 扩容活体 t83：新增 applet 实跑取证（true/false/yes/wc/head/printf 级，随 B1 syscall 面实证收敛）+ 覆盖度成像表落 docs（applet × syscall 矩阵）+ SELFTEST_TOTAL 82→83 双端同步 | crates/kernel + docs | 待落 |
 | **M34-D1**（笔⑥） | 驱动服务化首割：驱动服务框架结构面（服务注册表定容表 + 请求/应答 IPC 通道契约 + 驱动进程形态 fail-visible）——kernel 驱动面电气零改动，结构面宿主对账 + METRICS P5 旁路行扩记 | crates/kernel + docs/METRICS | 待落 |
