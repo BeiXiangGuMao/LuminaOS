@@ -12,6 +12,13 @@
 //! 25 调用绑定面与本映射面同源（号/名复用 [`crate::convert`] 快照
 //! 口径，测试对账断言）。
 //!
+//! M34-B1 次批收录（busybox 覆盖度扩容批次一）：chdir(80) /
+//! newfstatat(262) / unlinkat(263) / faccessat(269)——路径域四目，
+//! 支撑面 = [`join_cwd`]（相对路径 cwd join 单一事实源）+ AT_* 旗标
+//! 事实源常量。**pipe2(293) 与 fork fd 继承面同批挂账**（fork 子代
+//! 句柄表全零实录——POSIX 流水线消费方 sh 批次依赖句柄表跨 fork
+//! 复制先行，单收无消费方，分批不虚报）。
+//!
 //! 错误协议：Linux ABI 用户态返回检查 rax < 0（musl 约定），内核侧
 //! 返回 `-(errno)`；errno 值域事实源 = [`crate::convert`]。
 
@@ -33,6 +40,12 @@ pub const ENOENT: u64 = 2;
 pub const E2BIG: u64 = 7;
 /// errno：可执行文件格式错误（execve 三格式探针全败）。
 pub const ENOEXEC: u64 = 8;
+/// errno：权限拒绝（faccessat R_OK/W_OK/X_OK 判定未过）。
+pub const EACCES: u64 = 13;
+/// errno：路径组件不是目录（chdir 目标为常规文件——Linux 同款）。
+pub const ENOTDIR: u64 = 20;
+/// errno：结果缓冲过小（getcwd size < cwd.len()+1——Linux ERANGE 协议）。
+pub const ERANGE: u64 = 34;
 
 /// Linux 执行类别（映射产物；执行面归 kernel::linux）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +96,18 @@ pub enum LinAction {
     /// x86_64 musl __set_thread_area 初始化链；ARCH_GET_FS 返回现值，
     /// 其余 op 显形 EINVAL）。执行档（MSR 面在 kernel::linux）。
     ArchPrctl,
+    /// chdir(80)：per-task cwd 落位（task::with_task_cwd 承载；相对
+    /// 路径 join 归 [`join_cwd`]，词法规范化归 vfs 面）。
+    ChDir,
+    /// newfstatat(262)（fstatat64）：AT_EMPTY_PATH + AT_FDCWD 路径域
+    /// stat 合成（与 fstat 共享 stat64 写入核——kernel::linux 面提取）。
+    FStatAt,
+    /// unlinkat(263)：AT_FDCWD 路径域删除（AT_REMOVEDIR 收下同落点——
+    /// v0 ramfs 无 symlink 实体，语义无损）。
+    UnlinkAt,
+    /// faccessat(269)：存在性 + 合成权限位比对（F_OK/R_OK/W_OK/X_OK；
+    /// v0 单用户 owner 位域口径）。
+    FAccessAt,
     // ---- 合成桩档（返回合成成功值；语义实体挂账） ----
     /// rt_sigaction(13) / rt_sigprocmask(14)：信号面挂账，合成 0
     StubOk,
@@ -113,6 +138,7 @@ pub fn translate(num: u64) -> LinAction {
         60 | 231 => LinAction::Exit, // exit / exit_group
         61 => LinAction::Wait4,
         63 => LinAction::UName,
+        80 => LinAction::ChDir, // M34-B1 收录（busybox 覆盖度扩容批次一）
         158 => LinAction::ArchPrctl, // M33-T1 收录（musl TLS 初始化链）
         72 => LinAction::Fcntl,
         79 => LinAction::GetCwd,
@@ -120,6 +146,9 @@ pub fn translate(num: u64) -> LinAction {
         218 => LinAction::StubTid,
         228 => LinAction::ClockGetTime,
         257 => LinAction::OpenAt,
+        262 => LinAction::FStatAt,   // M34-B1 收录
+        263 => LinAction::UnlinkAt,  // M34-B1 收录
+        269 => LinAction::FAccessAt, // M34-B1 收录
         _ => LinAction::Err(ENOSYS),
     }
 }
@@ -127,8 +156,43 @@ pub fn translate(num: u64) -> LinAction {
 /// AT_FDCWD 哨兵（openat dirfd 相对路径基准；v0 仅收此值）。
 pub const AT_FDCWD: u64 = (-100i64) as u64;
 
-/// 映射面覆盖度成像（数与 [`translate`] 首批收录一致；测试对账断言）。
-pub const COVERED: usize = 24;
+/// AT_SYMLINK_NOFOLLOW（fstatat 旗标；v0 ramfs 无符号链接实体——收下
+/// 不映射，语义无损如实记档）。
+pub const AT_SYMLINK_NOFOLLOW: u64 = 0x100;
+/// AT_REMOVEDIR（unlinkat 旗标；v0 单一 unlink 落点同构收下——RamFs
+/// 叶子操作对文件/空目录同域，非空目录 ENOTEMPTY 由 fs 面显形）。
+pub const AT_REMOVEDIR: u64 = 0x200;
+/// AT_EMPTY_PATH（fstatat 旗标：path = NULL 时对 dirfd 本体 stat——
+/// dup'd fd 语义直通；dirfd < 3 → 字符设备合成与 fstat 同构）。
+pub const AT_EMPTY_PATH: u64 = 0x1000;
+
+/// access 模式：存在性（faccessat mode 域）。
+pub const F_OK: u64 = 0;
+/// access 模式：可执行。
+pub const X_OK: u64 = 1;
+/// access 模式：可写。
+pub const W_OK: u64 = 2;
+/// access 模式：可读。
+pub const R_OK: u64 = 4;
+
+/// 映射面覆盖度成像（数与 [`translate`] 收录一致；测试对账断言）。
+pub const COVERED: usize = 28;
+
+/// 相对路径 cwd join（M34-B1 单一事实源）：绝对路径原样；相对路径
+/// `cwd + path`（cwd 尾随分隔符去重——根哨兵 `"/"` 自然吞并）。词法
+/// 规范化（`.`/`..` 折叠）归 vfs 面（crystal `PathBuf::normalize`），
+/// 本函数纯拼接零语义（宿主可测；kernel::linux 消费面同源）。
+pub fn join_cwd(cwd: &str, path: &str) -> alloc::string::String {
+    if path.starts_with('/') {
+        return alloc::string::String::from(path);
+    }
+    let mut out = alloc::string::String::from(cwd);
+    if !out.ends_with('/') {
+        out.push('/');
+    }
+    out.push_str(path);
+    out
+}
 
 /// wait4 wstatus 编码（M33-P1 对账单一事实源）：Lumina SYS_WAIT_PID
 /// 退出码 → Linux wstatus = `(exit_code & 0xFF) << 8`（WEXITSTATUS 域；
@@ -183,6 +247,11 @@ mod tests {
         assert_eq!(translate(13), LinAction::StubOk);
         assert_eq!(translate(14), LinAction::StubOk);
         assert_eq!(translate(218), LinAction::StubTid);
+        // M34-B1 次批收录（路径域四目）
+        assert_eq!(translate(80), LinAction::ChDir);
+        assert_eq!(translate(262), LinAction::FStatAt);
+        assert_eq!(translate(263), LinAction::UnlinkAt);
+        assert_eq!(translate(269), LinAction::FAccessAt);
         // 显形拒绝（未收录）
         assert_eq!(translate(56), LinAction::Err(ENOSYS)); // clone（M33-P1 后仍挂账——vfork/clone 旗标面随后续批次）
         assert_eq!(translate(59), LinAction::Execve); // M33-P1 收录
@@ -215,6 +284,11 @@ mod tests {
             (63, LinAction::UName),
             (72, LinAction::Fcntl),
             (257, LinAction::OpenAt),
+            // M34-B1 次批（BINDINGS 同步扩容 29 调用）
+            (80, LinAction::ChDir),
+            (262, LinAction::FStatAt),
+            (263, LinAction::UnlinkAt),
+            (269, LinAction::FAccessAt),
         ];
         for (num, action) in paired {
             assert_eq!(&translate(*num), action, "号 {num} 对账失配");
@@ -232,6 +306,29 @@ mod tests {
         assert_eq!(ENOENT, 2);
         assert_eq!(E2BIG, 7);
         assert_eq!(ENOEXEC, 8);
+        // M34-B1 errno 事实源对账
+        assert_eq!(EACCES, 13);
+        assert_eq!(ENOTDIR, 20);
+        assert_eq!(ERANGE, 34);
+        // M34-B1 AT_* 旗标事实源
+        assert_eq!(AT_SYMLINK_NOFOLLOW, 0x100);
+        assert_eq!(AT_REMOVEDIR, 0x200);
+        assert_eq!(AT_EMPTY_PATH, 0x1000);
+        assert_eq!(F_OK, 0);
+        assert_eq!(X_OK, 1);
+        assert_eq!(W_OK, 2);
+        assert_eq!(R_OK, 4);
+    }
+
+    #[test]
+    fn join_cwd_golden() {
+        // M34-B1 相对路径 join 单一事实源 golden
+        assert_eq!(join_cwd("/", "bin"), "/bin");
+        assert_eq!(join_cwd("/bin", "ls"), "/bin/ls");
+        assert_eq!(join_cwd("/bin/", "ls"), "/bin/ls"); // 尾随分隔去重
+        assert_eq!(join_cwd("/bin", "/abs/x"), "/abs/x"); // 绝对路径原样
+        assert_eq!(join_cwd("/", "/"), "/");
+        assert_eq!(join_cwd("/a/b", ".."), "/a/b/.."); // 纯拼接——规范化归 vfs 面
     }
 
     #[test]

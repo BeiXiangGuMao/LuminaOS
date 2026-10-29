@@ -484,6 +484,17 @@ pub fn sys_open(path_ptr: u64, len: u64, mode: u64) -> u64 {
         OPEN_RESULT.store(EFAULT, Ordering::Release);
         return EFAULT;
     };
+    sys_open_bytes(path_bytes, mode)
+}
+
+/// OPEN 字节面内核入口（M34-B1）：路径字节串由调用方持有（Linux 面相对
+/// 路径 cwd join 后的内核侧字节域——[`crate::linux::lin_path_bytes`]）；
+/// 参数域校验 + 取证面与 [`sys_open`] 同源。
+pub fn sys_open_bytes(path_bytes: &[u8], mode: u64) -> u64 {
+    if mode & 0b11 == 0 || mode & !bedrock::abi::OPEN_MODE_MASK != 0 || path_bytes.is_empty() {
+        OPEN_RESULT.store(EINVAL, Ordering::Release);
+        return EINVAL;
+    }
     let r = open_impl(path_bytes, mode);
     if r >> 32 == 1 {
         OPEN_RESULT.store(0, Ordering::Release);
@@ -923,17 +934,26 @@ pub fn sys_remove(path_ptr: u64, len: u64) -> u64 {
     } else {
         match validate_user_slice(path_ptr, len) {
             None => EFAULT,
-            Some(pb) => match normalize_user_path(pb).and_then(|p| resolve_parent(&p)) {
-                Err(e) => e,
-                Ok((fs, dir, leaf)) => match fs.unlink(dir, &leaf) {
-                    Ok(()) => 0,
-                    Err(e) => e.errno(),
-                },
-            },
+            Some(pb) => sys_remove_bytes(pb),
         }
     };
     REMOVE_RESULT.store(code, Ordering::Release);
     code
+}
+
+/// REMOVE 字节面内核入口（M34-B1）：路径字节串由调用方持有（Linux 面
+/// unlinkat 相对路径 cwd join 域）；errno 直返（0 = 成功——**不走
+/// min(ENOSYS) 截断**：FsError 域含 ENOTEMPTY(39)/EOPNOTSUPP(95) 等
+/// 超出 ENOSYS 的合法 errno，截断即语义损毁）；取证面归 [`sys_remove`]
+/// 外壳。
+pub fn sys_remove_bytes(path_bytes: &[u8]) -> u64 {
+    match normalize_user_path(path_bytes).and_then(|p| resolve_parent(&p)) {
+        Err(e) => e,
+        Ok((fs, dir, leaf)) => match fs.unlink(dir, &leaf) {
+            Ok(()) => 0,
+            Err(e) => e.errno(),
+        },
+    }
 }
 
 /// SYS_READDIR 主体（M15-①）：**分页化**目录枚举（替代 M13-① 一次性

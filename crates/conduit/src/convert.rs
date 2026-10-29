@@ -269,9 +269,12 @@ pub struct SyscallBinding {
     pub err_domain: &'static str,
 }
 
-/// Linux x86_64 syscall 绑定表（首批 25 调用，C-P01 ≥20 达标面）。
+/// Linux x86_64 syscall 绑定表（首批 25 + M34-B1 次批 4 = 29 调用，
+/// C-P01 ≥20 达标面）。
 ///
-/// 选样口径：静态 busybox 常用路径优先（文件/进程/内存/时间/系统信息面）；
+/// 选样口径：静态 busybox 常用路径优先（文件/进程/内存/时间/系统信息面；
+/// 次批 = busybox 覆盖度扩容——chdir/newfstatat/unlinkat/faccessat 路径
+/// 域四目，与 [`crate::translate`] 收录面同源同步）；
 /// 号/名与 lib.rs `linux_syscall_name` 快照同源（测试对账断言）。
 pub const BINDINGS: &[SyscallBinding] = &[
     SyscallBinding {
@@ -421,6 +424,31 @@ pub const BINDINGS: &[SyscallBinding] = &[
     SyscallBinding {
         num: 257,
         name: "openat",
+        nargs: 4,
+        err_domain: "errno",
+    },
+    // ---- M34-B1 次批（busybox 覆盖度扩容批次一：路径域四目） ----
+    SyscallBinding {
+        num: 80,
+        name: "chdir",
+        nargs: 1,
+        err_domain: "errno",
+    },
+    SyscallBinding {
+        num: 262,
+        name: "newfstatat",
+        nargs: 4,
+        err_domain: "errno",
+    },
+    SyscallBinding {
+        num: 263,
+        name: "unlinkat",
+        nargs: 3,
+        err_domain: "errno",
+    },
+    SyscallBinding {
+        num: 269,
+        name: "faccessat",
         nargs: 4,
         err_domain: "errno",
     },

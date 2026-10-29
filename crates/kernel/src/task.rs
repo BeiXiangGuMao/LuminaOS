@@ -238,6 +238,12 @@ struct Task {
     /// 非 fork 子代无义（全零）。spawn_fork_child 锁窗内焊接（与遗传
     /// 细胞同窗纪律：入队前落位，首派发窗口零竞态）。
     fork_frame: [u64; 15],
+    /// 进程工作目录（M34-B1 chdir 收录面）：None = 根哨兵（`"/"`
+    /// 语义——Option 承载为 const fn `main_task` 构造兼容）。fork 继承
+    /// （spawn_fork_child 锁窗内拷贝——Linux 同款）、execve 保持
+    /// （exec 不改 cwd——Linux 同款）；消费面 = lin_openat/fstatat/
+    /// unlinkat/faccessat 相对路径 join + lin_getcwd 真值化。
+    cwd: Option<alloc::string::String>,
 }
 
 impl Task {
@@ -273,6 +279,7 @@ impl Task {
             lin_abi: false,
             fork_child: false,
             fork_frame: [0; 15],
+            cwd: None,
         }
     }
 
@@ -346,6 +353,7 @@ impl Task {
             lin_abi: false,
             fork_child: false,
             fork_frame: [0; 15],
+            cwd: None,
         }
     }
 }
@@ -1179,6 +1187,13 @@ pub fn spawn_fork_child(
     // 同窗纪律；P1 缺口修复：fork 子代继承父 ABI 链，lin_fork 恒 true，
     // 缺位则子代恢复后 Linux 号域走 Lumina 原生派发语义错乱）。
     t.lin_abi = lin_abi;
+    // M34-B1：cwd 继承（fork 子代 = 父工作目录——Linux 同款；
+    // 父槽缺失防御回退根哨兵 None）。
+    t.cwd = s
+        .tasks
+        .get(parent)
+        .and_then(|p| p.as_ref())
+        .and_then(|p| p.cwd.clone());
     let Some(id) = alloc_slot(&mut s, t) else {
         return usize::MAX;
     };
@@ -1906,6 +1921,20 @@ pub fn with_task_hflags<R>(id: usize, f: impl FnOnce(&mut [u8; HANDLE_MAX]) -> R
         .get_mut(id)
         .and_then(|t| t.as_mut())
         .map(|t| f(&mut t.hflags))
+}
+
+/// 在调度锁窗口内访问目标任务工作目录（M34-B1 chdir 收录面）：
+/// 任务不存在返回 None。
+pub fn with_task_cwd<R>(
+    id: usize,
+    f: impl FnOnce(&mut Option<alloc::string::String>) -> R,
+) -> Option<R> {
+    let _w = IntWindow::new();
+    let mut s = sched_lock!();
+    s.tasks
+        .get_mut(id)
+        .and_then(|t| t.as_mut())
+        .map(|t| f(&mut t.cwd))
 }
 
 /// 清除目标句柄旗标（M15-② close/revoke 面配套：同号复用不继承陈值；

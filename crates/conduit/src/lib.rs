@@ -12,6 +12,7 @@
 //! 映射 + 25 调用绑定表，C-P01 首批 ≥20 调用全绑定）。与《语言移植与支持
 //! 指南》所述「原生 ABI 路径」无关——原生路径直接使用 `bedrock::abi` 的调用号。
 #![no_std]
+extern crate alloc;
 
 pub mod convert;
 pub mod defs;
@@ -107,6 +108,7 @@ pub fn linux_syscall_name(num: u64) -> Option<&'static str> {
         61 => "wait4",
         62 => "kill",
         63 => "uname",
+        80 => "chdir",
         98 => "getrusage",
         101 => "ptrace",
         179 => "sysinfo",
@@ -117,7 +119,10 @@ pub fn linux_syscall_name(num: u64) -> Option<&'static str> {
         233 => "epoll_ctl",
         257 => "openat",
         262 => "newfstatat",
+        263 => "unlinkat",
+        269 => "faccessat",
         291 => "statx",
+        293 => "pipe2",
         _ => return None,
     };
     Some(name)

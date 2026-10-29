@@ -19,15 +19,33 @@
 //! **M33-F1 收录 getdents64**（dirent64 页打包 + ramfs 媒体面，
 //! execve 路径解析同步接真）；clone（vfork 旗标面随后续
 //! 批次）仍 ENOSYS 显形（覆盖度分批不虚报——M33-计划 裁决注）。
+//!
+//! **M34-B1 次批收录**（busybox 覆盖度扩容批次一）：chdir（per-task
+//! cwd 落位——`task::with_task_cwd` 承载，fork 继承 execve 保持）+
+//! newfstatat / unlinkat / faccessat 路径域三目（AT_FDCWD + 相对路径
+//! cwd join——[`conduit::translate::join_cwd`] 单一事实源；词法规范化
+//! 归 crystal `PathBuf::normalize`）+ getcwd 真值化（根哨兵 → 任务
+//! cwd + ERANGE 协议）+ stat64 写入核提取（`write_stat64`——fstat/
+//! newfstatat 共享单一事实源，目录合成位 0644→0755 修正——可遍历
+//! 位 faccessat X_OK 判定硬依赖）。**pipe2(293) 挂账**：fork 子代句柄
+//! 表全零实录（`Task::new_user` handles 全零——句柄表跨 fork 复制
+//! 缺席），POSIX 流水线消费方 sh 批次依赖 fd 继承先行，同批收录
+//! 不虚报（translate 层同步保持 ENOSYS 显形）。
 
 use crate::syscall::{validate_user_slice, validate_user_slice_mut, SyscallFrame};
 use conduit::translate::{
-    translate, LinAction, E2BIG, EBADF, EINVAL, ENOENT, ENOEXEC, ENOMEM, ENOSYS, ENOTTY, EPERM,
+    join_cwd, translate, LinAction, AT_EMPTY_PATH, AT_FDCWD, AT_REMOVEDIR, AT_SYMLINK_NOFOLLOW,
+    E2BIG, EACCES, EBADF, EINVAL, ENOENT, ENOEXEC, ENOMEM, ENOSYS, ENOTDIR, ENOTTY, EPERM, ERANGE,
+    F_OK, R_OK, W_OK, X_OK,
 };
 use core::sync::atomic::{AtomicU64, Ordering};
 
 /// EFAULT（errno 14；conduit::translate 未导出，字面值对账 defs 快照）。
 const EFAULT: u64 = 14;
+
+/// REALTIME 时钟纪元偏移（2026-01-01T00:00:00Z，无 RTC 口径——墙上钟
+/// = 固定纪元 + 单调 uptime）。
+const EPOCH_OFFSET_NS: u64 = 1_767_225_600_000_000_000;
 
 // ---- errno 事实源引用（conduit::translate；负值协议在 err()） ----
 
@@ -54,13 +72,6 @@ static MMAP_CUR: AtomicU64 = AtomicU64::new(MMAP_BASE);
 
 /// Lumina OK 位（sys_* 返回 `(1 << 32) | payload` 成功形态）。
 const OK_BIT: u64 = 1 << 32;
-
-/// AT_FDCWD（openat dirfd 哨兵；v0 仅收此值——相对目录 fd 未收录）。
-const AT_FDCWD: u64 = (-100i64) as u64;
-
-/// REALTIME 时钟纪元偏移（2026-01-01T00:00:00Z，无 RTC 口径——墙上钟
-/// = 固定纪元 + 单调 uptime）。
-const EPOCH_OFFSET_NS: u64 = 1_767_225_600_000_000_000;
 
 #[inline]
 fn err(errno: u64) -> u64 {
@@ -103,14 +114,17 @@ pub fn lin_dispatch(frame: &mut SyscallFrame) -> u64 {
             if frame.rdi != AT_FDCWD {
                 return err(EINVAL); // 相对目录 fd 未收录（v0 仅 AT_FDCWD）
             }
-            let Some(len) = lin_strlen(frame.rsi) else {
-                return err(EFAULT);
+            // M34-B1：相对路径 cwd join（单一事实源 join_cwd）→ 字节面
+            let bytes = match lin_path_bytes(frame.rsi) {
+                Some(Ok(b)) => b,
+                Some(Err(e)) => return err(e),
+                None => return err(EFAULT),
             };
             // Linux O_* → Lumina open mode（conduit 事实源双向映射）
             let Some(mode) = conduit::convert::flags_to_open_mode(frame.rdx as u32) else {
                 return err(EINVAL);
             };
-            lumina_to_linux(crate::vfs::sys_open(frame.rsi, len, mode))
+            lumina_to_linux(crate::vfs::sys_open_bytes(&bytes, mode))
         }
         LinAction::WriteV => lin_writev(frame),
         LinAction::FStat => lin_fstat(frame.rdi, frame.rsi),
@@ -148,6 +162,10 @@ pub fn lin_dispatch(frame: &mut SyscallFrame) -> u64 {
         LinAction::StubOk => 0,
         LinAction::StubTid => crate::procs::current_pid(),
         LinAction::ArchPrctl => lin_arch_prctl(frame.rdi, frame.rsi),
+        LinAction::ChDir => lin_chdir(frame.rdi),
+        LinAction::FStatAt => lin_fstat_at(frame.rdi, frame.rsi, frame.rdx, frame.r10),
+        LinAction::UnlinkAt => lin_unlink_at(frame.rdi, frame.rsi, frame.rdx),
+        LinAction::FAccessAt => lin_faccessat(frame.rdi, frame.rsi, frame.rdx),
         LinAction::Err(e) => {
             let _ = (EBADF, ENOTTY); // 事实源引用锚（errno 值域单源）
             err(e)
@@ -217,29 +235,56 @@ fn lin_writev(frame: &mut SyscallFrame) -> u64 {
 
 /// fstat(fd, statbuf)：Linux struct stat 最小合成（v0 零展——mode/
 /// nlink/size/rdev，其余 0；musl isatty/stat 路径消费面）。
+/// M34-B1：stat64 写入核提取（[`write_stat64`]——与 newfstatat 共享
+/// 单一事实源）；目录合成位 0644→0755 修正（可遍历位 faccessat X_OK
+/// 判定硬依赖；合成域单源 [`fd_stat_mode_size`]）。
 fn lin_fstat(fd: u64, statbuf: u64) -> u64 {
     const S_IFCHR: u64 = 0o020000;
-    const S_IFREG: u64 = 0o100000;
-    const S_IFDIR: u64 = 0o040000;
-    const STAT64_LEN: u64 = 144;
     let (mode, size) = if fd < 3 {
         (S_IFCHR | 0o620, 0)
     } else {
-        let r = crate::vfs::sys_stat(fd);
-        if r >> 32 != 1 {
-            return err(r.min(ENOSYS));
+        match fd_stat_mode_size(fd) {
+            Ok(v) => v,
+            Err(e) => return err(e),
         }
-        let kind = r & 0xFF;
-        let size = (r >> 16) & 0xFFFF;
-        let ifmt = match kind {
-            1 => S_IFDIR,
-            _ => S_IFREG,
-        };
-        (ifmt | 0o644, size)
     };
+    write_stat64_user(statbuf, mode, size)
+}
+
+/// vfs stat →（合成 mode, size）（M34-B1 提取：fstat/fstatat 共享）。
+fn fd_stat_mode_size(fd: u64) -> Result<(u64, u64), u64> {
+    let r = crate::vfs::sys_stat(fd);
+    if r >> 32 != 1 {
+        return Err(r.min(ENOSYS));
+    }
+    Ok(synth_mode_size(r & 0xFF, (r >> 16) & 0xFFFF))
+}
+
+/// vfs stat kind/size → Linux 合成（mode, size）单一事实源（M34-B1）：
+/// 目录 0755（可遍历 x 位——faccessat X_OK 判定硬依赖）/ 文件 0644；
+/// kind 域 1 = Dir（vfs NodeKind 同构）。
+fn synth_mode_size(kind: u64, size: u64) -> (u64, u64) {
+    const S_IFDIR: u64 = 0o040000;
+    const S_IFREG: u64 = 0o100000;
+    let ifmt = if kind == 1 { S_IFDIR } else { S_IFREG };
+    let perm = if kind == 1 { 0o755 } else { 0o644 };
+    (ifmt | perm, size)
+}
+
+/// stat64 144 B 用户写入核外壳（M34-B1；校验 + 错误域归本层）。
+fn write_stat64_user(statbuf: u64, mode: u64, size: u64) -> u64 {
+    const STAT64_LEN: u64 = 144;
     let Some(dst) = validate_user_slice_mut(statbuf, STAT64_LEN) else {
-        return err(14);
+        return err(EFAULT);
     };
+    write_stat64(dst, mode, size);
+    0
+}
+
+/// stat64 144 B 写入纯核（M34-B1 单一事实源）：st_dev=0 / st_nlink=1 /
+/// st_mode / st_uid=st_gid=st_rdev=0 / st_size（布局同 Linux x86_64
+/// struct stat 前 64 B 消费域——musl isatty/stat 路径零展口径）。
+fn write_stat64(dst: &mut [u8], mode: u64, size: u64) {
     for b in dst.iter_mut() {
         *b = 0;
     }
@@ -250,7 +295,6 @@ fn lin_fstat(fd: u64, statbuf: u64) -> u64 {
     dst[40..48].copy_from_slice(&0u64.to_le_bytes()); // st_gid
     dst[48..56].copy_from_slice(&0u64.to_le_bytes()); // st_rdev
     dst[56..64].copy_from_slice(&size.to_le_bytes()); // st_size
-    0
 }
 
 /// wait4(pid, status, options, rusage)：SYS_WAIT_PID 编码 → Linux
@@ -520,17 +564,198 @@ fn lin_uname(buf: u64) -> u64 {
     0
 }
 
-/// getcwd(buf, size)：根路径合成（v0 单根口径）。
+/// getcwd(buf, size)（M34-B1 真值化）：任务 cwd（None = 根哨兵 "/"）；
+/// Linux 协议：size < len+1 → ERANGE（musl 重试更大缓冲）；成功返回
+/// 写入字节数（含 NUL）。
 fn lin_getcwd(buf: u64, size: u64) -> u64 {
-    if size < 2 {
+    let cwd = task_cwd_string();
+    let need = cwd.len() as u64 + 1;
+    if size < need {
+        return err(ERANGE);
+    }
+    let Some(dst) = validate_user_slice_mut(buf, need) else {
+        return err(EFAULT);
+    };
+    dst[..cwd.len()].copy_from_slice(cwd.as_bytes());
+    dst[cwd.len()] = 0;
+    need
+}
+
+// ---- M34-B1 路径域支撑面（cwd 读取 / 相对路径 join / chdir / fstatat / unlinkat / faccessat） ----
+
+/// 当前任务 cwd 串（None = 根哨兵；任务缺失防御回退根——内核态主任务
+/// 自检路径零消费方，纯防御）。
+fn task_cwd_string() -> alloc::string::String {
+    crate::task::with_task_cwd(crate::task::current_task_id(), |c| {
+        c.clone()
+            .unwrap_or_else(|| alloc::string::String::from("/"))
+    })
+    .unwrap_or_else(|| alloc::string::String::from("/"))
+}
+
+/// 路径字节解析（M34-B1）：NUL 扫描 → UTF-8 → 相对路径 cwd join
+/// （[`conduit::translate::join_cwd`] 单一事实源；绝对路径原样）。
+/// 返回域：None = 指针/窗域不可达（调用方 EFAULT）；Some(Err) = 非
+/// UTF-8（EINVAL——Lumina 路径域，vfs InvalidPath 同值口径）。
+fn lin_path_bytes(path_ptr: u64) -> Option<Result<alloc::vec::Vec<u8>, u64>> {
+    let plen = lin_strlen(path_ptr)?;
+    let bytes = validate_user_slice(path_ptr, plen)?;
+    match core::str::from_utf8(bytes) {
+        Err(_) => Some(Err(EINVAL)),
+        Ok(s) => {
+            if s.starts_with('/') {
+                Some(Ok(bytes.to_vec()))
+            } else {
+                let cwd = task_cwd_string();
+                Some(Ok(join_cwd(&cwd, s).into_bytes()))
+            }
+        }
+    }
+}
+
+/// 路径域三目公共核：join → 试开（只读）→ vfs stat → 关闭 →
+/// （mode, size）合成。chdir/fstatat/faccessat 共享单一事实源。
+fn lin_path_stat(path_ptr: u64) -> Result<(u64, u64), u64> {
+    let bytes = match lin_path_bytes(path_ptr) {
+        Some(Ok(b)) => b,
+        Some(Err(e)) => return Err(e),
+        None => return Err(EFAULT),
+    };
+    let h = crate::vfs::sys_open_bytes(&bytes, 1); // 0b01 = READ
+    if h >> 32 != 1 {
+        return Err(h.min(ENOSYS));
+    }
+    let fd = h & 0xFFFF_FFFF;
+    let st = crate::vfs::sys_stat(fd);
+    let _ = crate::vfs::sys_close(fd);
+    if st >> 32 != 1 {
+        return Err(st.min(ENOSYS));
+    }
+    Ok(synth_mode_size(st & 0xFF, (st >> 16) & 0xFFFF))
+}
+
+/// chdir(path)（M34-B1 收录）：join → 词法规范化（meridian 重导出
+/// crystal `PathBuf::normalize`——折叠 `.`/`..`/重复分隔，越根 `..`
+/// InvalidPath→EINVAL）→ 试开 + 目录 kind 判定（非目录 ENOTDIR——
+/// Linux chdir(file) 同款）→ 关闭 → 任务 cwd 落位（规范化 canonical
+/// 串）。v0 口径：规范化在命名空间锁外（词法面纯函数，ramfs 静态域
+/// 无 TOCTOU 实体，如实记档）。
+fn lin_chdir(path_ptr: u64) -> u64 {
+    let bytes = match lin_path_bytes(path_ptr) {
+        Some(Ok(b)) => b,
+        Some(Err(e)) => return err(e),
+        None => return err(EFAULT),
+    };
+    let Ok(s) = core::str::from_utf8(&bytes) else {
+        return err(EINVAL);
+    };
+    let Ok(norm) = meridian::vfs::PathBuf::normalize(s) else {
+        return err(EINVAL);
+    };
+    let (mode, _) = match lin_path_stat(path_ptr) {
+        Ok(v) => v,
+        Err(e) => return err(e),
+    };
+    // 目录判定：S_IFDIR 域位（synth_mode_size 合成域——0o040000）
+    if mode & 0o170000 != 0o040000 {
+        return err(ENOTDIR);
+    }
+    let _ = crate::task::with_task_cwd(crate::task::current_task_id(), |c| {
+        *c = Some(alloc::string::String::from(norm.as_str()));
+    });
+    0
+}
+
+/// newfstatat(dirfd, path, buf, flags)（M34-B1 收录）：AT_EMPTY_PATH +
+/// path = NULL → dirfd 本体 stat（fd < 3 → 字符设备合成与 fstat 同构；
+/// fd ≥ 3 → vfs stat 域）；路径域 = AT_FDCWD + cwd join →
+/// [`lin_path_stat`] → stat64 写入核（[`write_stat64`] 与 fstat 共享）。
+/// 旗标域：AT_SYMLINK_NOFOLLOW 收下不映射（v0 ramfs 无符号链接实体，
+/// 语义无损）；其余位 EINVAL。
+fn lin_fstat_at(dirfd: u64, path: u64, statbuf: u64, flags: u64) -> u64 {
+    const KNOWN: u64 = AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH;
+    if flags & !KNOWN != 0 {
         return err(EINVAL);
     }
-    let Some(dst) = validate_user_slice_mut(buf, 2) else {
-        return err(14);
+    if path == 0 {
+        if flags & AT_EMPTY_PATH == 0 {
+            return err(EINVAL);
+        }
+        const S_IFCHR: u64 = 0o020000;
+        let (mode, size) = if dirfd < 3 {
+            (S_IFCHR | 0o620, 0)
+        } else {
+            match fd_stat_mode_size(dirfd) {
+                Ok(v) => v,
+                Err(e) => return err(e),
+            }
+        };
+        return write_stat64_user(statbuf, mode, size);
+    }
+    if dirfd != AT_FDCWD {
+        return err(EINVAL); // 相对目录 fd 未收录（v0 同 openat 口径）
+    }
+    let (mode, size) = match lin_path_stat(path) {
+        Ok(v) => v,
+        Err(e) => return err(e),
     };
-    dst[0] = b'/';
-    dst[1] = 0;
-    2
+    write_stat64_user(statbuf, mode, size)
+}
+
+/// unlinkat(dirfd, path, flags)（M34-B1 收录）：AT_FDCWD + cwd join →
+/// `vfs::sys_remove_bytes`（RamFs 叶子操作——文件/空目录同域可摘，
+/// 非空目录 ENOTEMPTY(39) 由 fs 面显形——**errno 直映不走 min 截断**）。
+/// 旗标域：0 | AT_REMOVEDIR 收下（v0 单一 unlink 落点同构）；其余 EINVAL。
+fn lin_unlink_at(dirfd: u64, path: u64, flags: u64) -> u64 {
+    if flags & !AT_REMOVEDIR != 0 {
+        return err(EINVAL);
+    }
+    if dirfd != AT_FDCWD {
+        return err(EINVAL); // 相对目录 fd 未收录（v0）
+    }
+    let bytes = match lin_path_bytes(path) {
+        Some(Ok(b)) => b,
+        Some(Err(e)) => return err(e),
+        None => return err(EFAULT),
+    };
+    let r = crate::vfs::sys_remove_bytes(&bytes);
+    if r == 0 {
+        0
+    } else {
+        err(r)
+    }
+}
+
+/// faccessat(dirfd, path, mode)（M34-B1 收录）：存在性 + 合成权限位
+/// 比对（v0 单用户 owner 位域口径——dir 0755 / file 0644 合成域单源
+/// [`fd_stat_mode_size`]）。mode 域：F_OK(0)/R_OK(4)/W_OK(2)/X_OK(1)
+/// 位组合，域外位 EINVAL；判拒 EACCES。flags（r10）忽略（AT_EACCESS
+/// 同义——v0 无 euid 分野，如实记档）。
+fn lin_faccessat(dirfd: u64, path: u64, mode: u64) -> u64 {
+    if mode & !0x7 != 0 {
+        return err(EINVAL);
+    }
+    if dirfd != AT_FDCWD {
+        return err(EINVAL); // 相对目录 fd 未收录（v0）
+    }
+    let (pmode, _) = match lin_path_stat(path) {
+        Ok(v) => v,
+        Err(e) => return err(e),
+    };
+    if mode == F_OK {
+        return 0; // 存在性由 lin_path_stat 打开面承载（Linux F_OK 语义）
+    }
+    let bits = pmode & 0o777;
+    if mode & R_OK != 0 && bits & 0o444 == 0 {
+        return err(EACCES);
+    }
+    if mode & W_OK != 0 && bits & 0o222 == 0 {
+        return err(EACCES);
+    }
+    if mode & X_OK != 0 && bits & 0o111 == 0 {
+        return err(EACCES);
+    }
+    0 // F_OK 或全判过（存在性由 lin_path_stat 打开面承载）
 }
 
 /// clock_gettime(clk, tp)：REALTIME(0)/MONOTONIC(1) 同源（固定纪元 +
