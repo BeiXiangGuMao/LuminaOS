@@ -334,6 +334,38 @@ pub const F_DUP2FD: u64 = 3;
 /// 描述符旗标 bit0：exec 时关闭（`close-on-exec`）。
 pub const FD_CLOEXEC: u64 = 1;
 
+// ---- 驱动服务框架契约（M34-D1：kernel::svc 结构面单一事实源） ----
+
+/// 服务注册表容量（定容）：M31-N1 五清点域（vnet/fb/kbd/console/block）
+/// + 三余量后续驱动批次。
+pub const SVC_MAX: usize = 8;
+/// 服务名词法上界（字节域；注册面词法校验 [`svc_name_ok`]）。
+pub const SVC_NAME_MAX: usize = 16;
+/// 预设服务 id 计数（boot 注册对账闸——init 返回值必须命中本值）。
+pub const SVC_PRESET_COUNT: usize = 5;
+/// 服务 id 段基（0x5E00 段——与文件 0xF11E / 通道 0xC0DE 段正交）。
+pub const SVC_ID_BASE: u64 = 0x5E00_0000_0000_0000;
+/// 预设服务 id：virtio-net 电气面（M31-N1 五清点 1,743 行域）。
+pub const SVC_VNET: u64 = SVC_ID_BASE + 1;
+/// 预设服务 id：stdvga+SYS_FB 显示域（953 行域）。
+pub const SVC_FB: u64 = SVC_ID_BASE + 2;
+/// 预设服务 id：PS2 键盘电气机制面（250 行域）。
+pub const SVC_KBD: u64 = SVC_ID_BASE + 3;
+/// 预设服务 id：串口控制台面（212 行域）。
+pub const SVC_CONSOLE: u64 = SVC_ID_BASE + 4;
+/// 预设服务 id：ATA PIO 块面（134 行域）。
+pub const SVC_BLOCK: u64 = SVC_ID_BASE + 5;
+
+/// 服务名词法校验（fail-visible 注册面）：1..=[`SVC_NAME_MAX`] 字节，
+/// ASCII 小写字母/数字/连字符。宿主可测纯函数（kernel::svc 注册闸
+/// 第一道——词法域与语义域分立）。
+pub fn svc_name_ok(name: &str) -> bool {
+    let b = name.as_bytes();
+    !(b.is_empty() || b.len() > SVC_NAME_MAX)
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
+}
+
 /// [`SYS_OPEN`] 模式 bit2：目标缺失时创建常规文件（v0.17，M16-①）。
 pub const O_CREAT: u64 = 0b0100;
 /// [`SYS_OPEN`] 模式 bit3：可写打开成功后截断为零长（v0.17，M16-①）。
@@ -1286,5 +1318,48 @@ mod tests {
             super::parse(r(SYS_IPC_SEND, [0, 4097, 0, 0, 0])),
             Err(AbiError::BadArgs)
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod svc_abi_tests {
+    use super::{
+        svc_name_ok, SVC_BLOCK, SVC_CONSOLE, SVC_FB, SVC_ID_BASE, SVC_KBD, SVC_MAX, SVC_NAME_MAX,
+        SVC_PRESET_COUNT, SVC_VNET,
+    };
+
+    #[test]
+    fn svc_name_lexical_gate() {
+        // M34-D1 契约宿主对账：词法闸 golden
+        assert!(svc_name_ok("vnet"));
+        assert!(svc_name_ok("fb"));
+        assert!(svc_name_ok("kbd"));
+        assert!(svc_name_ok("console"));
+        assert!(svc_name_ok("block"));
+        assert!(svc_name_ok("a23-b"));
+        assert!(!svc_name_ok("")); // 空
+        assert!(!svc_name_ok(&"x".repeat(SVC_NAME_MAX + 1))); // 越界
+        assert!(!svc_name_ok("Vnet")); // 大写拒收
+        assert!(!svc_name_ok("v net")); // 空格拒收
+        assert!(!svc_name_ok("v/net")); // 分隔符拒收
+    }
+
+    #[test]
+    fn svc_ids_segment_orthogonal() {
+        // 0x5E00 段与文件 0xF11E / 通道 0xC0DE 段正交；五预设连续
+        assert_eq!(SVC_VNET, SVC_ID_BASE + 1);
+        assert_eq!(SVC_FB, SVC_ID_BASE + 2);
+        assert_eq!(SVC_KBD, SVC_ID_BASE + 3);
+        assert_eq!(SVC_CONSOLE, SVC_ID_BASE + 4);
+        assert_eq!(SVC_BLOCK, SVC_ID_BASE + 5);
+        let ids = [SVC_VNET, SVC_FB, SVC_KBD, SVC_CONSOLE, SVC_BLOCK];
+        assert_eq!(ids.len(), SVC_PRESET_COUNT);
+        for a in 0..ids.len() {
+            for b in a + 1..ids.len() {
+                assert_ne!(ids[a], ids[b]);
+            }
+        }
+        const { assert!(SVC_MAX >= SVC_PRESET_COUNT) };
     }
 }

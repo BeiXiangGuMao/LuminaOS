@@ -50,6 +50,7 @@ mod procs;
 mod selftest;
 mod shell;
 mod smp;
+mod svc;
 mod swap;
 mod syscall;
 mod task;
@@ -726,6 +727,20 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         None => {
             let _ = writeln!(log, "vfs: /bin/busybox probe MISS (介质缺位或播种失败)");
         }
+    }
+
+    // M34-D1 驱动服务框架结构面：五驱动 boot 注册（内核态占位 v0 口径
+    // ——电气面零改动；通道铸造/驱动进程形态随服务化批次）。对账闸 =
+    // bedrock::abi::SVC_PRESET_COUNT，未命中即无标记（S8 fail-visible）。
+    let svc_n = svc::init();
+    let (svc_used, svc_cap, svc_mask) = svc::snapshot();
+    if svc_n == bedrock::abi::SVC_PRESET_COUNT {
+        let _ = writeln!(
+            log,
+            "LUMINA-SVC-INIT n={svc_n} used={svc_used}/{svc_cap} mask={svc_mask:#x}"
+        );
+    } else {
+        let _ = writeln!(log, "svc: registration incomplete n={svc_n}");
     }
     let t20 = vmm::demand_paging_check(&mut log, frames);
     report(&mut log, t20, "demand-paging-caps");

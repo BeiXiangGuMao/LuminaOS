@@ -509,7 +509,7 @@ fn smoke_inner() -> bool {
     // 3) 串口日志断言：启动标记 + 十五项自检 + 用户态标记 + TLV 双向
     //    （M31-W1 起：Weave 自举装载证据行在环——机器可验）
     let selftest_marker = format!("LUMINA-SELFTEST-PASS {SELFTEST_EXPECTED}");
-    let required: [&[u8]; 8] = [
+    let required: [&[u8]; 9] = [
         b"LUMINA-BOOT-OK",
         selftest_marker.as_bytes(),
         b"LUMINA-TLV-OK",
@@ -522,6 +522,8 @@ fn smoke_inner() -> bool {
         // M34-B2：applet 扩容活体（true/false/printf/wc -l 四 applet 分发
         // 路径 + exit 码语义对账；t83 相位汇总标记）
         b"LUMINA-T83-OK",
+        // M34-D1：驱动服务框架结构面 boot 注册证据（五驱动内核态占位）
+        b"LUMINA-SVC-INIT",
     ];
     let mut ok = tlv_ok;
     for marker in required {
@@ -676,7 +678,7 @@ fn longrun_tlv_check(all: &[u8]) -> (bool, bool) {
 fn longrun_boot_fails(serial: &[u8], tlv_ok: bool, resp_checked: bool) -> Vec<String> {
     let mut fails = Vec::new();
     let selftest_marker = format!("LUMINA-SELFTEST-PASS {SELFTEST_EXPECTED}");
-    let markers: [&[u8]; 8] = [
+    let markers: [&[u8]; 9] = [
         b"LUMINA-BOOT-OK",
         selftest_marker.as_bytes(),
         b"LUMINA-TLV-OK",
@@ -685,6 +687,7 @@ fn longrun_boot_fails(serial: &[u8], tlv_ok: bool, resp_checked: bool) -> Vec<St
         b"LUMINA-WEAVE-BOOT",
         b"LUMINA-T82-OK",
         b"LUMINA-T83-OK",
+        b"LUMINA-SVC-INIT",
     ];
     for marker in markers {
         if find(serial, marker).is_none() {
