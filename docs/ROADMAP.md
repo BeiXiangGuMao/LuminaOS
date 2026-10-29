@@ -289,14 +289,16 @@ M33 退出口径：ELF64 静态加载器在环（双格式并行 LXE1 零破坏�
 | 任务 | 内容 | 提交物 | 验收 |
 |---|---|---|---|
 | **M34-计划**（笔①） | 本表落盘 + §三 M34 行 🚧 标注 + 远线行更新 + 范围界定注（四候选方向技术路径盘点 + 口径裁决六注）+ 挂账七项随行登记（③⑦ 转主攻注） | ROADMAP | ✅ 本提交 |
-| **M34-H1**（笔②） | harbor libc 符号扩容 57→≥150：unistd/time/search 新域纯 safe 面（值语义 + 切片语义）+ H-P01 闸 50→150 机检双端同步 + 宿主对账测试扩容 + METRICS H-P01 行扩记 | crates/harbor + docs/METRICS | 待落 |
-| **M34-P4**（笔③） | PR-P04 电源协同显示侧首割：power 显示协同语义面（blank/unblank/亮度档位契约 + 状态机 fail-visible）+ kernel fb 挂接结构面（SYS 面或内部接线，随结构收敛）+ 宿主对账 + METRICS PR-P04 行扩记（DPMS 电气面真机窗口挂账不变） | crates/power + crates/kernel + docs/METRICS | ✅ 本提交（代码面 282ac81） |
+| **M34-H1**（笔②） | harbor libc 符号扩容 57→≥150：unistd/time/search 新域纯 safe 面（值语义 + 切片语义）+ H-P01 闸 50→150 机检双端同步 + 宿主对账测试扩容 + METRICS H-P01 行扩记 | crates/harbor + docs/METRICS | **待落（挂账续作——用户笔序未含本笔，如实登记不虚报；近线 M35 首项裁决）** |
+| **M34-P4**（笔③） | PR-P04 电源协同显示侧首割：power 显示协同语义面（blank/unblank/亮度档位契约 + 状态机 fail-visible）+ kernel fb 挂接结构面（SYS 面或内部接线，随结构收敛）+ 宿主对账 + METRICS PR-P04 行扩记（DPMS 电气面真机窗口挂账不变） | crates/power + crates/kernel + docs/METRICS | ✅ 282ac81（代码）+ 3676e7a（对账补笔：METRICS PR-P04 行扩记 + 行翻转） |
 | **M34-B1**（笔④） | busybox 覆盖度扩容批次一：conduit::translate 次批硬需集（pipe2/dup2/fstatat64/unlinkat/getcwd/chdir 等，随 applet 依赖实证收敛）+ kernel linux.rs 执行面接线 + C-P01 对账 + 未收录 ENOSYS 显形纪律保持 | crates/conduit + crates/kernel | ✅ 04e4ad2 |
 | **M34-B2**（笔⑤） | busybox applet 扩容活体 t83：新增 applet 实跑取证（true/false/yes/wc/head/printf 级，随 B1 syscall 面实证收敛）+ 覆盖度成像表落 docs（applet × syscall 矩阵）+ SELFTEST_TOTAL 82→83 双端同步 | crates/kernel + docs | ✅ 本提交（true/false/printf/wc -l 四 applet 实证；yes/head 随批次续挂） |
 | **M34-D1**（笔⑥） | 驱动服务化首割：驱动服务框架结构面（服务注册表定容表 + 请求/应答 IPC 通道契约 + 驱动进程形态 fail-visible）——kernel 驱动面电气零改动，结构面宿主对账 + METRICS P5 旁路行扩记 | crates/kernel + docs/METRICS | ✅ 本提交（kernel::svc 定容注册表 + 五驱动 boot 注册 + bedrock 契约宿主对账） |
 | **M34-D2**（笔⑦） | 旁路缩编批次二：console/tty 纯函数面 crate 化外移（M31-N1 三分分级兑现——策略面先行，电气面零改动）+ kernel 消费面切换 + 政策面对账 | crates/kernel + 新 crate | ✅ 本提交（quill 外移 + 消费面切换 + 政策边登记） |
 | **M34-R1**（笔⑧） | 真机窗口机制面收口：longrun RUNBOOK 执行手册（环境准备核对单 + 24h/72h 一键脚本 + 报告模板 + 取证归档规范）+ 环境 B 绝对基准清单口径手册化（B-P02/B-P03/M-P02/刷新率四项）+ 正式记录挂账注 | docs + scripts + tools/xtask | ✅ 本提交（docs/RUNBOOK.md + scripts/longrun-run.sh 一键脚本 + 环境 B 基准清单手册化） |
-| **M34-收尾**（笔⑨） | ROADMAP/METRICS/MATURITY/README 对账 + 挂账七项复核注 + 四方向 DoD 核验 + 近线 M35 + worklog 重录锚链 | 对账提交 | 待落 |
+| **M34-收尾**（笔⑨） | ROADMAP/METRICS/MATURITY/README 对账 + 挂账七项复核注 + 四方向 DoD 核验 + 近线 M35 + worklog 重录锚链 | 对账提交 | ✅ 本提交 |
+
+> **收尾核验（M34-收尾）**：四方向 DoD 逐项——① P2/P3：PR-P04 语义面 + 挂接结构面在环（t79 相位 (g) pr04=true；DPMS 电气面挂账不变——口径裁决注②兑现）；H-P01 ≥150 机检闸**未达**（H1 挂账续作——P2 深化项如实缺口登记，H-P01 行保持 57 符号 ≥50 闸在环）；② busybox：转换层次批（translate 次批 + open(2)/uid 族/munmap 实证收录 + fcntl 域同值异义缺陷修正 + validate 512→64KiB 预算扩容）与 applet 扩容 t83 活体（true/false/printf/wc -l 四目 0/1/0/0 + LUMINA-T83-OK）在环 + 覆盖度成像表落库（docs/BUSYBOX.md）；③ 驱动服务化：svc 框架结构面在环（LUMINA-SVC-INIT n=5 mask=0x3e + bedrock 契约宿主对账——电气零改动）+ quill 外移在环（政策面 28 条）；④ 真机窗口：RUNBOOK/一键脚本/报告模板在环 + 正式 24h/72h 记录挂账如实。**M34 八笔中七笔关账**（计划 3f64fa5 / P4 282ac81+3676e7a / B1 04e4ad2 / B2 4d9531f / D1 cde5e6f / D2 8a1d40c / R1 0f91290 / 收尾本提交；H1 待落）——§三 M34 行保持 🚧 不虚报。**挂账七项随行复核**：① t73 设备级残余（本轮撞窗两轮 193 冷却脱窗复跑全绿——定性不变）/ ② TCP 电气接线（不变）/ ③ PR-P04（**转 P4 主攻关账——语义面+挂接面在环，电气面挂账续**）/ ④ alpha 混合与多 Surface 表（不变）/ ⑤ 细则 PDF 重取逐条对账（介质失联不变；MATURITY v2 五维按在库引用面重建口径续用）/ ⑥ harbor C ABI 链接层（不变；与 H1 同域近线）/ ⑦ busybox 全功能覆盖度扩容（**B1/B2 批次一关账——四 applet 活体 + 成像表；yes/head/sh 族批次二续挂**）。**MATURITY v2 = 6.3/10**（v1 6.0 → +0.3：功能 6.5/稳定 5.5/治理 8.5 三维增量，性能/安全如实不动——docs/MATURITY.md §二·二）。近线 M35 候选方向：**H1 续作（P2 DoD 收口——harbor 57→≥150）** + busybox 批次二（yes/head/sh 族 + fork fd 继承/pipe2 同批）+ crystal xxh3-128 uplift（CR-P10）+ TCP 电气接线批次 + alpha 多 Surface 表——近线首项随 M35 开工裁决。
 
 M34 退出口径：harbor ≥150 符号机检闸双端在环 + PR-P04 显示协同语义面/挂接结构面在环（DPMS 电气面挂账不变）+ busybox 转换层次批与 applet 扩容 t83 活体在环 + 覆盖度成像表落库 + 驱动服务框架结构面在环（电气面零改动）+ console/tty 纯函数面外移在环 + RUNBOOK/一键脚本/报告模板在环 + 冒烟 83/83。
 

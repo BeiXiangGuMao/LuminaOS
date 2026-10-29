@@ -6,10 +6,10 @@ workspace。内核可经 multiboot1 在 QEMU（`-smp 2`）上裸机启动，物�
 系统调用、能力化 IPC、swap 换页、持久化存储面全部在环；键盘/TTY 交互、
 显示面（1080p LFB/Surface 服务化/文本渲染/stage 合成器）、virtio-net 网络面
 （UDP/TCP 协议栈）全部在环；crystal 格式 v1 文件系统（WAL/快照）在环；
-**82 项裸机自检全绿并自动验收**（QEMU 退出码 33）。
+**83 项裸机自检全绿并自动验收**（QEMU 退出码 33）。
 
-当前状态：**v0.26.0（M33 P1 末 DoD 收口季：busybox Linux 兼容 + 长稳面板 + 五维首评）** · ROADMAP 制度化（M24→M33 十里程碑逐笔
-落账）· 取证证据链全程落账（t 系活体 t66-t82 续编）· ADR 八项裁决在库
+当前状态：**v0.26.0（M34 四候选合并轮：电源协同显示侧 + busybox 覆盖度扩容 + 驱动服务化首割 + 真机窗口 RUNBOOK；H1 harbor 扩容挂账续作）** · ROADMAP 制度化（M24→M34 十一里程碑逐笔
+落账）· 取证证据链全程落账（t 系活体 t66-t83 续编）· ADR 八项裁决在库
 （docs/adr/）· 五维成熟度首评 v1 = 6.0/10（docs/MATURITY.md）。
 
 ## 特性一览
@@ -79,8 +79,9 @@ lumina-os/                 ← 源码树（保持干爽，永不出现编译产�
 │   │                SAFETY 四行模板，unsafe_op_in_unsafe_fn = deny）
 │   ├── kernel/      内核映像（启动汇编 + 中断子系统 + 调度 + 进程 + VFS 接线
 │   │                + crystal 装配 + fb stage 合成器 + vnet UDP/TCP 回环 + census
-│   │                败点名面 + bootprep 自举预备活体 + busybox Linux 兼容活体 + 82 项自检）
+│   │                败点名面 + bootprep 自举预备活体 + busybox Linux 兼容活体 + 83 项自检）
 │   ├── bedrock/     磐基内核（syscall ABI、TLV、IPC 端点信箱、LXE1、自持同步原语）
+│   ├── quill/       羽管笔终端文本规程纯函数面（console 翻译核 + tty 行分类核——M34-D2 外移，零依赖零 unsafe）
 │   ├── harbor/      港湾 libc 符号面（errno/string/ctype/stdlib 首批 57 符号
 │   │                垂直切片，forbid unsafe；ADR-0003 重铸，分配器归 ostd::heap）
 │   ├── vanguard/    前卫能力模型（权限位、派生收窄、撤销、V-P05 注入矩阵）
@@ -117,7 +118,7 @@ lumina-build/              ← 编译产物 + 日志 + 报告（源码树外，�
 
 ```bash
 cargo build --workspace          # 全仓构建（19 crate）
-cargo test  --workspace          # 全仓测试（宿主）+ 82 项裸机自检（S8）
+cargo test  --workspace          # 全仓测试（宿主）+ 83 项裸机自检（S8）
 cargo run -p xtask -- ci         # 十一阶段门禁（S1-S5 + S5b IDL 一致性 + S5c lint 台账 + S6/S7 + S8 冒烟 + S9 报告，fail-fast）
 cargo run -p xtask -- smoke      # 仅内核：lint + build + QEMU 裸机自检
 cargo run -p xtask -- check      # 仅宿主快速门禁（fmt + clippy + 测试 + 文档 + IDL 一致性 + lint 台账）
@@ -140,7 +141,7 @@ objcopy -O binary \
   <target-dir>/x86_64-unknown-none/release/lumina-kernel \
   <target-dir>/x86_64-unknown-none/release/lumina-kernel.bin
 
-# 裸机启动（串口落盘 + isa-debug-exit 自动退出，退出码 33 = 自检全过[82 项]）
+# 裸机启动（串口落盘 + isa-debug-exit 自动退出，退出码 33 = 自检全过[83 项]）
 qemu-system-x86_64 -L <seabios> -L <qemu-data> \
   -kernel lumina-kernel.bin -m 256M -display none -no-reboot \
   -serial file:boot.log -device isa-debug-exit,iobase=0xf4,iosize=0x04
