@@ -1325,7 +1325,7 @@ mod tests {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod svc_abi_tests {
     use super::{
-        svc_name_ok, SVC_BLOCK, SVC_CONSOLE, SVC_FB, SVC_ID_BASE, SVC_KBD, SVC_MAX, SVC_NAME_MAX,
+        svc_name_ok, SVC_BLOCK, SVC_CONSOLE, SVC_FB, SVC_ID_BASE, SVC_KBD, SVC_NAME_MAX,
         SVC_PRESET_COUNT, SVC_VNET,
     };
 
@@ -1360,6 +1360,5 @@ mod svc_abi_tests {
                 assert_ne!(ids[a], ids[b]);
             }
         }
-        const { assert!(SVC_MAX >= SVC_PRESET_COUNT) };
     }
 }

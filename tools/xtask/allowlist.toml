@@ -187,3 +187,8 @@ note = "内核态本体（ring0 边界面：中断/任务/页表/端口 I/O）"
 # ADR-0003（M29-N1）销账注：原 harbor 文件级 unsafe 白名单（until=M29）到期销账——
 # 分配器已迁 ostd::heap（ostd 全 crate 允许层承接），harbor 重铸后 crate 级
 # forbid(unsafe_code)，无 unsafe 容忍面。
+
+[[allowed_edges]]
+from = "lumina-kernel"
+to = "quill"
+note = "内核消费终端文本规程纯函数面（M34-D2 旁路缩编批次二外移——console 翻译核 + tty 行分类核；M31-N1 三分分级兑现）"

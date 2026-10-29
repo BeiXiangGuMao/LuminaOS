@@ -6,6 +6,7 @@ resolver = "2"
 members = [
     "crates/ostd",
     "crates/harbor",
+    "crates/quill",
     "crates/vanguard",
     "crates/bedrock",
     "crates/conduit",
@@ -36,6 +37,7 @@ authors = ["Lumina OS Project"]
 # 内部 crate 集中声明（DEV-002 第二章：依赖方向 ostd → {harbor, vanguard} → bedrock）
 ostd = { path = "crates/ostd" }
 harbor = { path = "crates/harbor" }
+quill = { path = "crates/quill" }
 vanguard = { path = "crates/vanguard" }
 bedrock = { path = "crates/bedrock" }
 conduit = { path = "crates/conduit" }

@@ -1,0 +1,10 @@
+[package]
+name = "quill"
+description = "Quill 羽管笔 —— 终端文本规程纯函数面（M34-D2 旁路缩编批次二外移：console 串口日志字节翻译 + tty 行编辑分类状态机；M31-N1 三分分级兑现——纯函数面 crate 化先行，电气面零改动）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true

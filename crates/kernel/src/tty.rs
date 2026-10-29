@@ -62,26 +62,23 @@ pub fn feed(b: u8) {
         }
         return;
     }
-    match b {
-        b'\n' => submit(),
-        0x08 => {
-            let len = LINE_LEN.load(Ordering::Acquire);
-            if len > 0 {
-                LINE_LEN.store(len - 1, Ordering::Release);
-                echo(b"\x08 \x08");
-            }
+    // M34-D2 消费面切换：分类核外移 [`quill::line::classify`]（纯函数
+    // 面，宿主对账在库）——本函数保持行缓冲 static 域 + 回显电气域。
+    let len = LINE_LEN.load(Ordering::Acquire);
+    match quill::line::classify(b, len, LINE_CAP) {
+        quill::line::LineAction::Submit => submit(),
+        quill::line::LineAction::Backspace => {
+            LINE_LEN.store(len - 1, Ordering::Release);
+            echo(&quill::line::BACKSPACE_TRACE);
         }
-        0x20..=0x7E => {
-            let len = LINE_LEN.load(Ordering::Acquire);
-            if len < LINE_CAP {
-                // SAFETY: 单写者（喂侧任务语境）；读侧只见就绪面。
-                // 裸指针 add 偏移（避开 static_mut_refs 语义）。
-                unsafe { *(&raw mut LINE_BUF as *mut u8).add(len) = b };
-                LINE_LEN.store(len + 1, Ordering::Release);
-                echo(&[b]);
-            }
+        quill::line::LineAction::Append => {
+            // SAFETY: 单写者（喂侧任务语境）；读侧只见就绪面。
+            // 裸指针 add 偏移（避开 static_mut_refs 语义）。
+            unsafe { *(&raw mut LINE_BUF as *mut u8).add(len) = b };
+            LINE_LEN.store(len + 1, Ordering::Release);
+            echo(&[b]);
         }
-        _ => {} // 其余控制字节忽略（Tab 等后续版本按需扩展）
+        quill::line::LineAction::Ignore => {} // 控制字节/空退格/满容
     }
 }
 

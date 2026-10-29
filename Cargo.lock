@@ -69,6 +69,7 @@ dependencies = [
  "ostd",
  "prism",
  "pulse",
+ "quill",
  "vanguard",
  "weave",
 ]
@@ -106,6 +107,10 @@ dependencies = [
 
 [[package]]
 name = "pulse"
+version = "0.26.0"
+
+[[package]]
+name = "quill"
 version = "0.26.0"
 
 [[package]]

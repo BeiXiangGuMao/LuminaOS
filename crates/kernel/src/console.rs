@@ -120,21 +120,12 @@ impl SerialPort {
 }
 
 /// 系统调用 SYS_LOG 直写路径：免分配逐字节输出（控制字符过滤为 '.'）。
+/// M34-D2 消费面切换：翻译核外移 [`quill::console::translate_log_bytes`]
+/// （纯函数面，宿主对账在库）——本函数保持电气发送域（端口 I/O），
+/// 逐字节语义与 M13-② 原核同构（quill golden 对账）。
 pub fn serial_log_bytes(bytes: &[u8]) {
     let sp = SerialPort::com1();
-    for &b in bytes {
-        let out = if b == b'\n' {
-            sp.send(b'\r');
-            b'\n'
-        } else if (0x20..0x7F).contains(&b) {
-            b
-        } else {
-            b'.'
-        };
-        sp.send(out);
-    }
-    sp.send(b'\r');
-    sp.send(b'\n');
+    quill::console::translate_log_bytes(bytes, |b| sp.send(b));
 }
 
 /// 原始字节直写（TLV 帧回传用）：不做任何控制字符翻译。
