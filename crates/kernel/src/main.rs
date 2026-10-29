@@ -4579,6 +4579,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         let mut px2: u64 = 0;
         let mut eq_ok = false;
         let mut sent_ok = false;
+        let mut pr04 = false;
         let arb_ok;
         if let Some(p) = &plan {
             // (e) 窗层仲裁：焦点窗（panes[0]，窗 2）z=2 高层胜出
@@ -4645,13 +4646,44 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
             }
             px2 = crate::fb::fb_compose_tick();
             ok &= px2 == 0;
+            // (g) M34-P4 PR-P04 电源协同显示侧登记面回环（kernel 侧消费
+            // 点；SELFTEST_TOTAL 不变——83 归 t83/B2）：blank → compose
+            // 拦截（损伤账保留不 drain）→ unblank → 账重放上屏像素复原
+            // → 亮度档位登记 + 越域拒显形 → 登记态镜像逐拍断言。
+            let base = crate::fb::fb_display_state();
+            let b = crate::fb::fb_display_blank();
+            let blank_state = crate::fb::fb_display_state();
+            // blank 态补一笔损伤：compose 应拦截返 0 且账保留
+            let _ = crate::fb::sys_fb_sync(dmg.x as u64, dmg.y as u64, dmg.w as u64, dmg.h as u64);
+            let blank_px = crate::fb::fb_compose_tick();
+            let u = crate::fb::fb_display_unblank();
+            let unblank_state = crate::fb::fb_display_state();
+            // unblank 后账重放：px == 交盒面积（消费点实收）
+            let replay_px = crate::fb::fb_compose_tick();
+            // 亮度档位登记面：档内收下 / 越域(>100)拒 / Restore 恢复全亮
+            let dim_ok = crate::fb::fb_display_set_brightness(25);
+            let dim_state = crate::fb::fb_display_state();
+            let dim_rej = !crate::fb::fb_display_set_brightness(101);
+            let restore_ok = crate::fb::fb_display_set_brightness(100);
+            pr04 = b
+                && u
+                && dim_ok
+                && restore_ok
+                && dim_rej
+                && base == (false, 100)
+                && blank_state == (true, 0)
+                && blank_px == 0
+                && unblank_state == (false, 100)
+                && replay_px == u64::from(dmg.w) * u64::from(dmg.h)
+                && dim_state == (false, 25);
+            ok &= pr04;
         } else {
             arb_ok = false;
         }
         ok &= arb_ok && eq_ok && sent_ok;
         let _ = writeln!(
             log,
-            "desktop-skel: ws=3+1 dock=2+2 plan=2 loom={loom_ok} icon={icon_ok} arb={arb_ok} px={px} eq={eq_ok} sent={sent_ok} tick2={px2} ok={ok}"
+            "desktop-skel: ws=3+1 dock=2+2 plan=2 loom={loom_ok} icon={icon_ok} arb={arb_ok} px={px} eq={eq_ok} sent={sent_ok} tick2={px2} pr04={pr04} ok={ok}"
         );
         ok
     };

@@ -726,6 +726,13 @@ pub fn sys_fb_stage(va: u64) -> u64 {
 /// （直写双轨共存——直写像素已在屏，无操作即正确语义）。返回本次
 /// 上屏像素数（活体断言域）。
 pub fn fb_compose_tick() -> u64 {
+    // M34-P4 电源协同显示侧（PR-P04）：blank 态合成器完全无操作——
+    // 拦截在 drain 之前，损伤账保留（unblank 后下一拍自然重放，不做
+    // 全量重放语义；blank 期内容冻结）。blank 默认 false，t77/t79-f/
+    // longrun B 断言域零扰动。
+    if DISPLAY_BLANKED.load(Ordering::Acquire) {
+        return 0;
+    }
     let plan = SYNC_DAMAGE.lock().drain_plan();
     if plan.is_skip() {
         return 0;
@@ -786,6 +793,61 @@ pub fn fb_compose_tick() -> u64 {
     n = put_udec(&mut buf, n, ticks);
     crate::console::serial_log_bytes(&buf[..n]);
     px
+}
+
+// ---- M34-P4 电源协同显示侧挂接结构面（PR-P04 首割）----
+//
+// 语义面在 power::display（三态状态机 + 档位契约 + 协同指令映射，
+// 宿主对账 6 例）；本面为 kernel 登记面：电源策略决策结果经内部接线
+// 落此处登记旗（blank/unblank/亮度档位），合成执行器入口消费 blank 旗。
+// 口径裁决（M34-计划注 ②）：零电气改动——DPMS 寄存器读写与背光调光
+// 执行面挂账真机窗口；亮度档位 = 登记契约面，无物理调光效应。
+
+/// 熄屏登记旗（blank 态合成器无操作，见 [`fb_compose_tick`] 入口拦截）。
+static DISPLAY_BLANKED: AtomicBool = AtomicBool::new(false);
+/// 亮度档位登记值（0-100；On=100 / Blank=0 / Dim=档位表值契约镜像）。
+static DISPLAY_BRIGHTNESS: AtomicU32 = AtomicU32::new(100);
+
+/// 熄屏登记（电源协同指令 Blank 消费面）：无 fb → false（fail-visible）；
+/// 亮度登记同步清 0（Blank 域契约镜像）。幂等：重复 blank 幂等成功
+/// （登记面幂等——状态机严格性在 power::display Err 显形面）。
+pub fn fb_display_blank() -> bool {
+    if fb_handle().is_none() {
+        return false;
+    }
+    DISPLAY_BLANKED.store(true, Ordering::Release);
+    DISPLAY_BRIGHTNESS.store(0, Ordering::Release);
+    true
+}
+
+/// 解熄屏登记（Restore/唤醒消费面）：无 fb → false；亮度登记恢复 100
+/// （Restore 全亮协同口径——用户级调光记忆随服务化批次，v0 不虚设）。
+pub fn fb_display_unblank() -> bool {
+    if fb_handle().is_none() {
+        return false;
+    }
+    DISPLAY_BLANKED.store(false, Ordering::Release);
+    DISPLAY_BRIGHTNESS.store(100, Ordering::Release);
+    true
+}
+
+/// 亮度档位登记（DimTo 档位消费面）：>100 或无 fb → false（fail-visible）；
+/// 档位闭集闸（DIM_STEPS）在 power::display 语义面，本面收 0-100 全域
+/// 登记（Blank=0 由 blank/unblank 维护，直写 0 合法 = 贴 Blank 域值）。
+pub fn fb_display_set_brightness(level: u32) -> bool {
+    if level > 100 || fb_handle().is_none() {
+        return false;
+    }
+    DISPLAY_BRIGHTNESS.store(level, Ordering::Release);
+    true
+}
+
+/// 显示电源登记态读面（取证/对账域）：`(blanked, brightness)`。
+pub fn fb_display_state() -> (bool, u32) {
+    (
+        DISPLAY_BLANKED.load(Ordering::Acquire),
+        DISPLAY_BRIGHTNESS.load(Ordering::Acquire),
+    )
 }
 
 /// 单交盒合成：prism 仲裁逐像素裁决 → stage→VRAM 拷写（胜者单写）。
