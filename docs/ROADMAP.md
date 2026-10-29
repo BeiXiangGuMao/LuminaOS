@@ -295,7 +295,7 @@ M33 退出口径：ELF64 静态加载器在环（双格式并行 LXE1 零破坏�
 | **M34-B2**（笔⑤） | busybox applet 扩容活体 t83：新增 applet 实跑取证（true/false/yes/wc/head/printf 级，随 B1 syscall 面实证收敛）+ 覆盖度成像表落 docs（applet × syscall 矩阵）+ SELFTEST_TOTAL 82→83 双端同步 | crates/kernel + docs | ✅ 本提交（true/false/printf/wc -l 四 applet 实证；yes/head 随批次续挂） |
 | **M34-D1**（笔⑥） | 驱动服务化首割：驱动服务框架结构面（服务注册表定容表 + 请求/应答 IPC 通道契约 + 驱动进程形态 fail-visible）——kernel 驱动面电气零改动，结构面宿主对账 + METRICS P5 旁路行扩记 | crates/kernel + docs/METRICS | ✅ 本提交（kernel::svc 定容注册表 + 五驱动 boot 注册 + bedrock 契约宿主对账） |
 | **M34-D2**（笔⑦） | 旁路缩编批次二：console/tty 纯函数面 crate 化外移（M31-N1 三分分级兑现——策略面先行，电气面零改动）+ kernel 消费面切换 + 政策面对账 | crates/kernel + 新 crate | ✅ 本提交（quill 外移 + 消费面切换 + 政策边登记） |
-| **M34-R1**（笔⑧） | 真机窗口机制面收口：longrun RUNBOOK 执行手册（环境准备核对单 + 24h/72h 一键脚本 + 报告模板 + 取证归档规范）+ 环境 B 绝对基准清单口径手册化（B-P02/B-P03/M-P02/刷新率四项）+ 正式记录挂账注 | docs + scripts + tools/xtask | 待落 |
+| **M34-R1**（笔⑧） | 真机窗口机制面收口：longrun RUNBOOK 执行手册（环境准备核对单 + 24h/72h 一键脚本 + 报告模板 + 取证归档规范）+ 环境 B 绝对基准清单口径手册化（B-P02/B-P03/M-P02/刷新率四项）+ 正式记录挂账注 | docs + scripts + tools/xtask | ✅ 本提交（docs/RUNBOOK.md + scripts/longrun-run.sh 一键脚本 + 环境 B 基准清单手册化） |
 | **M34-收尾**（笔⑨） | ROADMAP/METRICS/MATURITY/README 对账 + 挂账七项复核注 + 四方向 DoD 核验 + 近线 M35 + worklog 重录锚链 | 对账提交 | 待落 |
 
 M34 退出口径：harbor ≥150 符号机检闸双端在环 + PR-P04 显示协同语义面/挂接结构面在环（DPMS 电气面挂账不变）+ busybox 转换层次批与 applet 扩容 t83 活体在环 + 覆盖度成像表落库 + 驱动服务框架结构面在环（电气面零改动）+ console/tty 纯函数面外移在环 + RUNBOOK/一键脚本/报告模板在环 + 冒烟 83/83。
