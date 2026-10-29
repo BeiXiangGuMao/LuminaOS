@@ -81,8 +81,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82）。
-const SELFTEST_TOTAL: usize = 82;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83）。
+const SELFTEST_TOTAL: usize = 83;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -4927,6 +4927,88 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t82, "busybox-lin");
+
+    // t83) busybox applet 扩容活体（M34-B2）：多 applet 分发路径实证——
+    //      true/false（exit 码语义 0/1 对账）/ printf（write(1) 串口取证
+    //      字样）/ wc -l（openat+read+fstatat64/fstat+close 文件域消费 +
+    //      行计数）。每 applet 独立地址空间（t82 同款装载链），串行收割
+    //      对账；LUMINA-T83-OK 汇总标记（xtask S8/longrun 双面板 required）。
+    let t83 = {
+        let mut ok = true;
+        let applets: [(&[&str], u64); 4] = [
+            (&["/bin/busybox", "true"], 0),
+            (&["/bin/busybox", "false"], 1),
+            (&["/bin/busybox", "printf", "LUMINA-T83-PF\n"], 0),
+            (&["/bin/busybox", "wc", "-l", "/bin/busybox"], 0),
+        ];
+        if let Some(blob) = vfs::read_image("/bin/busybox") {
+            for (i, (argv, expect)) in applets.iter().enumerate() {
+                let Some(frames) = vmm::global_frames() else {
+                    let _ = writeln!(log, "applet[{i}]: frame service unreachable");
+                    ok = false;
+                    break;
+                };
+                // AT_RANDOM 熵：TSC 纪元拆字节（t82 同款）
+                let t = ostd::time::tsc_now();
+                let mut random = [0u8; 16];
+                for (j, b) in random.iter_mut().enumerate() {
+                    *b = (t >> ((j % 8) * 8)) as u8 ^ (j as u8).rotate_left(3);
+                }
+                match user::build_user_space_elf(
+                    &blob,
+                    argv,
+                    &["PATH=/bin"],
+                    random,
+                    "busybox",
+                    &mut || frames.alloc(),
+                ) {
+                    Ok(es) => {
+                        let mut slots = [0u64; 15];
+                        slots[0] = 0x202; // RFLAGS：IF=1
+                        slots[1] = es.entry;
+                        slots[7] = es.rsp;
+                        let id = task::spawn_fork_child(
+                            "busybox-applet",
+                            es.root,
+                            task::current_task_id(),
+                            slots,
+                            true,
+                        );
+                        if id == usize::MAX {
+                            let _ = writeln!(log, "applet[{i}]: task slot exhausted");
+                            ok = false;
+                            break;
+                        }
+                        let r = procs::sys_wait_pid(id as u64);
+                        let rpid = (r >> 16) & 0xFFFF;
+                        let code = r & 0xFFFF;
+                        let _ = writeln!(
+                            log,
+                            "applet[{}] {} reaped pid={rpid} exit={code} (expect {expect})",
+                            i, argv[1]
+                        );
+                        ok &= r >> 32 == 1; // WAITPID_OK_BIT
+                        ok &= rpid == id as u64;
+                        ok &= code == *expect; // applet exit 码语义（true=0/false=1）
+                        ok &= !task::task_alive(id);
+                    }
+                    Err(e) => {
+                        let _ = writeln!(log, "applet[{}]: user space build failed ({e:?})", i);
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+        } else {
+            let _ = writeln!(log, "applet: /bin/busybox media MISS");
+            ok = false;
+        }
+        if ok {
+            let _ = writeln!(log, "LUMINA-T83-OK");
+        }
+        ok
+    };
+    report(&mut log, t83, "applet-lin");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {

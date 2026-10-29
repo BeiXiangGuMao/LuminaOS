@@ -1204,3 +1204,30 @@ pub fn sys_fcntl(handle: u64, cmd: u64, arg: u64) -> u64 {
     FCNTL_RESULT.store(code, Ordering::Release);
     code
 }
+
+/// fd 开旗标查询（M34-B2）：Linux F_GETFL 语义承载（kernel::linux 域
+/// 翻译后消费——**不经 [`sys_fcntl`] 命令域**：bedrock F_DUP2FD(3) 与
+/// Linux F_GETFL(3) 同值异义，直传即误派 dup2）。fd<3 控制台三件套 =
+/// O_RDWR；vfs 文件面按 OFD readable/writable 反推 O_RDONLY/O_WRONLY/
+/// O_RDWR（64 位 O_LARGEFILE=0——Linux x86_64 同构；v0 无 O_APPEND
+/// 执行面如实记档）。成功 `(1 << 32) | flags`；无效句柄 EBADF。
+pub fn fd_open_flags(handle: u64) -> u64 {
+    if handle < 3 {
+        return OK_BIT | 0o2;
+    }
+    let Some((_slot, _cap, idx)) = resolve_file_object(handle) else {
+        return EBADF;
+    };
+    let files = FILES.lock();
+    match files[idx].as_ref() {
+        Some(f) => {
+            let fl = match (f.readable, f.writable) {
+                (true, true) => 0o2,
+                (true, false) => 0o0,
+                _ => 0o1,
+            };
+            OK_BIT | fl
+        }
+        None => EBADF,
+    }
+}

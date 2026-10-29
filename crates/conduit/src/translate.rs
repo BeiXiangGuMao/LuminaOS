@@ -19,6 +19,12 @@
 //! 句柄表全零实录——POSIX 流水线消费方 sh 批次依赖句柄表跨 fork
 //! 复制先行，单收无消费方，分批不虚报）。
 //!
+//! M34-B2 收录（t83 活体实证导航——LIN-DISPATCH-ERR 取证线定案）：
+//! open(2)（open( path, flags, mode ) = openat(AT_FDCWD, ·) 参数
+//! 同形直通——wc/fopen 路径实证）+ getuid(102)/getgid(104)/
+//! geteuid(105)/getegid(106) 合成桩（v0 单用户 root 口径全量 0——
+//! busybox libbb 公共路径身份检查实录；多用户随纵深批次挂账）。
+//!
 //! 错误协议：Linux ABI 用户态返回检查 rax < 0（musl 约定），内核侧
 //! 返回 `-(errno)`；errno 值域事实源 = [`crate::convert`]。
 
@@ -108,8 +114,19 @@ pub enum LinAction {
     /// faccessat(269)：存在性 + 合成权限位比对（F_OK/R_OK/W_OK/X_OK；
     /// v0 单用户 owner 位域口径）。
     FAccessAt,
+    /// open(2)：`open(path, flags, mode)` = openat(AT_FDCWD, ·) 参数
+    /// 同形直通（wc/fopen 路径——M34-B2 t83 实证收录；musl 层本应走
+    /// openat，busybox 部分路径直发旧号）。
+    Open,
+    /// getuid(102)/getgid(104)/geteuid(105)/getegid(106) 合成桩：v0
+    /// 单用户 root 口径全量 0（busybox libbb 公共路径身份检查——M34-B2
+    /// t83 实证收录；多用户随纵深批次挂账）。四号共用一变体，
+    /// COVERED 计数口径 = 变体数 + ioctl 显形 1。
+    StubUid,
     // ---- 合成桩档（返回合成成功值；语义实体挂账） ----
-    /// rt_sigaction(13) / rt_sigprocmask(14)：信号面挂账，合成 0
+    /// rt_sigaction(13) / rt_sigprocmask(14)：信号面挂账，合成 0；
+    /// munmap(11)：v0 匿名区不回收口径合成 0（musl free/realloc 大块
+    /// 释放路径——M34-B2 t83 实证收录；真回收随页帧回收批次）
     StubOk,
     /// set_tid_address(218)：合成返回 pid（TLS 清理桩语义）
     StubTid,
@@ -123,10 +140,12 @@ pub fn translate(num: u64) -> LinAction {
     match num {
         0 => LinAction::Read,
         1 => LinAction::Write,
+        2 => LinAction::Open, // M34-B2 收录（t83 实证：wc/fopen 路径）
         3 => LinAction::Close,
         5 => LinAction::FStat,
         8 => LinAction::LSeek,
         9 => LinAction::MMapAnon,
+        11 => LinAction::StubOk, // munmap 合成（v0 匿名区不回收——M34-B2 收录）
         12 => LinAction::Brk,
         13 | 14 => LinAction::StubOk,
         16 => LinAction::Err(ENOTTY), // ioctl：非终端 fd 语义（v0 全量）
@@ -139,6 +158,7 @@ pub fn translate(num: u64) -> LinAction {
         61 => LinAction::Wait4,
         63 => LinAction::UName,
         80 => LinAction::ChDir, // M34-B1 收录（busybox 覆盖度扩容批次一）
+        102 | 104 | 105 | 106 => LinAction::StubUid, // M34-B2 收录（uid/gid 族合成）
         158 => LinAction::ArchPrctl, // M33-T1 收录（musl TLS 初始化链）
         72 => LinAction::Fcntl,
         79 => LinAction::GetCwd,
@@ -176,7 +196,9 @@ pub const W_OK: u64 = 2;
 pub const R_OK: u64 = 4;
 
 /// 映射面覆盖度成像（数与 [`translate`] 收录一致；测试对账断言）。
-pub const COVERED: usize = 28;
+/// 口径 = LinAction 变体数 + ioctl 显形 1（StubUid 一变体承载 uid/gid
+/// 族四号——号域覆盖另见 BINDINGS 名表快照）。
+pub const COVERED: usize = 30;
 
 /// 相对路径 cwd join（M34-B1 单一事实源）：绝对路径原样；相对路径
 /// `cwd + path`（cwd 尾随分隔符去重——根哨兵 `"/"` 自然吞并）。词法
@@ -252,6 +274,13 @@ mod tests {
         assert_eq!(translate(262), LinAction::FStatAt);
         assert_eq!(translate(263), LinAction::UnlinkAt);
         assert_eq!(translate(269), LinAction::FAccessAt);
+        // M34-B2 收录（t83 实证导航）
+        assert_eq!(translate(2), LinAction::Open);
+        assert_eq!(translate(11), LinAction::StubOk); // munmap 合成
+        assert_eq!(translate(102), LinAction::StubUid);
+        assert_eq!(translate(104), LinAction::StubUid);
+        assert_eq!(translate(105), LinAction::StubUid);
+        assert_eq!(translate(106), LinAction::StubUid);
         // 显形拒绝（未收录）
         assert_eq!(translate(56), LinAction::Err(ENOSYS)); // clone（M33-P1 后仍挂账——vfork/clone 旗标面随后续批次）
         assert_eq!(translate(59), LinAction::Execve); // M33-P1 收录

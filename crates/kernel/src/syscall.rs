@@ -512,7 +512,11 @@ pub(crate) fn validate_user_slice(ptr: u64, len: u64) -> Option<&'static [u8]> {
     // 双防线（野值指针走 not-present #PF 致命路径，与恒等域同构）。
     const PD6_LO: u64 = 0x1_8000_0000;
     const PD6_HI: u64 = 0x1_81A0_0000; // STACK_TOP_GROW 顶 .. BRK_LIMIT
-    if len == 0 || len > 512 {
+                                       // M34-B2 上限扩容 512→64 KiB（musl stdio BUFSIZ=1024 实录——wc
+                                       // fread read(fd, buf, 1024) 撞 512 上限 EFAULT 定案；域白名单 +
+                                       // MMU 页表可达双防线不变，本值 = 防 DoS 拷贝预算面）。Linux 面
+                                       // 消费域（stdio 1024/writev 聚合 8 KiB 预算内）全覆盖。
+    if len == 0 || len > 0x1_0000 {
         return None;
     }
     let ident_ok = (0x1000..IDENT_LIMIT).contains(&ptr) && ptr.checked_add(len)? <= IDENT_LIMIT;
@@ -535,7 +539,11 @@ pub(crate) fn validate_user_slice_mut(ptr: u64, len: u64) -> Option<&'static mut
     // M33-T1 域扩展：同 validate_user_slice（PD6 Linux 用户域）。
     const PD6_LO: u64 = 0x1_8000_0000;
     const PD6_HI: u64 = 0x1_81A0_0000;
-    if len == 0 || len > 512 {
+    // M34-B2 上限扩容 512→64 KiB（musl stdio BUFSIZ=1024 实录——wc
+    // fread read(fd, buf, 1024) 撞 512 上限 EFAULT 定案；域白名单 +
+    // MMU 页表可达双防线不变，本值 = 防 DoS 拷贝预算面）。Linux 面
+    // 消费域（stdio 1024/writev 聚合 8 KiB 预算内）全覆盖。
+    if len == 0 || len > 0x1_0000 {
         return None;
     }
     let ident_ok = (0x1000..IDENT_LIMIT).contains(&ptr) && ptr.checked_add(len)? <= IDENT_LIMIT;

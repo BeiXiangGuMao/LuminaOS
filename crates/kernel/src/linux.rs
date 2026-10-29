@@ -110,21 +110,17 @@ pub fn lin_dispatch(frame: &mut SyscallFrame) -> u64 {
             }
         }
         LinAction::GetPid => crate::procs::current_pid(),
+        LinAction::Open => {
+            // M34-B2 收录（t83 实证：wc/fopen 路径）：open(path, flags,
+            // mode) = openat(AT_FDCWD, ·) 参数同形——与 OpenAt 共享核
+            lin_open_common(frame.rdi, frame.rsi)
+        }
         LinAction::OpenAt => {
             if frame.rdi != AT_FDCWD {
                 return err(EINVAL); // 相对目录 fd 未收录（v0 仅 AT_FDCWD）
             }
             // M34-B1：相对路径 cwd join（单一事实源 join_cwd）→ 字节面
-            let bytes = match lin_path_bytes(frame.rsi) {
-                Some(Ok(b)) => b,
-                Some(Err(e)) => return err(e),
-                None => return err(EFAULT),
-            };
-            // Linux O_* → Lumina open mode（conduit 事实源双向映射）
-            let Some(mode) = conduit::convert::flags_to_open_mode(frame.rdx as u32) else {
-                return err(EINVAL);
-            };
-            lumina_to_linux(crate::vfs::sys_open_bytes(&bytes, mode))
+            lin_open_common(frame.rsi, frame.rdx)
         }
         LinAction::WriteV => lin_writev(frame),
         LinAction::FStat => lin_fstat(frame.rdi, frame.rsi),
@@ -151,15 +147,36 @@ pub fn lin_dispatch(frame: &mut SyscallFrame) -> u64 {
             ))
         }
         LinAction::Fcntl => {
-            // F_GETFD(1)/F_SETFD(2)/F_GETFL(3)/F_SETFL(4) → Lumina 面
-            if (1..=4).contains(&frame.rsi) {
-                lumina_to_linux(crate::vfs::sys_fcntl(frame.rdi, frame.rsi, frame.rdx))
-            } else {
-                err(EINVAL)
+            // M34-B2 域纪律修正：Linux fcntl 命令域与 bedrock 域**同值
+            // 异义**（Linux F_GETFL(3) vs bedrock F_DUP2FD(3)——直传即
+            // 误派 dup2！musl __fdopen 的 F_GETFL 探测实录）。翻译面：
+            // F_GETFD(1)/F_SETFD(2) 同值直传；F_GETFL(3)/F_SETFL(4)
+            // 本地承载（fd_open_flags / 收下不映射）；其余 EINVAL。
+            const F_GETFD_L: u64 = 1;
+            const F_SETFD_L: u64 = 2;
+            const F_GETFL_L: u64 = 3;
+            const F_SETFL_L: u64 = 4;
+            match frame.rsi {
+                F_GETFD_L | F_SETFD_L => {
+                    lumina_to_linux(crate::vfs::sys_fcntl(frame.rdi, frame.rsi, frame.rdx))
+                }
+                F_GETFL_L => lumina_to_linux(crate::vfs::fd_open_flags(frame.rdi)),
+                F_SETFL_L => {
+                    // 收下不映射（v0 无 O_APPEND/O_NONBLOCK 执行面——
+                    // musl fopen "a" 链容错；句柄有效性同域校验）
+                    let r = crate::vfs::fd_open_flags(frame.rdi);
+                    if r >> 32 == 1 {
+                        0
+                    } else {
+                        err(r.min(ENOSYS))
+                    }
+                }
+                _ => err(EINVAL),
             }
         }
         LinAction::Exit => crate::task::exit_current(frame.rdi),
         LinAction::StubOk => 0,
+        LinAction::StubUid => 0, // M34-B2：uid/gid 族合成（v0 单用户 root）
         LinAction::StubTid => crate::procs::current_pid(),
         LinAction::ArchPrctl => lin_arch_prctl(frame.rdi, frame.rsi),
         LinAction::ChDir => lin_chdir(frame.rdi),
@@ -168,9 +185,41 @@ pub fn lin_dispatch(frame: &mut SyscallFrame) -> u64 {
         LinAction::FAccessAt => lin_faccessat(frame.rdi, frame.rsi, frame.rdx),
         LinAction::Err(e) => {
             let _ = (EBADF, ENOTTY); // 事实源引用锚（errno 值域单源）
+                                     // M34-B2 取证线：未收录/显形拒绝号串口成像（fail-visible——
+                                     // 覆盖度扩容批次的实证导航面；ENOTTY 高频域同显不遮蔽）
+            let line = alloc::format!("LIN-DISPATCH-ERR num={} errno={}\n", frame.num, e);
+            crate::console::serial_log_bytes(line.as_bytes());
             err(e)
         }
     }
+}
+
+/// open/openat 公共核（M34-B2 提取）：cwd join（lin_path_bytes）→
+/// Linux O_* → Lumina open mode（conduit 事实源双向映射）→ 字节面开。
+/// OpenAt 校验 dirfd 后传 path 指针；Open 直传三参（参数同形直通）。
+fn lin_open_common(path_ptr: u64, flags_linux: u64) -> u64 {
+    let bytes = match lin_path_bytes(path_ptr) {
+        Some(Ok(b)) => b,
+        Some(Err(e)) => return err(e),
+        None => return err(EFAULT),
+    };
+    let Some(mode) = conduit::convert::flags_to_open_mode(flags_linux as u32) else {
+        // M34-B2 取证线：旗标域拒收成像（覆盖度扩容实证导航）
+        let line = alloc::format!("LIN-OPEN-REJECT flags={:#x}\n", flags_linux);
+        crate::console::serial_log_bytes(line.as_bytes());
+        return err(EINVAL);
+    };
+    let r = crate::vfs::sys_open_bytes(&bytes, mode);
+    if r >> 32 != 1 {
+        let line = alloc::format!(
+            "LIN-OPEN-FAIL flags={:#x} mode={:#x} errno={}\n",
+            flags_linux,
+            mode,
+            r & 0xFFFF
+        );
+        crate::console::serial_log_bytes(line.as_bytes());
+    }
+    lumina_to_linux(r)
 }
 
 /// read(fd, buf, count)：fd 0 = tty 非阻塞游标（v0 口径）；其余 vfs。
@@ -188,7 +237,15 @@ fn lin_read(frame: &mut SyscallFrame) -> u64 {
         dst[0] = (ch & 0xFF) as u8;
         return 1;
     }
-    lumina_to_linux(crate::vfs::sys_read(fd, buf, count))
+    let r = crate::vfs::sys_read(fd, buf, count);
+    if r >> 32 != 1 {
+        let line = alloc::format!(
+            "LIN-READ-FAIL fd={fd} buf={buf:#x} count={count} errno={}\n",
+            r & 0xFFFF
+        );
+        crate::console::serial_log_bytes(line.as_bytes());
+    }
+    lumina_to_linux(r)
 }
 
 /// write(fd, buf, count)：fd 1/2 = 串口控制台；其余 vfs。
@@ -255,6 +312,8 @@ fn lin_fstat(fd: u64, statbuf: u64) -> u64 {
 fn fd_stat_mode_size(fd: u64) -> Result<(u64, u64), u64> {
     let r = crate::vfs::sys_stat(fd);
     if r >> 32 != 1 {
+        let line = alloc::format!("LIN-STAT-FAIL fd={fd} errno={}\n", r & 0xFFFF);
+        crate::console::serial_log_bytes(line.as_bytes());
         return Err(r.min(ENOSYS));
     }
     Ok(synth_mode_size(r & 0xFF, (r >> 16) & 0xFFFF))

@@ -185,6 +185,11 @@ pub const O_DIRECTORY: u32 = 0o200000;
 /// musl 开盘路径常规携带）。
 pub const O_CLOEXEC: u32 = 0o2000000;
 
+/// O_LARGEFILE（musl x86_64 = 0o100000——64 位原生无义位，open 链恒带；
+/// M34-B2 t83 实证收录：wc/fopen 路径 LIN-OPEN-REJECT flags=0x8000
+/// 取证定案。收下不映射——64 位内核语义原生承载）。
+pub const O_LARGEFILE: u32 = 0o100000;
+
 /// LXE1 open 模式域 → Linux O_* 旗标集。
 ///
 /// LXE1 域（`bedrock::abi` v0.19）：bit0=读、bit1=写（访问位必须非零，
@@ -225,7 +230,15 @@ pub fn open_mode_to_flags(mode: u64) -> Option<u32> {
 /// （O_APPEND/O_NONBLOCK…）→ `None`（不支持旗标集 fail-visible，
 /// 兼容层慢路径须先清旗标再进 LXE1 域）。
 pub fn flags_to_open_mode(flags: u32) -> Option<u64> {
-    let known = O_RDONLY | O_WRONLY | O_RDWR | O_CREAT | O_EXCL | O_TRUNC | O_DIRECTORY | O_CLOEXEC;
+    let known = O_RDONLY
+        | O_WRONLY
+        | O_RDWR
+        | O_CREAT
+        | O_EXCL
+        | O_TRUNC
+        | O_DIRECTORY
+        | O_CLOEXEC
+        | O_LARGEFILE;
     if flags & !known != 0 {
         return None; // 首批不支持的旗标集
     }
@@ -269,8 +282,9 @@ pub struct SyscallBinding {
     pub err_domain: &'static str,
 }
 
-/// Linux x86_64 syscall 绑定表（首批 25 + M34-B1 次批 4 = 29 调用，
-/// C-P01 ≥20 达标面）。
+/// Linux x86_64 syscall 绑定表（首批 25 + M34-B1 次批 4 + M34-B2 uid 族 4
+/// = 33 调用，C-P01 ≥20 达标面；open(2) 首批已在表——M34-B2 执行面
+/// 直通接线）。
 ///
 /// 选样口径：静态 busybox 常用路径优先（文件/进程/内存/时间/系统信息面；
 /// 次批 = busybox 覆盖度扩容——chdir/newfstatat/unlinkat/faccessat 路径
@@ -451,6 +465,32 @@ pub const BINDINGS: &[SyscallBinding] = &[
         name: "faccessat",
         nargs: 4,
         err_domain: "errno",
+    },
+    // ---- M34-B2（t83 实证导航：open(2) 执行面接线〔首批绑定已在表〕
+    //      + uid/gid 族合成桩） ----
+    SyscallBinding {
+        num: 102,
+        name: "getuid",
+        nargs: 0,
+        err_domain: "status",
+    },
+    SyscallBinding {
+        num: 104,
+        name: "getgid",
+        nargs: 0,
+        err_domain: "status",
+    },
+    SyscallBinding {
+        num: 105,
+        name: "geteuid",
+        nargs: 0,
+        err_domain: "status",
+    },
+    SyscallBinding {
+        num: 106,
+        name: "getegid",
+        nargs: 0,
+        err_domain: "status",
     },
 ];
 
