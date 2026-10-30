@@ -87,8 +87,9 @@
 | **M32** | Aurora SDK/权限中心：权限中心首割 + SDK 最小服务面——**✅ 关账**（七笔闭账：计划 d1d4494 / ⓪ 定版 3d3e65b+搭车件 905aad2 / A1 f777d31 / S1 952859d / B1 3a86001 / T1 4048e45 / 收尾本提交；*注：哈希为改写前锚，M31/M32 十四笔身份改写后新锚尾段 3740c95，登记备查不回改*） | P4 | AF-P03/P06 拦截校验在环 + 权限四相在环（vanguard 本体零改动）；AF-P01 宿主基准口径登记；t81 活体 81/81；CA-P02/04/06 细则失联按在库面承接 | aurora/vanguard |
 | **M33** | P1 末 DoD 收口：busybox Linux 兼容路径 + 长稳面板 + 五维首评——**✅ 关账**（九笔闭账注：计划/E1/L1/P1/F1/T1/R1/X1/收尾全行落账——ELF64 加载器 + Linux 兼容全链 + 进程族 + t82 活体 82/82 + 长稳机制面短窗实证 + 五维首评 v1 6.0/10；正式 24h/72h 门禁记录真机窗口挂账） | P1 收口 | busybox 静态运行 24h（P1 末 DoD）；1080p@60/72h 长稳口径；五维成熟度指数首评；t82 活体 | kernel::user/conduit/xtask |
 | **M34** | 四候选方向合并轮：P2/P3 DoD 深化（harbor 符号扩容 H-P01≥150 闸 + PR-P04 电源协同显示侧首割）+ busybox 覆盖度扩容批次（转换层次批 + applet 扩容 t83）+ 驱动服务化首割（服务框架结构面 + 旁路缩编批次二）+ 真机窗口机制面收口（longrun RUNBOOK + 环境 B 基准清单） | P2/P3/P5 | H-P01 ≥150 机检闸；PR-P04 结构面；applet 覆盖度成像表；驱动服务框架结构面；RUNBOOK 在环；t83 活体 | harbor/power/conduit/kernel/xtask/docs |
+| **M35** | H1 续作 + busybox 批次二：harbor libc 符号扩容 57→≥150（H-P01 闸 50→150 双端同步——P2 DoD 收口，M34-H1 挂账转正）+ busybox 批次二（fork fd 继承 + pipe2 执行面同批解锁 sh 流水线 + yes/head applet 扩容——M34 收尾移交挂账⑦续作） | P2/P3 | H-P01 ≥150 机检闸双端在环；fork fd 继承在环；pipe2 执行面（EOF/EPIPE 语义）在环；sh 流水线活体；t84/t85 活体 | harbor/kernel/conduit/docs |
 
-远线：M35+ 后续里程碑随 M34 关账裁决（候选方向：crystal xxh3-128 uplift〔CR-P10 全量口径重跑〕+ TCP 电气接线批次 + alpha 混合与多 Surface 表 + 多用户纵深〔多会话/隔离强化〕——近线首项随 M35 开工裁决）。
+远线：M36+ 后续里程碑随 M35 关账裁决（候选方向：crystal xxh3-128 uplift〔CR-P10 全量口径重跑〕+ TCP 电气接线批次 + alpha 混合与多 Surface 表 + 多用户纵深〔多会话/隔离强化〕——近线首项随 M36 开工裁决）。
 
 ---
 
@@ -301,6 +302,25 @@ M33 退出口径：ELF64 静态加载器在环（双格式并行 LXE1 零破坏�
 > **收尾核验（M34-收尾）**：四方向 DoD 逐项——① P2/P3：PR-P04 语义面 + 挂接结构面在环（t79 相位 (g) pr04=true；DPMS 电气面挂账不变——口径裁决注②兑现）；H-P01 ≥150 机检闸**未达**（H1 挂账续作——P2 深化项如实缺口登记，H-P01 行保持 57 符号 ≥50 闸在环）；② busybox：转换层次批（translate 次批 + open(2)/uid 族/munmap 实证收录 + fcntl 域同值异义缺陷修正 + validate 512→64KiB 预算扩容）与 applet 扩容 t83 活体（true/false/printf/wc -l 四目 0/1/0/0 + LUMINA-T83-OK）在环 + 覆盖度成像表落库（docs/BUSYBOX.md）；③ 驱动服务化：svc 框架结构面在环（LUMINA-SVC-INIT n=5 mask=0x3e + bedrock 契约宿主对账——电气零改动）+ quill 外移在环（政策面 28 条）；④ 真机窗口：RUNBOOK/一键脚本/报告模板在环 + 正式 24h/72h 记录挂账如实。**M34 八笔中七笔关账**（计划 3f64fa5 / P4 282ac81+3676e7a / B1 04e4ad2 / B2 4d9531f / D1 cde5e6f / D2 8a1d40c / R1 0f91290 / 收尾本提交；H1 待落）——§三 M34 行保持 🚧 不虚报。**挂账七项随行复核**：① t73 设备级残余（本轮撞窗两轮 193 冷却脱窗复跑全绿——定性不变）/ ② TCP 电气接线（不变）/ ③ PR-P04（**转 P4 主攻关账——语义面+挂接面在环，电气面挂账续**）/ ④ alpha 混合与多 Surface 表（不变）/ ⑤ 细则 PDF 重取逐条对账（介质失联不变；MATURITY v2 五维按在库引用面重建口径续用）/ ⑥ harbor C ABI 链接层（不变；与 H1 同域近线）/ ⑦ busybox 全功能覆盖度扩容（**B1/B2 批次一关账——四 applet 活体 + 成像表；yes/head/sh 族批次二续挂**）。**MATURITY v2 = 6.3/10**（v1 6.0 → +0.3：功能 6.5/稳定 5.5/治理 8.5 三维增量，性能/安全如实不动——docs/MATURITY.md §二·二）。近线 M35 候选方向：**H1 续作（P2 DoD 收口——harbor 57→≥150）** + busybox 批次二（yes/head/sh 族 + fork fd 继承/pipe2 同批）+ crystal xxh3-128 uplift（CR-P10）+ TCP 电气接线批次 + alpha 多 Surface 表——近线首项随 M35 开工裁决。
 
 M34 退出口径：harbor ≥150 符号机检闸双端在环 + PR-P04 显示协同语义面/挂接结构面在环（DPMS 电气面挂账不变）+ busybox 转换层次批与 applet 扩容 t83 活体在环 + 覆盖度成像表落库 + 驱动服务框架结构面在环（电气面零改动）+ console/tty 纯函数面外移在环 + RUNBOOK/一键脚本/报告模板在环 + 冒烟 83/83。
+
+---
+
+### M35 任务级分解（🚧 进行中，H1 续作 + busybox 批次二）
+
+> 主题：H1 续作（M34-H1 挂账转正——P2 DoD 收口）+ busybox 批次二（M34 收尾移交挂账⑦续作）。验收锚：§一 P2 行「H-P01≥150」+ M34 收尾近线首项裁决（用户 M35 开工指令同源：H1 续作 + busybox 批次二）。主战场 harbor/kernel/conduit/xtask/docs。**技术路径盘点**（M34 关账基线）：① harbor = errno/string/ctype/stdlib 四域 57 符号实录（3/16/18/20，闸 ≥50 机检在环；crate 级 forbid(unsafe_code)）——扩容至 ≥150 需 +93 符号：unistd/time/search 新域主路径纯 safe 面实证可达约 36 符号 + 既有 string/stdlib 域扩容约 28 + wctype/wchar 补齐域约 37；**域集实证收敛裁决**：unistd/time/search 主路径 + 既有域扩容 + wctype/wchar 补齐（≥150 为硬 DoD 锚，M34-H1 行域列举为主路径非穷尽——C ABI 指针层挂账不纳入不变）；② busybox 批次二 = translate.rs M34-B1 注记挂账兑现：**fork 子代句柄表全零实录**（spawn_fork_child 现拷 cwd/fork_frame/lin_abi 三面，handles/hflags 双表缺席）+ **pipe2(293) 挂账**（「POSIX 流水线消费方 sh 批次依赖句柄表跨 fork 复制先行，单收无消费方」）——批次二口径 = fork fd 继承（handles + hflags 双表锁窗拷贝）→ pipe2 执行面（vfs 管道对象 + 读/写端句柄 + EOF/EPIPE fail-visible）→ translate 293 摘牌收录 → sh 流水线（`|` 解析 → fork+pipe2+dup2+execve 串联实证）+ yes/head applet 扩容 + t84/t85 活体。**口径裁决注**：① H-P01 闸 50→150 双端同步（harbor lib.rs 机检断言 + METRICS H-P01 行）随 H1 关账笔落位；② 新增符号全部值语义/切片语义 safe 面（forbid(unsafe_code) 不破；M29 先例：NUL 串以 `&[u8]` 承载、指针参数以引用/切片等价化、fail-visible 化）；③ 时间域 = UTC/"C" locale 纪律（tzset 空实现登记；clock/time/clock_gettime 需时钟源 syscall——挂账不虚报）；④ fork fd 继承 = Linux 同款（子代获父句柄表拷贝——底层 FileObject 引用计数共享，hflags CLOEXEC 旗标随链）；⑤ pipe2 v0 = 64 KiB 定容字节环 + 双端关闭检测（写端全关 → read 返 0 EOF；读端全关 → write 返 EPIPE；CLOEXEC 旗标走既有 fd_open_flags 面）；⑥ 自检基线 83/83 → 85/85（t84 fork-pipe 活体 + t85 sh 流水线活体）双端同步沿用 M33/M34 纪律。**挂账六项随行**（M34 收尾移交逐项复核，非本轮主攻）：① t73 设备级残余 ② TCP 电气接线 ③ PR-P04 电气面（DPMS 真机窗口）④ alpha 混合与多 Surface 表 ⑤ 细则 PDF 重取逐条对账 ⑥ harbor C ABI 指针/链接层（与 H1 同域——本轮符号面扩容不触及，待用户态链接面成形续挂）。
+
+| 任务 | 内容 | 提交物 | 验收 |
+|---|---|---|---|
+| **M35-计划**（笔①） | §三 M35 行开工 🚧 + §四 M35 子节任务级分解落盘（八笔 + 口径裁决注 + 挂账移交） | docs/ROADMAP | ✅ 本提交 |
+| **M35-H1a**（笔②） | harbor time 新域：Tm 结构 + difftime/mktime/timegm/gmtime 族/asctime 族/ctime 族/strftime/wcsftime/tzset 纯计算 UTC="C" locale 面（14 符号 → 71）+ 宿主对账测试 | crates/harbor | |
+| **M35-H1b**（笔③） | harbor search 新域：hcreate/hdestroy/hsearch(+_r) 哈希表 + lfind/lsearch 线性搜索 + insque/remque 双链 + tsearch 族二叉搜索树（15 符号 → 86）+ 宿主对账测试 | crates/harbor | |
+| **M35-H1c**（笔④） | harbor unistd 新域（getopt 族/swab/confstr/sysconf/getpagesize，7 符号）+ string 域扩容（strcpy/strncpy/strcat/strncat/stpcpy/stpncpy/strtok/strtok_r/strcoll/strxfrm/strerror_r/memccpy/memfrob/bcopy/bzero/bcmp/index/rindex，+18）+ stdlib 域扩容（strtoimax/strtoumax/mblen/mbtowc/wctomb/mbstowcs/wcstombs/qsort_r/rand_r/atof，+10）（→ 121）+ 宿主对账测试 | crates/harbor | |
+| **M35-H1d**（笔⑤） | harbor wctype/wchar 补齐域（isw 族/towlower/towupper/wctype/wctrans/towctrans，17；wcs 族/wmem 族，20）（→ 158）+ H-P01 闸 50→150 双端同步（lib.rs 机检断言升级 + METRICS H-P01 行扩记）+ 宿主对账测试扩容——**H1 关账（≥150 硬锚达成）** | crates/harbor + docs/METRICS | |
+| **M35-BBa**（笔⑥） | fork fd 继承：spawn_fork_child handles/hflags 双表锁窗拷贝（Linux 同款 FileObject 共享）+ pipe2 执行面：vfs 管道对象（64 KiB 定容字节环 + 读/写端句柄 + EOF/EPIPE fail-visible + CLOEXEC 面）+ lin_pipe2 用户内存回写 + translate 293 摘牌收录 + t84 fork-pipe 活体 + SELFTEST 83→84 双端同步 | crates/kernel + crates/conduit | |
+| **M35-BBb**（笔⑦） | busybox 批次二 applet 面：sh 流水线首割（`|` 解析 → fork+pipe2+dup2+execve 两段串联实证）+ yes/head applet 扩容 + BUSYBOX.md 覆盖度成像表扩记 + t85 sh 流水线活体 + SELFTEST 84→85 双端同步 | crates/kernel + docs | |
+| **M35-收尾**（笔⑧） | ROADMAP/METRICS/MATURITY/README 对账 + 挂账六项复核注 + 双方向 DoD 核验 + 近线 M36 + worklog Task ID 20 | 对账提交 | |
+
+M35 退出口径：harbor ≥150 符号机检闸双端在环（P2 DoD 收口）+ fork fd 继承在环 + pipe2 执行面在环（EOF/EPIPE 语义实证）+ sh 流水线活体在环 + yes/head applet 在环 + 覆盖度成像表扩记 + 冒烟 85/85。
 
 ---
 
