@@ -4,7 +4,7 @@
 //! 手册》第 5 章指标族 H-P01…H-P07：执行系统库档**零 unsafe** 政策（crate
 //! 级 `forbid(unsafe_code)`），M29-H1 落地 **H-P01 首批 ≥50 符号垂直切片**。
 //!
-//! # 域谱（71 函数符号，M35-H1a 扩容；机器可检清点见 `tests::h_p01_symbol_inventory`）
+//! # 域谱（86 函数符号，M35-H1b 扩容；机器可检清点见 `tests::h_p01_symbol_inventory`）
 //!
 //! - [`errno`]：errno 面（AtomicI32）+ POSIX 错误常量 46 项 + strerror
 //!   名称表（3 函数符号 + 45 常量）；
@@ -16,7 +16,10 @@
 //! - [`time`]：历法换算与格式化 14 符号（M35-H1a——UTC/"C" locale 纯
 //!   计算 UTC 面：gmtime/localtime 族 + mktime/timegm/difftime +
 //!   asctime/ctime 族固定 26 字节形状 + strftime/wcsftime + tzset 空实现
-//!   登记；时钟源 syscall 面挂账不虚报）。
+//!   登记；时钟源 syscall 面挂账不虚报）；
+//! - [`search`]：哈希表/线性搜索/双链队列/BST 15 符号（M35-H1b——
+//!   hcreate/hdestroy/hsearch 全局族〔atomic 槽位定容 64〕+ _r 显式表族 +
+//!   lfind/lsearch + insque/remque 索引双链 + tsearch 族句柄 BST）。
 //!
 //! # v0 范围界定（偏差登记，见 ROADMAP §四 M29 计划注）
 //!
@@ -44,6 +47,7 @@ extern crate alloc;
 
 pub mod ctype;
 pub mod errno;
+pub mod search;
 pub mod stdlib;
 pub mod string;
 pub mod time;
@@ -73,8 +77,8 @@ pub type wchar_t = i32;
 
 #[cfg(test)]
 mod tests {
-    /// H-P01 符号清点（机器可检的 ≥50 闸，M35-H1a 起扩容追踪）：逐域枚举
-    /// 公开函数符号名，断言总数（errno 45 常量另计，不入函数口径）。
+    /// H-P01 符号清点（机器可检的 ≥50 闸，M35-H1a/b 起扩容追踪）：逐域
+    /// 枚举公开函数符号名，断言总数（errno 45 常量另计，不入函数口径）。
     #[test]
     fn h_p01_symbol_inventory() {
         const ERRNO: &[&str] = &["errno", "set_errno", "strerror"];
@@ -109,9 +113,27 @@ mod tests {
             "wcsftime",
             "tzset",
         ];
-        let total = ERRNO.len() + CTYPE.len() + STRING.len() + STDLIB.len() + TIME.len();
+        const SEARCH: &[&str] = &[
+            "hcreate",
+            "hdestroy",
+            "hsearch",
+            "hcreate_r",
+            "hdestroy_r",
+            "hsearch_r",
+            "lfind",
+            "lsearch",
+            "insque",
+            "remque",
+            "tsearch",
+            "tfind",
+            "tdelete",
+            "twalk",
+            "tdestroy",
+        ];
+        let total =
+            ERRNO.len() + CTYPE.len() + STRING.len() + STDLIB.len() + TIME.len() + SEARCH.len();
         assert!(total >= 50, "H-P01 must export >= 50 symbols, got {total}");
-        assert_eq!(total, 71);
+        assert_eq!(total, 86);
         // 域内抽查（防清单漂移）：每域至少 1 名逐一比对实际公开面。
         assert_eq!(crate::errno::strerror(crate::errno::EINVAL), "EINVAL");
         assert_eq!(crate::ctype::isdigit(b'7' as crate::c_int), 1);
@@ -132,6 +154,10 @@ mod tests {
                 tm_isdst: 0
             }),
             Some(0)
+        );
+        assert_eq!(
+            crate::search::lfind(&3, &[1, 2, 3], |a: &i32, b: &i32| a.cmp(b) as crate::c_int),
+            Some(2)
         );
     }
 }
