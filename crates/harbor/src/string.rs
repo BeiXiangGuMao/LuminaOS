@@ -205,6 +205,235 @@ pub fn strndup(s: &[u8], n: usize) -> Option<Vec<u8>> {
     Some(s[..end].to_vec())
 }
 
+/// C 串复制（`strcpy`）：`src`（须含 NUL）复制入 `dst` 并补 NUL；
+/// `dst` 容量须 ≥ len+1，否则 `None`（C 溢出 UB → fail-visible）。
+/// 返回复制长度（= NUL 写位下标——[`stpcpy`] 语义同行）。
+pub fn strcpy(dst: &mut [u8], src: &[u8]) -> Option<usize> {
+    let len = strlen(src)?;
+    if dst.len() < len + 1 {
+        return None;
+    }
+    dst[..len].copy_from_slice(&src[..len]);
+    dst[len] = 0;
+    Some(len)
+}
+
+/// 有界 C 串复制（`strncpy`）：至多 `n` 字节；`src` 短于 `n` 时以 NUL
+/// 补足至 `n`（C 语义照办）；返回写入字节数（恒 `n`，`dst` 须容 `n`）。
+///
+/// `src` 片内无 NUL 且片长 < `n` → 以片界为界（C 越界读 UB → 界内化）。
+pub fn strncpy(dst: &mut [u8], src: &[u8], n: usize) -> Option<usize> {
+    if dst.len() < n {
+        return None;
+    }
+    let len = strnlen(src, n);
+    dst[..len].copy_from_slice(&src[..len]);
+    for b in &mut dst[len..n] {
+        *b = 0;
+    }
+    Some(n)
+}
+
+/// C 串追加（`strcat`）：`dst` 须已含 NUL（追加点）；`dst` 容量须 ≥
+/// len+srclen+1。返回追加后总长。
+pub fn strcat(dst: &mut [u8], src: &[u8]) -> Option<usize> {
+    let at = strlen(dst)?;
+    let slen = strlen(src)?;
+    if dst.len() < at + slen + 1 {
+        return None;
+    }
+    dst[at..at + slen].copy_from_slice(&src[..slen]);
+    dst[at + slen] = 0;
+    Some(at + slen)
+}
+
+/// 有界 C 串追加（`strncat`）：至多追加 `n` 字节（NUL 终止优先）+
+/// 终止 NUL。返回追加后总长。
+pub fn strncat(dst: &mut [u8], src: &[u8], n: usize) -> Option<usize> {
+    let at = strlen(dst)?;
+    let slen = strnlen(src, n);
+    if dst.len() < at + slen + 1 {
+        return None;
+    }
+    dst[at..at + slen].copy_from_slice(&src[..slen]);
+    dst[at + slen] = 0;
+    Some(at + slen)
+}
+
+/// C 串复制·尾指针语义（`stpcpy`）：返回 NUL 写位下标（C 返回指向
+/// 终止 NUL 的指针——偏移映射）。
+pub fn stpcpy(dst: &mut [u8], src: &[u8]) -> Option<usize> {
+    strcpy(dst, src)
+}
+
+/// 有界 C 串复制·尾指针语义（`stpncpy`）：`src` 短于 `n` → 返回 NUL
+/// 写位；`src` ≥ `n` → 返回 `n`（无 NUL 写入，C 照办）。
+pub fn stpncpy(dst: &mut [u8], src: &[u8], n: usize) -> Option<usize> {
+    if dst.len() < n {
+        return None;
+    }
+    let len = strnlen(src, n);
+    dst[..len].copy_from_slice(&src[..len]);
+    if len < n {
+        for b in &mut dst[len..n] {
+            *b = 0;
+        }
+        Some(len)
+    } else {
+        Some(n)
+    }
+}
+
+/// 分词（`strtok`）：进程级游标全局面（C 内部 saveptr——指针同一性
+/// 承载：续扫须重传**同一**基串，本面无 NULL 续扫——偏差登记）。
+///
+/// 首调（游标未指同串）= 自 0 起扫；续调 = 自上次游标续扫。返回 token
+/// （所有权克隆）；耗尽 → `None`（游标复位）。
+///
+/// 偏差登记：C 允许两次调用间改传不同串/NULL——本面以指针同一性判定
+/// 续扫，异串 = 全新分词（C saveptr 误用同域险情，登记）。
+pub fn strtok(s: &[u8], delim: &[u8]) -> Option<Vec<u8>> {
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    static BASE: AtomicUsize = AtomicUsize::new(0);
+    static OFF: AtomicUsize = AtomicUsize::new(0);
+    static LIVE: AtomicBool = AtomicBool::new(false);
+    let base = s.as_ptr() as usize;
+    let start = if LIVE.load(Ordering::Relaxed) && BASE.load(Ordering::Relaxed) == base {
+        OFF.load(Ordering::Relaxed).min(s.len())
+    } else {
+        0
+    };
+    let (token, next) = strtok_scan(s, start, delim)?;
+    LIVE.store(true, Ordering::Relaxed);
+    BASE.store(base, Ordering::Relaxed);
+    OFF.store(next, Ordering::Relaxed);
+    Some(token)
+}
+
+/// 分词·显式游标（`strtok_r`）：`saveptr` 承载**剩余串**（C `char **`
+/// 的所有权面映射）；首调传 `Some(s)`，续调传 `None`。
+pub fn strtok_r(s: Option<&[u8]>, delim: &[u8], saveptr: &mut Option<Vec<u8>>) -> Option<Vec<u8>> {
+    let rest: Vec<u8> = match (s, saveptr.as_ref()) {
+        (Some(x), _) => x.to_vec(),
+        (None, Some(r)) => r.clone(),
+        (None, None) => return None,
+    };
+    let (token, consumed) = strtok_scan(&rest, 0, delim)?;
+    let remaining: Vec<u8> = rest[consumed.min(rest.len())..].to_vec();
+    *saveptr = Some(remaining);
+    Some(token)
+}
+
+/// 分词扫描内核：`start` 起跳过前导分隔符 → token 终界；返回
+/// `(token, 下一扫描位)`。无 token → `None`。
+fn strtok_scan(s: &[u8], start: usize, delim: &[u8]) -> Option<(Vec<u8>, usize)> {
+    let mut i = start;
+    while i < s.len() && s[i] != 0 && delim.contains(&s[i]) {
+        i += 1;
+    }
+    if i >= s.len() || s[i] == 0 {
+        return None;
+    }
+    let tok_start = i;
+    while i < s.len() && s[i] != 0 && !delim.contains(&s[i]) {
+        i += 1;
+    }
+    Some((s[tok_start..i].to_vec(), i))
+}
+
+/// "C" locale 串比较（`strcoll`）：恒等 [`strcmp`]（collation 面 = 字节
+/// 序——"C" locale 纪律，locale 面挂账）。
+pub fn strcoll(a: &[u8], b: &[u8]) -> Option<c_int> {
+    strcmp(a, b)
+}
+
+/// 变换（`strxfrm`）："C" locale 下恒等复制（C 语义照办——返回**全变换
+/// 长度**（不含 NUL）；`dst` 足容则全拷 + NUL，否则截断拷 + NUL）。
+pub fn strxfrm(dst: &mut [u8], src: &[u8]) -> Option<usize> {
+    let full = strlen(src)?;
+    let write = full.min(dst.len().saturating_sub(1));
+    dst[..write].copy_from_slice(&src[..write]);
+    dst[write] = 0;
+    Some(full)
+}
+
+/// 错误串·线程安全面（`strerror_r`）：名称表查得 [`crate::errno::strerror`]
+/// 写入 `buf`（含 NUL）；XSI 返回值域照办——0 = 成功 / `ERANGE` = 缓冲
+/// 不足（内容截断 + NUL）/ `EINVAL` = 未知错误码。
+pub fn strerror_r(errnum: c_int, buf: &mut [u8]) -> c_int {
+    let name = crate::errno::strerror(errnum);
+    if buf.is_empty() {
+        return crate::errno::ERANGE;
+    }
+    if name == "EUNKNOWN" {
+        // 未知码（含 0）：XSI EINVAL 面（名称表 miss）
+        buf[0] = 0;
+        return crate::errno::EINVAL;
+    }
+    let name = name.as_bytes();
+    let write = name.len().min(buf.len() - 1);
+    buf[..write].copy_from_slice(&name[..write]);
+    buf[write] = 0;
+    if write < name.len() {
+        return crate::errno::ERANGE;
+    }
+    0
+}
+
+/// 限量复制至遇字符（`memccpy`）：`src` 前域复制至 `c` 首现（含）或
+/// `n` 尽；命中返回 dst 内**止点后偏移**（C 返回指针的偏移映射），
+/// 未命中 → `None`。
+pub fn memccpy(dst: &mut [u8], src: &[u8], c: u8, n: usize) -> Option<usize> {
+    let n = n.min(src.len()).min(dst.len());
+    for i in 0..n {
+        dst[i] = src[i];
+        if src[i] == c {
+            return Some(i + 1);
+        }
+    }
+    None
+}
+
+/// 位翻转域（`memfrob`）：前 `n` 字节逐位 XOR `0x2A`（越界钳位——C 为
+/// 无界 UB → 确定行为登记）；返回处理字节数。
+pub fn memfrob(buf: &mut [u8], n: usize) -> usize {
+    let n = n.min(buf.len());
+    for b in &mut buf[..n] {
+        *b ^= 0x2A;
+    }
+    n
+}
+
+/// 域移动复制（`bcopy`）：语义同 [`memmove`]（允许重叠，方向感知）；
+/// 返回 `Some(n)` / 域界越界 `None`。
+pub fn bcopy(buf: &mut [u8], dst: usize, src: usize, n: usize) -> Option<usize> {
+    memmove(buf, dst, src, n)
+}
+
+/// 域清零（`bzero`）：前 `n` 字节清零（越界钳位——C UB → 确定行为）；
+/// 返回处理字节数。
+pub fn bzero(buf: &mut [u8], n: usize) -> usize {
+    let n = n.min(buf.len());
+    buf[..n].fill(0);
+    n
+}
+
+/// 域比较（`bcmp`）：0 = 全等 / 1 = 有异（C 历史返回值域 0/非零）。
+#[must_use]
+pub fn bcmp(a: &[u8], b: &[u8]) -> c_int {
+    c_int::from(a != b)
+}
+
+/// 字符首现·历史名（`index`）= [`strchr`]。
+pub fn index(s: &[u8], c: u8) -> Option<usize> {
+    strchr(s, c)
+}
+
+/// 字符末现·历史名（`rindex`）= [`strrchr`]。
+pub fn rindex(s: &[u8], c: u8) -> Option<usize> {
+    strrchr(s, c)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,5 +540,165 @@ mod tests {
         assert_eq!(strndup(&s, 3).as_deref(), Some(&b"dup"[..]));
         assert_eq!(strndup(&s, 100).as_deref(), Some(&b"dup me"[..]));
         assert_eq!(strndup(b"unterminated", 4).as_deref(), Some(&b"unte"[..]));
+    }
+
+    /// 扩容批：strcpy/strncpy/stpcpy/stpncpy 复制族。
+    #[test]
+    fn copy_family_extended() {
+        let mut d = [0u8; 8];
+        assert_eq!(strcpy(&mut d, &cstr("hey")), Some(3));
+        assert_eq!(&d[..4], b"hey\0");
+        assert_eq!(strcpy(&mut d, b"no-nul"), None, "src unterminated");
+        assert_eq!(strcpy(&mut [0u8; 3], &cstr("abcd")), None, "dst too small");
+        // stpcpy 尾指针 = NUL 位
+        let mut d = [0u8; 8];
+        assert_eq!(stpcpy(&mut d, &cstr("ab")), Some(2));
+        assert_eq!(d[2], 0);
+        // strncpy：短源补 NUL 至 n
+        let mut d = [0xFFu8; 6];
+        assert_eq!(strncpy(&mut d, &cstr("ab"), 5), Some(5));
+        assert_eq!(&d, b"ab\0\0\0\xFF");
+        // strncpy：长源截断（无 NUL 写入）
+        let mut d = [0u8; 3];
+        assert_eq!(strncpy(&mut d, b"abcdef", 3), Some(3));
+        assert_eq!(&d, b"abc");
+        // strncpy：dst 不够
+        assert_eq!(strncpy(&mut [0u8; 2], &cstr("ab"), 5), None);
+        // stpncpy：短源 → NUL 位；长源 → n
+        let mut d = [0u8; 6];
+        assert_eq!(stpncpy(&mut d, &cstr("ab"), 4), Some(2));
+        assert_eq!(&d[..4], b"ab\0\0");
+        let mut d = [0u8; 3];
+        assert_eq!(stpncpy(&mut d, b"abcdef", 3), Some(3));
+    }
+
+    /// 扩容批：strcat/strncat 追加族。
+    #[test]
+    fn append_family_extended() {
+        let mut d = [0u8; 10];
+        assert_eq!(strcpy(&mut d, &cstr("ab")), Some(2));
+        assert_eq!(strcat(&mut d, &cstr("cd")), Some(4));
+        assert_eq!(&d[..5], b"abcd\0");
+        // dst 无 NUL → None
+        let mut raw = *b"ab";
+        assert_eq!(strcat(&mut raw, &cstr("x")), None);
+        // 容量不足
+        let mut d = [0u8; 4];
+        assert_eq!(strcpy(&mut d, &cstr("abc")), Some(3));
+        assert_eq!(strcat(&mut d, &cstr("de")), None);
+        // strncat：n 界（NUL 终止优先）
+        let mut d = [0u8; 8];
+        assert_eq!(strcpy(&mut d, &cstr("ab")), Some(2));
+        assert_eq!(strncat(&mut d, &cstr("cdef"), 2), Some(4));
+        assert_eq!(&d[..5], b"abcd\0");
+    }
+
+    /// 扩容批：strtok 全局游标 / strtok_r 显式游标。
+    #[test]
+    fn strtok_family() {
+        // strtok：指针同一性续扫（同串重传）
+        let s = cstr("a,b,,c");
+        assert_eq!(strtok(&s, b",").as_deref(), Some(&b"a"[..]));
+        assert_eq!(strtok(&s, b",").as_deref(), Some(&b"b"[..]));
+        assert_eq!(strtok(&s, b",").as_deref(), Some(&b"c"[..]));
+        assert_eq!(strtok(&s, b","), None, "exhausted");
+        // 异串 = 全新分词（指针同一性判定，登记面）
+        let t = cstr("x;y");
+        assert_eq!(strtok(&t, b";").as_deref(), Some(&b"x"[..]));
+        // strtok_r：显式 saveptr
+        let mut save = None;
+        let s = cstr("one two three");
+        assert_eq!(
+            strtok_r(Some(&s), b" ", &mut save).as_deref(),
+            Some(&b"one"[..])
+        );
+        assert_eq!(
+            strtok_r(None, b" ", &mut save).as_deref(),
+            Some(&b"two"[..])
+        );
+        assert_eq!(
+            strtok_r(None, b" ", &mut save).as_deref(),
+            Some(&b"three"[..])
+        );
+        assert_eq!(strtok_r(None, b" ", &mut save), None, "exhausted");
+        // strtok_r：(None, None) → None
+        let mut empty = None;
+        assert_eq!(strtok_r(None, b" ", &mut empty), None);
+        // 分隔符前导/尾随
+        let mut save = None;
+        let s = cstr(",,a,,");
+        assert_eq!(
+            strtok_r(Some(&s), b",", &mut save).as_deref(),
+            Some(&b"a"[..])
+        );
+        assert_eq!(strtok_r(None, b",", &mut save), None);
+    }
+
+    /// 扩容批：strcoll/strxfrm/strerror_r（"C" locale 面）。
+    #[test]
+    fn locale_and_strerror_r() {
+        let a = cstr("abc");
+        let b = cstr("abd");
+        assert_eq!(strcoll(&a, &a), Some(0));
+        assert_eq!(strcoll(&a, &b), Some(-1));
+        // strxfrm：足容全拷 + 返回全长
+        let mut d = [0u8; 8];
+        assert_eq!(strxfrm(&mut d, &cstr("xyz")), Some(3));
+        assert_eq!(&d[..4], b"xyz\0");
+        // 截断仍返全长（C 语义照办）
+        let mut d = [0u8; 3];
+        assert_eq!(strxfrm(&mut d, &cstr("xyzw")), Some(4));
+        assert_eq!(&d, b"xy\0");
+        // strerror_r：已知/未知/小缓冲
+        let mut buf = [0u8; 16];
+        assert_eq!(strerror_r(crate::errno::EINVAL, &mut buf), 0);
+        assert_eq!(&buf[..7], b"EINVAL\0");
+        let mut small = [0u8; 3];
+        assert_eq!(
+            strerror_r(crate::errno::EINVAL, &mut small),
+            crate::errno::ERANGE
+        );
+        assert_eq!(&small[..2], b"EI", "truncated + NUL");
+        assert_eq!(small[2], 0);
+        let mut buf = [0u8; 16];
+        assert_eq!(strerror_r(99999, &mut buf), crate::errno::EINVAL);
+        assert_eq!(buf[0], 0);
+        let mut empty: [u8; 0] = [];
+        assert_eq!(strerror_r(1, &mut empty), crate::errno::ERANGE);
+    }
+
+    /// 扩容批：memccpy/memfrob/bcopy/bzero/bcmp/index/rindex。
+    #[test]
+    fn mem_legacy_family() {
+        // memccpy：命中止点 / 未命中
+        let mut d = [0u8; 8];
+        assert_eq!(memccpy(&mut d, b"aXbXc", b'b', 5), Some(3));
+        assert_eq!(&d[..3], b"aXb");
+        let mut d = [0u8; 8];
+        assert_eq!(memccpy(&mut d, b"aXbXc", b'z', 5), None);
+        // memfrob：XOR 0x2A（frob("Hello") = "bOFFE"—— involutive：再 frob 复原）
+        let mut buf = *b"Hello";
+        assert_eq!(memfrob(&mut buf, 5), 5);
+        assert_eq!(&buf, b"bOFFE");
+        assert_eq!(memfrob(&mut buf, 5), 5);
+        assert_eq!(&buf, b"Hello", "frob is involutive");
+        // bcopy：重叠方向感知（同 memmove）
+        let mut m = [1u8, 2, 3, 4, 0];
+        assert_eq!(bcopy(&mut m, 1, 0, 4), Some(4));
+        assert_eq!(m, [1, 1, 2, 3, 4]);
+        assert_eq!(bcopy(&mut m, 5, 0, 2), None, "out of bounds");
+        // bzero
+        let mut z = [0xAAu8; 4];
+        assert_eq!(bzero(&mut z, 2), 2);
+        assert_eq!(z, [0, 0, 0xAA, 0xAA]);
+        // bcmp：0/1 值域（非符号）
+        assert_eq!(bcmp(b"ab", b"ab"), 0);
+        assert_eq!(bcmp(b"ab", b"ac"), 1);
+        assert_eq!(bcmp(b"ab", b"ab\0"), 1, "length participates");
+        // index/rindex = strchr/strrchr
+        let s = cstr("hello");
+        assert_eq!(index(&s, b'l'), Some(2));
+        assert_eq!(rindex(&s, b'l'), Some(3));
+        assert_eq!(index(&s, b'z'), None);
     }
 }

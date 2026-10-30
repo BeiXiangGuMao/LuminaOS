@@ -1,15 +1,30 @@
 //! stdlib 域——数值转换、排序与伪随机。
 //!
-//! 承接 POSIX `<stdlib.h>` 首批符号（20 项）：abs/div 族为值语义
-//! `extern "C"`；strto* 为切片语义 safe 面（返回 `(值, 消耗字节数)` 对，
-//! 等价 C 的 `endptr` 惯用法）；qsort/bsearch 为 Rust 泛型切片面；
-//! rand/srand 为 LCG 伪随机（数值 recipes 风格，v0 决定论实现）。
+//! 承接 POSIX `<stdlib.h>` 符号面（M29 首批 20 项 + M35-H1c 扩容 10 项）：
+//! abs/div 族为值语义 `extern "C"`；strto* 为切片语义 safe 面（返回
+//! `(值, 消耗字节数)` 对，等价 C 的 `endptr` 惯用法）；qsort/bsearch/
+//! qsort_r 为 Rust 泛型切片面；rand/srand/rand_r 为 LCG 伪随机（数值
+//! recipes 风格，v0 决定论实现）；mbr/wcs 转换族为 "C" locale ASCII 单
+//! 字节面（多字节编码面挂账）。
 //!
 //! **C UB 的 fail-visible 化**：
 //! - div 族除零 / `i32::MIN / -1` 溢出：C 为 UB，本面返回 `{0, 0}` 哨兵
 //!   （文档化确定行为，零 panic 载体纪律）；
 //! - strto* 溢出：POSIX defined（钳位 + `errno = ERANGE`）——照办；
-//! - `atoi` = `(int)strtol(s, 10)` 截断语义（POSIX 等式照办）。
+//! - `atoi` = `(int)strtol(s, 10)` 截断语义（POSIX 等式照办）；
+//! - mbstowcs/wcstombs 非法序列：C 返 `(size_t)-1`——照办（哨兵值登记）。
+//!
+//! # M35-H1c 扩容批（10 符号）承载形式
+//!
+//! - **strtoimax/strtoumax**：LP64 下 `intmax_t`/`uintmax_t` 与 long 同宽
+//!   ——strtol/strtoull 引擎复用（双符号齐备纪律）；
+//! - **mblen/mbtowc/wctomb**："C" locale 单字节编码（ASCII 0..=0x7F，
+//!   越域 → `-1` + `errno = EILSEQ`；C 多字节状态机面挂账）；
+//! - **mbstowcs/wcstombs**：逐元素 ASCII 往返（非法 → `usize::MAX` 哨兵
+//!   = C `(size_t)-1` 照办；目标容量尽即停 = C `n` 界语义）；
+//! - **qsort_r**：C `compar(a, b, arg)` 上下文指针 → 闭包捕获等价化
+//!   （登记）；**rand_r**：调用方持种子（可重入，全局态面不触及）；
+//!   **atof** = `strtod(s).0` 等式照办。
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -356,6 +371,137 @@ fn scan_signed(s: &[u8], base: c_int) -> (u128, usize, bool, bool) {
     (acc, consumed, neg, false)
 }
 
+// ───── M35-H1c 扩容批（10 符号）─────
+
+/// 有基整数转换（`strtoimax`，`intmax_t` 域）：LP64 下与 [`strtol`] 同宽。
+pub fn strtoimax(s: &[u8], base: c_int) -> (c_intmax, usize) {
+    strtol(s, base)
+}
+
+/// 有基无符号转换（`strtoumax`，`uintmax_t` 域）：LP64 下与
+/// [`strtoull`] 同宽（负号模取负语义随行）。
+pub fn strtoumax(s: &[u8], base: c_int) -> (crate::c_uintmax, usize) {
+    strtoull(s, base)
+}
+
+/// ASCII 单字节判定基元（"C" locale mb 面）。
+fn ascii_ok(b: u8) -> bool {
+    b < 0x80
+}
+
+/// 多字节字符长度（`mblen`）：`None` = 复位（返 0）；空片 = `n = 0`
+/// （返 0）；NUL 首字节 = 0；ASCII = 1；非 ASCII = `-1` +
+/// `errno = EILSEQ`（"C" locale 单字节纪律，状态机面挂账）。
+pub fn mblen(s: Option<&[u8]>) -> c_int {
+    match s {
+        None => 0,
+        Some([]) => 0,
+        Some(x) if x[0] == 0 => 0,
+        Some(x) if ascii_ok(x[0]) => 1,
+        Some(_) => {
+            errno::set_errno(crate::errno::EILSEQ);
+            -1
+        }
+    }
+}
+
+/// 多字节转宽字符（`mbtowc`）：语义同 [`mblen`]，ASCII 时写 `out`。
+pub fn mbtowc(out: &mut crate::wchar_t, s: Option<&[u8]>) -> c_int {
+    match s {
+        None => 0,
+        Some([]) => 0,
+        Some(x) if x[0] == 0 => 0,
+        Some(x) if ascii_ok(x[0]) => {
+            *out = crate::wchar_t::from(x[0]);
+            1
+        }
+        Some(_) => {
+            errno::set_errno(crate::errno::EILSEQ);
+            -1
+        }
+    }
+}
+
+/// 宽字符转多字节（`wctomb`）：ASCII 0..=0x7F 写 `buf[0]` 返 1；NUL 宽
+/// 字符照写（C 语义）；越域 → `-1` + `errno = EILSEQ`（"C" locale；
+/// 复位面随 `buf` 缺省承载——C `s = NULL` 复位态挂账）。
+pub fn wctomb(buf: &mut [u8], wc: crate::wchar_t) -> c_int {
+    if buf.is_empty() {
+        errno::set_errno(crate::errno::EILSEQ);
+        return -1;
+    }
+    if (0..=0x7F).contains(&wc) {
+        buf[0] = wc as u8;
+        1
+    } else {
+        errno::set_errno(crate::errno::EILSEQ);
+        -1
+    }
+}
+
+/// 多字节串转宽串（`mbstowcs`）：逐字节 ASCII 往返，NUL 止（NUL 不计数；
+/// 目标容量尽即停返已转数——C `n` 界语义）；非法字节 → `usize::MAX`
+/// （C `(size_t)-1` 照办）。
+pub fn mbstowcs(dst: &mut [crate::wchar_t], src: &[u8]) -> usize {
+    for (i, &b) in src.iter().enumerate() {
+        if b == 0 {
+            return i;
+        }
+        if i >= dst.len() {
+            return dst.len();
+        }
+        if !ascii_ok(b) {
+            return usize::MAX;
+        }
+        dst[i] = crate::wchar_t::from(b);
+    }
+    src.len()
+}
+
+/// 宽串转多字节串（`wcstombs`）：逐宽字符 ASCII 往返，NUL 宽字符止
+/// （不计数；目标容量尽即停返已转数——C `n` 界语义；有容则补 NUL 不
+/// 计数——C 语义照办）；越域宽字符 → `usize::MAX`。
+pub fn wcstombs(dst: &mut [u8], src: &[crate::wchar_t]) -> usize {
+    for (i, &w) in src.iter().enumerate() {
+        if w == 0 {
+            if i < dst.len() {
+                dst[i] = 0;
+            }
+            return i;
+        }
+        if i >= dst.len() {
+            return dst.len();
+        }
+        if !(0..=0x7F).contains(&w) {
+            return usize::MAX;
+        }
+        dst[i] = w as u8;
+    }
+    src.len()
+}
+
+/// 排序·比较器面（`qsort_r`）：C `compar(a, b, arg)` 上下文指针 → 闭包
+/// 捕获等价化（登记）；确定性稳定排序（qsort 同纪律）。
+pub fn qsort_r<T>(v: &mut [T], compar: impl Fn(&T, &T) -> c_int) {
+    v.sort_by(|a, b| compar(a, b).cmp(&0));
+}
+
+/// 伪随机·可重入（`rand_r`）：调用方持种子（LCG 常数与 [`rand`] 同源；
+/// 取高 15 位——0..=32767）。
+#[must_use]
+pub fn rand_r(seed: &mut crate::c_uint) -> c_int {
+    let next = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+    *seed = next;
+    ((next >> 16) & 0x7FFF) as c_int
+}
+
+/// 十进制浮点转换（`atof`）= `strtod(s).0` 等式照办。
+#[must_use]
+pub fn atof(s: &[u8]) -> f64 {
+    let (v, _) = strtod(s);
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,5 +645,91 @@ mod tests {
         let mut words = ["pear", "apple", "fig"];
         qsort(&mut words);
         assert_eq!(words, ["apple", "fig", "pear"]);
+    }
+
+    /// H1c 扩容批：strtoimax/strtoumax（LP64 同宽 + 负号模取负）。
+    #[test]
+    fn strtoimax_strtoumax() {
+        assert_eq!(strtoimax(b"-42xyz", 10), (-42, 3));
+        assert_eq!(strtoimax(b"0x1F", 0), (31, 4));
+        assert_eq!(strtoumax(b"18446744073709551615", 10), (u64::MAX, 20));
+        assert_eq!(strtoumax(b"-1", 10), (u64::MAX, 2), "negation modulo 2^64");
+        assert_eq!(strtoumax(b"42", 10), (42, 2));
+    }
+
+    /// H1c 扩容批：mblen/mbtowc/wctomb（"C" locale ASCII 单字节面）。
+    #[test]
+    fn mb_char_family() {
+        // mblen：复位/空/NUL/ASCII/非法
+        assert_eq!(mblen(None), 0);
+        assert_eq!(mblen(Some(b"")), 0);
+        assert_eq!(mblen(Some(b"\0rest")), 0);
+        assert_eq!(mblen(Some(b"A")), 1);
+        errno::set_errno(0);
+        assert_eq!(mblen(Some(b"\xC3")), -1);
+        assert_eq!(errno(), crate::errno::EILSEQ);
+        // mbtowc：写值语义
+        let mut wc: crate::wchar_t = 0;
+        assert_eq!(mbtowc(&mut wc, None), 0);
+        assert_eq!(mbtowc(&mut wc, Some(b"Q")), 1);
+        assert_eq!(wc, 0x51);
+        assert_eq!(mbtowc(&mut wc, Some(b"\0")), 0);
+        assert_eq!(mbtowc(&mut wc, Some(b"\xFF")), -1);
+        // wctomb：ASCII 往返 + 越域
+        let mut buf = [0u8; 4];
+        assert_eq!(wctomb(&mut buf, 0x51), 1);
+        assert_eq!(buf[0], b'Q');
+        assert_eq!(wctomb(&mut buf, 0), 1, "NUL wide char writes \\0");
+        assert_eq!(buf[0], 0);
+        assert_eq!(wctomb(&mut buf, 0x263A), -1);
+    }
+
+    /// H1c 扩容批：mbstowcs/wcstombs 往返（NUL 界/容量界/非法哨兵）。
+    #[test]
+    fn mb_string_roundtrip() {
+        let mut wide = [0i32; 8];
+        assert_eq!(mbstowcs(&mut wide, b"abc\0more"), 3);
+        assert_eq!(&wide[..4], &[b'a' as i32, b'b' as i32, b'c' as i32, 0]);
+        // 容量界即停
+        let mut wide = [0i32; 2];
+        assert_eq!(mbstowcs(&mut wide, b"abcd"), 2);
+        // 非法哨兵
+        let mut wide = [0i32; 8];
+        assert_eq!(mbstowcs(&mut wide, b"ab\xFF"), usize::MAX);
+        // wcstombs 往返
+        let src: [crate::wchar_t; 4] = [b'x' as i32, b'y' as i32, b'z' as i32, 0];
+        let mut narrow = [0u8; 8];
+        assert_eq!(wcstombs(&mut narrow, &src), 3);
+        assert_eq!(&narrow[..4], b"xyz\0");
+        // 越域宽字符哨兵
+        let bad: [crate::wchar_t; 2] = [b'x' as i32, 0x2026];
+        assert_eq!(wcstombs(&mut narrow, &bad), usize::MAX);
+        // 容量界
+        let src: [crate::wchar_t; 3] = [b'a' as i32, b'b' as i32, b'c' as i32];
+        let mut tiny = [0u8; 2];
+        assert_eq!(wcstombs(&mut tiny, &src), 2);
+    }
+
+    /// H1c 扩容批：qsort_r 比较器面 + rand_r 可重入 + atof 等式。
+    #[test]
+    fn qsort_r_rand_r_atof() {
+        // qsort_r：闭包捕获上下文（C arg 指针等价化）+ 降序
+        let mut v = [3i32, 1, 4, 1, 5];
+        qsort_r(&mut v, |a: &i32, b: &i32| b.cmp(a) as c_int);
+        assert_eq!(v, [5, 4, 3, 1, 1]);
+        // rand_r：确定性序列（种子同值 → 序列同值）
+        let mut s1: crate::c_uint = 7;
+        let mut s2: crate::c_uint = 7;
+        for _ in 0..8 {
+            let a = rand_r(&mut s1);
+            let b = rand_r(&mut s2);
+            assert_eq!(a, b);
+            assert!((0..=32767).contains(&a));
+        }
+        assert_ne!(s1, 7, "seed advanced");
+        // atof 等式 + 负数/指数
+        assert_eq!(atof(b"2.5"), 2.5);
+        assert_eq!(atof(b"-3.25e2"), -325.0);
+        assert_eq!(atof(b"junk"), 0.0);
     }
 }

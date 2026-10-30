@@ -4,7 +4,7 @@
 //! 手册》第 5 章指标族 H-P01…H-P07：执行系统库档**零 unsafe** 政策（crate
 //! 级 `forbid(unsafe_code)`），M29-H1 落地 **H-P01 首批 ≥50 符号垂直切片**。
 //!
-//! # 域谱（86 函数符号，M35-H1b 扩容；机器可检清点见 `tests::h_p01_symbol_inventory`）
+//! # 域谱（121 函数符号，M35-H1c 扩容；机器可检清点见 `tests::h_p01_symbol_inventory`）
 //!
 //! - [`errno`]：errno 面（AtomicI32）+ POSIX 错误常量 46 项 + strerror
 //!   名称表（3 函数符号 + 45 常量）；
@@ -19,7 +19,11 @@
 //!   登记；时钟源 syscall 面挂账不虚报）；
 //! - [`search`]：哈希表/线性搜索/双链队列/BST 15 符号（M35-H1b——
 //!   hcreate/hdestroy/hsearch 全局族〔atomic 槽位定容 64〕+ _r 显式表族 +
-//!   lfind/lsearch + insque/remque 索引双链 + tsearch 族句柄 BST）。
+//!   lfind/lsearch + insque/remque 索引双链 + tsearch 族句柄 BST）；
+//! - [`unistd`]：命令行解析与系统配置 7 符号（M35-H1c——getopt 族显式
+//!   状态面〔GetoptState〕+ swab/confstr/sysconf/getpagesize）；
+//! - string/stdlib 扩容 28 符号（M35-H1c——复制/追加/分词/legacy mem 族
+//!   + strtoimax 族/mb 面/qsort_r/rand_r/atof）。
 //!
 //! # v0 范围界定（偏差登记，见 ROADMAP §四 M29 计划注）
 //!
@@ -51,6 +55,7 @@ pub mod search;
 pub mod stdlib;
 pub mod string;
 pub mod time;
+pub mod unistd;
 
 // C ABI 惯用小写命名（libc 符号名对齐）——non_camel_case_types 为有意为之
 /// C ABI 基础类型（LuminaOS LP64 面板，见 crate 文档）。
@@ -74,10 +79,13 @@ pub type c_intmax = i64;
 /// C `wchar_t`（LP64 Linux：32 位；M35-H1a time 域 wcs* 面随行）。
 #[allow(non_camel_case_types)]
 pub type wchar_t = i32;
+/// C `uintmax_t`（LP64：64 位；M35-H1c stdlib 扩容面随行）。
+#[allow(non_camel_case_types)]
+pub type c_uintmax = u64;
 
 #[cfg(test)]
 mod tests {
-    /// H-P01 符号清点（机器可检的 ≥50 闸，M35-H1a/b 起扩容追踪）：逐域
+    /// H-P01 符号清点（机器可检的 ≥50 闸，M35-H1a/b/c 起扩容追踪）：逐域
     /// 枚举公开函数符号名，断言总数（errno 45 常量另计，不入函数口径）。
     #[test]
     fn h_p01_symbol_inventory() {
@@ -88,14 +96,74 @@ mod tests {
             "toupper",
         ];
         const STRING: &[&str] = &[
-            "memcpy", "memmove", "memset", "memcmp", "memchr", "memrchr", "strlen", "strnlen",
-            "strcmp", "strncmp", "strchr", "strrchr", "strstr", "strspn", "strcspn", "strpbrk",
-            "strdup", "strndup",
+            "memcpy",
+            "memmove",
+            "memset",
+            "memcmp",
+            "memchr",
+            "memrchr",
+            "strlen",
+            "strnlen",
+            "strcmp",
+            "strncmp",
+            "strchr",
+            "strrchr",
+            "strstr",
+            "strspn",
+            "strcspn",
+            "strpbrk",
+            "strdup",
+            "strndup",
+            "strcpy",
+            "strncpy",
+            "strcat",
+            "strncat",
+            "stpcpy",
+            "stpncpy",
+            "strtok",
+            "strtok_r",
+            "strcoll",
+            "strxfrm",
+            "strerror_r",
+            "memccpy",
+            "memfrob",
+            "bcopy",
+            "bzero",
+            "bcmp",
+            "index",
+            "rindex",
         ];
         const STDLIB: &[&str] = &[
-            "abs", "labs", "llabs", "imaxabs", "div", "ldiv", "lldiv", "imaxdiv", "atoi", "atol",
-            "atoll", "strtol", "strtoul", "strtoll", "strtoull", "strtod", "qsort", "bsearch",
-            "rand", "srand",
+            "abs",
+            "labs",
+            "llabs",
+            "imaxabs",
+            "div",
+            "ldiv",
+            "lldiv",
+            "imaxdiv",
+            "atoi",
+            "atol",
+            "atoll",
+            "strtol",
+            "strtoul",
+            "strtoll",
+            "strtoull",
+            "strtod",
+            "qsort",
+            "bsearch",
+            "rand",
+            "srand",
+            "strtoimax",
+            "strtoumax",
+            "mblen",
+            "mbtowc",
+            "wctomb",
+            "mbstowcs",
+            "wcstombs",
+            "qsort_r",
+            "rand_r",
+            "atof",
         ];
         const TIME: &[&str] = &[
             "difftime",
@@ -130,10 +198,24 @@ mod tests {
             "twalk",
             "tdestroy",
         ];
-        let total =
-            ERRNO.len() + CTYPE.len() + STRING.len() + STDLIB.len() + TIME.len() + SEARCH.len();
+        const UNISTD: &[&str] = &[
+            "getopt",
+            "getopt_long",
+            "getopt_long_only",
+            "swab",
+            "confstr",
+            "sysconf",
+            "getpagesize",
+        ];
+        let total = ERRNO.len()
+            + CTYPE.len()
+            + STRING.len()
+            + STDLIB.len()
+            + TIME.len()
+            + SEARCH.len()
+            + UNISTD.len();
         assert!(total >= 50, "H-P01 must export >= 50 symbols, got {total}");
-        assert_eq!(total, 86);
+        assert_eq!(total, 121);
         // 域内抽查（防清单漂移）：每域至少 1 名逐一比对实际公开面。
         assert_eq!(crate::errno::strerror(crate::errno::EINVAL), "EINVAL");
         assert_eq!(crate::ctype::isdigit(b'7' as crate::c_int), 1);
@@ -159,5 +241,7 @@ mod tests {
             crate::search::lfind(&3, &[1, 2, 3], |a: &i32, b: &i32| a.cmp(b) as crate::c_int),
             Some(2)
         );
+        assert_eq!(crate::unistd::getpagesize(), 4096);
+        assert_eq!(crate::stdlib::atof(b"2.5"), 2.5);
     }
 }
