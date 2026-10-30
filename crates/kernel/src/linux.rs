@@ -123,6 +123,12 @@ pub fn lin_dispatch(frame: &mut SyscallFrame) -> u64 {
             lin_open_common(frame.rsi, frame.rdx)
         }
         LinAction::WriteV => lin_writev(frame),
+        LinAction::Pipe2 => {
+            // M35-BBa 收录：pipe2(int pipefd[2], int flags)——pipefd
+            // 用户回写在 vfs 层（validate_user_slice_mut 域守门），
+            // O_CLOEXEC 随链 hflags FD_CLOEXEC（EXEC 成功路径消费）。
+            lumina_to_linux(crate::vfs::sys_pipe2(frame.rdi, frame.rsi))
+        }
         LinAction::FStat => lin_fstat(frame.rdi, frame.rsi),
         LinAction::Wait4 => lin_wait4(frame),
         LinAction::Fork => lin_fork(frame),

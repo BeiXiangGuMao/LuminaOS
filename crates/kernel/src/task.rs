@@ -323,8 +323,10 @@ impl Task {
         }
         // M15-②：句柄随任务终结全撤后，注册表中已无能力引用的文件对象
         // 就地回收（dup/开放句柄跨终结的引用计数收敛面；SCHED → FILES
-        // → CAPS 单向链，无反向边）。
+        // → CAPS 单向链，无反向边）。M35-BBa：管道域同构收敛随行
+        // （SCHED → PIPES → CAPS 同向——fork 继承副本存活期间端不闭）。
         crate::vfs::reap_orphaned_files();
+        crate::vfs::reap_orphaned_pipes();
     }
 
     /// 主任务槽（运行在引导栈上）。
@@ -1194,6 +1196,32 @@ pub fn spawn_fork_child(
         .get(parent)
         .and_then(|p| p.as_ref())
         .and_then(|p| p.cwd.clone());
+    // M35-BBa：fork fd 继承（Linux 同款——句柄域 skip(1) 全量继承：
+    // 逐父句柄铸同对象同权限新全局槽〔dup 链同款：底层 FileObject/Pipe
+    // 引用计数共享，子代退出 revoke 自身槽不互踩父代——直接拷索引会
+    // 同槽双主，结构性排除〕；hflags CLOEXEC 旗标随链拷贝；句柄 1 主
+    // 身份域不继承〔与 M33-P1 子代无主身份现状一致，登记〕）。
+    // 锁纪律：先取 CAPS 快照即释（SCHED → CAPS 单向嵌套），后铸槽
+    // （alloc_slot 内部自取 CAPS——自旋锁不可重入，快照段分离防自递归）。
+    if let Some(p) = s.tasks.get(parent).and_then(|p| p.as_ref()) {
+        let snapshot: Vec<(usize, crate::caps::Capability)> = p
+            .handles
+            .iter()
+            .enumerate()
+            .skip(1)
+            .filter_map(|(h, g)| {
+                g.and_then(|g| crate::caps::table().lock().get(g).ok())
+                    .map(|cap| (h, cap))
+            })
+            .collect();
+        let hflags = p.hflags;
+        for (h, cap) in snapshot {
+            if let Some(ng) = crate::caps::alloc_slot(cap) {
+                t.handles[h] = Some(ng);
+            }
+        }
+        t.hflags = hflags;
+    }
     let Some(id) = alloc_slot(&mut s, t) else {
         return usize::MAX;
     };

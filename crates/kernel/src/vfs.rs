@@ -63,6 +63,9 @@ use crate::task;
 const MAX_FILES: usize = 32;
 /// 文件对象 id 铸造基（与通道 0xC0DE_… 段隔离；高 32 位即段判定位）。
 const FILE_OBJECT_BASE: u64 = 0xF11E_0000_0000_0000;
+/// 管道对象 id 基址（M35-BBa——独立段位 0xF19E，与文件/通道段位互斥；
+/// 读端/写端各占一个 object id，共享同一 [`Pipe`] 环核）。
+const PIPE_OBJECT_BASE: u64 = 0xF19E_0000_0000_0000;
 
 // ---- 本地 errno（Conduit 口径；FsError 未覆盖的语义） ----
 /// 句柄无效 / 未以所需访问方式打开 / 非文件对象。
@@ -77,6 +80,10 @@ const EINVAL: u64 = 22;
 const ENFILE: u64 = 23;
 /// 调用方句柄表满。
 const EMFILE: u64 = 24;
+/// 资源暂不可用（管道空环/满环——M35-BBa 非阻塞语义登记）。
+const EAGAIN: u64 = 11;
+/// 管道断裂（读端引用归零后写——SIGPIPE 递送面挂账）。
+const EPIPE: u64 = 32;
 
 /// M19-① ENFILE 现场快照：bit63..40 = FILES used，bit15..8 = CAPS 存活
 /// 槽数，bit0 = 有效旗。ENFILE 返回点锁内采样（reap 补扫会修复现场，
@@ -657,8 +664,8 @@ fn open_impl(path_bytes: &[u8], mode: u64) -> u64 {
     OK_BIT | free_handle as u64
 }
 
-/// SYS_READ 主体（M13-②）：句柄 → 文件对象 → OFD 偏移读 → 偏移推进。
-/// 成功返回 `(1 << 32) | count`（0 = EOF）；错误域见模块文档。
+/// SYS_READ 主体（M13-② 立；M35-BBa 管道分流）：句柄 → 文件/管道对象 →
+/// OFD 偏移读或环核读。成功返回 `(1 << 32) | count`（0 = EOF）。
 pub fn sys_read(handle: u64, buf_ptr: u64, len: u64) -> u64 {
     if len == 0 {
         READ_RESULT.store(EINVAL, Ordering::Release);
@@ -668,25 +675,34 @@ pub fn sys_read(handle: u64, buf_ptr: u64, len: u64) -> u64 {
         READ_RESULT.store(EFAULT, Ordering::Release);
         return EFAULT;
     };
-    let Some((_slot, cap, idx)) = resolve_file_object(handle) else {
-        READ_RESULT.store(EBADF, Ordering::Release);
-        return EBADF;
-    };
-    if cap.rights() & Right::READ.bits() == 0 {
-        READ_RESULT.store(EBADF, Ordering::Release);
-        return EBADF;
-    }
-    let r = {
-        let mut files = FILES.lock();
-        match files[idx].as_mut() {
-            Some(f) if f.readable => match f.fs.read_at(f.vnode, f.pos, buf) {
-                Ok(n) => {
-                    f.pos += n as u64;
-                    Ok(n)
-                }
-                Err(e) => Err(e.errno()),
-            },
-            Some(_) | None => Err(EBADF),
+    let r = if let Some((_slot, cap, pipe)) = resolve_pipe_object(handle) {
+        // M35-BBa 管道分流：环核读（EOF/EAGAIN 语义见 Pipe::read）。
+        if cap.rights() & Right::READ.bits() == 0 {
+            Err(EBADF)
+        } else {
+            pipe.read(buf)
+        }
+    } else {
+        let Some((_slot, cap, idx)) = resolve_file_object(handle) else {
+            READ_RESULT.store(EBADF, Ordering::Release);
+            return EBADF;
+        };
+        if cap.rights() & Right::READ.bits() == 0 {
+            READ_RESULT.store(EBADF, Ordering::Release);
+            return EBADF;
+        }
+        {
+            let mut files = FILES.lock();
+            match files[idx].as_mut() {
+                Some(f) if f.readable => match f.fs.read_at(f.vnode, f.pos, buf) {
+                    Ok(n) => {
+                        f.pos += n as u64;
+                        Ok(n)
+                    }
+                    Err(e) => Err(e.errno()),
+                },
+                Some(_) | None => Err(EBADF),
+            }
         }
     };
     let code = match r {
@@ -708,25 +724,34 @@ pub fn sys_write(handle: u64, buf_ptr: u64, len: u64) -> u64 {
         WRITE_RESULT.store(EFAULT, Ordering::Release);
         return EFAULT;
     };
-    let Some((_slot, cap, idx)) = resolve_file_object(handle) else {
-        WRITE_RESULT.store(EBADF, Ordering::Release);
-        return EBADF;
-    };
-    if cap.rights() & Right::WRITE.bits() == 0 {
-        WRITE_RESULT.store(EBADF, Ordering::Release);
-        return EBADF;
-    }
-    let r = {
-        let mut files = FILES.lock();
-        match files[idx].as_mut() {
-            Some(f) if f.writable => match f.fs.write_at(f.vnode, f.pos, buf) {
-                Ok(n) => {
-                    f.pos += n as u64;
-                    Ok(n)
-                }
-                Err(e) => Err(e.errno()),
-            },
-            Some(_) | None => Err(EBADF),
+    let r = if let Some((_slot, cap, pipe)) = resolve_pipe_object(handle) {
+        // M35-BBa 管道分流：环核写（EPIPE/EAGAIN 语义见 Pipe::write）。
+        if cap.rights() & Right::WRITE.bits() == 0 {
+            Err(EBADF)
+        } else {
+            pipe.write(buf)
+        }
+    } else {
+        let Some((_slot, cap, idx)) = resolve_file_object(handle) else {
+            WRITE_RESULT.store(EBADF, Ordering::Release);
+            return EBADF;
+        };
+        if cap.rights() & Right::WRITE.bits() == 0 {
+            WRITE_RESULT.store(EBADF, Ordering::Release);
+            return EBADF;
+        }
+        {
+            let mut files = FILES.lock();
+            match files[idx].as_mut() {
+                Some(f) if f.writable => match f.fs.write_at(f.vnode, f.pos, buf) {
+                    Ok(n) => {
+                        f.pos += n as u64;
+                        Ok(n)
+                    }
+                    Err(e) => Err(e.errno()),
+                },
+                Some(_) | None => Err(EBADF),
+            }
         }
     };
     let code = match r {
@@ -737,15 +762,18 @@ pub fn sys_write(handle: u64, buf_ptr: u64, len: u64) -> u64 {
     code
 }
 
-/// SYS_CLOSE 主体（M13-②；**M15-② 深化**）：句柄回收（任务表 + 全局
-/// 槽 + 对象面收敛）。三分支：
+/// SYS_CLOSE 主体（M13-②；**M15-② 深化；M35-BBa 管道分支**）：句柄回收
+/// （任务表 + 全局槽 + 对象面收敛）。四分支：
 /// 1. 文件对象：撤销全局槽后按 [`caps_refcount`] 判定——仍有存活引用
-///    （dup 副本/跨任务授予）则对象保留（关闭一副本不影响其余副本，
-///    POSIX dup 语义），归零才释放注册表槽；
+///    （dup 副本/跨任务授予/fork 继承）则对象保留（关闭一副本不影响
+///    其余副本，POSIX dup 语义），归零才释放注册表槽；
 /// 2. 通道对象（[`crate::ipc::is_channel_object`]）：**通道句柄关闭
 ///    落点**（v0 bind 存续语义补全）——句柄 + 全局槽回收，通道对象
 ///    （环对 + 注册表槽）存续不回收（bind 存续纪律不变）；
-/// 3. 其余对象（主身份句柄等）：原样保留回插，EBADF（绝不消费他面
+/// 3. 管道端对象（M35-BBa）：撤销全局槽后按 [`caps_refcount`] 判定——
+///    端引用归零才释放 PIPES 注册表槽（EOF/EPIPE 判定键随引用计数
+///    动态收敛，无需显式端闭标记）；
+/// 4. 其余对象（主身份句柄等）：原样保留回插，EBADF（绝不消费他面
 ///    ——段位/注册表双重守门）。
 ///
 /// 成功路径同时清除该句柄 CLOEXEC 旗标（同号复用不继承陈值）。
@@ -780,6 +808,23 @@ pub fn sys_close(handle: u64) -> u64 {
                         task::clear_hflag(caller, h);
                         0
                     }
+                    Ok(o) if is_pipe_object(o) => {
+                        // M35-BBa 管道端句柄关闭落点：撤销后引用归零才清
+                        // PIPES 槽（EOF/EPIPE 键动态收敛——fork 继承副本
+                        // 存活期间端不闭，POSIX 语义）。
+                        let _ = crate::caps::table().lock().revoke(g);
+                        if caps_refcount(o) == 0 {
+                            let mut pipes = PIPES.lock();
+                            if let Some(i) = pipes
+                                .iter()
+                                .position(|p| p.as_ref().is_some_and(|p| p.object == o))
+                            {
+                                pipes[i] = None;
+                            }
+                        }
+                        task::clear_hflag(caller, h);
+                        0
+                    }
                     _ => {
                         // 非文件/通道对象：回插原句柄（不消费他面），EBADF
                         task::with_task_handles(caller, |t| t[h] = Some(g));
@@ -792,6 +837,230 @@ pub fn sys_close(handle: u64) -> u64 {
     };
     CLOSE_RESULT.store(code, Ordering::Release);
     code
+}
+
+// ---- M35-BBa 管道执行面（SYS_PIPE2 + fork fd 继承消费方） ----
+
+/// 管道定容（64 KiB——M35 裁决注 ⑤）。
+const PIPE_CAP: usize = 65536;
+/// O_CLOEXEC（Linux 号域 0x80000——pipe2 旗标随链 hflags FD_CLOEXEC 面）。
+const O_CLOEXEC: u64 = 0o200_0000;
+/// 管道对象 id 铸造计数（单调，段位 [`PIPE_OBJECT_BASE`]）。
+static NEXT_PIPE_OBJECT: AtomicU64 = AtomicU64::new(PIPE_OBJECT_BASE);
+/// 内核管道注册表：槽位按对象 id 反查（FILES/CHANNELS 同构）。
+static PIPES: SpinLock<Vec<Option<PipeEntry>>> = SpinLock::new(alloc::vec::Vec::new());
+/// 管道面容量（与 MAX_FILES 同档）。
+const MAX_PIPES: usize = 32;
+
+/// 管道环核：定容环形字节缓冲 + 端对象 id（EOF/EPIPE 判定键 = 对端能力
+/// 存活引用——与 FILE 域 [`caps_refcount`] 收敛面同源：fork 继承/dup 的
+/// 新槽铸入即对端存活，全撤即端闭）。
+struct Pipe {
+    /// 定容环形字节缓冲。
+    ring: SpinLock<PipeRing>,
+    /// 读端对象 id（写路径 EPIPE 判定键）。
+    r_object: AtomicU64,
+    /// 写端对象 id（读路径 EOF 判定键）。
+    w_object: AtomicU64,
+}
+
+struct PipeRing {
+    data: Vec<u8>,
+    head: usize,
+    len: usize,
+}
+
+/// 管道注册表条目（object → 环核共享句柄）。
+struct PipeEntry {
+    object: u64,
+    pipe: Arc<Pipe>,
+}
+
+impl Pipe {
+    fn new(r_object: u64, w_object: u64) -> Self {
+        Self {
+            ring: SpinLock::new(PipeRing {
+                data: alloc::vec![0u8; PIPE_CAP],
+                head: 0,
+                len: 0,
+            }),
+            r_object: AtomicU64::new(r_object),
+            w_object: AtomicU64::new(w_object),
+        }
+    }
+
+    /// 读：空环 + 写端引用归零 → EOF（`Ok(0)`）；空环 + 写端存活 →
+    /// `EAGAIN`（非阻塞语义登记——阻塞读随协作式调度面挂账，M35 裁决
+    /// 注 ⑤）；否则出环 `n = min(len, 存量)`。
+    fn read(&self, buf: &mut [u8]) -> Result<usize, u64> {
+        if buf.is_empty() {
+            return Err(EINVAL);
+        }
+        let mut ring = self.ring.lock();
+        if ring.len == 0 {
+            return if caps_refcount(self.w_object.load(Ordering::Acquire)) == 0 {
+                Ok(0)
+            } else {
+                Err(EAGAIN)
+            };
+        }
+        let n = buf.len().min(ring.len);
+        for (i, slot) in buf.iter_mut().take(n).enumerate() {
+            *slot = ring.data[(ring.head + i) % PIPE_CAP];
+        }
+        ring.head = (ring.head + n) % PIPE_CAP;
+        ring.len -= n;
+        Ok(n)
+    }
+
+    /// 写：读端引用归零 → `EPIPE`（SIGPIPE 递送面挂账）；满环 →
+    /// `EAGAIN`；否则入环部分写 `n = min(len, free)`（Linux 非阻塞写同形）。
+    fn write(&self, buf: &[u8]) -> Result<usize, u64> {
+        if buf.is_empty() {
+            return Err(EINVAL);
+        }
+        let mut ring = self.ring.lock();
+        if caps_refcount(self.r_object.load(Ordering::Acquire)) == 0 {
+            return Err(EPIPE);
+        }
+        let free = PIPE_CAP - ring.len;
+        if free == 0 {
+            return Err(EAGAIN);
+        }
+        let n = buf.len().min(free);
+        for (i, &b) in buf.iter().take(n).enumerate() {
+            let at = (ring.head + ring.len + i) % PIPE_CAP;
+            ring.data[at] = b;
+        }
+        ring.len += n;
+        Ok(n)
+    }
+}
+
+/// 管道对象段位判定（高 32 位段——与 [`is_file_object`] 同构）。
+fn is_pipe_object(object: u64) -> bool {
+    (object >> 32) == (PIPE_OBJECT_BASE >> 32)
+}
+
+/// 管道句柄解析：句柄 → 全局能力槽 → 段位门禁 → PIPES 反查（返回环核
+/// Arc 共享——锁即取即释，环核锁在 [`Pipe::read`]/`write` 内层单向嵌套）。
+fn resolve_pipe_object(handle: u64) -> Option<(usize, Capability, Arc<Pipe>)> {
+    let caller = task::current_task_id();
+    let h = handle as usize;
+    if h == 0 || h >= task::HANDLE_MAX {
+        return None;
+    }
+    let slot = task::with_task_handles(caller, |t| t[h]).and_then(|s| s)?;
+    let cap = crate::caps::table().lock().get(slot).ok()?;
+    if !is_pipe_object(cap.object()) {
+        return None;
+    }
+    let object = cap.object();
+    let pipe = {
+        let pipes = PIPES.lock();
+        pipes.iter().find_map(|e| {
+            e.as_ref()
+                .filter(|e| e.object == object)
+                .map(|e| e.pipe.clone())
+        })?
+    };
+    Some((slot, cap, pipe))
+}
+
+/// 管道孤儿回收（[`task::revoke_all_handles`] 收敛链挂接——FILE 域
+/// [`reap_orphaned_files`] 同构：能力引用归零条目清槽，Arc 计数随
+/// drop 收敛）。
+pub fn reap_orphaned_pipes() {
+    let mut pipes = PIPES.lock();
+    for e in pipes.iter_mut() {
+        if let Some(entry) = e.as_ref() {
+            if caps_refcount(entry.object) == 0 {
+                *e = None;
+            }
+        }
+    }
+}
+
+/// SYS_PIPE2 主体（M35-BBa；Linux 号域 293）：管道铸造（64 KiB 定容环 ×1
+/// + 读/写端对象 ×2 + 能力槽 ×2〔r=READ / w=WRITE〕+ 句柄安装×2）。
+///
+/// - `flags`：仅收 `0` | [`O_CLOEXEC`]（随链 hflags [`FD_CLOEXEC`]——
+///   EXEC 成功路径 [`close_cloexec_handles`] 消费）；其余位 → `EINVAL`
+///   （fail-visible 登记）；
+/// - `pipefd` 用户回写：`int[2]`（8 字节）= `[读端句柄, 写端句柄]`
+///   （EFAULT 域守门）；
+/// - 句柄表满 → `EMFILE`（先验免泄漏）；管道表满 → `ENFILE`。
+///
+/// 成功返回 `(1 << 32) | 0`。
+pub fn sys_pipe2(pipefd_ptr: u64, flags: u64) -> u64 {
+    if flags & !O_CLOEXEC != 0 {
+        return EINVAL; // 未收录旗标 fail-visible（O_NONBLOCK 随阻塞面挂账）
+    }
+    let Some(pfd) = validate_user_slice_mut(pipefd_ptr, 8) else {
+        return EFAULT;
+    };
+    let caller = task::current_task_id();
+    // 句柄空位预检 ×2（先验免泄漏）。
+    let (free_r, free_w) = {
+        let found = task::with_task_handles(caller, |t| {
+            let mut it = t
+                .iter()
+                .enumerate()
+                .skip(1)
+                .filter(|(_, s)| s.is_none())
+                .map(|(h, _)| h);
+            (it.next(), it.next())
+        })
+        .unwrap_or((None, None));
+        match found {
+            (Some(a), Some(b)) => (a, b),
+            _ => return EMFILE,
+        }
+    };
+    // 注册表槽位（满 → ENFILE）。
+    let mut pipes = PIPES.lock();
+    if pipes.iter().filter(|e| e.is_some()).count() + 2 > MAX_PIPES {
+        return ENFILE;
+    }
+    let r_object = NEXT_PIPE_OBJECT.fetch_add(1, Ordering::Relaxed);
+    let w_object = NEXT_PIPE_OBJECT.fetch_add(1, Ordering::Relaxed);
+    let arc = Arc::new(Pipe::new(r_object, w_object));
+    pipes.push(Some(PipeEntry {
+        object: r_object,
+        pipe: arc.clone(),
+    }));
+    pipes.push(Some(PipeEntry {
+        object: w_object,
+        pipe: arc.clone(),
+    }));
+    drop(pipes);
+    // 能力铸造（r=READ / w=WRITE）+ 句柄安装。
+    let g_r = crate::caps::alloc_slot(Capability::new(r_object, Right::READ.bits()));
+    let g_w = crate::caps::alloc_slot(Capability::new(w_object, Right::WRITE.bits()));
+    let (Some(g_r), Some(g_w)) = (g_r, g_w) else {
+        // 回滚（能力面满——先铸端已装则撤销；注册表条目引用归零随 reap 收敛）
+        if let Some(g) = g_r {
+            let _ = crate::caps::table().lock().revoke(g);
+        }
+        if let Some(g) = g_w {
+            let _ = crate::caps::table().lock().revoke(g);
+        }
+        return ENOMEM;
+    };
+    task::with_task_handles(caller, |t| {
+        t[free_r] = Some(g_r);
+        t[free_w] = Some(g_w);
+    });
+    if flags & O_CLOEXEC != 0 {
+        task::with_task_hflags(caller, |f| {
+            f[free_r] |= bedrock::abi::FD_CLOEXEC as u8;
+            f[free_w] |= bedrock::abi::FD_CLOEXEC as u8;
+        });
+    }
+    // pipefd[2] 用户回写（int 域 4 字节 ×2——LP64 int = i32）。
+    pfd[0..4].copy_from_slice(&(free_r as u32).to_le_bytes());
+    pfd[4..8].copy_from_slice(&(free_w as u32).to_le_bytes());
+    OK_BIT
 }
 
 /// SYS_STAT 主体（M13-②）：元数据快照（不影响偏移）。

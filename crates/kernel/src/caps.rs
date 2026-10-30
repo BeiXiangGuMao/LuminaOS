@@ -11,7 +11,7 @@
 //! unsafe 面：零。自旋锁 + 纯类型能力令牌。
 
 use ostd::sync::SpinLock;
-use vanguard::{Capability, CapabilityTable};
+pub use vanguard::{Capability, CapabilityTable};
 
 /// 全局能力表（静态存储期；槽位容量 = vanguard::CAPACITY）。
 static CAPS: SpinLock<CapabilityTable> = SpinLock::new(CapabilityTable::new());

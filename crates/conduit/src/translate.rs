@@ -17,7 +17,10 @@
 //! 支撑面 = [`join_cwd`]（相对路径 cwd join 单一事实源）+ AT_* 旗标
 //! 事实源常量。**pipe2(293) 与 fork fd 继承面同批挂账**（fork 子代
 //! 句柄表全零实录——POSIX 流水线消费方 sh 批次依赖句柄表跨 fork
-//! 复制先行，单收无消费方，分批不虚报）。
+//! 复制先行，单收无消费方，分批不虚报）；**M35-BBa 摘牌收录**：
+//! fork fd 继承落位（task::spawn_fork_child 句柄域 skip(1) 新槽铸入
+//! 且 hflags 随链）与 pipe2 执行面（64 KiB 定容环 + EOF/EPIPE 语义），
+//! sh 流水线消费链路成立（BBb 批次承接）。
 //!
 //! M34-B2 收录（t83 活体实证导航——LIN-DISPATCH-ERR 取证线定案）：
 //! open(2)（open( path, flags, mode ) = openat(AT_FDCWD, ·) 参数
@@ -114,6 +117,10 @@ pub enum LinAction {
     /// faccessat(269)：存在性 + 合成权限位比对（F_OK/R_OK/W_OK/X_OK；
     /// v0 单用户 owner 位域口径）。
     FAccessAt,
+    /// pipe2(293)：管道执行面（M35-BBa 收录——M34-B1 同批挂账摘牌：
+    /// fork fd 继承面落位后消费方 sh 流水线链路成立）。执行档：
+    /// int pipefd[2] 用户回写 + O_CLOEXEC 旗标随链（kernel::vfs）。
+    Pipe2,
     /// open(2)：`open(path, flags, mode)` = openat(AT_FDCWD, ·) 参数
     /// 同形直通（wc/fopen 路径——M34-B2 t83 实证收录；musl 层本应走
     /// openat，busybox 部分路径直发旧号）。
@@ -169,6 +176,7 @@ pub fn translate(num: u64) -> LinAction {
         262 => LinAction::FStatAt,   // M34-B1 收录
         263 => LinAction::UnlinkAt,  // M34-B1 收录
         269 => LinAction::FAccessAt, // M34-B1 收录
+        293 => LinAction::Pipe2,     // M35-BBa 收录（fork fd 继承面同批摘牌）
         _ => LinAction::Err(ENOSYS),
     }
 }
@@ -281,6 +289,8 @@ mod tests {
         assert_eq!(translate(104), LinAction::StubUid);
         assert_eq!(translate(105), LinAction::StubUid);
         assert_eq!(translate(106), LinAction::StubUid);
+        // M35-BBa 收录（fork fd 继承面同批摘牌）
+        assert_eq!(translate(293), LinAction::Pipe2);
         // 显形拒绝（未收录）
         assert_eq!(translate(56), LinAction::Err(ENOSYS)); // clone（M33-P1 后仍挂账——vfork/clone 旗标面随后续批次）
         assert_eq!(translate(59), LinAction::Execve); // M33-P1 收录

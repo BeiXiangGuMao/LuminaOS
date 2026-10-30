@@ -82,8 +82,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83）。
-const SELFTEST_TOTAL: usize = 83;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84）。
+const SELFTEST_TOTAL: usize = 84;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -5024,6 +5024,82 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t83, "applet-lin");
+
+    // t84) fork-pipe 活体（M35-BBa）：pipe2 执行面全语义锚——64 KiB 定容
+    // 环（部分写/满环 EAGAIN）+ EOF（写端引用归零）+ EPIPE（读端引用归零）
+    // + 未收录旗标 fail-visible + O_CLOEXEC 随链 hflags FD_CLOEXEC。fork
+    // fd 继承机制面随行落位（task::spawn_fork_child 句柄域 skip(1) 新槽
+    // 铸入 + hflags 随链）；跨 fork 活体实证由 t85 sh 流水线承载（BBb）。
+    let t84 = {
+        let mut ok = true;
+        // (a) pipe2 创建 + pipefd 回写 + 句柄对账
+        let mut pfd = [0u32; 2];
+        let r = vfs::sys_pipe2(pfd.as_mut_ptr() as u64, 0);
+        ok &= r >> 32 == 1;
+        let (fd_r, fd_w) = (u64::from(pfd[0]), u64::from(pfd[1]));
+        ok &= fd_r != fd_w && fd_r != 0 && fd_w != 0;
+        // (b) 未收录旗标 fail-visible（O_NONBLOCK 0x4000 → EINVAL=22）
+        ok &= vfs::sys_pipe2(0, 0x4000) == 22;
+        // (c) 环语义：写读字节对账（15 B 载荷）
+        const PAYLOAD: &[u8] = b"pipe-payload-42";
+        let r = vfs::sys_write(fd_w, PAYLOAD.as_ptr() as u64, PAYLOAD.len() as u64);
+        ok &= r >> 32 == 1 && (r & 0xFFFF_FFFF) as usize == PAYLOAD.len();
+        let mut rbuf = [0u8; PAYLOAD.len()];
+        let r = vfs::sys_read(fd_r, rbuf.as_mut_ptr() as u64, rbuf.len() as u64);
+        ok &= r >> 32 == 1 && (r & 0xFFFF_FFFF) as usize == PAYLOAD.len();
+        ok &= rbuf == *PAYLOAD;
+        // (d) 空环 + 写端存活 → EAGAIN=11（非阻塞语义登记）
+        ok &= vfs::sys_read(fd_r, rbuf.as_mut_ptr() as u64, 4) == 11;
+        // (e) 定容环：4096×16 分块填满（64 KiB）→ 满环 EAGAIN → 全量读出
+        // 对账 → 环空写端存活 → EAGAIN（栈安全分块——64 KiB 整块不上栈）
+        let chunk = [0xA5u8; 4096];
+        let mut filled = 0usize;
+        for _ in 0..16 {
+            let r = vfs::sys_write(fd_w, chunk.as_ptr() as u64, 4096);
+            ok &= r >> 32 == 1 && (r & 0xFFFF_FFFF) as usize == 4096;
+            filled += 4096;
+        }
+        ok &= filled == 65536;
+        ok &= vfs::sys_write(fd_w, chunk.as_ptr() as u64, 1) == 11; // 满环
+        let mut drained = 0usize;
+        loop {
+            let n = vfs::sys_read(fd_r, rbuf.as_mut_ptr() as u64, 4096);
+            if n >> 32 != 1 {
+                break;
+            }
+            let got = (n & 0xFFFF_FFFF) as usize;
+            ok &= got > 0;
+            drained += got;
+            if got < 4096 {
+                break;
+            }
+        }
+        ok &= drained == 65536;
+        ok &= vfs::sys_read(fd_r, rbuf.as_mut_ptr() as u64, 4) == 11; // 环空
+                                                                      // (f) EOF：写端关闭（引用归零）→ read 返 0
+        ok &= vfs::sys_close(fd_w) == 0;
+        let r = vfs::sys_read(fd_r, rbuf.as_mut_ptr() as u64, 4);
+        ok &= r >> 32 == 1 && (r & 0xFFFF_FFFF) == 0;
+        ok &= vfs::sys_close(fd_r) == 0;
+        // (g) EPIPE：读端关闭（引用归零）后写 → EPIPE=32
+        let mut pfd2 = [0u32; 2];
+        ok &= vfs::sys_pipe2(pfd2.as_mut_ptr() as u64, 0) >> 32 == 1;
+        ok &= vfs::sys_close(u64::from(pfd2[0])) == 0;
+        ok &= vfs::sys_write(u64::from(pfd2[1]), PAYLOAD.as_ptr() as u64, 4) == 32;
+        ok &= vfs::sys_close(u64::from(pfd2[1])) == 0;
+        // (h) O_CLOEXEC 随链：pipe2(0o200_0000) → 双端 hflags FD_CLOEXEC=1
+        let mut pfd3 = [0u32; 2];
+        ok &= vfs::sys_pipe2(pfd3.as_mut_ptr() as u64, 0o200_0000) >> 32 == 1;
+        let (bit_r, bit_w) = task::with_task_hflags(task::current_task_id(), |f| {
+            (f[pfd3[0] as usize] & 1, f[pfd3[1] as usize] & 1)
+        })
+        .unwrap_or((0, 0));
+        ok &= bit_r == 1 && bit_w == 1;
+        ok &= vfs::sys_close(u64::from(pfd3[0])) == 0;
+        ok &= vfs::sys_close(u64::from(pfd3[1])) == 0;
+        ok
+    };
+    report(&mut log, t84, "fork-pipe");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {
