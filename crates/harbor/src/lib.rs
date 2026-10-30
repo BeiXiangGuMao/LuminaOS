@@ -4,7 +4,7 @@
 //! 手册》第 5 章指标族 H-P01…H-P07：执行系统库档**零 unsafe** 政策（crate
 //! 级 `forbid(unsafe_code)`），M29-H1 落地 **H-P01 首批 ≥50 符号垂直切片**。
 //!
-//! # 首批四域（57 函数符号，机器可检清点见 `tests::h_p01_symbol_inventory`）
+//! # 域谱（71 函数符号，M35-H1a 扩容；机器可检清点见 `tests::h_p01_symbol_inventory`）
 //!
 //! - [`errno`]：errno 面（AtomicI32）+ POSIX 错误常量 46 项 + strerror
 //!   名称表（3 函数符号 + 45 常量）；
@@ -12,7 +12,11 @@
 //! - [`string`]：mem/str 语义 18 符号（切片语义 safe 面——NUL 终止串以
 //!   `&[u8]` 承载，越界即 `None`/界限值，等价 C 语义的 fail-visible 化）；
 //! - [`stdlib`]：数值转换/排序/伪随机 20 符号（abs/div 族值语义
-//!   `extern "C"` + strto* 切片面 + qsort/bsearch + rand/srand LCG）。
+//!   `extern "C"` + strto* 切片面 + qsort/bsearch + rand/srand LCG）；
+//! - [`time`]：历法换算与格式化 14 符号（M35-H1a——UTC/"C" locale 纯
+//!   计算 UTC 面：gmtime/localtime 族 + mktime/timegm/difftime +
+//!   asctime/ctime 族固定 26 字节形状 + strftime/wcsftime + tzset 空实现
+//!   登记；时钟源 syscall 面挂账不虚报）。
 //!
 //! # v0 范围界定（偏差登记，见 ROADMAP §四 M29 计划注）
 //!
@@ -42,6 +46,7 @@ pub mod ctype;
 pub mod errno;
 pub mod stdlib;
 pub mod string;
+pub mod time;
 
 // C ABI 惯用小写命名（libc 符号名对齐）——non_camel_case_types 为有意为之
 /// C ABI 基础类型（LuminaOS LP64 面板，见 crate 文档）。
@@ -62,11 +67,14 @@ pub type c_ulong = u64;
 /// C `intmax_t`（LP64：64 位）。
 #[allow(non_camel_case_types)]
 pub type c_intmax = i64;
+/// C `wchar_t`（LP64 Linux：32 位；M35-H1a time 域 wcs* 面随行）。
+#[allow(non_camel_case_types)]
+pub type wchar_t = i32;
 
 #[cfg(test)]
 mod tests {
-    /// H-P01 首批符号清点（机器可检的 ≥50 闸）：逐域枚举公开函数符号名，
-    /// 断言总数 ≥ 50（errno 45 常量另计，不入函数口径）。
+    /// H-P01 符号清点（机器可检的 ≥50 闸，M35-H1a 起扩容追踪）：逐域枚举
+    /// 公开函数符号名，断言总数（errno 45 常量另计，不入函数口径）。
     #[test]
     fn h_p01_symbol_inventory() {
         const ERRNO: &[&str] = &["errno", "set_errno", "strerror"];
@@ -85,12 +93,25 @@ mod tests {
             "atoll", "strtol", "strtoul", "strtoll", "strtoull", "strtod", "qsort", "bsearch",
             "rand", "srand",
         ];
-        let total = ERRNO.len() + CTYPE.len() + STRING.len() + STDLIB.len();
-        assert!(
-            total >= 50,
-            "H-P01 first batch must export >= 50 symbols, got {total}"
-        );
-        assert_eq!(total, 57);
+        const TIME: &[&str] = &[
+            "difftime",
+            "timegm",
+            "mktime",
+            "gmtime",
+            "gmtime_r",
+            "localtime",
+            "localtime_r",
+            "asctime",
+            "asctime_r",
+            "ctime",
+            "ctime_r",
+            "strftime",
+            "wcsftime",
+            "tzset",
+        ];
+        let total = ERRNO.len() + CTYPE.len() + STRING.len() + STDLIB.len() + TIME.len();
+        assert!(total >= 50, "H-P01 must export >= 50 symbols, got {total}");
+        assert_eq!(total, 71);
         // 域内抽查（防清单漂移）：每域至少 1 名逐一比对实际公开面。
         assert_eq!(crate::errno::strerror(crate::errno::EINVAL), "EINVAL");
         assert_eq!(crate::ctype::isdigit(b'7' as crate::c_int), 1);
@@ -98,5 +119,19 @@ mod tests {
         assert_eq!(crate::string::strlen(&buf), Some(0));
         assert_eq!(crate::stdlib::abs(-5), 5);
         assert_eq!(crate::stdlib::imaxabs(-7), 7);
+        assert_eq!(
+            crate::time::timegm(&crate::time::Tm {
+                tm_year: 70,
+                tm_mon: 0,
+                tm_mday: 1,
+                tm_hour: 0,
+                tm_min: 0,
+                tm_sec: 0,
+                tm_wday: 4,
+                tm_yday: 0,
+                tm_isdst: 0
+            }),
+            Some(0)
+        );
     }
 }
