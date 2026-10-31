@@ -315,8 +315,11 @@ impl Task {
 
     /// 句柄表全量清算（M9-A：任务终结路径调用；全局能力槽逐个撤销）。
     /// 锁序：调用方已持 SCHED，内部再取 CAPS（SCHED → CAPS 单向嵌套）。
+    /// M35-BBb：清算域扩为全表（句柄 0 纳入——stdio 重定向接线域承载
+    /// 管道句柄槽，终结撤销随链，管道引用计数收敛不漏；句柄 0 既有
+    /// 路径恒空〔主身份域在句柄 1〕，行为零变）。
     fn revoke_all_handles(&mut self) {
-        for slot in self.handles.iter_mut().skip(1) {
+        for slot in self.handles.iter_mut() {
             if let Some(g) = slot.take() {
                 let _ = crate::caps::table().lock().revoke(g);
             }
@@ -1171,6 +1174,38 @@ pub fn spawn_fork_child(
     frame_slots: [u64; 15],
     lin_abi: bool,
 ) -> usize {
+    spawn_fork_child_impl(name, user_root, parent, frame_slots, lin_abi, &[], true)
+}
+
+/// 无继承接线派生（M35-BBb sh 流水线段面）：fork 快照协议全同（定点
+/// iretq 入口 + rax 槽零协议 + lin_abi 随链 + cwd 继承），句柄域**仅
+/// 接线域装载**（继承域缺席）——管道段引用域最小化：编排端双端关闭
+/// 后 EOF/EPIPE 判定键 = 对端段子代存活单源（caps_refcount 收敛零残
+/// 留）。t85 A/B 段消费面。（带继承接线变体暂无消费方——按零死代码
+/// 纪律不设，继承+接线复合需求出现时经 [`spawn_fork_child_impl`]
+/// inherit_handles=true 域扩位承接。）
+pub fn spawn_stage_wired(
+    name: &'static str,
+    user_root: u64,
+    parent: usize,
+    frame_slots: [u64; 15],
+    lin_abi: bool,
+    wiring: &[(usize, usize)],
+) -> usize {
+    spawn_fork_child_impl(name, user_root, parent, frame_slots, lin_abi, wiring, false)
+}
+
+/// 接线派生公共核：`inherit_handles` = true 时执行 M35-BBa 句柄域
+/// skip(1) 全量继承，随后统一施焊 `wiring` 接线域（同槽后者胜）。
+fn spawn_fork_child_impl(
+    name: &'static str,
+    user_root: u64,
+    parent: usize,
+    frame_slots: [u64; 15],
+    lin_abi: bool,
+    wiring: &[(usize, usize)],
+    inherit_handles: bool,
+) -> usize {
     let _w = IntWindow::new();
     let mut s = sched_lock!();
     let mut t = Task::new_user(
@@ -1204,23 +1239,45 @@ pub fn spawn_fork_child(
     // 锁纪律：先取 CAPS 快照即释（SCHED → CAPS 单向嵌套），后铸槽
     // （alloc_slot 内部自取 CAPS——自旋锁不可重入，快照段分离防自递归）。
     if let Some(p) = s.tasks.get(parent).and_then(|p| p.as_ref()) {
-        let snapshot: Vec<(usize, crate::caps::Capability)> = p
-            .handles
-            .iter()
-            .enumerate()
-            .skip(1)
-            .filter_map(|(h, g)| {
-                g.and_then(|g| crate::caps::table().lock().get(g).ok())
-                    .map(|cap| (h, cap))
-            })
-            .collect();
-        let hflags = p.hflags;
-        for (h, cap) in snapshot {
-            if let Some(ng) = crate::caps::alloc_slot(cap) {
-                t.handles[h] = Some(ng);
+        if inherit_handles {
+            let snapshot: Vec<(usize, crate::caps::Capability)> = p
+                .handles
+                .iter()
+                .enumerate()
+                .skip(1)
+                .filter_map(|(h, g)| {
+                    g.and_then(|g| crate::caps::table().lock().get(g).ok())
+                        .map(|cap| (h, cap))
+                })
+                .collect();
+            for (h, cap) in snapshot {
+                if let Some(ng) = crate::caps::alloc_slot(cap) {
+                    t.handles[h] = Some(ng);
+                }
             }
         }
+        let hflags = p.hflags;
         t.hflags = hflags;
+    }
+    // M35-BBb：接线域（wiring = (子句柄, 父句柄源)——继承之后同窗施
+    // 焊，同槽后者胜；铸槽纪律与继承域同款。父句柄源缺失（越界/空
+    // 槽）= 接线对静默跳过（fail-visible 归编排方：t85 对账收割码兜
+    // 底，不静默伪装成功）。
+    if let Some(p) = s.tasks.get(parent).and_then(|p| p.as_ref()) {
+        let wiring_snap: Vec<(usize, crate::caps::Capability)> = wiring
+            .iter()
+            .filter_map(|(ch, ph)| {
+                p.handles
+                    .get(*ph)
+                    .and_then(|g| g.and_then(|g| crate::caps::table().lock().get(g).ok()))
+                    .map(|cap| (*ch, cap))
+            })
+            .collect();
+        for (ch, cap) in wiring_snap {
+            if let Some(ng) = crate::caps::alloc_slot(cap) {
+                t.handles[ch] = Some(ng);
+            }
+        }
     }
     let Some(id) = alloc_slot(&mut s, t) else {
         return usize::MAX;

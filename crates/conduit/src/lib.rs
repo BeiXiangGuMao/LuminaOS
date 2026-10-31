@@ -17,6 +17,7 @@ extern crate alloc;
 pub mod convert;
 pub mod defs;
 pub mod layout;
+pub mod sh;
 pub mod translate;
 
 /// 兼容目标 Linux 版本。

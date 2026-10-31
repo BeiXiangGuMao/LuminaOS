@@ -250,8 +250,8 @@ const KERNEL_ELF: &str =
 const KERNEL_BIN: &str =
     "/home/z/my-project/lumina-build/target/x86_64-unknown-none/release/lumina-kernel.bin";
 
-/// 自检标记总数（与内核 SELFTEST_TOTAL 同步；M12 完成态 = 43，M13-② 起 46，M15 起 52，M16 起 55，M17 起 58，M18 起 62，M21-③ 起 63，M23 起 65，M23-B 起 67，M23-C1 起 68，M23-C2 起 69，M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M25-T1 起 75，M26-T1 起 76，M28-T1 起 77，M27-N2 起 78，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84）。
-const SELFTEST_EXPECTED: &str = "84/84";
+/// 自检标记总数（与内核 SELFTEST_TOTAL 同步；M12 完成态 = 43，M13-② 起 46，M15 起 52，M16 起 55，M17 起 58，M18 起 62，M21-③ 起 63，M23 起 65，M23-B 起 67，M23-C1 起 68，M23-C2 起 69，M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M25-T1 起 75，M26-T1 起 76，M28-T1 起 77，M27-N2 起 78，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85）。
+const SELFTEST_EXPECTED: &str = "85/85";
 
 /// TLV 请求帧：tag 0x0007，value = b"lumina-m5"。
 const TLV_REQ: &[u8] = &[
@@ -509,7 +509,7 @@ fn smoke_inner() -> bool {
     // 3) 串口日志断言：启动标记 + 十五项自检 + 用户态标记 + TLV 双向
     //    （M31-W1 起：Weave 自举装载证据行在环——机器可验）
     let selftest_marker = format!("LUMINA-SELFTEST-PASS {SELFTEST_EXPECTED}");
-    let required: [&[u8]; 9] = [
+    let required: [&[u8]; 10] = [
         b"LUMINA-BOOT-OK",
         selftest_marker.as_bytes(),
         b"LUMINA-TLV-OK",
@@ -522,6 +522,9 @@ fn smoke_inner() -> bool {
         // M34-B2：applet 扩容活体（true/false/printf/wc -l 四 applet 分发
         // 路径 + exit 码语义对账；t83 相位汇总标记）
         b"LUMINA-T83-OK",
+        // M35-BBb：sh 流水线活体（`|` 解析 → fork+pipe2+dup2+execve 两段
+        // 串联——yes|head 真流管道 + exit 码对账；t85 相位汇总标记）
+        b"LUMINA-T85-OK",
         // M34-D1：驱动服务框架结构面 boot 注册证据（五驱动内核态占位）
         b"LUMINA-SVC-INIT",
     ];
@@ -678,7 +681,7 @@ fn longrun_tlv_check(all: &[u8]) -> (bool, bool) {
 fn longrun_boot_fails(serial: &[u8], tlv_ok: bool, resp_checked: bool) -> Vec<String> {
     let mut fails = Vec::new();
     let selftest_marker = format!("LUMINA-SELFTEST-PASS {SELFTEST_EXPECTED}");
-    let markers: [&[u8]; 9] = [
+    let markers: [&[u8]; 10] = [
         b"LUMINA-BOOT-OK",
         selftest_marker.as_bytes(),
         b"LUMINA-TLV-OK",
@@ -687,6 +690,7 @@ fn longrun_boot_fails(serial: &[u8], tlv_ok: bool, resp_checked: bool) -> Vec<St
         b"LUMINA-WEAVE-BOOT",
         b"LUMINA-T82-OK",
         b"LUMINA-T83-OK",
+        b"LUMINA-T85-OK",
         b"LUMINA-SVC-INIT",
     ];
     for marker in markers {

@@ -317,7 +317,7 @@ M34 退出口径：harbor ≥150 符号机检闸双端在环 + PR-P04 显示协�
 | **M35-H1c**（笔④） | harbor unistd 新域（getopt 族/swab/confstr/sysconf/getpagesize，7 符号）+ string 域扩容（strcpy/strncpy/strcat/strncat/stpcpy/stpncpy/strtok/strtok_r/strcoll/strxfrm/strerror_r/memccpy/memfrob/bcopy/bzero/bcmp/index/rindex，+18）+ stdlib 域扩容（strtoimax/strtoumax/mblen/mbtowc/wctomb/mbstowcs/wcstombs/qsort_r/rand_r/atof，+10）（→ 121）+ 宿主对账测试 | crates/harbor | |
 | **M35-H1d**（笔⑤） | harbor wctype/wchar 补齐域（isw 族/towlower/towupper/wctype/wctrans/towctrans，17；wcs 族/wmem 族，20）（→ 158）+ H-P01 闸 50→150 双端同步（lib.rs 机检断言升级 + METRICS H-P01 行扩记）+ 宿主对账测试扩容——**H1 关账（≥150 硬锚达成）** | crates/harbor + docs/METRICS | |
 | **M35-BBa**（笔⑥） | fork fd 继承：spawn_fork_child handles/hflags 双表锁窗拷贝（Linux 同款 FileObject 共享）+ pipe2 执行面：vfs 管道对象（64 KiB 定容字节环 + 读/写端句柄 + EOF/EPIPE fail-visible + CLOEXEC 面）+ lin_pipe2 用户内存回写 + translate 293 摘牌收录 + t84 fork-pipe 活体 + SELFTEST 83→84 双端同步 | crates/kernel + crates/conduit | |
-| **M35-BBb**（笔⑦） | busybox 批次二 applet 面：sh 流水线首割（`|` 解析 → fork+pipe2+dup2+execve 两段串联实证）+ yes/head applet 扩容 + BUSYBOX.md 覆盖度成像表扩记 + t85 sh 流水线活体 + SELFTEST 84→85 双端同步 | crates/kernel + docs | |
+| **M35-BBb**（笔⑦） | busybox 批次二 applet 面：sh 流水线首割（`|` 解析 → fork+pipe2+dup2+execve 两段串联实证）+ yes/head applet 扩容 + BUSYBOX.md 覆盖度成像表扩记 + t85 sh 流水线活体 + SELFTEST 84→85 双端同步 | crates/kernel + docs | ✅ 本提交 |
 | **M35-收尾**（笔⑧） | ROADMAP/METRICS/MATURITY/README 对账 + 挂账六项复核注 + 双方向 DoD 核验 + 近线 M36 + worklog Task ID 20 | 对账提交 | |
 
 M35 退出口径：harbor ≥150 符号机检闸双端在环（P2 DoD 收口）+ fork fd 继承在环 + pipe2 执行面在环（EOF/EPIPE 语义实证）+ sh 流水线活体在环 + yes/head applet 在环 + 覆盖度成像表扩记 + 冒烟 85/85。

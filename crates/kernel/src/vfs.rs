@@ -442,10 +442,12 @@ pub fn reap_orphaned_files() {
 /// 句柄解析共用切片（M13-②）：调用方句柄 → (全局槽, 能力, 文件槽)。
 /// NULL/越界/未持有/全局槽失效/非文件段/注册表无此对象 → None（对外
 /// 同面 EBADF——与通道面「无效句柄同面不泄拓扑」纪律一致）。
+/// M35-BBb：句柄 0 解禁（stdio 重定向接线域——接线铸槽可装句柄 0，
+/// 解析面与文件/管道域同面；句柄 0 既有路径恒空，仅接线域可非空）。
 fn resolve_file_object(handle: u64) -> Option<(usize, Capability, usize)> {
     let caller = task::current_task_id();
     let h = handle as usize;
-    if h == 0 || h >= task::HANDLE_MAX {
+    if h >= task::HANDLE_MAX {
         return None;
     }
     let slot = task::with_task_handles(caller, |t| t[h]).and_then(|s| s)?;
@@ -944,10 +946,12 @@ fn is_pipe_object(object: u64) -> bool {
 
 /// 管道句柄解析：句柄 → 全局能力槽 → 段位门禁 → PIPES 反查（返回环核
 /// Arc 共享——锁即取即释，环核锁在 [`Pipe::read`]/`write` 内层单向嵌套）。
+/// M35-BBb：句柄 0 解禁（与 [`resolve_file_object`] 同面——stdio
+/// 重定向接线域可装句柄 0，t85 B 段 stdin 管道读消费面）。
 fn resolve_pipe_object(handle: u64) -> Option<(usize, Capability, Arc<Pipe>)> {
     let caller = task::current_task_id();
     let h = handle as usize;
-    if h == 0 || h >= task::HANDLE_MAX {
+    if h >= task::HANDLE_MAX {
         return None;
     }
     let slot = task::with_task_handles(caller, |t| t[h]).and_then(|s| s)?;
@@ -1472,6 +1476,15 @@ pub fn sys_fcntl(handle: u64, cmd: u64, arg: u64) -> u64 {
     };
     FCNTL_RESULT.store(code, Ordering::Release);
     code
+}
+
+/// stdio 重定向活动判定（M35-BBb lin 派发消费面）：调用方句柄域
+/// 已装管道或文件对象 = 重定向在环（true）——lin_read/lin_write 的
+/// fd 0/1/2 分流闸：重定向在环走 vfs 真对象，未装保持控制台/tty
+/// 直通（既有语义零破）。主身份等其他对象不触法（解析 None = 未重
+/// 定向）。句柄 0/1/2 与文件/管道双 resolver 同源，单点事实源。
+pub fn stdio_redirect_active(handle: u64) -> bool {
+    resolve_pipe_object(handle).is_some() || resolve_file_object(handle).is_some()
 }
 
 /// fd 开旗标查询（M34-B2）：Linux F_GETFL 语义承载（kernel::linux 域

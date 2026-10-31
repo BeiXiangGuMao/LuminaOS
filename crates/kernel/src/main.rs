@@ -82,8 +82,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84）。
-const SELFTEST_TOTAL: usize = 84;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85）。
+const SELFTEST_TOTAL: usize = 85;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -5100,6 +5100,144 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t84, "fork-pipe");
+
+    // t85) sh 流水线活体（M35-BBb）：`|` 解析（conduit::sh 首割——两段
+    //      argv 词元对账）→ pipe2 → 两段接线派生（spawn_stage_wired：
+    //      A 段 stdout←写端 + B 段 stdin←读端——fork 锁窗铸槽 = dup2
+    //      等价面；无继承域 = 段引用最小化）→ 预流灌注（A 段首刷落地
+    //      有界自旋实证——B 段首读确定性保障）→ 编排端双端关闭（引用
+    //      计数移交段域）→ 收割对账（head exit 0 / yes exit 1——EPIPE
+    //      终结主路径 + 满环 EAGAIN 终结容差路径，exit 1 双路同值；
+    //      SIGPIPE 递送面挂账）→ busybox 真流串联实证（musl writev/read
+    //      全链经 vfs 管道域）。闭包体承载（段内早退 = 相位败非自检败）。
+    let t85 = {
+        let mut run = || -> bool {
+            let mut ok = true;
+            // (a) `|` 解析首割（conduit::sh 纯函数——两段 argv 词元对账）
+            ok &= match conduit::sh::parse_pipeline("yes | head -n 3") {
+                Some(st) => {
+                    st.len() == 2
+                        && st[0].as_slice() == ["yes"]
+                        && st[1].as_slice() == ["head", "-n", "3"]
+                }
+                None => false,
+            };
+            // (b) pipe2（编排端 = 内核主任务句柄域；BBa 执行面同源）
+            let mut pfd = [0u32; 2];
+            ok &= vfs::sys_pipe2(pfd.as_mut_ptr() as u64, 0) >> 32 == 1;
+            let (fd_r, fd_w) = (u64::from(pfd[0]), u64::from(pfd[1]));
+            let Some(blob) = vfs::read_image("/bin/busybox") else {
+                let _ = writeln!(log, "sh: /bin/busybox media MISS");
+                return false;
+            };
+            let Some(frames) = vmm::global_frames() else {
+                let _ = writeln!(log, "sh: frame service unreachable");
+                return false;
+            };
+            // 段派生闭包（fork 快照协议 = t82/t83 同族；接线域装 stdio 域）
+            let spawn_stage = |argv: &[&str], wiring: &[(usize, usize)], name: &'static str| {
+                let t = ostd::time::tsc_now();
+                let mut random = [0u8; 16];
+                for (j, b) in random.iter_mut().enumerate() {
+                    *b = (t >> ((j % 8) * 8)) as u8 ^ (j as u8).rotate_left(3);
+                }
+                let es = user::build_user_space_elf(
+                    &blob,
+                    argv,
+                    &["PATH=/bin"],
+                    random,
+                    "busybox",
+                    &mut || frames.alloc(),
+                )
+                .ok()?;
+                let mut slots = [0u64; 15];
+                slots[0] = 0x202; // RFLAGS：IF=1
+                slots[1] = es.entry;
+                slots[7] = es.rsp;
+                let id = task::spawn_stage_wired(
+                    name,
+                    es.root,
+                    task::current_task_id(),
+                    slots,
+                    true,
+                    wiring,
+                );
+                (id != usize::MAX).then_some(id)
+            };
+            // (c) A 段 = yes：stdout 接线写端（句柄 1 ← fd_w）
+            let Some(id_a) =
+                spawn_stage(&["/bin/busybox", "yes"], &[(1, fd_w as usize)], "sh-stageA")
+            else {
+                let _ = writeln!(log, "sh: stageA spawn fail");
+                let _ = vfs::sys_close(fd_r);
+                let _ = vfs::sys_close(fd_w);
+                return false;
+            };
+            // (d) 预流灌注：A 段首刷落地实证（有界自旋——yes musl 初始
+            // 化百 syscall 量级；1 字节读出 = 环非空 → B 段首读确定性保障）
+            let mut primed = false;
+            let mut byte = [0u8; 1];
+            for _ in 0..2_000_000 {
+                let r = vfs::sys_read(fd_r, byte.as_mut_ptr() as u64, 1);
+                if r >> 32 == 1 {
+                    primed = true;
+                    break;
+                }
+                core::hint::spin_loop();
+            }
+            ok &= primed;
+            let _ = writeln!(log, "sh: stageA pid={id_a} primed={primed}");
+            // (e) B 段 = head -n 3：stdin 接线读端（句柄 0 ← fd_r）
+            let Some(id_b) = spawn_stage(
+                &["/bin/busybox", "head", "-n", "3"],
+                &[(0, fd_r as usize)],
+                "sh-stageB",
+            ) else {
+                let _ = writeln!(log, "sh: stageB spawn fail");
+                let _ = vfs::sys_close(fd_r);
+                let _ = vfs::sys_close(fd_w);
+                return false;
+            };
+            // (f) 编排端双端关闭（引用计数移交段域：读端 = B 段单源、写
+            // 端 = A 段单源——EPIPE/EOF 判定键随段存活收敛，零编排残留）
+            ok &= vfs::sys_close(fd_r) == 0;
+            ok &= vfs::sys_close(fd_w) == 0;
+            // (g) 收割对账：head exit 0（3 行读尽正常终结）；yes exit 1
+            //（写错终结三路同值——writev 截断续写 EFAULT→F_ERR die
+            // 实证主路径〔musl puts 溢出域直写块 iov 出域→部分成功
+            // 语义推进→0 进度 EFAULT〕+ EPIPE / 满环 EAGAIN 容差路
+            // 径；SIGPIPE 递送面挂账）
+            let r = procs::sys_wait_pid(id_b as u64);
+            let code_b = r & 0xFFFF;
+            let _ = writeln!(
+                log,
+                "sh: head reaped pid={} exit={code_b}",
+                (r >> 16) & 0xFFFF
+            );
+            ok &= r >> 32 == 1;
+            ok &= (r >> 16) & 0xFFFF == id_b as u64;
+            ok &= code_b == 0;
+            ok &= !task::task_alive(id_b);
+            let r = procs::sys_wait_pid(id_a as u64);
+            let code_a = r & 0xFFFF;
+            let _ = writeln!(
+                log,
+                "sh: yes reaped pid={} exit={code_a}",
+                (r >> 16) & 0xFFFF
+            );
+            ok &= r >> 32 == 1;
+            ok &= (r >> 16) & 0xFFFF == id_a as u64;
+            ok &= code_a == 1;
+            ok &= !task::task_alive(id_a);
+            ok
+        };
+        let ok = run();
+        if ok {
+            let _ = writeln!(log, "LUMINA-T85-OK");
+        }
+        ok
+    };
+    report(&mut log, t85, "sh-pipeline");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {

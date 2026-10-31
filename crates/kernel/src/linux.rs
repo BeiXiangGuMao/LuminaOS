@@ -232,6 +232,19 @@ fn lin_open_common(path_ptr: u64, flags_linux: u64) -> u64 {
 fn lin_read(frame: &mut SyscallFrame) -> u64 {
     let (fd, buf, count) = (frame.rdi, frame.rsi, frame.rdx);
     if fd == 0 {
+        // M35-BBb：stdio 重定向在环 = 句柄域真对象优先（sh 流水线 B 段
+        // stdin 管道读消费面）；未装保持 tty 游标域（既有语义零破）。
+        if crate::vfs::stdio_redirect_active(0) {
+            let r = crate::vfs::sys_read(0, buf, count);
+            if r >> 32 != 1 {
+                let line = alloc::format!(
+                    "LIN-READ-FAIL fd=0 buf={buf:#x} count={count} errno={}\n",
+                    r & 0xFFFF
+                );
+                crate::console::serial_log_bytes(line.as_bytes());
+            }
+            return lumina_to_linux(r);
+        }
         // tty 游标域：0 = 暂无数据（非阻塞 v0 口径如实记档）
         let ch = crate::tty::getch();
         if ch == 0 {
@@ -255,8 +268,14 @@ fn lin_read(frame: &mut SyscallFrame) -> u64 {
 }
 
 /// write(fd, buf, count)：fd 1/2 = 串口控制台；其余 vfs。
+/// M35-BBb：fd 1/2 重定向在环（句柄域已装管道/文件对象）= vfs 真对象
+/// 优先（sh 流水线 A 段 stdout 管道写消费面）；未装保持串口直通
+/// （既有语义零破——t82/t83 控制台取证路径不变）。
 fn lin_write(fd: u64, buf: u64, count: u64) -> u64 {
     if fd == 1 || fd == 2 {
+        if crate::vfs::stdio_redirect_active(fd) {
+            return lumina_to_linux(crate::vfs::sys_write(fd, buf, count));
+        }
         let Some(src) = validate_user_slice(buf, count) else {
             return err(14);
         };
@@ -267,6 +286,13 @@ fn lin_write(fd: u64, buf: u64, count: u64) -> u64 {
 }
 
 /// writev(fd, iov, iovcnt)：聚合 ≤8 KiB 单发（v0 上限口径）。
+/// M35-BBb：**部分成功语义对齐**（Linux 同款——逐 iov 拷贝推进，坏 iov
+/// 截断点前已聚合字节按成功计数返回，首 iov 即坏才全体 EFAULT；8 KiB
+/// 聚合预算越顶同法截断）。实证锚：musl `puts` 溢出域 writev 携
+/// `{缓冲,直写块}` 双 iov——直写块指针出用户域白名单（t85 yes 活体
+/// LIN-WV 取证 iov1={0x2,1}），全有全无式拒绝令整个 writev EFAULT、
+/// 已聚合字节一并蒸发——musl __stdio_write 部分计数推进循环消费面
+/// 直接依赖部分成功语义（cnt≥0 即推进 iov 游标续写）。
 fn lin_writev(frame: &mut SyscallFrame) -> u64 {
     let (fd, iov, iovcnt) = (frame.rdi, frame.rsi, frame.rdx);
     if iovcnt == 0 || iovcnt > 1024 {
@@ -283,12 +309,17 @@ fn lin_writev(frame: &mut SyscallFrame) -> u64 {
             continue;
         }
         if acc.len() + len as usize > 8 * 1024 {
-            return err(EINVAL); // 聚合预算越顶（v0 口径）
+            break; // 聚合预算截断——已聚合部分按部分成功推进（Linux 同款）
         }
-        let Some(part) = validate_user_slice(base, len) else {
-            return err(14);
-        };
-        acc.extend_from_slice(part);
+        match validate_user_slice(base, len) {
+            Some(part) => acc.extend_from_slice(part),
+            None => {
+                if acc.is_empty() {
+                    return err(14); // 首 iov 即坏 = 全体 EFAULT（Linux 同款）
+                }
+                break; // 截断点后弃——已聚合字节部分成功
+            }
+        }
     }
     if acc.is_empty() {
         return 0;
