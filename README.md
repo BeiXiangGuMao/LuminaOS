@@ -6,11 +6,11 @@ workspace。内核可经 multiboot1 在 QEMU（`-smp 2`）上裸机启动，物�
 系统调用、能力化 IPC、swap 换页、持久化存储面全部在环；键盘/TTY 交互、
 显示面（1080p LFB/Surface 服务化/文本渲染/stage 合成器）、virtio-net 网络面
 （UDP/TCP 协议栈）全部在环；crystal 格式 v1 文件系统（WAL/快照）在环；
-**83 项裸机自检全绿并自动验收**（QEMU 退出码 33）。
+**85 项裸机自检全绿并自动验收**（QEMU 退出码 33）。
 
-当前状态：**v0.26.0（M34 四候选合并轮：电源协同显示侧 + busybox 覆盖度扩容 + 驱动服务化首割 + 真机窗口 RUNBOOK；H1 harbor 扩容挂账续作）** · ROADMAP 制度化（M24→M34 十一里程碑逐笔
-落账）· 取证证据链全程落账（t 系活体 t66-t83 续编）· ADR 八项裁决在库
-（docs/adr/）· 五维成熟度首评 v1 = 6.0/10（docs/MATURITY.md）。
+当前状态：**v0.26.0（M35 双向收口：harbor 158 符号 H-P01 ≥150 闸 P2 DoD 收口 + busybox 批次二 fork fd 继承/pipe2/sh 流水线真流 + yes/head applet；自检 85/85）** · ROADMAP 制度化（M24→M35 十二里程碑逐笔
+落账）· 取证证据链全程落账（t 系活体 t66-t85 续编）· ADR 八项裁决在库
+（docs/adr/）· 五维成熟度 v3 = 6.4/10（docs/MATURITY.md）。
 
 ## 特性一览
 
