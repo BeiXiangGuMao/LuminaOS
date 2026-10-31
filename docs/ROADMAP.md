@@ -89,7 +89,9 @@
 | **M34** | 四候选方向合并轮：P2/P3 DoD 深化（harbor 符号扩容 H-P01≥150 闸 + PR-P04 电源协同显示侧首割）+ busybox 覆盖度扩容批次（转换层次批 + applet 扩容 t83）+ 驱动服务化首割（服务框架结构面 + 旁路缩编批次二）+ 真机窗口机制面收口（longrun RUNBOOK + 环境 B 基准清单） | P2/P3/P5 | H-P01 ≥150 机检闸；PR-P04 结构面；applet 覆盖度成像表；驱动服务框架结构面；RUNBOOK 在环；t83 活体 | harbor/power/conduit/kernel/xtask/docs |
 | **M35** | H1 续作 + busybox 批次二：harbor libc 符号扩容 57→≥150（H-P01 闸 50→150 双端同步——P2 DoD 收口，M34-H1 挂账转正）+ busybox 批次二（fork fd 继承 + pipe2 执行面同批解锁 sh 流水线 + yes/head applet 扩容——M34 收尾移交挂账⑦续作）——**✅ 关账**（八笔闭账注：计划/H1a…H1d/BBa/BBb/收尾全行落账——harbor 158 符号 H-P01 ≥150 闸双端在环〔P2 DoD 收口〕+ fork fd 继承 + pipe2 执行面 EOF/EPIPE + sh 流水线真流串联〔t85 `yes \| head -n 3` 两段活体〕+ yes/head applet + 覆盖度成像表扩记 + writev 部分成功语义对齐随行；自检 85/85 双活体 t84/t85） | P2/P3 | H-P01 ≥150 机检闸双端在环；fork fd 继承在环；pipe2 执行面（EOF/EPIPE 语义）在环；sh 流水线活体；t84/t85 活体 | harbor/kernel/conduit/docs |
 
-远线：M36+ 后续里程碑随 M35 关账裁决（候选方向：crystal xxh3-128 uplift〔CR-P10 全量口径重跑〕+ TCP 电气接线批次 + alpha 混合与多 Surface 表 + 多用户纵深〔多会话/隔离强化〕——近线首项随 M36 开工裁决）。
+| **M36** | 四候选方向合并轮：crystal xxh3-128 uplift（CR-P10 全量口径重跑——M26 既登记偏差收口：算法 ID 2 + 特性位并存 + 超级块/节点双算法面 + 规范黄金向量锚定）+ TCP 电气接线批次（kernel::vnet TCP 面——挂账②转正）+ alpha 混合与多 Surface 表（prism 合成扩容——挂账④转正）+ busybox 批次三（cat/ls applet + getuid 族 + 阻塞式管道 I/O；ash 启动面超窗拆笔如实挂账） | P2/P3 | CR-P10 全量口径在库重建挂接；TCP 电气活体；alpha 合成面活体；applet 覆盖度扩记；t86+ 活体 | crystal/pulse/kernel/prism/conduit/docs |
+
+远线：M37+ 后续里程碑随 M36 关账裁决（候选方向：多用户纵深〔多会话/隔离强化——安全面 6→8 缺口主批次，独立里程碑量级〕+ 真 GUI 应用生态〔依赖 M36-A1 alpha 先行〕+ DPMS 电气面〔挂账③真机窗口裁决不变〕+ busybox ash 启动面 + harbor C ABI 链接层 + 细则 PDF 逐条对账——随 M36 落账滚动）。
 
 ---
 
@@ -323,6 +325,20 @@ M34 退出口径：harbor ≥150 符号机检闸双端在环 + PR-P04 显示协�
 > **收尾核验（M35-收尾）**：双方向 DoD 逐项——① H1 续作（P2 DoD 收口）：harbor **158 符号**实录（H-P01 机检闸 50→150 双端在环——lib.rs 符号清点断言 + METRICS H-P01 行；九域全谱宿主对账：errno/string/ctype/stdlib/unistd/time/search/wctype/wchar；C ABI 指针/链接层挂账不纳入不变）——**≥150 硬锚达成，M34-H1 挂账转正关账**；② busybox 批次二：fork fd 继承在环（spawn_fork_child_impl handles/hflags 双表锁窗继承——BBa 笔⑥）+ pipe2 执行面在环（64 KiB 定容环 + EOF/EPIPE/CLOEXEC——t84 八相位 84/84）+ sh 流水线首割在环（conduit::sh `|` 解析宿主 7 例 + spawn_stage_wired 接线铸槽 dup2 等价面 + t85 七相位真流串联——`yes | head -n 3` head exit 0 / yes exit 1 双收割对账 + LUMINA-T85-OK）+ yes/head applet 在环（BUSYBOX.md 成像表扩记 + translate 三批 293 收录）+ **writev 部分成功语义对齐随行**（Linux 同款——musl puts 溢出域双 iov 实录 iov1={0x2,1}，全有全无式 EFAULT 缺陷修复，已聚合字节按成功计数返回——musl __stdio_write 部分计数推进循环消费面直接依赖）。**M35 八笔全关账**（计划 c906c82 / H1a ecf17e0 / H1b ba7a623 / H1c d0bded1 / H1d f90b79d / BBa 1dbc461 / BBb ab45a80〔提交身份事故修史 amend 保序保时强推回环——沙盒回收 git config 失复事故恢复面，M26 先例纪律复实证〕/ 收尾本提交）——§三 M35 行 ✅ 关账落账。**挂账六项随行复核**：① t73 设备级残余（本窗口 S8 多跑全程未撞窗——193 冷却协议未启用，定性不变）/ ② TCP 电气接线（不变）/ ③ PR-P04 电气面 DPMS（真机窗口挂账不变）/ ④ alpha 混合与多 Surface 表（不变）/ ⑤ 细则 PDF 重取逐条对账（介质失联不变）/ ⑥ harbor C ABI 指针/链接层（不变——与用户态链接面成形同步）。**MATURITY v3 = 6.4/10**（v2 6.3 → +0.1：功能 6.8/稳定 5.6/治理 8.6 三维增量，性能/安全如实不动——docs/MATURITY.md §二·三）。近线 M36 候选方向：**crystal xxh3-128 uplift（CR-P10 全量口径重跑）** + TCP 电气接线批次 + alpha 混合与多 Surface 表 + busybox 批次三（cat/ls + 真 busybox sh ash 启动面——getuid 族/信号面/阻塞式管道 I/O）+ 多用户纵深——近线首项随 M36 开工裁决。
 
 M35 退出口径：harbor ≥150 符号机检闸双端在环（P2 DoD 收口）+ fork fd 继承在环 + pipe2 执行面在环（EOF/EPIPE 语义实证）+ sh 流水线活体在环 + yes/head applet 在环 + 覆盖度成像表扩记 + 冒烟 85/85。
+
+### M36 任务级分解（🚧 进行中，四候选方向合并轮）
+
+> 主题：四候选方向合并轮（M36 开工裁决：七候选→四项在册——crystal xxh3-128 uplift〔M35 收尾点名近线首项，自包含低风险先攻〕+ TCP 电气接线批次〔挂账②转正——pulse::tcp 协议面骨架 + kernel::vnet UDP/ICMP 电气先例路径成熟〕+ alpha 混合与多 Surface 表〔挂账④转正——真 GUI 应用生态前置〕+ busybox 批次三〔挂账⑦续作〕；多用户纵深留远线主批次〔安全面 6→8 缺口独立里程碑量级〕+ 真 GUI 应用生态依赖 A1 先行〔M37 候补〕+ DPMS 电气面挂账③既定真机窗口裁决不变）。主战场 crystal/pulse/kernel::vnet/prism/conduit/docs。**口径裁决注**（六项）：① xxh3-128 uplift 范围 = 算法面（in-crate 零依赖 no_std 无 unsafe 实现——xxHash v0.8 规范语义短/中/长三径，规范黄金向量锚定，向量以参考实现生成硬编码入库）+ 盘上面（算法 ID 2 + 特性位 `feature::XXH3_128` 并存：超级块 algo=2 → 128 位校验和 496..512 域〔校验域 0..496〕+ 节点 algo=2 → 16 字节校验和 16..32 域、条目区 32 起；全卷单算法声明制——`SuperBlock.checksum_algo` 主导 + 节点头 algo 字节一致性闸 + 旧读端算法 ID 前置门行动性拒绝；WAL 记录帧校验 `wal_cksum` 保持 XXH64——短命帧 v1 冻结边界如实登记）+ CR-P10 全量口径在库重建（细则 PDF 介质失联 §七 5 先例——超级块/节点双面 xxh3-128 可达 + 双实现验证〔写入端/恢复端独立对账〕+ 双算法并存互拒 + 校验和树结构面不动〔ROOT_NONE 既状〕）；② TCP 电气接线范围 = kernel::vnet TCP 面（TCP 端口表 + 伪头校验和 cksum16 复用 + rx_pump proto 6 分流 + ARP 地址解析 + virtio TX 电气 + 三次握手面）——重传定时器/滑动窗口/分片重组继续挂账不纳入；③ alpha 混合 = per-pixel over 算子（ART-003 在库面承接）+ 多 Surface 表 = Surface 注册表 + Stack 多面合成扩容 + 1080p 活体扩相位；④ busybox 批次三 = cat/ls applet（openat/getdents64 消费面已在库）+ getuid 族 + 阻塞式管道 I/O（等待队列面）；ash 启动面若超窗拆笔挂账续作；⑤ 自检网 t86+ 续编随活体落点双端同步（SELFTEST_EXPECTED/SELFTEST_TOTAL）；⑥ 挂账随行复核制不变。
+
+| 任务 | 内容 | 战场 | 状态 |
+|---|---|---|---|
+| **M36-计划**（笔①） | 本表落盘 + §三 M36 行 🚧 标注 + 远线 M37+ 滚动改写 + 挂账随行登记 | docs/ROADMAP | ✅ 本提交 |
+| **M36-C1a**（笔②） | crystal xxh3-128 算法面：in-crate 零依赖实现（短/中/长三径）+ 规范黄金向量锚定（空串/短/中/长边界扫描）+ `layout::CKSUM_XXH3_128` 算法 ID + 宿主对账测试 | crates/crystal | 🚧 |
+| **M36-C1b**（笔③） | crystal 盘上并存面：超级块/节点双算法 codec + 特性位联动闸 + 节点头一致性闸 + WAL 对账面双算法 + format.md F-2/F-4/F-5 勘误注 + CR-P10 口径重建 METRICS 挂接 + crash-fs 回归 | crates/crystal + docs | 🚧 |
+| **M36-N1**（笔④） | TCP 电气接线：kernel::vnet TCP 端口表 + 伪头校验和 + rx 分流 + 握手/数据段 TX/RX 电气 + TCP 活体 + SELFTEST 双端同步 | crates/kernel + crates/pulse | 🚧 |
+| **M36-A1**（笔⑤） | alpha 混合与多 Surface 表：prism over 算子 + Surface 注册表 + Stack 合成扩容 + 宿主 golden + 活体扩相位 | crates/prism + crates/kernel | 🚧 |
+| **M36-BB3**（笔⑥） | busybox 批次三：cat/ls applet + getuid 族 + 阻塞式管道 I/O 等待队列 + 覆盖度成像表扩记 + 活体 | crates/kernel + crates/conduit + docs | 🚧 |
+| **M36-收尾**（笔⑦） | ROADMAP/METRICS/MATURITY/README 对账 + 挂账复核注 + 近线 M37 + worklog Task ID 21 | 对账提交 | 🚧 |
 
 ---
 
