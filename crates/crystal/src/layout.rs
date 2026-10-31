@@ -27,6 +27,10 @@ pub const NODE_MAGIC: u32 = 0x4E545243;
 /// 校验和算法 ID（超级块/节点头各一字节；0 保留，1 = XXH64）。
 pub const CKSUM_XXH64: u8 = 1;
 
+/// 校验和算法 ID 2 = XXH3-128（M36-C1a uplift；细则 2.4 默认算法，演进规则
+/// 并存面——特性位 [`feature::XXH3_128`] 联动，盘上接入随 C1b）。
+pub const CKSUM_XXH3_128: u8 = 2;
+
 /// 特性位（超级块 `feature_bits`；细则 3.2：未知位必须可行动拒绝挂载）。
 pub mod feature {
     /// v1 基线（空集；已知位全集见 [`super::feature::KNOWN`]）。
