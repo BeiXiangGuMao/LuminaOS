@@ -203,6 +203,7 @@ mod tests {
             dev,
             alloc_next: NODE_START_LBA,
             device_lbas: DEV_LBAS,
+            checksum_algo: crate::layout::CKSUM_XXH3_128,
         }
     }
 

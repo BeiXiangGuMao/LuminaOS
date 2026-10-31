@@ -252,7 +252,16 @@ fn node_cksum_at(dev: &dyn BlockDevice, addr: u64) -> Result<u64, WalError> {
     }
     // 防线 4：回放重验走 strict 解码（头部 + 校验和 + 钳制全过才算在场）。
     match decode_node(&node, addr) {
-        Ok(_) => Ok(crate::format::node_checksum(&node)),
+        Ok((head, _)) => {
+            // 双算法对账锚（M36-C1b）：XXH64 域全摘要 / XXH3-128 域 low64
+            // （WAL 记录 u64 定宽 v1 冻结边界——完整 128 位验证仍由
+            // decode_node 每读执行，WAL 对账为预闸面）。
+            let sum = crate::format::node_checksum(head.checksum_algo, &node)
+                .map_err(|_| WalError::IntentOutOfRange { addr })?;
+            Ok(u64::from_le_bytes(
+                sum[..8].try_into().map_err(|_| WalError::Io)?,
+            ))
+        }
         Err(_) => Err(WalError::IntentOutOfRange { addr }),
     }
 }
@@ -401,14 +410,15 @@ mod tests {
             item_count: 1,
         };
         encode_node(&head, &items, &mut node).expect("encode node");
-        let sum = node_checksum(&node);
+        let sum = node_checksum(CKSUM_XXH64, &node).expect("node checksum");
+        let anchor = u64::from_le_bytes(sum[..8].try_into().expect("sum low64"));
         for i in 0..(NODE_BYTES / BLOCK_SIZE) {
             let mut sector = [0u8; BLOCK_SIZE];
             sector.copy_from_slice(&node[i * BLOCK_SIZE..(i + 1) * BLOCK_SIZE]);
             dev.write_block(addr + i as u64, &sector)
                 .expect("plant block");
         }
-        sum
+        anchor
     }
 
     /// 污染节点首扇区某字节（半写/位翻转注入面）。
@@ -548,7 +558,9 @@ mod tests {
             &mut node,
         )
         .expect("encode");
-        let sum = crate::format::node_checksum(&node);
+        let sum =
+            crate::format::node_checksum(crate::layout::CKSUM_XXH64, &node).expect("node checksum");
+        let sum = u64::from_le_bytes(sum[..8].try_into().expect("sum low64"));
         for i in 0..32u64 {
             let mut sector = [0u8; 512];
             sector.copy_from_slice(&node[i as usize * 512..(i as usize + 1) * 512]);

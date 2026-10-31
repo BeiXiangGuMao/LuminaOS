@@ -20,7 +20,9 @@ use alloc::vec::Vec;
 
 use bedrock::block::{BlockDevice, BLOCK_SIZE};
 
-use crate::format::{decode_node, encode_node, NodeHead, NodeType, RootRef, NODE_ITEM_CAP};
+use crate::format::{
+    decode_node, encode_node, node_checksum, node_item_cap, NodeHead, NodeType, RootRef,
+};
 use crate::layout::{is_node_addr, NODE_BLOCKS, NODE_BYTES, TREE_MAX_DEPTH};
 
 /// 树操作错误（结构面；IO/一致性级经 [`BtreeError::Io`]/[`BtreeError::Format`]）。
@@ -64,6 +66,8 @@ pub struct BtreeContext<'a> {
     pub alloc_next: u64,
     /// 设备容量（LBA 数；分配上界钳制）。
     pub device_lbas: u64,
+    /// 全卷校验和算法（M36-C1b 单算法声明制——由超级块主导，节点头一致性闸对账）。
+    pub checksum_algo: u8,
 }
 
 /// 叶/内部条目（16 B：key + 值域）。
@@ -102,6 +106,14 @@ impl<'a> BtreeContext<'a> {
             node[i * BLOCK_SIZE..(i + 1) * BLOCK_SIZE].copy_from_slice(&sector);
         }
         let (head, raw) = decode_node(&node, addr).map_err(BtreeError::Format)?;
+        // 全卷单算法声明制：节点头算法必须与超级块声明一致（M36-C1b 闸）。
+        if head.checksum_algo != self.checksum_algo {
+            return Err(BtreeError::Format(
+                crate::format::FormatError::AlgoFeatureMismatch {
+                    algo: head.checksum_algo,
+                },
+            ));
+        }
         let mut items = Vec::with_capacity(usize::from(head.item_count));
         for i in 0..usize::from(head.item_count) {
             let mut kb = [0u8; 8];
@@ -117,7 +129,8 @@ impl<'a> BtreeContext<'a> {
     }
 
     /// 编码并写整节点（新址写入 = COW 复制面；旧节点零触碰）。
-    /// 返回该节点的校验和（WAL 意图表对照锚，X1 消费）。
+    /// 返回该节点的校验和锚（WAL 意图表对照面：XXH64 域全摘要 /
+    /// XXH3-128 域 low64——WAL 记录 u64 定宽 v1 冻结边界，M36-C1b 勘误注）。
     fn write_node(
         &self,
         addr: u64,
@@ -134,11 +147,12 @@ impl<'a> BtreeContext<'a> {
         let head = NodeHead {
             node_type,
             level,
-            checksum_algo: crate::layout::CKSUM_XXH64,
+            checksum_algo: self.checksum_algo,
             item_count: items.len() as u16,
         };
         encode_node(&head, &raw, &mut node).map_err(BtreeError::Format)?;
-        let sum = crate::format::node_checksum(&node);
+        let sum = node_checksum(self.checksum_algo, &node).map_err(BtreeError::Format)?;
+        let anchor = u64::from_le_bytes(sum[..8].try_into().map_err(|_| BtreeError::BadStructure)?);
         for i in 0..(NODE_BYTES / BLOCK_SIZE) {
             let mut sector = [0u8; BLOCK_SIZE];
             sector.copy_from_slice(&node[i * BLOCK_SIZE..(i + 1) * BLOCK_SIZE]);
@@ -146,7 +160,7 @@ impl<'a> BtreeContext<'a> {
                 .write_block(addr + i as u64, &sector)
                 .map_err(|_| BtreeError::Io)?;
         }
-        Ok(sum)
+        Ok(anchor)
     }
 }
 
@@ -336,7 +350,7 @@ fn tree_write(
     leaf.extend_from_slice(&items[idx..]);
     let new_addr;
     let mut sep_up: Option<Item> = None;
-    if leaf.len() <= NODE_ITEM_CAP {
+    if leaf.len() <= node_item_cap(ctx.checksum_algo).map_err(BtreeError::Format)? {
         new_addr = cow_copy(ctx, leaf_head.node_type, leaf_head.level, &leaf, writes)?.0;
     } else {
         let mid = leaf.len() / 2;
@@ -421,7 +435,7 @@ fn finish_cow(
             pins.push(sep);
         }
         pins.extend_from_slice(&pitems[arm + 1..]);
-        if pins.len() <= NODE_ITEM_CAP {
+        if pins.len() <= node_item_cap(ctx.checksum_algo).map_err(BtreeError::Format)? {
             new_addr = cow_copy(ctx, phead.node_type, phead.level, &pins, writes)?.0;
         } else {
             let mid = pins.len() / 2;
@@ -478,7 +492,7 @@ fn leaf_level(ctx: &BtreeContext, addr: u64) -> Result<u8, BtreeError> {
 mod tests {
     use super::{insert, lookup, BtreeContext, RootRef};
     use crate::format::ROOT_NONE;
-    use crate::layout::{NODE_START_LBA, TREE_MAX_DEPTH};
+    use crate::layout::{CKSUM_XXH3_128, NODE_START_LBA, TREE_MAX_DEPTH};
     use bedrock::block::MemBlock;
 
     /// 131072 LBA（64 MiB）：2000 键 COW 全量复制（~3k 节点）充分生长域。
@@ -489,6 +503,7 @@ mod tests {
             dev,
             alloc_next: NODE_START_LBA,
             device_lbas: DEV_LBAS,
+            checksum_algo: CKSUM_XXH3_128,
         }
     }
 
@@ -580,6 +595,7 @@ mod tests {
             dev: &dev,
             alloc_next: NODE_START_LBA,
             device_lbas: 512,
+            checksum_algo: CKSUM_XXH3_128,
         };
         let mut r = root_at(1);
         let mut ok = 0u64;

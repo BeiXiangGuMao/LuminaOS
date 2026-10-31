@@ -25,7 +25,9 @@ use crystal::btree::{insert_tracked, lookup, BtreeContext};
 use crystal::format::{
     decode_sb, encode_sb, RootRef, RootRef as FmtRootRef, SuperBlock, ROOT_NONE,
 };
-use crystal::layout::{CKSUM_XXH64, FORMAT_VERSION, NODE_START_LBA, SB_A_LBA, SB_B_LBA, WAL_LBAS};
+use crystal::layout::{
+    feature, CKSUM_XXH3_128, FORMAT_VERSION, NODE_START_LBA, SB_A_LBA, SB_B_LBA, WAL_LBAS,
+};
 use crystal::wal::{append_txn, record_lbas, recover, repair_sb, NodeIntent, WalTxn};
 
 /// 故障注入块设备：预算耗尽 = 断电（丢弃写）；torn = 边界扇区半写。
@@ -96,10 +98,12 @@ const N_TXN: u64 = 30; // 30 事务 ≈ 1500+ 扇区写（树长深后单笔升�
 
 /// 格式化：空根 SB 写 A 槽（gen = 1）。
 fn format_dev(dev: &dyn BlockDevice) -> SuperBlock {
+    // M36-C1b：crash-fs 注入矩阵整体跑 uplift 域（XXH3-128 全链真跑——
+    // 双算法并存面的故障注入回归锚）。
     let sb = SuperBlock {
         version: FORMAT_VERSION,
-        feature_bits: 0,
-        checksum_algo: CKSUM_XXH64,
+        feature_bits: feature::XXH3_128,
+        checksum_algo: CKSUM_XXH3_128,
         slot: 0,
         generation: 1,
         wal_head: 0,
@@ -120,6 +124,7 @@ fn commit_txn(dev: &dyn BlockDevice, sb: &SuperBlock, root: RootRef, key: u64) -
         dev,
         alloc_next: sb.alloc_next,
         device_lbas: DEV_LBAS,
+        checksum_algo: CKSUM_XXH3_128,
     };
     let (new_root, writes) = insert_tracked(&mut ctx, root, key, key + 1000).expect("txn insert");
     let gen = sb.generation + 1;
@@ -212,6 +217,7 @@ fn assert_two_state(dev: &dyn BlockDevice, sb: &SuperBlock) {
         dev,
         alloc_next: NODE_START_LBA,
         device_lbas: DEV_LBAS,
+        checksum_algo: CKSUM_XXH3_128,
     };
     for k in 0..N_TXN {
         let expect = if k + 2 <= sb.generation {
@@ -311,6 +317,7 @@ fn wal_discard_on_corrupt_node() {
             dev: &dev,
             alloc_next: sb.alloc_next,
             device_lbas: DEV_LBAS,
+            checksum_algo: CKSUM_XXH3_128,
         };
         let (new_root4, writes) = insert_tracked(&mut ctx, root, 3, 1003).expect("txn4");
         let txn = WalTxn {
@@ -398,6 +405,7 @@ fn bitflip_read_path_detection_matrix() {
                 dev: &dev,
                 alloc_next: NODE_START_LBA,
                 device_lbas: DEV_LBAS,
+                checksum_algo: CKSUM_XXH3_128,
             };
             let r = lookup(
                 &ctx,
@@ -422,6 +430,7 @@ fn bitflip_read_path_detection_matrix() {
         dev: &dev,
         alloc_next: NODE_START_LBA,
         device_lbas: DEV_LBAS,
+        checksum_algo: CKSUM_XXH3_128,
     };
     for k in 0..8u64 {
         assert_eq!(lookup(&ctx, root, k).unwrap(), Some(k + 1000));

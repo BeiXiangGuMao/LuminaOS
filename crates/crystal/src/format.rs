@@ -7,7 +7,8 @@
 //! 2. **解析时钳制**——节点指针范围与对齐（[`crate::layout::is_node_addr`]）、
 //!    树深上限、键序合法性、条目容量（`SuperBlock`/`NodeHead` 物化时钳制）；
 //! 3. **使用前校验**——校验和先于任何语义解释（校验不过即
-//!    [`FormatError::ChecksumMismatch`]，绝不返回已解释数据）；
+//!    [`FormatError::ChecksumMismatch`]/[`FormatError::ChecksumMismatch128`]，
+//!    绝不返回已解释数据）；
 //! 4. **恢复路径二次校验**——日志回放的每个节点重验校验和（W1 消费口）。
 //!
 //! 未知特性位处理（细则 3.2）：拒绝挂载且拒绝信息可行动——
@@ -19,13 +20,13 @@
 
 use core::fmt;
 
-use crate::checksum::xxh64;
-pub use crate::layout::NODE_ITEM_CAP;
+use crate::checksum::{xxh3_128, xxh64};
 use crate::layout::{
-    feature, is_node_addr, CKSUM_XXH64, FORMAT_VERSION, MIN_DEVICE_LBAS, NODE_BYTES,
-    NODE_HEADER_BYTES, NODE_MAGIC, SB_A_LBA, SB_B_LBA, SB_CKSUM_OFFSET, SB_MAGIC, TREE_MAX_DEPTH,
+    feature, is_node_addr, CKSUM_XXH3_128, CKSUM_XXH64, FORMAT_VERSION, MIN_DEVICE_LBAS,
+    NODE_BYTES, NODE_HEADER_BYTES, NODE_MAGIC, SB_A_LBA, SB_B_LBA, SB_MAGIC, TREE_MAX_DEPTH,
     WAL_LBAS,
 };
+pub use crate::layout::{NODE_HEADER_BYTES_128, NODE_ITEM_CAP, NODE_ITEM_CAP_128};
 
 /// 格式域错误（细则 3.3 一致性级 + 结构面；IO 级由 `BlockError` 透传）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +59,20 @@ pub enum FormatError {
         expected: u64,
         /// 实得摘要。
         actual: u64,
+    },
+    /// 校验和不符（128 位域，M36-C1b：XXH3-128 面；摘要 16 B 小端）。
+    ChecksumMismatch128 {
+        /// 不符地址（LBA；超级块面 = 0）。
+        at: u64,
+        /// 期望摘要（16 B 小端）。
+        expected: [u8; 16],
+        /// 实得摘要（16 B 小端）。
+        actual: [u8; 16],
+    },
+    /// 校验和算法与特性位联动闸不符（M36-C1b：algo=2 ⟺ `feature::XXH3_128`）。
+    AlgoFeatureMismatch {
+        /// 盘上算法 ID。
+        algo: u8,
     },
     /// 地址越界。
     OutOfRange {
@@ -115,6 +130,25 @@ impl fmt::Display for FormatError {
                 f,
                 "校验和不符 @LBA{at}: 期望 {expected:#018x} 实得 {actual:#018x}"
             ),
+            Self::ChecksumMismatch128 {
+                at,
+                expected,
+                actual,
+            } => {
+                write!(f, "校验和不符(128位) @LBA{at}: 期望 ")?;
+                for b in expected.iter() {
+                    write!(f, "{b:02x}")?;
+                }
+                write!(f, " 实得 ")?;
+                for b in actual.iter() {
+                    write!(f, "{b:02x}")?;
+                }
+                Ok(())
+            }
+            Self::AlgoFeatureMismatch { algo } => write!(
+                f,
+                "校验和算法 {algo} 与特性位联动闸不符（algo=2 ⟺ feature::XXH3_128）"
+            ),
             Self::OutOfRange { addr, limit } => write!(f, "地址 {addr} 越界（容量 {limit}）"),
             Self::Misaligned { addr } => write!(f, "地址 {addr} 未按节点粒度对齐"),
             Self::BadKeyOrder { index } => write!(f, "键序非法 @条目{index}"),
@@ -169,7 +203,8 @@ pub struct SuperBlock {
     pub version: u32,
     /// 特性位图（只允许 [`crate::layout::feature::KNOWN`] 子集）。
     pub feature_bits: u64,
-    /// 校验和算法 ID（恒 [`crate::layout::CKSUM_XXH64`]）。
+    /// 校验和算法 ID（v1 存量卷 = [`CKSUM_XXH64`]；uplift 卷 =
+    /// [`CKSUM_XXH3_128`] + 特性位 `feature::XXH3_128`——M36-C1b 演进规则并存面）。
     pub checksum_algo: u8,
     /// 槽位（0 = A / 1 = B；双槽交替写的信息位，与槽 LBA 交叉核对）。
     pub slot: u8,
@@ -187,7 +222,9 @@ pub struct SuperBlock {
     pub root_cksum: RootRef,
 }
 
-/// 超级块编码（512 B；校验域 = 0..504，校验和落 504..512）。
+/// 超级块编码（512 B；XXH64 域校验域 0..504 校验和落 504..512，
+/// XXH3-128 域校验域 0..496 校验和落 496..512——M36-C1b 双算法面，
+/// 布局由 `sb.checksum_algo` 定）。
 pub fn encode_sb(sb: &SuperBlock) -> [u8; 512] {
     let mut buf = [0u8; 512];
     buf[0..8].copy_from_slice(&SB_MAGIC);
@@ -204,8 +241,15 @@ pub fn encode_sb(sb: &SuperBlock) -> [u8; 512] {
     buf[60..68].copy_from_slice(&sb.root_subvols.generation.to_le_bytes());
     buf[68..76].copy_from_slice(&sb.root_cksum.addr.to_le_bytes());
     buf[76..84].copy_from_slice(&sb.root_cksum.generation.to_le_bytes());
-    let sum = xxh64(&buf[..SB_CKSUM_OFFSET]);
-    buf[SB_CKSUM_OFFSET..].copy_from_slice(&sum.to_le_bytes());
+    // 算法定域：校验域终点 = 512 − 域宽（XXH64 8 B → 504；XXH3-128 16 B → 496）。
+    let cklen = cksum_field_len(sb.checksum_algo).unwrap_or(8);
+    let ck_off = 512 - cklen;
+    let mut sum = [0u8; 16];
+    match sb.checksum_algo {
+        CKSUM_XXH3_128 => sum.copy_from_slice(&xxh3_128(&buf[..ck_off]).to_le_bytes()),
+        _ => sum[..8].copy_from_slice(&xxh64(&buf[..ck_off]).to_le_bytes()),
+    }
+    buf[ck_off..].copy_from_slice(&sum[..cklen]);
     buf
 }
 
@@ -227,14 +271,29 @@ pub fn decode_sb(buf: &[u8; 512], device_lbas: u64) -> Result<SuperBlock, Format
         return Err(FormatError::UnsupportedFeatures { unknown });
     }
     let algo = buf[20];
-    if algo != CKSUM_XXH64 {
-        return Err(FormatError::BadAlgo { found: algo });
+    // 防线 1：算法 ID 先于校验（未知算法 → 行动性拒绝——旧读端语义）。
+    let cklen = cksum_field_len(algo)?;
+    let ck_off = 512 - cklen;
+    // 联动闸（M36-C1b）：algo=2 ⟺ feature::XXH3_128（双向）。
+    match algo {
+        CKSUM_XXH3_128 if feature_bits & feature::XXH3_128 == 0 => {
+            return Err(FormatError::AlgoFeatureMismatch { algo });
+        }
+        CKSUM_XXH64 if feature_bits & feature::XXH3_128 != 0 => {
+            return Err(FormatError::AlgoFeatureMismatch { algo });
+        }
+        _ => {}
     }
-    // 防线 3：校验和先于任何语义解释。
-    let expected = le_u64(buf, SB_CKSUM_OFFSET);
-    let actual = xxh64(&buf[..SB_CKSUM_OFFSET]);
+    // 防线 3：校验和先于任何语义解释（归一化 16 B 比较）。
+    let mut expected = [0u8; 16];
+    expected[..cklen].copy_from_slice(&buf[ck_off..]);
+    let mut actual = [0u8; 16];
+    match algo {
+        CKSUM_XXH3_128 => actual.copy_from_slice(&xxh3_128(&buf[..ck_off]).to_le_bytes()),
+        _ => actual[..8].copy_from_slice(&xxh64(&buf[..ck_off]).to_le_bytes()),
+    }
     if expected != actual {
-        return Err(FormatError::ChecksumMismatch {
+        return Err(FormatError::ChecksumMismatch128 {
             at: 0,
             expected,
             actual,
@@ -351,20 +410,63 @@ pub struct NodeHead {
 /// 节点校验和域偏移（头 16 字节定名域 + 8 字节校验和）。
 pub const NODE_CKSUM_OFFSET: usize = 16;
 
-/// 计算节点校验和（整 16 KiB，校验和字段清零后参与）。
-pub fn node_checksum(node: &[u8; NODE_BYTES]) -> u64 {
-    let mut scratch = *node;
-    scratch[NODE_CKSUM_OFFSET..NODE_CKSUM_OFFSET + 8].fill(0);
-    xxh64(&scratch)
+/// 节点校验和域宽（算法定；未知算法 → [`FormatError::BadAlgo`]）。
+pub fn cksum_field_len(algo: u8) -> Result<usize, FormatError> {
+    match algo {
+        CKSUM_XXH64 => Ok(8),
+        CKSUM_XXH3_128 => Ok(16),
+        _ => Err(FormatError::BadAlgo { found: algo }),
+    }
 }
 
-/// 编码节点头 + 校验和（`items` 为条目区字节，长度 `item_count * 16`）。
+/// 节点条目容量（算法定；未知算法 → [`FormatError::BadAlgo`]）。
+pub fn node_item_cap(algo: u8) -> Result<usize, FormatError> {
+    match algo {
+        CKSUM_XXH64 => Ok(NODE_ITEM_CAP),
+        CKSUM_XXH3_128 => Ok(NODE_ITEM_CAP_128),
+        _ => Err(FormatError::BadAlgo { found: algo }),
+    }
+}
+
+/// 节点条目区起点（算法定头宽；未知算法 → [`FormatError::BadAlgo`]）。
+pub fn node_items_offset(algo: u8) -> Result<usize, FormatError> {
+    match algo {
+        CKSUM_XXH64 => Ok(NODE_HEADER_BYTES),
+        CKSUM_XXH3_128 => Ok(NODE_HEADER_BYTES_128),
+        _ => Err(FormatError::BadAlgo { found: algo }),
+    }
+}
+
+/// 计算节点校验和（整 16 KiB，校验和域清零后参与；归一化 16 B——
+/// XXH64 域高 8 B 零延伸，M36-C1b 双算法面）。
+pub fn node_checksum(algo: u8, node: &[u8; NODE_BYTES]) -> Result<[u8; 16], FormatError> {
+    let cklen = cksum_field_len(algo)?;
+    let mut scratch = *node;
+    scratch[NODE_CKSUM_OFFSET..NODE_CKSUM_OFFSET + cklen].fill(0);
+    let mut out = [0u8; 16];
+    match algo {
+        CKSUM_XXH64 => out[..8].copy_from_slice(&xxh64(&scratch).to_le_bytes()),
+        _ => out.copy_from_slice(&xxh3_128(&scratch).to_le_bytes()),
+    }
+    Ok(out)
+}
+
+/// 编码节点头 + 校验和（`items` 为条目区字节，长度 `item_count * 16`；
+/// 布局由 `head.checksum_algo` 自描述——XXH64 域条目区自 24 起，XXH3-128
+/// 域自 32 起，M36-C1b）。
 pub fn encode_node(
     head: &NodeHead,
     items: &[u8],
     node: &mut [u8; NODE_BYTES],
 ) -> Result<(), FormatError> {
     if items.len() != usize::from(head.item_count) * 16 {
+        return Err(FormatError::BadItemCount {
+            count: head.item_count,
+        });
+    }
+    let items_off = node_items_offset(head.checksum_algo)?;
+    let cklen = cksum_field_len(head.checksum_algo)?;
+    if usize::from(head.item_count) > node_item_cap(head.checksum_algo)? {
         return Err(FormatError::BadItemCount {
             count: head.item_count,
         });
@@ -377,30 +479,32 @@ pub fn encode_node(
     node[7] = 0;
     node[8..10].copy_from_slice(&head.item_count.to_le_bytes());
     node[10..12].fill(0);
-    node[NODE_HEADER_BYTES..NODE_HEADER_BYTES + items.len()].copy_from_slice(items);
-    let sum = node_checksum(node);
-    node[NODE_CKSUM_OFFSET..NODE_CKSUM_OFFSET + 8].copy_from_slice(&sum.to_le_bytes());
+    node[items_off..items_off + items.len()].copy_from_slice(items);
+    let sum = node_checksum(head.checksum_algo, node)?;
+    node[NODE_CKSUM_OFFSET..NODE_CKSUM_OFFSET + cklen].copy_from_slice(&sum[..cklen]);
     Ok(())
 }
 
 /// 解码节点头（防线 1→2→3→2 全序；键序钳制随条目域执行）。
 ///
-/// 返回头 + 键序验证后的条目切片视图（`&[u8]`，每条目 16 字节）。
+/// 算法面自描述（头偏移 6 字节）：XXH64 域头 24 B / XXH3-128 域头 32 B
+/// （M36-C1b）；未知算法行动性拒绝（旧读端语义）。返回头 + 键序验证后的
+/// 条目切片视图（`&[u8]`，每条目 16 字节）。
 pub fn decode_node(node: &[u8; NODE_BYTES], at: u64) -> Result<(NodeHead, &[u8]), FormatError> {
-    // 防线 1：魔数 / 算法。
+    // 防线 1：魔数 / 算法（未知算法 → 行动性拒绝；域布局随算法）。
     let magic = le_u32(node, 0);
     if magic != NODE_MAGIC {
         return Err(FormatError::BadMagic { at });
     }
     let algo = node[6];
-    if algo != CKSUM_XXH64 {
-        return Err(FormatError::BadAlgo { found: algo });
-    }
-    // 防线 3：校验和先于解释。
-    let expected = le_u64(node, NODE_CKSUM_OFFSET);
-    let actual = node_checksum(node);
+    let items_off = node_items_offset(algo)?;
+    let cklen = cksum_field_len(algo)?;
+    // 防线 3：校验和先于解释（归一化 16 B 比较；XXH64 域高 8 B 零延伸）。
+    let mut expected = [0u8; 16];
+    expected[..cklen].copy_from_slice(&node[NODE_CKSUM_OFFSET..NODE_CKSUM_OFFSET + cklen]);
+    let actual = node_checksum(algo, node)?;
     if expected != actual {
-        return Err(FormatError::ChecksumMismatch {
+        return Err(FormatError::ChecksumMismatch128 {
             at,
             expected,
             actual,
@@ -410,7 +514,7 @@ pub fn decode_node(node: &[u8; NODE_BYTES], at: u64) -> Result<(NodeHead, &[u8])
     let node_type = NodeType::from_byte(node[4])?;
     let level = node[5];
     let item_count = u16::from_le_bytes([node[8], node[9]]);
-    if usize::from(item_count) > NODE_ITEM_CAP {
+    if usize::from(item_count) > node_item_cap(algo)? {
         return Err(FormatError::BadItemCount { count: item_count });
     }
     let max_level = match node_type {
@@ -426,7 +530,7 @@ pub fn decode_node(node: &[u8; NODE_BYTES], at: u64) -> Result<(NodeHead, &[u8])
         checksum_algo: algo,
         item_count,
     };
-    let items = &node[NODE_HEADER_BYTES..NODE_HEADER_BYTES + usize::from(item_count) * 16];
+    let items = &node[items_off..items_off + usize::from(item_count) * 16];
     for i in 0..usize::from(item_count) {
         let key = le_u64(items, i * 16);
         if i > 0 && key <= le_u64(items, (i - 1) * 16) {
@@ -631,13 +735,156 @@ mod tests {
         // 校验和函数与 xxh64 直算一致（跨模块一致性）。
         let mut node = [0u8; NODE_BYTES];
         node[0..4].copy_from_slice(&crate::layout::NODE_MAGIC.to_le_bytes());
+        let got = super::node_checksum(crate::layout::CKSUM_XXH64, &node).expect("校验和");
         assert_eq!(
-            super::node_checksum(&node),
-            xxh64(&{
+            &got[..8],
+            &xxh64(&{
                 let mut s = node;
                 s[16..24].fill(0);
                 s
             })
+            .to_le_bytes()
         );
+    }
+
+    // ===================== M36-C1b 双算法并存面 =====================
+
+    fn sample_sb_algo(slot: u8, algo: u8) -> SuperBlock {
+        let mut sb = sample_sb(slot);
+        sb.checksum_algo = algo;
+        if algo == crate::layout::CKSUM_XXH3_128 {
+            sb.feature_bits = crate::layout::feature::XXH3_128;
+        } else {
+            sb.feature_bits = crate::layout::feature::BASE;
+        }
+        sb
+    }
+
+    /// 超级块双算法回环：两域各自编码→解码全等；XXH3-128 域校验和 16 B
+    /// 落 496..512（高半域非零——域宽度自证）。
+    #[test]
+    fn sb_roundtrip_both_algos() {
+        for algo in [crate::layout::CKSUM_XXH64, crate::layout::CKSUM_XXH3_128] {
+            let sb = sample_sb_algo(0, algo);
+            let raw = encode_sb(&sb);
+            let back = decode_sb(&raw, crate::layout::MIN_DEVICE_LBAS).expect("解码成功");
+            assert_eq!(back, sb);
+            if algo == crate::layout::CKSUM_XXH3_128 {
+                assert!(
+                    raw[496..504].iter().any(|b| *b != 0),
+                    "XXH3-128 高半校验和域应非零"
+                );
+            }
+        }
+    }
+
+    /// 联动闸双向：algo=2 无特性位拒 / algo=1 带 XXH3 位拒；未知算法 ID
+    /// 行动性拒绝（旧读端语义）。
+    #[test]
+    fn sb_algo_feature_gates() {
+        // algo=2 缺特性位。
+        let mut sb = sample_sb_algo(0, crate::layout::CKSUM_XXH3_128);
+        sb.feature_bits = crate::layout::feature::BASE;
+        assert!(matches!(
+            decode_sb(&encode_sb(&sb), crate::layout::MIN_DEVICE_LBAS),
+            Err(super::FormatError::AlgoFeatureMismatch { algo: 2 })
+        ));
+        // algo=1 带 XXH3 位。
+        let mut sb2 = sample_sb(0);
+        sb2.feature_bits = crate::layout::feature::XXH3_128;
+        assert!(matches!(
+            decode_sb(&encode_sb(&sb2), crate::layout::MIN_DEVICE_LBAS),
+            Err(super::FormatError::AlgoFeatureMismatch { algo: 1 })
+        ));
+        // 未知算法 ID（手改字节 + 域外不动）。
+        let mut raw3 = encode_sb(&sample_sb(0));
+        raw3[20] = 7;
+        assert!(matches!(
+            decode_sb(&raw3, crate::layout::MIN_DEVICE_LBAS),
+            Err(super::FormatError::BadAlgo { found: 7 })
+        ));
+    }
+
+    /// 节点双算法回环：两域各自编码→解码全等；XXH3-128 域条目区自 32 起
+    /// （头 8..24 零域自证）+ 容量域 1023/1022 分界。
+    #[test]
+    fn node_roundtrip_both_algos() {
+        let items16 = |k: u64| {
+            let mut raw = alloc::vec![0u8; 16];
+            raw[..8].copy_from_slice(&k.to_le_bytes());
+            raw[8..].copy_from_slice(&(k * 3).to_le_bytes());
+            raw
+        };
+        for algo in [crate::layout::CKSUM_XXH64, crate::layout::CKSUM_XXH3_128] {
+            let head = NodeHead {
+                node_type: NodeType::Leaf,
+                level: 0,
+                checksum_algo: algo,
+                item_count: 1,
+            };
+            let mut node = [0u8; NODE_BYTES];
+            encode_node(&head, &items16(42), &mut node).expect("编码成功");
+            let (back, items) = decode_node(&node, _SB_A).expect("解码成功");
+            assert_eq!(back.checksum_algo, algo);
+            assert_eq!(back.item_count, 1);
+            assert_eq!(&items[..8], &42u64.to_le_bytes());
+            if algo == crate::layout::CKSUM_XXH3_128 {
+                // 128 位域高半（24..32 = 校验和高 8 字节）应非零——域宽度自证。
+                assert!(node[24..32].iter().any(|b| *b != 0), "128 位域高半非零自证");
+            }
+        }
+    }
+
+    /// XXH3-128 域容量边界：NODE_ITEM_CAP_128 条可编，+1 拒收（BadItemCount）。
+    #[test]
+    fn node_cap_boundary_128() {
+        let mut items = alloc::vec![0u8; crate::layout::NODE_ITEM_CAP_128 * 16];
+        for i in 0..crate::layout::NODE_ITEM_CAP_128 {
+            items[i * 16..i * 16 + 8].copy_from_slice(&((i as u64 + 1) * 2).to_le_bytes());
+        }
+        let head = NodeHead {
+            node_type: NodeType::Leaf,
+            level: 0,
+            checksum_algo: crate::layout::CKSUM_XXH3_128,
+            item_count: crate::layout::NODE_ITEM_CAP_128 as u16,
+        };
+        let mut node = [0u8; NODE_BYTES];
+        encode_node(&head, &items, &mut node).expect("满容可编");
+        let (back, _) = decode_node(&node, _SB_A).expect("满容可解");
+        assert_eq!(back.item_count, crate::layout::NODE_ITEM_CAP_128 as u16);
+        let over = NodeHead {
+            item_count: (crate::layout::NODE_ITEM_CAP_128 + 1) as u16,
+            ..head
+        };
+        assert!(encode_node(&over, &items, &mut node).is_err());
+    }
+
+    /// 跨算法损坏检测：XXH3-128 域节点翻一字节 → ChecksumMismatch128；
+    /// 未知算法节点 → BadAlgo 行动性拒绝。
+    #[test]
+    fn node_corrupt_and_unknown_algo() {
+        let mut items = alloc::vec![0u8; 16];
+        items[..8].copy_from_slice(&1u64.to_le_bytes());
+        let head = NodeHead {
+            node_type: NodeType::Leaf,
+            level: 0,
+            checksum_algo: crate::layout::CKSUM_XXH3_128,
+            item_count: 1,
+        };
+        let mut node = [0u8; NODE_BYTES];
+        encode_node(&head, &items, &mut node).expect("编码成功");
+        node[64] ^= 0x01;
+        assert!(matches!(
+            decode_node(&node, _SB_A),
+            Err(super::FormatError::ChecksumMismatch128 { .. })
+        ));
+        // 未知算法。
+        let mut node2 = [0u8; NODE_BYTES];
+        node2[0..4].copy_from_slice(&crate::layout::NODE_MAGIC.to_le_bytes());
+        node2[6] = 9;
+        assert!(matches!(
+            decode_node(&node2, _SB_A),
+            Err(super::FormatError::BadAlgo { found: 9 })
+        ));
     }
 }

@@ -24,7 +24,8 @@ use bedrock::block::{BlockDevice, BLOCK_SIZE};
 use crate::btree::{insert_tracked, lookup, upsert_tracked, BtreeContext};
 use crate::format::{decode_sb, encode_sb, RootRef, SuperBlock, ROOT_NONE};
 use crate::layout::{
-    CKSUM_XXH64, FORMAT_VERSION, MIN_DEVICE_LBAS, NODE_START_LBA, SB_A_LBA, SB_B_LBA, WAL_LBAS,
+    feature, CKSUM_XXH3_128, FORMAT_VERSION, MIN_DEVICE_LBAS, NODE_START_LBA, SB_A_LBA, SB_B_LBA,
+    WAL_LBAS,
 };
 use crate::subvol::{read_root, SubvolError, SubvolId};
 use crate::wal::{
@@ -93,18 +94,23 @@ impl Fs {
             dev: self.dev.as_ref(),
             alloc_next: self.sb.alloc_next,
             device_lbas: self.device_lbas,
+            checksum_algo: self.sb.checksum_algo,
         }
     }
 
     /// 格式化：空根超级块写 A 槽（代际 1）；低于最小域拒绝。
+    ///
+    /// 新卷默认 uplift 域（M36-C1b：CKSUM_XXH3_128 + 特性位
+    /// `feature::XXH3_128`——细则 2.4 默认算法落地；存量 XXH64 卷照常读写，
+    /// 演进规则并存面）。
     pub fn format(dev: &Arc<dyn BlockDevice>, device_lbas: u64) -> Result<Self, FsError> {
         if device_lbas < MIN_DEVICE_LBAS {
             return Err(FsError::TooSmall { lbas: device_lbas });
         }
         let sb = SuperBlock {
             version: FORMAT_VERSION,
-            feature_bits: 0,
-            checksum_algo: CKSUM_XXH64,
+            feature_bits: feature::XXH3_128,
+            checksum_algo: CKSUM_XXH3_128,
             slot: 0,
             generation: 1,
             wal_head: 0,
@@ -384,6 +390,7 @@ mod tests {
                 dev: dev.as_ref(),
                 alloc_next: fs.sb.alloc_next,
                 device_lbas: DEV_LBAS,
+                checksum_algo: fs.sb.checksum_algo,
             };
             crate::subvol::read_root(&ctx, fs.sb.root_subvols, snap).expect("snap root")
         };
@@ -400,6 +407,7 @@ mod tests {
             dev: dev.as_ref(),
             alloc_next: NODE_START_LBA_FS,
             device_lbas: DEV_LBAS,
+            checksum_algo: crate::layout::CKSUM_XXH3_128,
         }
     }
 

@@ -51,11 +51,19 @@ pub const NODE_BYTES: usize = 16 * 1024;
 /// 每节点块数（16 KiB ÷ 512 B = 32）。
 pub const NODE_BLOCKS: u64 = (NODE_BYTES / BLOCK_SIZE) as u64;
 
-/// 节点头部字节数：定名域 16 B + 校验和 8 B，条目区自偏移 24 起。
+/// 节点头部字节数（XXH64 域）：定名域 16 B + 校验和 8 B，条目区自偏移 24 起。
 pub const NODE_HEADER_BYTES: usize = 24;
 
-/// 节点条目容量（(16384 − 24) ÷ 16 = 1022；条目 = key u64 + 值域 u64）。
+/// 节点头部字节数（XXH3-128 域，M36-C1b）：定名域 16 B + 校验和 16 B，
+/// 条目区自偏移 32 起（演进规则并存面——算法 ID 6 字节自描述 + 超级块
+/// 一致性闸双保险）。
+pub const NODE_HEADER_BYTES_128: usize = 32;
+
+/// 节点条目容量（(16384 − 24) ÷ 16 = 1023；条目 = key u64 + 值域 u64）。
 pub const NODE_ITEM_CAP: usize = (NODE_BYTES - NODE_HEADER_BYTES) / 16;
+
+/// 节点条目容量（XXH3-128 域，M36-C1b：(16384 − 32) ÷ 16 = 1022）。
+pub const NODE_ITEM_CAP_128: usize = (NODE_BYTES - NODE_HEADER_BYTES_128) / 16;
 
 /// 树深上限（细则 5.2 解析时钳制；1022 叉 × 8 深远超 v1 容量域）。
 pub const TREE_MAX_DEPTH: u8 = 8;
@@ -66,7 +74,9 @@ pub const SB_A_LBA: u64 = 0;
 /// 超级块 B 槽 LBA（双槽交替写，细则 2.1 根切换原子性）。
 pub const SB_B_LBA: u64 = 1;
 
-/// 超级块内嵌校验和字段偏移（504..512；校验域 = 0..504）。
+/// 超级块内嵌校验和字段偏移（XXH64 域：504..512，校验域 = 0..504）。
+/// XXH3-128 域（M36-C1b）校验和 16 B 落 496..512（校验域 = 0..496）——
+/// 算法 ID（偏移 20）在两域均位于校验域内，先于校验读取。
 pub const SB_CKSUM_OFFSET: usize = 504;
 
 /// 超级块尺寸（恒 1 块；容量关系钳制在 codec）。
