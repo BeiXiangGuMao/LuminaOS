@@ -49,7 +49,7 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use meridian::vfs::{FileSystem, FsError, Namespace, NodeKind, OpenFlags, PathBuf, RamFs, VnodeId};
 use ostd::sync::SpinLock;
@@ -678,11 +678,12 @@ pub fn sys_read(handle: u64, buf_ptr: u64, len: u64) -> u64 {
         return EFAULT;
     };
     let r = if let Some((_slot, cap, pipe)) = resolve_pipe_object(handle) {
-        // M35-BBa 管道分流：环核读（EOF/EAGAIN 语义见 Pipe::read）。
+        // M35-BBa 管道分流；M36-BB3 阻塞面（EOF/阻塞语义见
+        // pipe_read_blocking——成功读出即唤醒写端等待者）。
         if cap.rights() & Right::READ.bits() == 0 {
             Err(EBADF)
         } else {
-            pipe.read(buf)
+            pipe_read_blocking(&pipe, buf).inspect(|_| wake_pipe_writers(&pipe))
         }
     } else {
         let Some((_slot, cap, idx)) = resolve_file_object(handle) else {
@@ -727,11 +728,12 @@ pub fn sys_write(handle: u64, buf_ptr: u64, len: u64) -> u64 {
         return EFAULT;
     };
     let r = if let Some((_slot, cap, pipe)) = resolve_pipe_object(handle) {
-        // M35-BBa 管道分流：环核写（EPIPE/EAGAIN 语义见 Pipe::write）。
+        // M35-BBa 管道分流；M36-BB3 阻塞面（EPIPE/阻塞语义见
+        // pipe_write_blocking——成功写入即唤醒读端等待者）。
         if cap.rights() & Right::WRITE.bits() == 0 {
             Err(EBADF)
         } else {
-            pipe.write(buf)
+            pipe_write_blocking(&pipe, buf).inspect(|_| wake_pipe_readers(&pipe))
         }
     } else {
         let Some((_slot, cap, idx)) = resolve_file_object(handle) else {
@@ -813,15 +815,34 @@ pub fn sys_close(handle: u64) -> u64 {
                     Ok(o) if is_pipe_object(o) => {
                         // M35-BBa 管道端句柄关闭落点：撤销后引用归零才清
                         // PIPES 槽（EOF/EPIPE 键动态收敛——fork 继承副本
-                        // 存活期间端不闭，POSIX 语义）。
+                        // 存活期间端不闭，POSIX 语义）。M36-BB3：末引用
+                        // 终结即对端等待者死亡唤醒（写端亡 → EOF 逃逸唤
+                        // 醒读等待者 / 读端亡 → EPIPE 逃逸唤醒写等待者；
+                        // syscall 上下文无 SCHED 锁持有——wake_tasks 直通
+                        // 面；revoke 链终结路径同域唤醒见
+                        // task::wake_pipes_locked 锁内版）。
                         let _ = crate::caps::table().lock().revoke(g);
                         if caps_refcount(o) == 0 {
+                            let dead = PIPES.lock().iter().find_map(|p| {
+                                p.as_ref()
+                                    .filter(|p| p.object == o)
+                                    .map(|p| (p.object, p.pipe.clone()))
+                            });
                             let mut pipes = PIPES.lock();
                             if let Some(i) = pipes
                                 .iter()
                                 .position(|p| p.as_ref().is_some_and(|p| p.object == o))
                             {
                                 pipes[i] = None;
+                            }
+                            drop(pipes);
+                            if let Some((_, pipe)) = dead {
+                                let died_write = pipe.w_object.load(Ordering::Acquire) == o;
+                                if died_write {
+                                    wake_pipe_readers(&pipe);
+                                } else {
+                                    wake_pipe_writers(&pipe);
+                                }
                             }
                         }
                         task::clear_hflag(caller, h);
@@ -842,11 +863,16 @@ pub fn sys_close(handle: u64) -> u64 {
 }
 
 // ---- M35-BBa 管道执行面（SYS_PIPE2 + fork fd 继承消费方） ----
+// ---- M36-BB3 阻塞式管道 I/O（Linux 对齐）：默认阻塞 + O_NONBLOCK 旗标 ----
 
 /// 管道定容（64 KiB——M35 裁决注 ⑤）。
 const PIPE_CAP: usize = 65536;
 /// O_CLOEXEC（Linux 号域 0x80000——pipe2 旗标随链 hflags FD_CLOEXEC 面）。
 const O_CLOEXEC: u64 = 0o200_0000;
+/// O_NONBLOCK（Linux x86_64 号域 0o4000——pipe2 旗标；M36-BB3 收录）。
+/// 置位 = 本管道双端非阻塞语义（空环读 / 满环写 → `EAGAIN` 立返）；
+/// 缺省 = Linux 同款阻塞语义（等待队列面——见 [`pipe_read_blocking`]）。
+const O_NONBLOCK: u64 = 0o4000;
 /// 管道对象 id 铸造计数（单调，段位 [`PIPE_OBJECT_BASE`]）。
 static NEXT_PIPE_OBJECT: AtomicU64 = AtomicU64::new(PIPE_OBJECT_BASE);
 /// 内核管道注册表：槽位按对象 id 反查（FILES/CHANNELS 同构）。
@@ -857,6 +883,16 @@ const MAX_PIPES: usize = 32;
 /// 管道环核：定容环形字节缓冲 + 端对象 id（EOF/EPIPE 判定键 = 对端能力
 /// 存活引用——与 FILE 域 [`caps_refcount`] 收敛面同源：fork 继承/dup 的
 /// 新槽铸入即对端存活，全撤即端闭）。
+///
+/// M36-BB3 阻塞面增量：
+/// - `nonblock`：铸造时旗标定格（pipe2 O_NONBLOCK——双端一体，Linux
+///   同款）；`false`（缺省）= 阻塞语义，空环读 / 满环写在 syscall 层
+///   等待队列面阻塞（[`pipe_read_blocking`]/[`pipe_write_blocking`]）；
+/// - `avail`：环内可读字节数的原子哨兵（锁窗内更新、锁外自由读）——
+///   阻塞探针（SCHED 锁窗口内运行）**不得取环锁**（SCHED → VFS 会与
+///   写路径 VFS → SCHED 唤醒嵌套成环），环状态经本哨兵无锁读出；
+///   对端存续仍走 [`caps_refcount`] 权威（SCHED → CAPS 单向，与
+///   FILES → CAPS 既有链同向无环）。
 struct Pipe {
     /// 定容环形字节缓冲。
     ring: SpinLock<PipeRing>,
@@ -864,6 +900,11 @@ struct Pipe {
     r_object: AtomicU64,
     /// 写端对象 id（读路径 EOF 判定键）。
     w_object: AtomicU64,
+    /// O_NONBLOCK 定格（铸造时定，双端一体）。
+    nonblock: bool,
+    /// 环内可读字节数哨兵（环锁内写、探针锁外读——丢失唤醒免疫链的
+    /// 无锁读端）。
+    avail: AtomicUsize,
 }
 
 struct PipeRing {
@@ -879,7 +920,7 @@ struct PipeEntry {
 }
 
 impl Pipe {
-    fn new(r_object: u64, w_object: u64) -> Self {
+    fn new(r_object: u64, w_object: u64, nonblock: bool) -> Self {
         Self {
             ring: SpinLock::new(PipeRing {
                 data: alloc::vec![0u8; PIPE_CAP],
@@ -888,12 +929,15 @@ impl Pipe {
             }),
             r_object: AtomicU64::new(r_object),
             w_object: AtomicU64::new(w_object),
+            nonblock,
+            avail: AtomicUsize::new(0),
         }
     }
 
     /// 读：空环 + 写端引用归零 → EOF（`Ok(0)`）；空环 + 写端存活 →
-    /// `EAGAIN`（非阻塞语义登记——阻塞读随协作式调度面挂账，M35 裁决
-    /// 注 ⑤）；否则出环 `n = min(len, 存量)`。
+    /// `EAGAIN`（O_NONBLOCK 管道语义；缺省阻塞管道该分支由
+    /// [`pipe_read_blocking`] 等待队列面承接后重试）；否则出环
+    /// `n = min(len, 存量)` 并推进 [`Pipe::avail`] 哨兵。
     fn read(&self, buf: &mut [u8]) -> Result<usize, u64> {
         if buf.is_empty() {
             return Err(EINVAL);
@@ -912,11 +956,14 @@ impl Pipe {
         }
         ring.head = (ring.head + n) % PIPE_CAP;
         ring.len -= n;
+        self.avail.store(ring.len, Ordering::Release);
         Ok(n)
     }
 
     /// 写：读端引用归零 → `EPIPE`（SIGPIPE 递送面挂账）；满环 →
-    /// `EAGAIN`；否则入环部分写 `n = min(len, free)`（Linux 非阻塞写同形）。
+    /// `EAGAIN`（O_NONBLOCK 管道语义；缺省阻塞管道由
+    /// [`pipe_write_blocking`] 承接）；否则入环部分写 `n = min(len, free)`
+    /// （Linux 非阻塞写同形）并推进 [`Pipe::avail`] 哨兵。
     fn write(&self, buf: &[u8]) -> Result<usize, u64> {
         if buf.is_empty() {
             return Err(EINVAL);
@@ -935,8 +982,116 @@ impl Pipe {
             ring.data[at] = b;
         }
         ring.len += n;
+        self.avail.store(ring.len, Ordering::Release);
         Ok(n)
     }
+}
+
+// ---- M36-BB3 阻塞式管道 I/O 等待队列面（Linux 对齐） ----
+
+/// 管道读阻塞尝试计数（诊断/活体证据面——t87 断言域；语义同 ipc
+/// `RECV_BLOCKS`：进入阻塞点即落证，探针命中回滚亦计入尝试面）。
+static PIPE_R_BLOCKS: AtomicU64 = AtomicU64::new(0);
+/// 管道写阻塞尝试计数。
+static PIPE_W_BLOCKS: AtomicU64 = AtomicU64::new(0);
+/// 管道读真实唤醒计数（block 返 true = 已阻塞且被唤醒；探针命中
+/// 返 false 不计）。
+static PIPE_R_WAKES: AtomicU64 = AtomicU64::new(0);
+/// 管道写真实唤醒计数。
+static PIPE_W_WAKES: AtomicU64 = AtomicU64::new(0);
+
+/// 管道阻塞面诊断快照（M36-BB3 断言域预留）：`(读尝试, 写尝试,
+/// 读唤醒, 写唤醒)`——尝试面 = 进入阻塞点即计（探针命中回滚亦计，
+/// ipc `RECV_BLOCKS` 同款口径）；唤醒面 = 真实阻塞后唤醒才计。
+/// 消费方 = t87 阻塞活体（BB3b——布局敏感挂账，见 ROADMAP M36 行）；
+/// 期望态注记：BB3b 落位即摘除本 expect。
+#[expect(dead_code)]
+pub fn pipe_block_stats() -> (u64, u64, u64, u64) {
+    (
+        PIPE_R_BLOCKS.load(Ordering::Acquire),
+        PIPE_W_BLOCKS.load(Ordering::Acquire),
+        PIPE_R_WAKES.load(Ordering::Acquire),
+        PIPE_W_WAKES.load(Ordering::Acquire),
+    )
+}
+
+/// 管道阻塞读（M36-BB3）：`O_NONBLOCK` 管道单发直返；缺省阻塞管道
+/// 空环 + 写端存活时登记 `WaitWhat::PipeRead` 等待并协作式让出，唤醒 /
+/// 探针命中后重试（真判定在 [`Pipe::read`] 环锁内重做——虚假唤醒由
+/// 重试循环自然收敛，ipc 阻塞接收同款范式）。
+///
+/// 丢失唤醒免疫（三链完备）：
+/// 1. 写方成功写 → 唤醒链（[`pipe_write_blocking`] 成功路径 wake）；
+/// 2. 写端终结（close/revoke 末引用）→ 对端唤醒链（[`sys_close`] 管道
+///    分支 + [`task::revoke_all_handles`] 锁内死亡唤醒 [`task::wake_pipes_locked`]）；
+/// 3. 登记与探针同 SCHED 锁窗口（[`task::block_current_unless`]）——
+///    探针读 `avail` 哨兵 + `caps_refcount` 权威，锁序 SCHED → CAPS
+///    单向（与 FILES → CAPS 既有链同向，无环）。
+fn pipe_read_blocking(pipe: &Pipe, buf: &mut [u8]) -> Result<usize, u64> {
+    loop {
+        match pipe.read(buf) {
+            // EAGAIN 只在「环空 + 写端存活」出环——阻塞条件成立域
+            Err(EAGAIN) if !pipe.nonblock => {
+                PIPE_R_BLOCKS.fetch_add(1, Ordering::AcqRel);
+                let object = pipe.r_object.load(Ordering::Acquire);
+                if task::block_current_unless(
+                    task::WaitWhat::PipeRead { object },
+                    true,
+                    // 探针（非消费哨兵读）：环非空 = 有数据；写端亡 =
+                    // EOF 逃逸。true = 仍需等待。
+                    || {
+                        pipe.avail.load(Ordering::Acquire) > 0
+                            || caps_refcount(pipe.w_object.load(Ordering::Acquire)) == 0
+                    },
+                ) {
+                    PIPE_R_WAKES.fetch_add(1, Ordering::AcqRel);
+                }
+            }
+            r => return r,
+        }
+    }
+}
+
+/// 管道阻塞写（M36-BB3）：满环 + 读端存活时登记 `WaitWhat::PipeWrite`
+/// 等待；唤醒 / 探针命中后重试（EPIPE 优先于满环判定——读端终结的
+/// 阻塞写方经等待队列逃逸而非永久滞留）。丢失唤醒免疫三链与
+/// [`pipe_read_blocking`] 对称（读方成功读唤醒 / 读端终结唤醒 / 锁窗探针）。
+fn pipe_write_blocking(pipe: &Pipe, buf: &[u8]) -> Result<usize, u64> {
+    loop {
+        match pipe.write(buf) {
+            // EAGAIN 只在「满环 + 读端存活」出环
+            Err(EAGAIN) if !pipe.nonblock => {
+                PIPE_W_BLOCKS.fetch_add(1, Ordering::AcqRel);
+                let object = pipe.w_object.load(Ordering::Acquire);
+                if task::block_current_unless(
+                    task::WaitWhat::PipeWrite { object },
+                    true,
+                    // 探针：环有空间 = 可写；读端亡 = EPIPE 逃逸。
+                    || {
+                        pipe.avail.load(Ordering::Acquire) < PIPE_CAP
+                            || caps_refcount(pipe.r_object.load(Ordering::Acquire)) == 0
+                    },
+                ) {
+                    PIPE_W_WAKES.fetch_add(1, Ordering::AcqRel);
+                }
+            }
+            r => return r,
+        }
+    }
+}
+
+/// 管道读端等待者唤醒（M36-BB3 数据到达面）：写方成功写后调用——
+/// 读端对象匹配的全部 `PipeRead` 等待者入队就绪（多等待者竞争由
+/// 重探循环自然收敛——先到先得，其余重归阻塞）。
+fn wake_pipe_readers(pipe: &Pipe) {
+    let object = pipe.r_object.load(Ordering::Acquire);
+    task::wake_tasks(|w| matches!(w, task::WaitWhat::PipeRead { object: o } if *o == object));
+}
+
+/// 管道写端等待者唤醒（M36-BB3 空间释放面）：读方成功读后调用。
+fn wake_pipe_writers(pipe: &Pipe) {
+    let object = pipe.w_object.load(Ordering::Acquire);
+    task::wake_tasks(|w| matches!(w, task::WaitWhat::PipeWrite { object: o } if *o == object));
 }
 
 /// 管道对象段位判定（高 32 位段——与 [`is_file_object`] 同构）。
@@ -974,22 +1129,35 @@ fn resolve_pipe_object(handle: u64) -> Option<(usize, Capability, Arc<Pipe>)> {
 /// 管道孤儿回收（[`task::revoke_all_handles`] 收敛链挂接——FILE 域
 /// [`reap_orphaned_files`] 同构：能力引用归零条目清槽，Arc 计数随
 /// drop 收敛）。
-pub fn reap_orphaned_pipes() {
+///
+/// 返回值（M36-BB3）：本次回收终结的管道端对 `[(读端对象, 写端对象)]`
+/// ——调用方（SCHED 锁窗口内，[`task::wake_pipes_locked`]）据此做对端
+/// 等待者锁内死亡唤醒（EOF/EPIPE 逃逸面）。本函数自身不唤醒：调用域
+/// 持 SCHED，锁内不可重入 wake。
+pub fn reap_orphaned_pipes() -> Vec<(u64, u64)> {
+    let mut dead = Vec::new();
     let mut pipes = PIPES.lock();
     for e in pipes.iter_mut() {
         if let Some(entry) = e.as_ref() {
             if caps_refcount(entry.object) == 0 {
+                dead.push((
+                    entry.pipe.r_object.load(Ordering::Acquire),
+                    entry.pipe.w_object.load(Ordering::Acquire),
+                ));
                 *e = None;
             }
         }
     }
+    dead
 }
 
 /// SYS_PIPE2 主体（M35-BBa；Linux 号域 293）：管道铸造（64 KiB 定容环 ×1
 /// + 读/写端对象 ×2 + 能力槽 ×2〔r=READ / w=WRITE〕+ 句柄安装×2）。
 ///
-/// - `flags`：仅收 `0` | [`O_CLOEXEC`]（随链 hflags [`FD_CLOEXEC`]——
-///   EXEC 成功路径 [`close_cloexec_handles`] 消费）；其余位 → `EINVAL`
+/// - `flags`：收 `0` | [`O_CLOEXEC`]（随链 hflags [`FD_CLOEXEC`]——
+///   EXEC 成功路径 [`close_cloexec_handles`] 消费）| [`O_NONBLOCK`]
+///   （M36-BB3 收录——双端一体非阻塞语义定格；缺省 = Linux 同款阻塞
+///   管道，等待队列面见 [`pipe_read_blocking`]）；其余位 → `EINVAL`
 ///   （fail-visible 登记）；
 /// - `pipefd` 用户回写：`int[2]`（8 字节）= `[读端句柄, 写端句柄]`
 ///   （EFAULT 域守门）；
@@ -997,8 +1165,8 @@ pub fn reap_orphaned_pipes() {
 ///
 /// 成功返回 `(1 << 32) | 0`。
 pub fn sys_pipe2(pipefd_ptr: u64, flags: u64) -> u64 {
-    if flags & !O_CLOEXEC != 0 {
-        return EINVAL; // 未收录旗标 fail-visible（O_NONBLOCK 随阻塞面挂账）
+    if flags & !(O_CLOEXEC | O_NONBLOCK) != 0 {
+        return EINVAL; // 未收录旗标 fail-visible（O_NONBLOCK 已随 M36-BB3 收录）
     }
     let Some(pfd) = validate_user_slice_mut(pipefd_ptr, 8) else {
         return EFAULT;
@@ -1028,7 +1196,7 @@ pub fn sys_pipe2(pipefd_ptr: u64, flags: u64) -> u64 {
     }
     let r_object = NEXT_PIPE_OBJECT.fetch_add(1, Ordering::Relaxed);
     let w_object = NEXT_PIPE_OBJECT.fetch_add(1, Ordering::Relaxed);
-    let arc = Arc::new(Pipe::new(r_object, w_object));
+    let arc = Arc::new(Pipe::new(r_object, w_object, flags & O_NONBLOCK != 0));
     pipes.push(Some(PipeEntry {
         object: r_object,
         pipe: arc.clone(),

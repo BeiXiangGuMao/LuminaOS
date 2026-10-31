@@ -118,8 +118,9 @@ pub enum LinAction {
     /// v0 单用户 owner 位域口径）。
     FAccessAt,
     /// pipe2(293)：管道执行面（M35-BBa 收录——M34-B1 同批挂账摘牌：
-    /// fork fd 继承面落位后消费方 sh 流水线链路成立）。执行档：
-    /// int pipefd[2] 用户回写 + O_CLOEXEC 旗标随链（kernel::vfs）。
+    /// fork fd 继承面落位后消费方 sh 流水线链路成立；M36-BB3 起
+    /// O_NONBLOCK 旗标收录，缺省 = Linux 同款阻塞语义）。执行档：
+    /// int pipefd[2] 用户回写 + O_CLOEXEC/O_NONBLOCK 旗标随链（kernel::vfs）。
     Pipe2,
     /// open(2)：`open(path, flags, mode)` = openat(AT_FDCWD, ·) 参数
     /// 同形直通（wc/fopen 路径——M34-B2 t83 实证收录；musl 层本应走

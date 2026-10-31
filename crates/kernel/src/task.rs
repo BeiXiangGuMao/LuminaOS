@@ -134,6 +134,7 @@ enum State {
 
 /// 阻塞等待对象（M10-B/C）：登记于 [`Task::wait`]，唤醒面按值匹配。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum WaitWhat {
     /// 换页：等待 (root, va) 的异步换入完成（swapd 唤醒，M10-B）。
     Swap {
@@ -161,6 +162,19 @@ pub enum WaitWhat {
         /// 到期 deadline（TSC 纳秒时刻；v0.14–v0.15 为全局节拍数，
         /// v0.16 单位变更如实记档）。
         deadline: u64,
+    },
+    /// 管道阻塞读（M36-BB3）：等待目标管道环出数据或写端终结（EOF）。
+    /// object = 管道读端对象 id（[`crate::vfs`] PIPES 域段位）；写方
+    /// 成功写入 / 写端末引用终结（close/revoke 链）唤醒。
+    PipeRead {
+        /// 管道读端对象 id。
+        object: u64,
+    },
+    /// 管道阻塞写（M36-BB3）：等待目标管道环出空间或读端终结（EPIPE）。
+    /// object = 管道写端对象 id；读方成功读出 / 读端末引用终结唤醒。
+    PipeWrite {
+        /// 管道写端对象 id。
+        object: u64,
     },
 }
 
@@ -318,7 +332,12 @@ impl Task {
     /// M35-BBb：清算域扩为全表（句柄 0 纳入——stdio 重定向接线域承载
     /// 管道句柄槽，终结撤销随链，管道引用计数收敛不漏；句柄 0 既有
     /// 路径恒空〔主身份域在句柄 1〕，行为零变）。
-    fn revoke_all_handles(&mut self) {
+    ///
+    /// 返回值（M36-BB3）：本次清算终结的管道端对 `[(读端对象, 写端对象)]`
+    /// ——调用方（SCHED 锁窗口内）据此对对端阻塞等待者做锁内死亡唤醒
+    /// （[`wake_pipes_locked`]；EOF/EPIPE 逃逸面）。本方法不可在
+    /// 自身内部调用 wake（SCHED 锁窗内不可重入）——唤醒职责上移调用方。
+    fn revoke_all_handles(&mut self) -> Vec<(u64, u64)> {
         for slot in self.handles.iter_mut() {
             if let Some(g) = slot.take() {
                 let _ = crate::caps::table().lock().revoke(g);
@@ -329,7 +348,9 @@ impl Task {
         // → CAPS 单向链，无反向边）。M35-BBa：管道域同构收敛随行
         // （SCHED → PIPES → CAPS 同向——fork 继承副本存活期间端不闭）。
         crate::vfs::reap_orphaned_files();
-        crate::vfs::reap_orphaned_pipes();
+        #[allow(clippy::let_unit_value)]
+        let _discard = crate::vfs::reap_orphaned_pipes(); // 实验期临时
+        Vec::new() // 实验期临时：管道域 pre-t87 恒空——死亡唤醒面本就零迭代
     }
 
     /// 主任务槽（运行在引导栈上）。
@@ -878,6 +899,18 @@ static BLOCK_WAKES: AtomicU64 = AtomicU64::new(0);
 /// 阻塞唤醒计数快照。
 pub fn block_wakes() -> u64 {
     BLOCK_WAKES.load(Ordering::Acquire)
+}
+
+/// 阻塞登记计数（M36-BB3）：累计「真实进入 Blocked 且登记存活（探针
+/// 未回滚）」的事件数——管道等待队列活体（t87）的同步锚与证据面：子
+/// 任务有界自旋等待本计数增量 = 对端已真实阻塞（登记生效）的可观察
+/// 事实。与 [`BLOCK_WAKES`]（唤醒面）互补成对。
+static BLOCKS: AtomicU64 = AtomicU64::new(0);
+
+/// 阻塞登记计数快照。
+#[allow(dead_code)]
+pub fn blocks() -> u64 {
+    BLOCKS.load(Ordering::Acquire)
 }
 
 /// 老化扫描（M9-C）：对全部就绪队列逐级做等待计账，跨 [`AGE_TICKS`]
@@ -2167,8 +2200,9 @@ fn finish_and_switch_away(code: u64) -> ! {
                 // M9-A 句柄生命周期收口 + M10-C 僵尸留证：终结前全表清算
                 // （全局槽逐个撤销归还能力表），退出码/状态登记。
                 let parent = sc.tasks[cur].as_ref().and_then(|t| t.parent);
+                let mut dead_pipes: Vec<(u64, u64)> = Vec::new();
                 if let Some(t) = sc.tasks[cur].as_mut() {
-                    t.revoke_all_handles();
+                    dead_pipes = t.revoke_all_handles();
                     t.exit_code = code;
                     // M23-② init 点名登记（interactive 守候读回面；锁窗口
                     // 内 Release 落账，kmain 见 finished 后 Acquire 读回）。
@@ -2176,6 +2210,14 @@ fn finish_and_switch_away(code: u64) -> ! {
                         INIT_EXIT.store(code, Ordering::Release);
                     }
                     t.state = State::Zombie;
+                }
+                // M36-BB3 管道端死亡锁内唤醒：终结清算终结的管道，其对端
+                // 阻塞等待者（PipeRead/PipeWrite）在本 SCHED 锁窗口内直接
+                // 派发就绪——EOF（写端亡）/EPIPE（读端亡）逃逸面；与下方
+                // M10-C Child 唤醒同构（wake_tasks 需重取 SCHED，锁窗内
+                // 不可重入）。
+                for (r, w) in &dead_pipes {
+                    wake_pipes_locked(sc, *r, *w);
                 }
                 // M21-① 护槽握手（S72 次级窗口正式转正收口）：Zombie 登记
                 // 即置握手旗——本任务 drop(s) 后在锁外由切换机器完成七槽
@@ -2764,6 +2806,9 @@ fn block_current_impl(what: WaitWhat, resume_if: bool, mut probe: Probe) -> bool
                 }
                 return false; // 探针命中：未阻塞，调用方直接重试消费
             }
+            // 登记存活（探针未回滚）——真实阻塞事件计数（M36-BB3 t87
+            // 同步锚：只计登记生效面，探针命中回滚不计）。
+            BLOCKS.fetch_add(1, Ordering::AcqRel);
             match pick_best(&mut sc.ready, &sc.tasks, cpu, IDLE, None) {
                 Some(id) => {
                     remove_value(&mut sc.ready, id);
@@ -2803,6 +2848,41 @@ fn block_current_impl(what: WaitWhat, resume_if: bool, mut probe: Probe) -> bool
     drop(w);
     true
 }
+/// 锁内管道死亡唤醒（M36-BB3）：SCHED 锁窗口内直接派发就绪——finish /
+/// revoke 链专用（[`wake_tasks`] 需重取 SCHED，锁窗内不可重入）。唤醒
+/// 语义与 [`wake_tasks`] 逐字段同构（wait 清除 + Ready + 入队 + 唤醒计
+/// 数），仅匹配域收窄为「读等待者 ← 读端对象 / 写等待者 ← 写端对象」；
+/// 扫描含槽位 0（主任务可阻塞——同款纪律）。
+#[allow(dead_code)]
+fn wake_pipes_locked(sc: &mut Scheduler, r_object: u64, w_object: u64) -> usize {
+    let mut woken = 0usize;
+    for id in 0..MAX_TASKS {
+        let Some(t) = sc.tasks[id].as_mut() else {
+            continue;
+        };
+        if t.state != State::Blocked {
+            continue;
+        }
+        let matched = match t.wait {
+            Some(WaitWhat::PipeRead { object }) => object == r_object,
+            Some(WaitWhat::PipeWrite { object }) => object == w_object,
+            _ => false,
+        };
+        if matched {
+            t.wait = None;
+            t.state = State::Ready;
+            t.waited = 0;
+            let p = t.base_prio;
+            enqueue(&mut sc.ready, id, p);
+            woken += 1;
+        }
+    }
+    if woken != 0 {
+        BLOCK_WAKES.fetch_add(woken as u64, Ordering::AcqRel);
+    }
+    woken
+}
+
 /// 扫描含槽位 0（主任务可阻塞——t35 的故障上下文即主任务）。
 pub fn wake_tasks(matcher: impl Fn(&WaitWhat) -> bool) -> usize {
     let _w = IntWindow::new();

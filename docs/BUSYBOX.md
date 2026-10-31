@@ -16,7 +16,7 @@
 
 **对账锚**：t82/t83 相位全链 = ELF64 直载（bedrock::elf，PD[2] 槽域原生基址）→ Linux 初始栈（AT_ 哨兵集）→ fork 桩同族定点进入 ring3（lin_abi 随链）→ musl 初始化 → applet 分发（busybox 多合一 argv[1] 路由）→ 专属消费 → exit_group → waitpid 收割（exit 码逐 applet 对账：0/1/0/0）。
 
-**t85 流水线对账锚（M35-BBb）**：`\|` 解析（conduit::sh 首割）→ pipe2(293)（编排端句柄域）→ 两段无继承接线派生（spawn_stage_wired：A 段句柄 1←写端 + B 段句柄 0←读端——fork 锁窗铸槽 = dup2 等价面）→ 预流灌注（A 段首刷有界自旋实证）→ 编排端双端关闭（段域单源引用）→ head exit 0 / yes exit 1 双收割对账——`yes \| head -n 3` 两段真流串联在环（musl writev/read 全链经 vfs 管道域）。
+**t85 流水线对账锚（M35-BBb）**：`\|` 解析（conduit::sh 首割）→ pipe2(293)（编排端句柄域）→ 两段无继承接线派生（spawn_stage_wired：A 段句柄 1←写端 + B 段句柄 0←读端——fork 锁窗铸槽 = dup2 等价面）→ 预流灌注（A 段首刷有界自旋实证）→ 编排端双端关闭（段域单源引用）→ head exit 0 / yes exit 1 双收割对账——`yes \| head -n 3` 两段真流串联在环（musl writev/read 全链经 vfs 管道域）。**M36-BB3a 注**：编排端 pipe2 显式定格 O_NONBLOCK(0o4000)——缺省阻塞语义（Linux 对齐）落位后 yes EAGAIN 容差动力学字节级保持。
 
 ## 二、translate 收录面（承载上表；M35-BBa 后 29 目）
 
@@ -32,9 +32,9 @@
 
 | 挂账项 | 依赖缺口 | 批次归属 |
 |---|---|---|
-| ~~yes / head~~（**t85 已实证——M35-BBb 摘牌**）；cat / ls 全谱 applet 扩容 | getdents64 已备（ls 就绪度高）；批量随批次三 | M35+ 裁决 |
-| ~~sh / 管道族（`yes \| head`）~~（**sh 流水线首割已实证——M35-BBb：`\|` 解析 + fork 锁窗接线铸槽（dup2 等价）+ pipe2 + 两段真流串联**；真 busybox sh ash 全量启动面——getuid 族未收录/信号面/阻塞 read——挂账批次三） | ash 启动面符号扩容 + SIGPIPE 递送 + 阻塞式管道 I/O（调度协作面） | sh 批次三 |
+| ~~yes / head~~（**t85 已实证——M35-BBb 摘牌**）；cat / ls 全谱 applet 扩容 | **消费面已全量在库**（openat(257)/getdents64(217)/fstatat64(262)/writev(20)——M33-F1/M34-B1/B2 收录面串联，ls 就绪度高）；applet 活体相位挂账 **BB3b**（挂账⑦ 布局敏感——t87 体量阈值，见 ROADMAP M36-BB3 行） | M36-BB3b 裁决 |
+| ~~sh / 管道族（`yes \| head`）~~（**sh 流水线首割已实证——M35-BBb：`\|` 解析 + fork 锁窗接线铸槽（dup2 等价）+ pipe2 + 两段真流串联**；真 busybox sh ash 全量启动面——getuid 族未收录/信号面/阻塞 read——ash 启动面挂账 BB3b；getuid 族 = M34-B2 合成桩已收（真身份面随多用户纵深）） | ash 启动面符号扩容 + SIGPIPE 递送 + ~~阻塞式管道 I/O~~（**M36-BB3a 已落**：O_NONBLOCK(0o4000) 收录 + 缺省 Linux 同款阻塞语义——WaitWhat::PipeRead/PipeWrite 等待队列 + 死亡唤醒双链；阻塞语义活体 t87 随 BB3b） | sh 批次三 |
 | mkdir / rm / cd 族 | mkdir(83)/unlinkat(263) 已备/AT_REMOVEDIR 已收；rmdir 语义随 mkdir 批次 | 同上 |
 | 阻塞式 tty read | v0 tty 游标非阻塞口径（read 返回 0 = 暂无数据） | 调度协作面批次 |
 
-> 复评机制：本表随 applet 批次推进续记（M34-B2 首版成像；M35-BBb 扩记——yes/head 两行 + pipe2 三批 + sh 首割摘牌注）；行数增长即覆盖度证据链，未达全功能口径前 METRICS 行保持「扩容中」定性。
+> 复评机制：本表随 applet 批次推进续记（M34-B2 首版成像；M35-BBb 扩记——yes/head 两行 + pipe2 三批 + sh 首割摘牌注；M36-BB3a 扩记——阻塞式管道 I/O 等待队列落位 + O_NONBLOCK 收录（活体 t87 挂账 BB3b））；行数增长即覆盖度证据链，未达全功能口径前 METRICS 行保持「扩容中」定性。

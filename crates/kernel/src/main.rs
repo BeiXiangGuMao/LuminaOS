@@ -5032,13 +5032,16 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     // 铸入 + hflags 随链）；跨 fork 活体实证由 t85 sh 流水线承载（BBb）。
     let t84 = {
         let mut ok = true;
-        // (a) pipe2 创建 + pipefd 回写 + 句柄对账
+        // (a) pipe2 创建 + pipefd 回写 + 句柄对账（M36-BB3 起 O_NONBLOCK
+        // 收录——本相位断言 EAGAIN 域，故铸非阻塞管道；缺省 = 阻塞语义
+        // t87 随 BB3b 布局挂账后承载）
         let mut pfd = [0u32; 2];
-        let r = vfs::sys_pipe2(pfd.as_mut_ptr() as u64, 0);
+        let r = vfs::sys_pipe2(pfd.as_mut_ptr() as u64, 0o4000);
         ok &= r >> 32 == 1;
         let (fd_r, fd_w) = (u64::from(pfd[0]), u64::from(pfd[1]));
         ok &= fd_r != fd_w && fd_r != 0 && fd_w != 0;
-        // (b) 未收录旗标 fail-visible（O_NONBLOCK 0x4000 → EINVAL=22）
+        // (b) 未收录旗标 fail-visible（0x4000 = 0o40000 未收录域 → EINVAL=22；
+        // O_NONBLOCK 0o4000 已随 M36-BB3 收录（收录面活体随 BB3b））
         ok &= vfs::sys_pipe2(0, 0x4000) == 22;
         // (c) 环语义：写读字节对账（15 B 载荷）
         const PAYLOAD: &[u8] = b"pipe-payload-42";
@@ -5048,7 +5051,8 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         let r = vfs::sys_read(fd_r, rbuf.as_mut_ptr() as u64, rbuf.len() as u64);
         ok &= r >> 32 == 1 && (r & 0xFFFF_FFFF) as usize == PAYLOAD.len();
         ok &= rbuf == *PAYLOAD;
-        // (d) 空环 + 写端存活 → EAGAIN=11（非阻塞语义登记）
+        // (d) 空环 + 写端存活 → EAGAIN=11（O_NONBLOCK 管道语义——缺省
+        // 阻塞语义活体随 BB3b）
         ok &= vfs::sys_read(fd_r, rbuf.as_mut_ptr() as u64, 4) == 11;
         // (e) 定容环：4096×16 分块填满（64 KiB）→ 满环 EAGAIN → 全量读出
         // 对账 → 环空写端存活 → EAGAIN（栈安全分块——64 KiB 整块不上栈）
@@ -5081,7 +5085,8 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         let r = vfs::sys_read(fd_r, rbuf.as_mut_ptr() as u64, 4);
         ok &= r >> 32 == 1 && (r & 0xFFFF_FFFF) == 0;
         ok &= vfs::sys_close(fd_r) == 0;
-        // (g) EPIPE：读端关闭（引用归零）后写 → EPIPE=32
+        // (g) EPIPE：读端关闭（引用归零）后写 → EPIPE=32（读端已亡——
+        // 阻塞管道该写不阻塞，EPIPE 先验直返）
         let mut pfd2 = [0u32; 2];
         ok &= vfs::sys_pipe2(pfd2.as_mut_ptr() as u64, 0) >> 32 == 1;
         ok &= vfs::sys_close(u64::from(pfd2[0])) == 0;
@@ -5124,7 +5129,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
             };
             // (b) pipe2（编排端 = 内核主任务句柄域；BBa 执行面同源）
             let mut pfd = [0u32; 2];
-            ok &= vfs::sys_pipe2(pfd.as_mut_ptr() as u64, 0) >> 32 == 1;
+            ok &= vfs::sys_pipe2(pfd.as_mut_ptr() as u64, 0o4000) >> 32 == 1; // O_NONBLOCK：yes 写端 EAGAIN 容差域（M36-BB3 缺省阻塞语义下显式定格非阻塞——t85 既有动力学字节级保持）
             let (fd_r, fd_w) = (u64::from(pfd[0]), u64::from(pfd[1]));
             let Some(blob) = vfs::read_image("/bin/busybox") else {
                 let _ = writeln!(log, "sh: /bin/busybox media MISS");
@@ -5510,6 +5515,8 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t86, "tcp-loop");
+
+    //      计）+ vfs::pipe_block_stats() 管道域分面计数。LUMINA-T87-OK。
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {
