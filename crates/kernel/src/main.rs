@@ -82,8 +82,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85）。
-const SELFTEST_TOTAL: usize = 85;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86）。
+const SELFTEST_TOTAL: usize = 86;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -5238,6 +5238,278 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t85, "sh-pipeline");
+
+    // t86) TCP 回环电气活体（M36-N1）：三次握手 + 数据 + 挥别全对话
+    //      （pulse::tcp 协议机消费在环——active_open/listen_recv/
+    //      syn_sent_recv/syn_rcvd_recv/advance/seq_advance）+ 端口表/
+    //      伪头校验和（proto 6 参数化面）/全闸分派（0800/IPv4/IHL/proto 6/
+    //      IP 总长/IP 校验和/寻我/段解析/伪头验证/端口路由/槽写入）+
+    //      交接环同构电气（PULSE_RX 直注——与真实 RX 共享段）+ 外部 TX
+    //      电气（ARP 解析网关 + IPv4/TCP SYN 组帧 + virtio 击发收讫证据，
+    //      重发容忍域 ≤3 拍）+ 负例闸（坏校验和拒收 + 未绑定端口拒投，
+    //      计数分域显形）。外部 RX 对接面挂账（M27-T1 既登记偏差——
+    //      重传定时器批次同收）。ARP→ICMP→UDP→TCP 活体链续编。
+    let t86 = {
+        let mut run = || -> bool {
+            const CL_PORT: u16 = 41000;
+            const SV_PORT: u16 = 41001;
+            const ISN_C: u32 = 1000;
+            const ISN_S: u32 = 9000;
+            use pulse::tcp;
+            let mut ok = true;
+            // 回环单段往返（发 → 交接环 pop 预算 40M 轮兜底 → 全闸分派 →
+            // 槽读出；t78 同款 fail-closed 面具）
+            let mut frame = [0u8; vnet::PULSE_FRAME_MAX];
+            let rtt_seg = |src_port: u16,
+                           dst_port: u16,
+                           seq: u32,
+                           ack_seq: u32,
+                           flags: u16,
+                           payload: &[u8],
+                           frame: &mut [u8]|
+             -> Option<vnet::TcpRxSeg> {
+                if !vnet::tcp_loopback_tx(src_port, dst_port, seq, ack_seq, flags, 8192, payload) {
+                    return None;
+                }
+                let mut got = None;
+                let mut spin = 0u64;
+                while spin < 40_000_000 {
+                    if let Some(fl) = vnet::pulse_rx_pop(frame) {
+                        got = Some(fl);
+                        break;
+                    }
+                    spin += 1;
+                    core::hint::spin_loop();
+                }
+                let fl = got?;
+                vnet::tcp_dispatch(&frame[..fl])?;
+                vnet::tcp_recv()
+            };
+            // (a) 端口绑定域（监听端绑定 + 重复绑拒 + 未绑解绑拒 + 客户端口绑定）
+            ok &= vnet::tcp_bind(SV_PORT).is_ok();
+            ok &= vnet::tcp_bind(SV_PORT) == Err(pulse::udp::BindError::AlreadyBound);
+            ok &= vnet::tcp_unbind(41999) == Err(pulse::udp::BindError::NotBound);
+            ok &= vnet::tcp_bind(CL_PORT).is_ok();
+            // (b) 握手①：客户端主动打开 → SYN → 监听端 listen_recv → SYN_RCVD
+            let (st_c, syn_seq) = match tcp::active_open(ISN_C) {
+                Ok(x) => x,
+                Err(_) => return false,
+            };
+            ok &= st_c == tcp::ConnState::SynSent && syn_seq == ISN_C;
+            let syn = rtt_seg(CL_PORT, SV_PORT, ISN_C, 0, tcp::FLAG_SYN, &[], &mut frame);
+            ok &= syn.is_some();
+            ok &= matches!(syn.as_ref().map(|s| s.flags), Some(f) if f == tcp::FLAG_SYN);
+            ok &= tcp::listen_recv(tcp::ConnState::Listen, tcp::FLAG_SYN).is_ok();
+            let st_s = tcp::ConnState::SynRcvd;
+            let _ = writeln!(
+                log,
+                "tcp: syn rcvd seq={}",
+                syn.as_ref().map(|s| s.seq).unwrap_or(0)
+            );
+            // (c) 握手②：服务端 SYN|ACK → 客户端 syn_sent_recv → ESTABLISHED
+            let syn_ack = rtt_seg(
+                SV_PORT,
+                CL_PORT,
+                ISN_S,
+                ISN_C + 1,
+                tcp::FLAG_SYN | tcp::FLAG_ACK,
+                &[],
+                &mut frame,
+            );
+            ok &= syn_ack.is_some();
+            let (st_c, rcv_nxt_c) = match tcp::syn_sent_recv(
+                tcp::ConnState::SynSent,
+                ISN_C,
+                tcp::FLAG_SYN | tcp::FLAG_ACK,
+                ISN_C + 1,
+                ISN_S,
+            ) {
+                Ok(x) => x,
+                Err(_) => return false,
+            };
+            ok &= st_c == tcp::ConnState::Established && rcv_nxt_c == ISN_S + 1;
+            let _ = writeln!(log, "tcp: client established rcv_nxt={rcv_nxt_c}");
+            // (d) 握手③：客户端最终 ACK → 服务端 syn_rcvd_recv → ESTABLISHED
+            let fin_ack = rtt_seg(
+                CL_PORT,
+                SV_PORT,
+                ISN_C + 1,
+                ISN_S + 1,
+                tcp::FLAG_ACK,
+                &[],
+                &mut frame,
+            );
+            ok &= fin_ack.is_some();
+            ok &= tcp::syn_rcvd_recv(st_s, ISN_S, tcp::FLAG_ACK, ISN_S + 1).is_ok();
+            let _ = writeln!(log, "tcp: server established (3-way handshake complete)");
+            // (e) 数据面：客户端 PSH|ACK 载荷段 → 服务端内容对账 → ACK 回执
+            const PAYLOAD: &[u8] = b"LUMINA-T86-TCP-DATA";
+            let data = rtt_seg(
+                CL_PORT,
+                SV_PORT,
+                ISN_C + 1,
+                ISN_S + 1,
+                tcp::FLAG_ACK | tcp::FLAG_PSH,
+                PAYLOAD,
+                &mut frame,
+            );
+            ok &= data.is_some();
+            let seg = data.unwrap_or(vnet::TcpRxSeg {
+                src_port: 0,
+                dst_port: 0,
+                seq: 0,
+                ack_seq: 0,
+                flags: 0,
+                window: 0,
+                len: 0,
+                data: [0; vnet::TCP_SEG_MAX],
+            });
+            ok &= seg.src_port == CL_PORT && seg.len == PAYLOAD.len();
+            ok &= &seg.data[..PAYLOAD.len()] == PAYLOAD;
+            ok &= seg.seq == ISN_C + 1;
+            // 头域全量对账（死域消解为真闸）：目的端口/确认序号/窗口域。
+            ok &= seg.dst_port == SV_PORT;
+            ok &= seg.ack_seq == ISN_S + 1;
+            ok &= seg.window == 8192;
+            let snd_nxt_c = tcp::seq_advance(ISN_C + 1, false, false, PAYLOAD.len());
+            let ack = rtt_seg(
+                SV_PORT,
+                CL_PORT,
+                ISN_S + 1,
+                snd_nxt_c,
+                tcp::FLAG_ACK,
+                &[],
+                &mut frame,
+            );
+            ok &= ack.is_some();
+            let _ = writeln!(log, "tcp: data {} bytes echoed ack", PAYLOAD.len());
+            // (f) 挥别四拍（简化八态主轴：C FIN → S FIN|ACK → C TimeWait →
+            //     C ClosedDone + 终 ACK → S FinWait→TimeWait→ClosedDone）
+            let st_c = tcp::advance(tcp::ConnState::Established, tcp::FLAG_FIN, 0, 0, false);
+            ok &= st_c == Ok(tcp::ConnState::FinWait);
+            let snd_fin_c = snd_nxt_c;
+            let snd_nxt_c = tcp::seq_advance(snd_fin_c, true, false, 0);
+            let s_fin = rtt_seg(
+                CL_PORT,
+                SV_PORT,
+                snd_fin_c,
+                ISN_S + 1,
+                tcp::FLAG_FIN | tcp::FLAG_ACK,
+                &[],
+                &mut frame,
+            );
+            ok &= s_fin.is_some();
+            let st_c = tcp::advance(
+                tcp::ConnState::FinWait,
+                tcp::FLAG_FIN | tcp::FLAG_ACK,
+                snd_nxt_c,
+                snd_nxt_c,
+                false,
+            );
+            ok &= st_c == Ok(tcp::ConnState::TimeWait);
+            let st_c = tcp::advance(tcp::ConnState::TimeWait, 0, 0, 0, true);
+            ok &= st_c == Ok(tcp::ConnState::ClosedDone);
+            // 服务端：收 FIN → 主动关闭主轴同构 → 双向挥别收束
+            let st_s = tcp::advance(tcp::ConnState::Established, tcp::FLAG_FIN, 0, 0, false);
+            ok &= st_s == Ok(tcp::ConnState::FinWait);
+            let snd_fin_s = ISN_S + 1;
+            let snd_nxt_s = tcp::seq_advance(snd_fin_s, true, false, 0);
+            let c_fin = rtt_seg(
+                SV_PORT,
+                CL_PORT,
+                snd_fin_s,
+                snd_nxt_c,
+                tcp::FLAG_FIN | tcp::FLAG_ACK,
+                &[],
+                &mut frame,
+            );
+            ok &= c_fin.is_some();
+            let st_s = tcp::advance(
+                tcp::ConnState::FinWait,
+                tcp::FLAG_FIN | tcp::FLAG_ACK,
+                snd_nxt_s,
+                snd_nxt_s,
+                false,
+            );
+            ok &= st_s == Ok(tcp::ConnState::TimeWait);
+            ok &= tcp::advance(tcp::ConnState::TimeWait, 0, 0, 0, true)
+                == Ok(tcp::ConnState::ClosedDone);
+            let _ = writeln!(log, "tcp: teardown both sides ClosedDone");
+            // (g) 外部 TX 电气：ARP 解析网关（重发容忍域 ≤3 拍——t72 先例）→
+            //     IPv4/TCP SYN 组帧 → virtio 击发（收讫闸内建）。外部 RX
+            //     对接面挂账（重传批次同收——本拍只断言 TX 电气证据）。
+            let mut ext_ok = false;
+            for _ in 0..3 {
+                if let Some(echo) = vnet::arp_roundtrip() {
+                    ext_ok = vnet::tcp_external_syn(echo.sha, echo.spa, 9, CL_PORT, 777);
+                    break;
+                }
+            }
+            ok &= ext_ok;
+            let stats = vnet::tcp_stats();
+            ok &= stats.ext_tx == 1;
+            let _ = writeln!(
+                log,
+                "tcp: ext_syn tx={} inj={} acc={} bad_cs={} no_port={}",
+                stats.ext_tx, stats.injected, stats.accepted, stats.bad_cs, stats.no_port
+            );
+            // (h) 负例闸：坏伪头校验和拒收（bad_cs 增量显形）+ 未绑定端口
+            //     拒投（no_port 增量显形）——fail-visible 双计数。
+            let s0 = vnet::tcp_stats();
+            let injected =
+                vnet::tcp_loopback_tx(CL_PORT, SV_PORT, ISN_C, 0, tcp::FLAG_SYN, 8192, &[]);
+            ok &= injected;
+            let mut got = None;
+            let mut spin = 0u64;
+            while spin < 40_000_000 {
+                if let Some(fl) = vnet::pulse_rx_pop(&mut frame) {
+                    got = Some(fl);
+                    break;
+                }
+                spin += 1;
+                core::hint::spin_loop();
+            }
+            let Some(fl) = got else { return false };
+            frame[50] ^= 0x01; // 翻 TCP 校验和 1 位（14 以太 + 20 IP + 16 校验和域偏移）
+            ok &= vnet::tcp_dispatch(&frame[..fl]).is_none();
+            let s1 = vnet::tcp_stats();
+            ok &= s1.bad_cs == s0.bad_cs + 1;
+            let injected2 =
+                vnet::tcp_loopback_tx(CL_PORT, 41998, ISN_C, 0, tcp::FLAG_SYN, 8192, &[]);
+            ok &= injected2;
+            let mut got2 = None;
+            let mut spin2 = 0u64;
+            while spin2 < 40_000_000 {
+                if let Some(fl) = vnet::pulse_rx_pop(&mut frame) {
+                    got2 = Some(fl);
+                    break;
+                }
+                spin2 += 1;
+                core::hint::spin_loop();
+            }
+            let Some(fl2) = got2 else { return false };
+            ok &= vnet::tcp_dispatch(&frame[..fl2]).is_none();
+            let s2 = vnet::tcp_stats();
+            ok &= s2.no_port == s1.no_port + 1;
+            // (i) 统计对账：注入 = 采纳 + 两负例（bad_cs + no_port）。
+            ok &= s2.injected == s2.accepted + s2.bad_cs + s2.no_port;
+            // (j) 解绑收场（路由失效证据——UDP 先例同款）。
+            ok &= vnet::tcp_unbind(SV_PORT).is_ok();
+            ok &= vnet::tcp_unbind(CL_PORT).is_ok();
+            let _ = writeln!(
+                log,
+                "tcp: final inj={} acc={} bad_cs={} no_port={} ext_tx={}",
+                s2.injected, s2.accepted, s2.bad_cs, s2.no_port, s2.ext_tx
+            );
+            ok
+        };
+        let ok = run();
+        if ok {
+            let _ = writeln!(log, "LUMINA-T86-OK");
+        }
+        ok
+    };
+    report(&mut log, t86, "tcp-loop");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {
