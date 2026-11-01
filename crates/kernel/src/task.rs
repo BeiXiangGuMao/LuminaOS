@@ -852,6 +852,11 @@ pub fn aging_boosts() -> u64 {
 /// 门控。
 static PERCPU_TICKS: [AtomicU64; MAX_CPUS] = [AtomicU64::new(0), AtomicU64::new(0)];
 
+/// boot 栈底哨兵取证一次性旗（挂账⑦ L3 显形层）：sentinel qword 失配
+/// 时首次打印 LUMINA-BOOTSTACK-EROSION 即置位——单行取证预算，串口
+/// 轰击纪律同 DRDB_BUDGET（t52 族教训）。
+static BOOTSTACK_EROSION_LOGGED: AtomicBool = AtomicBool::new(false);
+
 /// per-CPU 当前切片长度（M10-A）：本核当前任务本量子已消耗的 PIT tick 数
 /// ——原子镜像（墙钟 ISR 锁自由递增；S31 缺陷族规避：PIT 进 ring3 的
 /// ISR 必须极短，不得取 SCHED 锁/触碰任务表）。派发点（execute_switch/
@@ -2557,9 +2562,35 @@ fn resched_preempt_body(cpu: usize, plan: &mut PreemptPlan) -> bool {
 ///      自-IPI——QEMU xAPIC 自定向 ICR 实测不交付，M10 开发期记档）；
 ///    - **对侧核**：PREEMPT_REQ 旗 test-and-set + 定向 RESCHED IPI
 ///      （对侧 RESCHED 钩子消费执行，交付实测安全）。
+/// 4. boot 栈底哨兵逐拍核对（挂账⑦ L3 显形层）：volatile 读 sentinel
+///    qword + 原子旗——被蚀即 LUMINA-BOOTSTACK-EROSION 一次性串口行
+///    （先于风暴落账；页表已物理隔离，蚀表路径不存在）。
 ///
 /// 本核量子路径返回 try_preempt_switch 结果（可能填写 plan 桩执行交换）。
 pub fn wall_hook(plan: &mut PreemptPlan) -> bool {
+    // ---- 挂账⑦ L3 显形层：boot 栈底哨兵区逐拍核对 ----
+    // 极短 ISR 纪律内：1 次 volatile 读（链接期定址 sentinel qword，
+    // = guard_top-8，栈下行越界首个被蚀位）+ 快路径原子旗 load。
+    // 被蚀 → 一次性串口取证行（SerialPort 直写端口无锁，猎场
+    // db_writer_trap 先例同款）。透明探针纪律：不阻断，带伤前行——
+    // 页表已物理隔离后余下损害面为堆尾（可显形），取证行先于任何
+    // 后续风暴落账。
+    if ostd::hw::phys::read_u64(crate::boot::boot_stack_guard_sentinel_addr())
+        != crate::boot::BOOT_STACK_GUARD_MAGIC
+        && !BOOTSTACK_EROSION_LOGGED.swap(true, Ordering::AcqRel)
+    {
+        let saw = ostd::hw::phys::read_u64(crate::boot::boot_stack_guard_sentinel_addr());
+        let mut serial = crate::console::SerialPort::com1();
+        serial.init();
+        let _ = core::fmt::Write::write_fmt(
+            &mut serial,
+            format_args!(
+                "LUMINA-BOOTSTACK-EROSION sentinel@{:#x} saw={saw:#x} want={:#x}（boot 栈下行越界显形——页表已隔离，蚀表路径不存在）\n",
+                crate::boot::boot_stack_guard_sentinel_addr(),
+                crate::boot::BOOT_STACK_GUARD_MAGIC
+            ),
+        );
+    }
     for (c, slot) in CURRENT.iter().enumerate() {
         if slot.load(Ordering::Relaxed) != IDLE {
             PERCPU_TICKS[c].fetch_add(1, Ordering::Relaxed);

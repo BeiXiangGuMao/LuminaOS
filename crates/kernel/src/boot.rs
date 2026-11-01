@@ -1,5 +1,14 @@
 //! 启动汇编：multiboot1 32 位入口 → 低 1 GiB 恒等映射 → x86_64 长模式。
 //!
+//! **挂账⑦ 布局根治（M36）**：`.boot.bss` 内序为〔哨兵区 4 KiB → boot 栈
+//! 256 KiB → 页表三张〕——栈向下生长，越界下行先蚀哨兵区（wall_hook
+//! 逐拍核对显形），再往下是堆尾；三张 boot 页表物理隔离在栈上方，任何
+//! 栈越界深度都不可达。缺陷史：v0.26.0 及之前页表紧贴栈下方（pml4/
+//! pdpt/pd_low 在 boot_stack_bottom 之下），自检深链溢出 64 KiB 栈后
+//! 静默蚀表 → 恒等映射无声瓦解 → #PF 风暴 → #DF 三重故障（qemu-int
+//! 取证：SP 穿越三表、isrf_pf_rec 取指自噬 CR2=自身 pc；M36-BB3a
+//! 挂账⑦ 体量阈值实验五连定界 +0~5 KiB，根治批 32 KiB 缩栈复现同链）。
+//!
 //! unsafe 白名单说明（SPEC 第十七章）：本模块是「框架内核白名单模块」，
 //! 机器状态初始化（页表、CR/MSR、GDT、远跳）无法以 safe Rust 表达，
 //! 因此整段以 `global_asm!` 固化并保持最小化；一旦进入 64 位 `kmain`，
@@ -26,8 +35,22 @@ global_asm! {
     ".long 0",                        // bss_end_addr：0 = 无需清零（页表自清、堆栈免初始化）
     ".long _start",                   // entry_addr：32 位入口（.multiboot 紧随其后）
 
-    // ---- 页表（3 × 4 KiB）与启动栈（64 KiB）：并入主 .bss（NOLOAD）----
+    // ---- 栈底哨兵区 + 启动栈 + 页表：并入主 .bss（NOLOAD）----
+    // 挂账⑦ 布局根治：序 = 哨兵区〔栈下行火线第一站〕→ boot 栈 256 KiB
+    // （64→256：自检深链 + t87 级批次阈值余量 ×4）→ 页表三张（栈上方
+    // ——越界下行不可达域；缺陷史：v0.26.0 及之前页表紧贴栈下方，深链
+    // 溢出静默蚀表 → 恒等映射无声瓦解 → #PF 风暴 → #DF）。哨兵区整页
+    // 涂鸦 BOOT_STACK_GUARD_MAGIC（kmain 早期），wall_hook 逐拍核对
+    // sentinel qword（guard_top-8 = 越界下行首个被蚀位）。
     ".section .boot.bss, \"aw\", @nobits",
+    ".balign 4096",
+    "boot_stack_guard_bottom:",
+    ".skip 4096",
+    "boot_stack_guard_top:",
+    ".balign 4096",
+    "boot_stack_bottom:",
+    ".skip 262144",
+    "boot_stack_top:",
     ".balign 4096",
     "pml4_table:",
     ".skip 4096",
@@ -35,12 +58,12 @@ global_asm! {
     ".skip 4096",
     "pd_low_table:",
     ".skip 4096",
-    "boot_stack_bottom:",
-    ".skip 65536",
-    "boot_stack_top:",
     // M22-③ [B] 猎场 v2.2：引导栈界符号全局导出（帧哨兵主任务锚——
     // 667/705/951/1005 四标本毒化目标 = 引导栈上主任务保存帧 RIP 槽，
     // Rust 侧读取栈界作哨兵界桩）。
+    // 挂账⑦：哨兵区界符号同款导出（wall_hook 核对面 + kmain 涂鸦面）。
+    ".globl boot_stack_guard_bottom",
+    ".globl boot_stack_guard_top",
     ".globl boot_stack_bottom",
     ".globl boot_stack_top",
 
@@ -124,12 +147,16 @@ global_asm! {
 }
 
 // M22-③ [B] 猎场 v2.2：引导栈界读取（帧哨兵主任务锚）。
-// SAFETY: 前置条件 —— 两符号由本文件 global_asm .globl 导出（.boot.bss
-//          NOLOAD 段，链接期定址，nm 可对账：bottom=0xa03000/top=0xa13000
-//          量级随链接布局浮动）。不变式 —— 仅取地址不读本体（零尺寸符号
-//          约定）。并发 —— 链接期常量，只读无竞争。
+// SAFETY: 前置条件 —— 四符号由本文件 global_asm .globl 导出（.boot.bss
+//          NOLOAD 段，链接期定址，nm 可对账；挂账⑦ 根治后量级：
+//          guard=[0x1600000,0x1601000) stack=[0x1601000,0x1641000)
+//          tables=[0x1641000,0x1644000)，随链接布局浮动）。
+//          不变式 —— 仅取地址不读本体（零尺寸符号约定）。并发 ——
+//          链接期常量，只读无竞争。
 // 违反后果 —— 符号缺失即链接期报错（无运行期风险）。
 extern "C" {
+    static boot_stack_guard_bottom: u8;
+    static boot_stack_guard_top: u8;
     static boot_stack_bottom: u8;
     static boot_stack_top: u8;
 }
@@ -140,4 +167,25 @@ pub fn boot_stack_bounds() -> (usize, usize) {
         core::ptr::addr_of!(boot_stack_bottom) as usize,
         core::ptr::addr_of!(boot_stack_top) as usize,
     )
+}
+
+/// boot 栈底哨兵区魔数（整页涂鸦基线；wall_hook 逐拍核对 sentinel
+/// qword，失配即 LUMINA-BOOTSTACK-EROSION 一次性取证行）。
+/// 取值 = "LUMINAGU" ASCII 小端——取证行 saw/want 同源可读。
+pub const BOOT_STACK_GUARD_MAGIC: u64 = 0x4C55_4D49_4E41_4755;
+
+/// 栈底哨兵区界 `(bottom, top)`（4 KiB，紧贴 [`boot_stack_bounds`] 的
+/// bottom 下方——挂账⑦ 根治布局，栈下行越界第一站；页表已物理隔离在
+/// 栈上方，越界下行不可达）。
+pub fn boot_stack_guard_bounds() -> (usize, usize) {
+    (
+        core::ptr::addr_of!(boot_stack_guard_bottom) as usize,
+        core::ptr::addr_of!(boot_stack_guard_top) as usize,
+    )
+}
+
+/// 哨兵核对地址（guard_top - 8：栈下行越界的**首个被蚀 qword**——
+/// 越界第一推即落此位，最早显形）。
+pub fn boot_stack_guard_sentinel_addr() -> u64 {
+    (core::ptr::addr_of!(boot_stack_guard_top) as usize - 8) as u64
 }

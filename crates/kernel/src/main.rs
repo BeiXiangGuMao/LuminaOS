@@ -172,6 +172,26 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         "kernel heap: {HEAP_SIZE} bytes bound (ostd::heap::FreeList)"
     );
 
+    // ---- 挂账⑦ 根治：boot 栈底哨兵区整页涂鸦（L3 显形层的账面基线）----
+    // 布局根治（boot.rs .boot.bss 重排：页表已移至栈上方）+ 容量余量
+    // （64→256 KiB）之后，哨兵区 = 栈下行越界第一站；整页涂鸦
+    // BOOT_STACK_GUARD_MAGIC，wall_hook 逐拍核对 sentinel qword
+    // （guard_top-8），被蚀即 LUMINA-BOOTSTACK-EROSION 一次性取证行。
+    // 涂鸦自栈侧端（guard_top-8）向低址推进——最先被蚀的位置最先定型。
+    {
+        let (gb, gt) = boot::boot_stack_guard_bounds();
+        let mut p = gt as u64 - 8;
+        while p >= gb as u64 {
+            ostd::hw::phys::write_u64(p, boot::BOOT_STACK_GUARD_MAGIC);
+            p -= 8;
+        }
+        let _ = writeln!(
+            log,
+            "boot-stack: guard [{gb:#x},{gt:#x}) painted {:#x} (L3 erosion sentinel)",
+            boot::BOOT_STACK_GUARD_MAGIC
+        );
+    }
+
     // ---- 引导信息解析 ----
     let summary = multiboot1::summarize(info);
     let _ = writeln!(
