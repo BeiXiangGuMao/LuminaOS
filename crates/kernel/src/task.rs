@@ -197,6 +197,15 @@ struct Task {
     stack_base: u64,
     /// 用户页表根物理地址（仅用户任务使用；内核任务恒为 0）。
     user_root: u64,
+    /// 任务 TLS 基址记账（IA32_FS_BASE 语义值；0 = 未设/引导态）。
+    /// M37-⓪ 挂账收口：FS base 为 per-CPU MSR 而调度器全局就绪队列
+    /// 自由跨核派发（M7-A）——基址不随任务即跨核迁移后 TLS 自指针
+    /// 归零，musl 首次触碰 errno 域（`mov %fs:0x0`）即用户态 #PF。
+    /// 记账面：arch_prctl(ARCH_SET_FS) 写槽 + per-CPU 缓存 + MSR 三面
+    /// 同拍（SCHED 锁窗）；恢复面唯一收口 prepare_dispatch（对账
+    /// 缓存漂移才 wrmsr，多数派发零 MSR 写）。fork 子代继承父现值
+    /// （Linux fork 同款）。
+    fs_base: u64,
     /// 类别。
     kind: Kind,
     /// 调度保存/恢复的寄存器面。
@@ -275,6 +284,7 @@ impl Task {
             stack_top: top,
             stack_base: base,
             user_root: 0,
+            fs_base: 0,
             kind: Kind::Kernel,
             ctx: TaskContext::boot_new(top, trampoline),
             state: State::Ready,
@@ -361,6 +371,7 @@ impl Task {
             stack_top: 0,
             stack_base: 0,
             user_root: 0,
+            fs_base: 0,
             kind: Kind::Kernel,
             ctx: TaskContext::stopped(),
             state: State::Running,
@@ -455,6 +466,12 @@ pub fn set_idle_reap(f: fn() -> bool) {
 /// （prepare_dispatch 按本核槽位派发时更新），消费面唯一（入口桩）。
 #[no_mangle]
 pub static LUMINA_PERCPU_KSTACK: [AtomicU64; MAX_CPUS] = [AtomicU64::new(0), AtomicU64::new(0)];
+
+/// 每核 IA32_FS_BASE 落笔缓存（M37-⓪）：值 = 本核 MSR 最后写入值。
+/// 初值 0 = 引导复位态（MSR 复位值同 0）——全写路径（arch_prctl SET
+/// 窗 + 派发恢复窗）均同拍更新缓存，不变式「缓存 == 本核 MSR」跨切
+/// 换/迁移/抢窗保持；派发面凭对账免冗余 wrmsr。
+static PERCPU_FS_BASE: [AtomicU64; MAX_CPUS] = [AtomicU64::new(0), AtomicU64::new(0)];
 
 /// 用户任务真实入口（user.rs 注入；避免 task ↔ user 循环依赖）。
 static USER_ENTRY_BRIDGE: AtomicUsize = AtomicUsize::new(0);
@@ -1296,6 +1313,10 @@ fn spawn_fork_child_impl(
         }
         let hflags = p.hflags;
         t.hflags = hflags;
+        // M37-⓪：fork 子代 TLS 基址继承（Linux fork 同款——子代线程
+        // 指针 = 父现值；首派发恢复面按槽值落 MSR，跨核派发不再失基，
+        // t85 sh 流水线 fork 族同受保护）。
+        t.fs_base = p.fs_base;
     }
     // M35-BBb：接线域（wiring = (子句柄, 父句柄源)——继承之后同窗施
     // 焊，同槽后者胜；铸槽纪律与继承域同款。父句柄源缺失（越界/空
@@ -1553,6 +1574,38 @@ pub fn resched_hits() -> u64 {
 /// 消费面为 syscall 入口桩的 LAPIC 索引读数；全局槽已删除。
 /// 内核任务回归引导根（RSP0/PERCPU 留陈旧值无害：内核任务被中断时本就
 /// 在 ring0，不经 RSP0 切栈；入 ring3 前必有用户任务派发重写）。
+/// M37-⓪ TLS 基址记账面（arch_prctl SET 与派发恢复面的槽位单源）：
+/// SCHED 锁窗内完成「任务槽 + 本核缓存 + MSR」三面同拍——与派发
+/// 面互斥，杜绝「MSR 已写、槽未记」的抢窗撕裂（跨核派发在锁外排
+/// 队，恢复面按槽值对账）。无任务上下文（防御分支）仍写 MSR+缓存
+/// 保持缓存不变式，下一次派发按槽值纠偏。
+pub fn set_current_fs_base(base: u64) {
+    let _w = IntWindow::new();
+    let mut s = sched_lock!();
+    let cpu = my_cpu();
+    let cur = CURRENT[cpu].load(Ordering::Relaxed);
+    if let Some(t) = s.tasks.get_mut(cur) {
+        if let Some(t) = t.as_mut() {
+            t.fs_base = base;
+        }
+    }
+    PERCPU_FS_BASE[cpu].store(base, Ordering::Release);
+    crate::linux::fs_base_write(base);
+}
+
+/// M37-⓪ 当前任务 TLS 基址读回（ARCH_GET_FS 权威源）：跨核迁移后
+/// 本核 MSR 属最后落笔任务，不可信——槽值才是本任务语义值。
+pub fn current_fs_base() -> u64 {
+    let _w = IntWindow::new();
+    let s = sched_lock!();
+    let cpu = my_cpu();
+    let cur = CURRENT[cpu].load(Ordering::Relaxed);
+    s.tasks
+        .get(cur)
+        .and_then(|t| t.as_ref())
+        .map_or(0, |t| t.fs_base)
+}
+
 fn prepare_dispatch(t: &Task, boot_cr3: u64, cpu: usize) {
     // M18-①：canary 校验（五条派发路径唯一收口；两次 volatile 读，
     // 锁内无分配、无锁获取——中断语境可达）。旧任务的下一次派发即
@@ -1573,6 +1626,15 @@ fn prepare_dispatch(t: &Task, boot_cr3: u64, cpu: usize) {
                 // 前置条件 —— user_root 为完整可用页表根（用户侧构造路径
                 //          保证）；所有 CR3 均映射低 1 GiB 恒等区。
                 ostd::hw::control::write_cr3(t.user_root);
+            }
+            // M37-⓪ 跨核 FSBASE 恢复（M33-T1 挂账收口）：TLS 基址随
+            // 任务走（fs_base 槽记账）；与 per-CPU 落笔缓存对账，漂移
+            // 才 wrmsr（多数派发零 MSR 写）。缓存/MSR 不变式由全写
+            // 路径同拍更新保持（SET 窗 SCHED 锁内、本窗调度锁内）。
+            let fb = t.fs_base;
+            if PERCPU_FS_BASE[cpu].load(Ordering::Acquire) != fb {
+                crate::linux::fs_base_write(fb);
+                PERCPU_FS_BASE[cpu].store(fb, Ordering::Release);
             }
         }
         Kind::Kernel => {

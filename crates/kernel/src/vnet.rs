@@ -462,6 +462,9 @@ const MY_IP: [u8; 4] = [10, 0, 2, 15];
 /// t69 轮询预算（TCG 下 ~0.5 s 量级上限；slirp 应答实测量级微秒，
 /// 预算纯为最坏情况兜底）。
 const ARP_SPIN_BUDGET: u64 = 40_000_000;
+/// t69 命中后 TX 回执收讫预算（M37-⓪）：应答已达前提下回执落环只差
+/// 设备侧账面一步——同量级短预算足额（回执真丢失即 t73 B 面，如实败）。
+const ARP_SETTLE_BUDGET: u64 = 1_000_000;
 
 /// vring 句柄：三表物理基址 + 双游标（驱动侧 avail 发布位 / used 影子）。
 struct Vring {
@@ -1844,6 +1847,20 @@ pub fn arp_roundtrip() -> Option<ArpEcho> {
                 }
                 // 应答寻我 + 问我本机地址 → 命中
                 if tpa == MY_IP && tha == st.mac {
+                    // M37-⓪ 收讫对账：应答命中即证 TX 已被设备消费——
+                    // used 回执仅异步迟到（MTTCG TX BH，M24-C1 实录
+                    // 同族）。命中后小预算排水等待回执落环，账实对齐
+                    // 再返回：三闸 tx_used≥1 不再与回执到达序竞速
+                    // （本宿主 4/4 确定性击发：rx_seen=1 + tx_used=0）。
+                    // 预算耗尽仍如实返回现值（回执真丢失 = t73 B 面
+                    // 家族，fail-visible 不掩）。
+                    let mut settle = 0u64;
+                    while tx_used == 0 && settle < ARP_SETTLE_BUDGET {
+                        let mut telems = [Done { id: 0, len: 0 }; 8];
+                        tx_used += drain_used(&mut st.tx, &mut telems);
+                        settle += 1;
+                        core::hint::spin_loop();
+                    }
                     return Some(ArpEcho {
                         sha,
                         spa,

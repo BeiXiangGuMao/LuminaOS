@@ -987,19 +987,34 @@ fn lin_clock_gettime(clk: u64, tp: u64) -> u64 {
 /// v0 口径如实记档：① FS base 为 per-CPU MSR，不在调度器上下文切换面
 /// （GPR+CR3 面外）——单 Linux 任务活体口径安全，per-task 保存恢复随
 /// 进程族批次挂账；② 无 CFI/沙箱面（用户基址直写 MSR——Linux 同权）。
+///
+/// **M37-⓪ 挂账收口（本笔）**：v0 口径①揭雷实证——调度器全局就绪
+/// 队列自由跨核派发（M7-A），FS base 不随任务即跨核迁移后 TLS 自指
+/// 针归零，musl 首次触碰 errno 域（`mov %fs:0x0,%rax`）即用户态 #PF
+/// （t87 相位 (b) `yes` 于本宿主 3/3 确定性击发，崩溃指令
+/// `0x4a159d: 64 48 8b 04 25 00...` 反汇编实锤）。接管面：SET 走
+/// [`crate::task::set_current_fs_base`]（SCHED 锁窗三面同拍：任务槽
+/// 记账 + per-CPU 落笔缓存 + MSR）；GET 读槽值（迁移后 MSR 属最后
+/// 落笔任务，不可信）；派发恢复唯一收口 prepare_dispatch（缓存对账
+/// 漂移才 wrmsr）。fork 子代继承父现值（Linux fork 同款）。
 fn lin_arch_prctl(op: u64, base: u64) -> u64 {
     const ARCH_SET_FS: u64 = 0x1002;
     const ARCH_GET_FS: u64 = 0x1003;
     match op {
         ARCH_SET_FS => {
-            wrmsr_fs_base(base);
+            // M37-⓪：任务槽记账 + 本核缓存 + MSR 三面同拍（SCHED 锁
+            // 窗内完成，与派发面互斥——MSR 已写槽未记的抢窗撕裂
+            // 结构性排除）。
+            crate::task::set_current_fs_base(base);
             0
         }
         ARCH_GET_FS => {
             let Some(dst) = validate_user_slice_mut(base, 8) else {
                 return err(14); // EFAULT
             };
-            let cur = rdmsr_fs_base();
+            // M37-⓪：读任务槽记账值（跨核迁移后本核 MSR 属最后落笔
+            // 任务，不可信——槽值才是本任务权威）。
+            let cur = crate::task::current_fs_base();
             dst[0..8].copy_from_slice(&cur.to_le_bytes());
             0
         }
@@ -1008,10 +1023,13 @@ fn lin_arch_prctl(op: u64, base: u64) -> u64 {
 }
 
 /// IA32_FS_BASE MSR 写（0xC0000100；`wrmsr` ecx=MSR 号 / edx:eax=值）。
+/// M37-⓪ 起消费面双口：arch_prctl SET 窗（经 task 记账面）+ 派发恢复
+/// 面（prepare_dispatch 缓存对账漂移时）。
 #[inline]
-fn wrmsr_fs_base(base: u64) {
-    // SAFETY: MSR 写为 ring0 专属指令；本函数仅经 lin_arch_prctl 派发
-    //         （内核态）可达；ecx/edx/eax 显式入参，无内存副作用。
+pub(crate) fn fs_base_write(base: u64) {
+    // SAFETY: MSR 写为 ring0 专属指令；本函数仅经 arch_prctl SET 记账
+    //         面与派发恢复面（均 ring0）可达；ecx/edx/eax 显式入参，
+    //         无内存副作用。
     unsafe {
         core::arch::asm!(
             "wrmsr",
@@ -1021,23 +1039,6 @@ fn wrmsr_fs_base(base: u64) {
             options(nomem, nostack, preserves_flags)
         );
     }
-}
-
-/// IA32_FS_BASE MSR 读（`rdmsr` edx:eax 出参拼装）。
-#[inline]
-fn rdmsr_fs_base() -> u64 {
-    let (lo, hi): (u32, u32);
-    // SAFETY: MSR 读为 ring0 专属指令；同 wrmsr_fs_base 无内存副作用。
-    unsafe {
-        core::arch::asm!(
-            "rdmsr",
-            in("ecx") 0xC000_0100u32,
-            out("eax") lo,
-            out("edx") hi,
-            options(nomem, nostack, preserves_flags)
-        );
-    }
-    ((hi as u64) << 32) | lo as u64
 }
 
 /// NUL 扫描（路径指针 → 长度；≤256 B 窗口防御——路径上界）。
