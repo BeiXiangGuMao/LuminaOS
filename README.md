@@ -8,7 +8,7 @@ workspace。内核可经 multiboot1 在 QEMU（`-smp 2`）上裸机启动，物�
 （UDP/TCP 协议栈）全部在环；crystal 格式 v1 文件系统（WAL/快照）在环；
 **85 项裸机自检全绿并自动验收**（QEMU 退出码 33）。
 
-当前状态：**v0.26.0（M35 双向收口：harbor 158 符号 H-P01 ≥150 闸 P2 DoD 收口 + busybox 批次二 fork fd 继承/pipe2/sh 流水线真流 + yes/head applet；自检 85/85）** · ROADMAP 制度化（M24→M35 十二里程碑逐笔
+当前状态：**v0.26.0（M36 四候选合并轮收口：crystal xxh3-128 uplift 全量口径 + kernel::vnet TCP 电气接线 t86 + prism alpha 混合/多 Surface 表 + busybox 批次三阻塞式管道 I/O〔BB3a 等待队列 + BB3b 探针极性根治 + t87 四相位电化学活体〕+ 挂账⑦ 布局敏感根治〔boot 栈/页表三层防御〕；自检 87/87）** · ROADMAP 制度化（M24→M35 十二里程碑逐笔
 落账）· 取证证据链全程落账（t 系活体 t66-t85 续编）· ADR 八项裁决在库
 （docs/adr/）· 五维成熟度 v3 = 6.4/10（docs/MATURITY.md）。
 
