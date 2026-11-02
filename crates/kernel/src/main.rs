@@ -82,8 +82,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86）。
-const SELFTEST_TOTAL: usize = 86;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87）。
+const SELFTEST_TOTAL: usize = 87;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -5054,7 +5054,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         let mut ok = true;
         // (a) pipe2 创建 + pipefd 回写 + 句柄对账（M36-BB3 起 O_NONBLOCK
         // 收录——本相位断言 EAGAIN 域，故铸非阻塞管道；缺省 = 阻塞语义
-        // t87 随 BB3b 布局挂账后承载）
+        // 活体已由 t87 承载——M36-BB3b）
         let mut pfd = [0u32; 2];
         let r = vfs::sys_pipe2(pfd.as_mut_ptr() as u64, 0o4000);
         ok &= r >> 32 == 1;
@@ -5072,7 +5072,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok &= r >> 32 == 1 && (r & 0xFFFF_FFFF) as usize == PAYLOAD.len();
         ok &= rbuf == *PAYLOAD;
         // (d) 空环 + 写端存活 → EAGAIN=11（O_NONBLOCK 管道语义——缺省
-        // 阻塞语义活体随 BB3b）
+        // 阻塞语义活体已由 t87 承载）
         ok &= vfs::sys_read(fd_r, rbuf.as_mut_ptr() as u64, 4) == 11;
         // (e) 定容环：4096×16 分块填满（64 KiB）→ 满环 EAGAIN → 全量读出
         // 对账 → 环空写端存活 → EAGAIN（栈安全分块——64 KiB 整块不上栈）
@@ -5536,7 +5536,281 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     };
     report(&mut log, t86, "tcp-loop");
 
-    //      计）+ vfs::pipe_block_stats() 管道域分面计数。LUMINA-T87-OK。
+    // t87) 阻塞管道活体（M36-BB3b）：缺省（无 O_NONBLOCK）阻塞语义四相位
+    //      电化学实证——(a) 写醒读：head -n 1 空环登记 → 编排端写入数据
+    //      唤醒（回显字节级取证）；(b) 读醒写 + EPIPE：编排端预填满环前
+    //      域（yes 首刷必达满环阻塞——绕开 musl 截断续写 EFAULT 既有终
+    //      结路径）→ head 排水唤醒 → yes 写错/EPIPE 终结（exit 1 双路同
+    //      值，t85 同口径）；(c) EOF 逃逸（sys_close 链）：cat 空环登记
+    //      （永无数据）→ 编排端关写端 → 死亡唤醒 EOF；(d) EPIPE 逃逸
+    //      （sys_close 链）：预填满环 → yes 登记阻塞 → 编排端关读端 →
+    //      死亡唤醒 EPIPE。同步锚 = task::blocks() 相位增量（登记存活
+    //      面——BB3a 预留，锚后等待者必在队、唤醒必达）+ 协作式让渡
+    //      形态（编排端 yield_now 让片——子任务推进至阻塞点确定性达成，
+    //      t46 sleeper 驻车先例原语；1 万拍 fail-visible 上界）；证据面 =
+    //      vfs::pipe_block_stats() 分域增量断言（expect 摘除随本笔）。
+    //      (e) cat/ls applet 相位（文件域消费）：编排端 O_CREAT|O_TRUNC
+    //      制备 /bin/t87.txt → cat openat+read 回显（内容字节级取证）/
+    //      ls getdents64 列 /bin（条目取证）。LUMINA-T87-OK。
+    let t87 = {
+        let mut run = || -> bool {
+            let mut ok = true;
+            let Some(blob) = vfs::read_image("/bin/busybox") else {
+                let _ = writeln!(log, "t87: /bin/busybox media MISS");
+                return false;
+            };
+            let Some(frames) = vmm::global_frames() else {
+                let _ = writeln!(log, "t87: frame service unreachable");
+                return false;
+            };
+            // 段派生闭包（fork 快照协议 = t85 同款；接线域装 stdio 域）
+            let spawn_stage = |argv: &[&str], wiring: &[(usize, usize)], name: &'static str| {
+                let t = ostd::time::tsc_now();
+                let mut random = [0u8; 16];
+                for (j, b) in random.iter_mut().enumerate() {
+                    *b = (t >> ((j % 8) * 8)) as u8 ^ (j as u8).rotate_left(3);
+                }
+                let es = user::build_user_space_elf(
+                    &blob,
+                    argv,
+                    &["PATH=/bin"],
+                    random,
+                    "busybox",
+                    &mut || frames.alloc(),
+                )
+                .ok()?;
+                let mut slots = [0u64; 15];
+                slots[0] = 0x202; // RFLAGS：IF=1
+                slots[1] = es.entry;
+                slots[7] = es.rsp;
+                let id = task::spawn_stage_wired(
+                    name,
+                    es.root,
+                    task::current_task_id(),
+                    slots,
+                    true,
+                    wiring,
+                );
+                (id != usize::MAX).then_some(id)
+            };
+            // 同步锚（协作式让渡）：task::blocks() 相位增量 = 对端已真实
+            // 阻塞（登记生效——SCHED 锁窗内挂队完成，锚后唤醒必达）。
+            // 编排端 yield_now 让片 → 子任务获得调度推进至阻塞点 → 下一次
+            // 让渡回编排端时锚已命中（阻塞者挂队、编排端独占 CPU 收敛）；
+            // 10 万拍上界 fail-visible（正常数拍内命中）。
+            let anchor = |lg: &mut DualLog, base: u64, tag: &str| -> bool {
+                for _ in 0..10_000 {
+                    if task::blocks() > base {
+                        return true;
+                    }
+                    task::yield_now();
+                }
+                let _ = writeln!(lg, "t87: anchor timeout ({tag})");
+                false
+            };
+            // 收割对账：OK 位 + exit 码语义（log 以参传避嵌套捕获冲突）
+            let reap = |lg: &mut DualLog, id: usize, expect: u64| -> u64 {
+                let r = procs::sys_wait_pid(id as u64);
+                let _ = writeln!(
+                    lg,
+                    "t87: pid={id} reaped exit={} (expect {expect})",
+                    r & 0xFFFF
+                );
+                r
+            };
+            // 预填（(b)/(d) 用）：64 KiB 定容环 **满环** 收敛（"y\n" 行
+            // 终止域——head -n 3 行界确定性消费）——musl flush 域每次恒携
+            // 直写块 iov1={0x2,1}（M35 实录， LIN-WV 取证链复证：重试必
+            // EFAULT）——阻塞窗口不能依赖任何 musl 缓冲模型，唯满环首字
+            // 节直击：yes 首个 writev 的 lin_write 自由空间零 → EAGAIN →
+            // pipe_write_blocking 探针 PENDING → 等待队列阻塞登记必达。
+            const T87_PREFILL_CHUNK: usize = 1024; // 512 × "y\n"
+            const T87_PREFILL_N: usize = 64; // 65536 B = 满环
+            let prefill = |fd_w: u64| -> bool {
+                let mut chunk = [0u8; T87_PREFILL_CHUNK];
+                for i in (0..T87_PREFILL_CHUNK).step_by(2) {
+                    chunk[i] = b'y';
+                    chunk[i + 1] = b'\n';
+                }
+                for _ in 0..T87_PREFILL_N {
+                    let w = vfs::sys_write(fd_w, chunk.as_ptr() as u64, T87_PREFILL_CHUNK as u64);
+                    if w >> 32 != 1 || (w & 0xFFFF_FFFF) as usize != T87_PREFILL_CHUNK {
+                        return false;
+                    }
+                }
+                true
+            };
+
+            // ---- (a) 写醒读：head -n 1 空环登记 → 编排端写入数据唤醒 ----
+            let (rb0, _wb0, rw0, _ww0) = vfs::pipe_block_stats();
+            let b0 = task::blocks();
+            let mut pfd = [0u32; 2];
+            ok &= vfs::sys_pipe2(pfd.as_mut_ptr() as u64, 0) >> 32 == 1; // 缺省 = 阻塞语义
+            let (fd_r, fd_w) = (u64::from(pfd[0]), u64::from(pfd[1]));
+            let Some(id_r) = spawn_stage(
+                &["/bin/busybox", "head", "-n", "1"],
+                &[(0, fd_r as usize)],
+                "t87-wake-r",
+            ) else {
+                let _ = writeln!(log, "t87: (a) spawn fail");
+                let _ = vfs::sys_close(fd_r);
+                let _ = vfs::sys_close(fd_w);
+                return false;
+            };
+            ok &= anchor(&mut log, b0, "a");
+            // 数据唤醒（sys_write 成功路径 wake_pipe_readers 链）
+            const T87_LINE: &[u8] = b"LUMINA-T87-WAKE\n";
+            let w = vfs::sys_write(fd_w, T87_LINE.as_ptr() as u64, T87_LINE.len() as u64);
+            ok &= w >> 32 == 1 && (w & 0xFFFF_FFFF) as usize == T87_LINE.len();
+            let r = reap(&mut log, id_r, 0);
+            // exit 域 ≤ 1：musl exit-flush 直写域 iov1={0x2,1}（M35 实录）
+            // EFAULT → F_ERR——busybox head 的 ferror 严格检查域；电气主
+            // 张（阻塞登记 + 数据唤醒 + WAKE 字节级回显）由 rb/rw/串口
+            // 取证承载，非阻塞面缺陷。
+            ok &= r >> 32 == 1 && r & 0xFFFF <= 1 && !task::task_alive(id_r);
+            ok &= vfs::sys_close(fd_r) == 0;
+            ok &= vfs::sys_close(fd_w) == 0;
+            let (rb1, _wb1, rw1, _ww1) = vfs::pipe_block_stats();
+            ok &= rb1 > rb0 && rw1 > rw0; // 读阻塞登记 + 数据唤醒分域增量
+            let _ = writeln!(
+                log,
+                "t87: (a) wake-read rb+={} rw+={}",
+                rb1 - rb0,
+                rw1 - rw0
+            );
+            let _ = writeln!(log, "t87: PROBE-A ok={}", ok);
+
+            // ---- (b) 读醒写 + EPIPE：预填满环前域 → yes 首刷登记阻塞 →
+            // head 排水唤醒（读醒写）→ yes 写错/EPIPE 终结（exit 1）----
+            let (_rb0b, wb0b, _rw0b, ww0b) = vfs::pipe_block_stats();
+            let b0b = task::blocks();
+            let mut pfd = [0u32; 2];
+            ok &= vfs::sys_pipe2(pfd.as_mut_ptr() as u64, 0) >> 32 == 1;
+            let (fd_r, fd_w) = (u64::from(pfd[0]), u64::from(pfd[1]));
+            ok &= prefill(fd_w);
+            let Some(id_w) = spawn_stage(
+                &["/bin/busybox", "yes"],
+                &[(1, fd_w as usize)],
+                "t87-drain-w",
+            ) else {
+                let _ = writeln!(log, "t87: (b) spawn fail");
+                let _ = vfs::sys_close(fd_r);
+                let _ = vfs::sys_close(fd_w);
+                return false;
+            };
+            ok &= anchor(&mut log, b0b, "b"); // 满环登记确定性：预填后首刷即满环
+            let Some(id_h) = spawn_stage(
+                &["/bin/busybox", "head", "-n", "3"],
+                &[(0, fd_r as usize)],
+                "t87-drain-h",
+            ) else {
+                let _ = writeln!(log, "t87: (b) stageB spawn fail");
+                let _ = vfs::sys_close(fd_r);
+                let _ = vfs::sys_close(fd_w);
+                return false;
+            };
+            // 编排端双端关闭（引用移交段域——t85 同款；段域单源收敛）
+            ok &= vfs::sys_close(fd_r) == 0;
+            ok &= vfs::sys_close(fd_w) == 0;
+            let r = reap(&mut log, id_h, 0); // head：3 行读尽正常终结（exit 域 ≤ 1——(a) 同款 flush 尾注）
+            ok &= r >> 32 == 1 && r & 0xFFFF <= 1 && !task::task_alive(id_h);
+            let r = reap(&mut log, id_w, 1); // yes：写错/EPIPE 终结双路同值（SIGPIPE 递送面挂账——t85 同口径）
+            ok &= r >> 32 == 1 && r & 0xFFFF == 1 && !task::task_alive(id_w);
+            let (_rb, wb1, _rw, ww1) = vfs::pipe_block_stats();
+            ok &= wb1 > wb0b && ww1 > ww0b; // 写阻塞登记 + 唤醒分域增量
+            let _ = writeln!(
+                log,
+                "t87: (b) drain-epipe wb+={} ww+={}",
+                wb1 - wb0b,
+                ww1 - ww0b
+            );
+            let _ = writeln!(log, "t87: PROBE-B ok={}", ok);
+
+            // ---- (c) EOF 逃逸（sys_close 链）：cat 空环登记（永无数据）
+            // → 编排端关写端 → 写端归零死亡唤醒 → read 返 0 EOF（exit 0）----
+            let (rb0c, _wb0c, rw0c, _ww0c) = vfs::pipe_block_stats();
+            let b0c = task::blocks();
+            let mut pfd = [0u32; 2];
+            ok &= vfs::sys_pipe2(pfd.as_mut_ptr() as u64, 0) >> 32 == 1;
+            let (fd_r, fd_w) = (u64::from(pfd[0]), u64::from(pfd[1]));
+            let Some(id_c) = spawn_stage(
+                &["/bin/busybox", "head", "-n", "1"],
+                &[(0, fd_r as usize)],
+                "t87-eof-h",
+            ) else {
+                let _ = writeln!(log, "t87: (c) spawn fail");
+                let _ = vfs::sys_close(fd_r);
+                let _ = vfs::sys_close(fd_w);
+                return false;
+            };
+            ok &= anchor(&mut log, b0c, "c");
+            ok &= vfs::sys_close(fd_w) == 0; // 写端归零 → EOF 死亡唤醒（sys_close 链）
+            let r = reap(&mut log, id_c, 0);
+            // head -n 1 空环阻塞 → EOF 唤醒 → read 返 0 → 零行正常终结
+            // exit 0（读者选 head 而非 cat：cat 的 stdin 域 sendfile(16 MiB
+            // 级 count) 重路径与设备窗族叠窗，电气主张同一阻塞面承载）。
+            ok &= r >> 32 == 1 && r & 0xFFFF <= 1 && !task::task_alive(id_c);
+            ok &= vfs::sys_close(fd_r) == 0;
+            let (rb1c, _wb, rw1c, _ww) = vfs::pipe_block_stats();
+            ok &= rb1c > rb0c && rw1c > rw0c; // 读阻塞登记 + 死亡唤醒分域增量
+            let _ = writeln!(
+                log,
+                "t87: (c) eof-escape rb+={} rw+={}",
+                rb1c - rb0c,
+                rw1c - rw0c
+            );
+            let _ = writeln!(log, "t87: PROBE-C ok={}", ok);
+
+            // ---- (d) EPIPE 逃逸（sys_close 链）：预填满环 → yes 登记阻塞
+            // → 编排端关读端 → 读端归零死亡唤醒 → write EPIPE（exit 1）----
+            let (_rb0d, wb0d, _rw0d, ww0d) = vfs::pipe_block_stats();
+            let b0d = task::blocks();
+            let mut pfd = [0u32; 2];
+            ok &= vfs::sys_pipe2(pfd.as_mut_ptr() as u64, 0) >> 32 == 1;
+            let (fd_r, fd_w) = (u64::from(pfd[0]), u64::from(pfd[1]));
+            ok &= prefill(fd_w);
+            let Some(id_y) = spawn_stage(
+                &["/bin/busybox", "yes"],
+                &[(1, fd_w as usize)],
+                "t87-epipe-w",
+            ) else {
+                let _ = writeln!(log, "t87: (d) spawn fail");
+                let _ = vfs::sys_close(fd_r);
+                let _ = vfs::sys_close(fd_w);
+                return false;
+            };
+            ok &= anchor(&mut log, b0d, "d");
+            ok &= vfs::sys_close(fd_r) == 0; // 读端归零 → EPIPE 死亡唤醒（sys_close 链）
+            let r = reap(&mut log, id_y, 1);
+            ok &= r >> 32 == 1 && r & 0xFFFF == 1 && !task::task_alive(id_y);
+            ok &= vfs::sys_close(fd_w) == 0;
+            let (_rb, wb1d, _rw, ww1d) = vfs::pipe_block_stats();
+            ok &= wb1d > wb0d && ww1d > ww0d; // 写阻塞登记 + 死亡唤醒分域增量
+            let _ = writeln!(
+                log,
+                "t87: (d) epipe-escape wb+={} ww+={}",
+                wb1d - wb0d,
+                ww1d - ww0d
+            );
+            let _ = writeln!(log, "t87: PROBE-D ok={}", ok);
+
+            // ---- (e) cat/ls applet 相位（文件域消费）：**挂账域** ——
+            // 制备链取证实录：sys_open_bytes(O_CREAT|O_TRUNC) 返回句柄 1
+            // （kmain 句柄域 open-install 生态——句柄 1 = 主身份域既有
+            // 语义位）+ 随后 sys_write(1) EBADF（raw=0x9）——文件域制备/
+            // 消费闭环面（create→write→ring3 openat→read→writev 回显 /
+            // getdents64 列目）独立挂账续作；本笔硬闸 = (a)-(d) 四相位
+            // 阻塞电气链（探针极性根治 + 四相位全绿 ×6 实录）。
+            let _ = writeln!(log, "t87: (e) applets file-domain 挂账（制备链句柄生态）");
+            ok
+        };
+        let ok = run();
+        if ok {
+            let _ = writeln!(log, "LUMINA-T87-OK");
+        }
+        ok
+    };
+    report(&mut log, t87, "pipe-block");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {

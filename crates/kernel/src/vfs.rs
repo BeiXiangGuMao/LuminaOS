@@ -1000,12 +1000,10 @@ static PIPE_R_WAKES: AtomicU64 = AtomicU64::new(0);
 /// 管道写真实唤醒计数。
 static PIPE_W_WAKES: AtomicU64 = AtomicU64::new(0);
 
-/// 管道阻塞面诊断快照（M36-BB3 断言域预留）：`(读尝试, 写尝试,
-/// 读唤醒, 写唤醒)`——尝试面 = 进入阻塞点即计（探针命中回滚亦计，
-/// ipc `RECV_BLOCKS` 同款口径）；唤醒面 = 真实阻塞后唤醒才计。
-/// 消费方 = t87 阻塞活体（BB3b——布局敏感挂账，见 ROADMAP M36 行）；
-/// 期望态注记：BB3b 落位即摘除本 expect。
-#[expect(dead_code)]
+/// 管道阻塞面诊断快照（M36-BB3）：`(读尝试, 写尝试, 读唤醒, 写唤醒)`
+/// ——尝试面 = 进入阻塞点即计（探针命中回滚亦计，ipc `RECV_BLOCKS`
+/// 同款口径）；唤醒面 = 真实阻塞后唤醒才计。消费方 = t87 阻塞活体
+/// 四相位断言域（M36-BB3b——分域增量锚 + 唤醒证据，见 ROADMAP M36 行）。
 pub fn pipe_block_stats() -> (u64, u64, u64, u64) {
     (
         PIPE_R_BLOCKS.load(Ordering::Acquire),
@@ -1015,10 +1013,11 @@ pub fn pipe_block_stats() -> (u64, u64, u64, u64) {
     )
 }
 
-/// 管道阻塞读（M36-BB3）：`O_NONBLOCK` 管道单发直返；缺省阻塞管道
-/// 空环 + 写端存活时登记 `WaitWhat::PipeRead` 等待并协作式让出，唤醒 /
-/// 探针命中后重试（真判定在 [`Pipe::read`] 环锁内重做——虚假唤醒由
-/// 重试循环自然收敛，ipc 阻塞接收同款范式）。
+/// 管道阻塞读（M36-BB3；t87 首跑根治探针极性——BB3a 误挂就绪语义于
+/// still_pending 契约位，空环读自旋空转）：`O_NONBLOCK` 管道单发直返；
+/// 缺省阻塞管道空环 + 写端存活时登记 `WaitWhat::PipeRead` 等待并协作
+/// 式让出，唤醒 / 探针命中后重试（真判定在 [`Pipe::read`] 环锁内重做
+/// ——虚假唤醒由重试循环自然收敛，ipc 阻塞接收同款范式）。
 ///
 /// 丢失唤醒免疫（三链完备）：
 /// 1. 写方成功写 → 唤醒链（[`pipe_write_blocking`] 成功路径 wake）；
@@ -1037,11 +1036,13 @@ fn pipe_read_blocking(pipe: &Pipe, buf: &mut [u8]) -> Result<usize, u64> {
                 if task::block_current_unless(
                     task::WaitWhat::PipeRead { object },
                     true,
-                    // 探针（非消费哨兵读）：环非空 = 有数据；写端亡 =
-                    // EOF 逃逸。true = 仍需等待。
+                    // 探针 = still_pending 契约（swap still_pending / ipc
+                    // pending 哨兵同款——返 true = 条件未就绪继续阻塞）：
+                    // 环空 + 写端存活 = 仍需等待；环非空（数据）或写端亡
+                    // （EOF 逃逸）任一成立即就绪（false → 锁窗回滚重试消费）。
                     || {
-                        pipe.avail.load(Ordering::Acquire) > 0
-                            || caps_refcount(pipe.w_object.load(Ordering::Acquire)) == 0
+                        pipe.avail.load(Ordering::Acquire) == 0
+                            && caps_refcount(pipe.w_object.load(Ordering::Acquire)) != 0
                     },
                 ) {
                     PIPE_R_WAKES.fetch_add(1, Ordering::AcqRel);
@@ -1066,10 +1067,12 @@ fn pipe_write_blocking(pipe: &Pipe, buf: &[u8]) -> Result<usize, u64> {
                 if task::block_current_unless(
                     task::WaitWhat::PipeWrite { object },
                     true,
-                    // 探针：环有空间 = 可写；读端亡 = EPIPE 逃逸。
+                    // 探针 = still_pending 契约（读路径同款）：满环 + 读端
+                    // 存活 = 仍需等待；环有空间或读端亡（EPIPE 逃逸）任一
+                    // 成立即就绪（false → 锁窗回滚重试消费）。
                     || {
-                        pipe.avail.load(Ordering::Acquire) < PIPE_CAP
-                            || caps_refcount(pipe.r_object.load(Ordering::Acquire)) == 0
+                        pipe.avail.load(Ordering::Acquire) >= PIPE_CAP
+                            && caps_refcount(pipe.r_object.load(Ordering::Acquire)) != 0
                     },
                 ) {
                     PIPE_W_WAKES.fetch_add(1, Ordering::AcqRel);

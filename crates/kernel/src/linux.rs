@@ -130,6 +130,13 @@ pub fn lin_dispatch(frame: &mut SyscallFrame) -> u64 {
             lumina_to_linux(crate::vfs::sys_pipe2(frame.rdi, frame.rsi))
         }
         LinAction::FStat => lin_fstat(frame.rdi, frame.rsi),
+        // M36-BB3b 收录（ls applet 消费驱动——M34-B1 newfstatat 先例）：
+        // stat(4)/lstat(6) = fstatat(AT_FDCWD, ·) 参数同形共享核（v0 无
+        // symlink 实体，AT_SYMLINK_NOFOLLOW 语义无损落点）。
+        LinAction::Stat => lin_fstat_at(AT_FDCWD, frame.rdi, frame.rsi, 0),
+        LinAction::LStat => lin_fstat_at(AT_FDCWD, frame.rdi, frame.rsi, AT_SYMLINK_NOFOLLOW),
+        LinAction::SendFile => lin_send_file(frame.rdi, frame.rsi, frame.rdx, frame.r10),
+        LinAction::Statx => lin_statx(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8),
         LinAction::Wait4 => lin_wait4(frame),
         LinAction::Fork => lin_fork(frame),
         LinAction::Execve => lin_execve(frame),
@@ -327,6 +334,90 @@ fn lin_writev(frame: &mut SyscallFrame) -> u64 {
     lin_write(fd, acc.as_ptr() as u64, acc.len() as u64)
 }
 
+/// statx(dirfd, path, flags, mask, buf)（M36-BB3b 收录——ls applet 条目
+/// 域消费驱动；musl 1.2 lstat 落点）：v0 = stat64 最小合成域（mode/size/
+/// nlink/ino/blksize + VALID 掩码——defs statx 5.15 形状 256 B 单源）。
+/// 路径域 = AT_FDCWD + cwd join（与 fstatat 同构）；AT_SYMLINK_NOFOLLOW
+/// 收下不映射（v0 无 symlink 实体）；AT_EMPTY_PATH 不收（fd 域走 fstat）。
+fn lin_statx(dirfd: u64, path: u64, flags: u64, mask: u64, buf: u64) -> u64 {
+    const AT_SYMLINK_NOFOLLOW: u64 = 0x100;
+    if flags & !AT_SYMLINK_NOFOLLOW != 0 || buf == 0 {
+        return err(EINVAL);
+    }
+    if path == 0 {
+        return err(EINVAL);
+    }
+    if dirfd != AT_FDCWD {
+        return err(EINVAL);
+    }
+    let (mode, size) = match lin_path_stat(path) {
+        Ok(v) => v,
+        Err(e) => return err(e),
+    };
+    let _ = mask; // v0 全域合成（mask 不筛——musl 消费域子集如实记档）
+    write_statx_user(buf, mode, size)
+}
+
+/// statx 5.15 形状写入核（defs 单源）：256 B 用户域填充——u32 域 4 B
+/// 对应（stx_mask@0x00 / stx_blksize@0x04 / stx_nlink@0x10 / stx_mode
+/// @0x1C / stx_size@0x28 / stx_blocks@0x30 / stx_attributes_mask@0x38）。
+fn write_statx_user(buf: u64, mode: u64, size: u64) -> u64 {
+    let Some(dst) = crate::syscall::validate_user_slice_mut(buf, 256) else {
+        return err(14);
+    };
+    let mut fill = |off: usize, v: &[u8]| {
+        if off + v.len() <= dst.len() {
+            dst[off..off + v.len()].copy_from_slice(v);
+        }
+    };
+    fill(0x00, &0x7FFu32.to_le_bytes()); // stx_mask：BASIC_STATS 全域在位
+    fill(0x04, &4096u32.to_le_bytes()); // stx_blksize
+    fill(0x10, &1u32.to_le_bytes()); // stx_nlink
+    fill(0x1C, &(mode as u16).to_le_bytes()); // stx_mode（u16 域）
+    fill(0x20, &1u64.to_le_bytes()); // stx_ino（v0 单一事实源 = 合成 1）
+    fill(0x28, &size.to_le_bytes()); // stx_size
+    fill(0x30, &size.div_ceil(512).to_le_bytes()); // stx_blocks
+    fill(0x38, &0u64.to_le_bytes()); // stx_attributes_mask
+    0
+}
+
+/// sendfile(out_fd, in_fd, offset, count)（M36-BB3b 收录——cat applet
+/// 消费驱动）：v0 = 内核侧 read+write 循环语义承载（4 KiB 堆聚合块；
+/// in_fd 当前偏移域直拷，offset 仅收 NULL——显域 EINVAL；EOF/写尽即
+/// 回）。返回累计拷贝字节；错误路径已拷字节 > 0 按部分成功返回（Linux
+/// 同款 ssize_t 语义）。
+fn lin_send_file(out_fd: u64, in_fd: u64, offset: u64, count: u64) -> u64 {
+    if offset != 0 {
+        return err(EINVAL);
+    }
+    let mut sent: u64 = 0;
+    while sent < count {
+        let want = (count - sent).min(4096);
+        let mut chunk = alloc::vec![0u8; want as usize];
+        let r = crate::vfs::sys_read(in_fd, chunk.as_mut_ptr() as u64, want);
+        if r >> 32 != 1 {
+            let e = r & 0xFFFF;
+            return if sent > 0 { sent } else { err(e) };
+        }
+        let got = r & 0xFFFF_FFFF;
+        if got == 0 {
+            break; // EOF（读尽即回）
+        }
+        chunk.truncate(got as usize);
+        let w = crate::vfs::sys_write(out_fd, chunk.as_ptr() as u64, got);
+        if w >> 32 != 1 {
+            let e = w & 0xFFFF;
+            return if sent > 0 { sent } else { err(e) };
+        }
+        let wrote = w & 0xFFFF_FFFF;
+        sent += wrote;
+        if wrote < got {
+            break; // out 短写（部分成功）
+        }
+    }
+    sent
+}
+
 /// fstat(fd, statbuf)：Linux struct stat 最小合成（v0 零展——mode/
 /// nlink/size/rdev，其余 0；musl isatty/stat 路径消费面）。
 /// M34-B1：stat64 写入核提取（[`write_stat64`]——与 newfstatat 共享
@@ -347,13 +438,27 @@ fn lin_fstat(fd: u64, statbuf: u64) -> u64 {
 
 /// vfs stat →（合成 mode, size）（M34-B1 提取：fstat/fstatat 共享）。
 fn fd_stat_mode_size(fd: u64) -> Result<(u64, u64), u64> {
+    // M36-BB3b 根治（ls 条目域实证暴露）：SYS_STAT ABI 尺寸车道 16 位
+    // （OK_BIT | size<<16 | kind）——≥64 KiB 文件 size<<16 溢出 OK 位车
+    // 道（st>>32 = size>>16 ≠ 1；/bin/busybox 1 MiB 域 0xF 实录，三代潜
+    // 伏——t83 wc 的 fstat 域静默容忍在案）。kind 域（低 8 位）恒在位；
+    // 尺寸权威改走 lseek-END（M15 偏移面），CUR 存返（流中 fstat 零扰动）。
     let r = crate::vfs::sys_stat(fd);
-    if r >> 32 != 1 {
+    if r < (1 << 32) {
         let line = alloc::format!("LIN-STAT-FAIL fd={fd} errno={}\n", r & 0xFFFF);
         crate::console::serial_log_bytes(line.as_bytes());
         return Err(r.min(ENOSYS));
     }
-    Ok(synth_mode_size(r & 0xFF, (r >> 16) & 0xFFFF))
+    let kind = r & 0xFF;
+    let cur = crate::vfs::sys_seek(fd, 1, 0);
+    let end = crate::vfs::sys_seek(fd, 2, 0);
+    if cur >> 32 == 1 {
+        let _ = crate::vfs::sys_seek(fd, 0, cur & 0xFFFF_FFFF);
+    }
+    if end >> 32 != 1 {
+        return Err(end.min(ENOSYS));
+    }
+    Ok(synth_mode_size(kind, end & 0xFFFF_FFFF))
 }
 
 /// vfs stat kind/size → Linux 合成（mode, size）单一事实源（M34-B1）：

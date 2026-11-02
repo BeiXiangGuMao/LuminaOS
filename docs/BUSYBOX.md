@@ -32,9 +32,9 @@
 
 | 挂账项 | 依赖缺口 | 批次归属 |
 |---|---|---|
-| ~~yes / head~~（**t85 已实证——M35-BBb 摘牌**）；cat / ls 全谱 applet 扩容 | **消费面已全量在库**（openat(257)/getdents64(217)/fstatat64(262)/writev(20)——M33-F1/M34-B1/B2 收录面串联，ls 就绪度高）；applet 活体相位挂账 **BB3b**（挂账⑦ 布局敏感——t87 体量阈值，见 ROADMAP M36-BB3 行） | M36-BB3b 裁决 |
-| ~~sh / 管道族（`yes \| head`）~~（**sh 流水线首割已实证——M35-BBb：`\|` 解析 + fork 锁窗接线铸槽（dup2 等价）+ pipe2 + 两段真流串联**；真 busybox sh ash 全量启动面——getuid 族未收录/信号面/阻塞 read——ash 启动面挂账 BB3b；getuid 族 = M34-B2 合成桩已收（真身份面随多用户纵深）） | ash 启动面符号扩容 + SIGPIPE 递送 + ~~阻塞式管道 I/O~~（**M36-BB3a 已落**：O_NONBLOCK(0o4000) 收录 + 缺省 Linux 同款阻塞语义——WaitWhat::PipeRead/PipeWrite 等待队列 + 死亡唤醒双链；阻塞语义活体 t87 随 BB3b） | sh 批次三 |
+| ~~yes / head~~（**t85 已实证——M35-BBb 摘牌**）；cat / ls 全谱 applet 扩容 | **消费面收录扩容在库**（M36-BB3b 消费驱动收录 stat(4)/lstat(6)/sendfile(40)/statx(332) + fd_stat_mode_size lseek-END 尺寸权威根治——见 ROADMAP M36-BB3 行）；applet 文件域制备/派生面挂账 **续作**（kmain 句柄域 open-install 生态实录 raw=0x100000001/0x9——t87 (e) 制备链取证实录） | 续作批次裁决 |
+| ~~sh / 管道族（`yes \| head`）~~（**sh 流水线首割已实证——M35-BBb：`\|` 解析 + fork 锁窗接线铸槽（dup2 等价）+ pipe2 + 两段真流串联**；真 busybox sh ash 全量启动面——getuid 族未收录/信号面/阻塞 read——ash 启动面挂账 BB3b；getuid 族 = M34-B2 合成桩已收（真身份面随多用户纵深）） | ash 启动面符号扩容 + SIGPIPE 递送 + ~~阻塞式管道 I/O~~（**M36-BB3a 已落**：O_NONBLOCK(0o4000) 收录 + 缺省 Linux 同款阻塞语义——WaitWhat::PipeRead/PipeWrite 等待队列 + 死亡唤醒双链；阻塞语义活体 **t87 已实证——M36-BB3b 摘牌**（四相位电化学全绿 + 探针极性根治）） | sh 批次三 |
 | mkdir / rm / cd 族 | mkdir(83)/unlinkat(263) 已备/AT_REMOVEDIR 已收；rmdir 语义随 mkdir 批次 | 同上 |
 | 阻塞式 tty read | v0 tty 游标非阻塞口径（read 返回 0 = 暂无数据） | 调度协作面批次 |
 
-> 复评机制：本表随 applet 批次推进续记（M34-B2 首版成像；M35-BBb 扩记——yes/head 两行 + pipe2 三批 + sh 首割摘牌注；M36-BB3a 扩记——阻塞式管道 I/O 等待队列落位 + O_NONBLOCK 收录（活体 t87 挂账 BB3b））；行数增长即覆盖度证据链，未达全功能口径前 METRICS 行保持「扩容中」定性。
+> 复评机制：本表随 applet 批次推进续记（M34-B2 首版成像；M35-BBb 扩记——yes/head 两行 + pipe2 三批 + sh 首割摘牌注；M36-BB3a 扩记——阻塞式管道 I/O 等待队列落位 + O_NONBLOCK 收录；**M36-BB3b 扩记——阻塞语义活体 t87 摘牌**（四相位电化学全绿 + BB3a 探针极性根治 + stat/lstat/sendfile/statx 消费驱动收录四目 + fd_stat_mode_size 尺寸权威根治））；行数增长即覆盖度证据链，未达全功能口径前 METRICS 行保持「扩容中」定性。

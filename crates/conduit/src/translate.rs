@@ -77,6 +77,17 @@ pub enum LinAction {
     WriteV,
     /// fstat(5)：合成 Linux struct stat 布局（v0 零展：mode/size/nlink）
     FStat,
+    /// stat(4)：路径 stat（M36-BB3b 收录——ls applet 消费驱动，M34-B1
+    /// newfstatat 先例）。
+    Stat,
+    /// lstat(6)：路径 lstat（v0 无符号链接实体——与 Stat 同构落点）。
+    LStat,
+    /// sendfile(40)：文件→fd 拷贝（M36-BB3b 收录——cat applet 消费驱动；
+    /// v0 内核侧 read+write 循环语义承载）。
+    SendFile,
+    /// statx(332)：扩展 stat（M36-BB3b 收录——ls applet 条目域 musl 1.2
+    /// lstat 落点消费驱动；v0 stat64 最小合成域 256 B）。
+    Statx,
     /// wait4(61)：SYS_WAIT_PID 编码 → Linux wstatus（code<<8）+ 返回 pid
     Wait4,
     /// brk(12)：brk 区管理（只扩不缩 v0 口径如实记档）
@@ -150,7 +161,9 @@ pub fn translate(num: u64) -> LinAction {
         1 => LinAction::Write,
         2 => LinAction::Open, // M34-B2 收录（t83 实证：wc/fopen 路径）
         3 => LinAction::Close,
+        4 => LinAction::Stat, // M36-BB3b 收录（ls 消费驱动）
         5 => LinAction::FStat,
+        6 => LinAction::LStat, // M36-BB3b 收录（ls 消费驱动——v0 无 symlink 实体，与 Stat 同构）
         8 => LinAction::LSeek,
         9 => LinAction::MMapAnon,
         11 => LinAction::StubOk, // munmap 合成（v0 匿名区不回收——M34-B2 收录）
@@ -159,6 +172,8 @@ pub fn translate(num: u64) -> LinAction {
         16 => LinAction::Err(ENOTTY), // ioctl：非终端 fd 语义（v0 全量）
         20 => LinAction::WriteV,
         33 => LinAction::Dup2,
+        40 => LinAction::SendFile, // M36-BB3b 收录（cat 消费驱动）
+        332 => LinAction::Statx,   // M36-BB3b 收录（ls 条目域 musl lstat 落点）
         39 => LinAction::GetPid,
         57 => LinAction::Fork,
         59 => LinAction::Execve,
@@ -292,6 +307,11 @@ mod tests {
         assert_eq!(translate(106), LinAction::StubUid);
         // M35-BBa 收录（fork fd 继承面同批摘牌）
         assert_eq!(translate(293), LinAction::Pipe2);
+        // M36-BB3b 收录（cat/ls applet 消费驱动——M34-B1 先例）
+        assert_eq!(translate(4), LinAction::Stat);
+        assert_eq!(translate(6), LinAction::LStat);
+        assert_eq!(translate(40), LinAction::SendFile);
+        assert_eq!(translate(332), LinAction::Statx);
         // 显形拒绝（未收录）
         assert_eq!(translate(56), LinAction::Err(ENOSYS)); // clone（M33-P1 后仍挂账——vfork/clone 旗标面随后续批次）
         assert_eq!(translate(59), LinAction::Execve); // M33-P1 收录
