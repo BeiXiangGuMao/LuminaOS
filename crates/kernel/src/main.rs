@@ -82,8 +82,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87）。
-const SELFTEST_TOTAL: usize = 87;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88）。
+const SELFTEST_TOTAL: usize = 88;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -4250,9 +4250,11 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
             crate::fb::fb_probe_px_write(*x, *y, c);
             sent_pre[i] = c;
         }
-        // (3) stage 组帧（交盒域确定性图案）
+        // (3) stage 组帧（交盒域确定性图案）——顶字节 0x00（M37-A1b XRGB
+        // 规范化写回：合成执行器低 24 位保真、X 通道归零；v0 0x55 顶字节
+        // 属直写期实现巧合非契约，t77 等值断言随规范化同步）
         let stage_px = |x: i32, y: i32| -> u32 {
-            0x5500_0000 | (((x & 0xFF) as u32) << 16) | (((y & 0xFF) as u32) << 8) | 0x5A
+            (((x & 0xFF) as u32) << 16) | (((y & 0xFF) as u32) << 8) | 0x5A
         };
         for y in dmg.y..dmg.y + dmg.h as i32 {
             for x in dmg.x..dmg.x + dmg.w as i32 {
@@ -4651,7 +4653,8 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                 sent_pre[i] = c;
             }
             let stage_px = |x: i32, y: i32| -> u32 {
-                0x7900_0000 | (((x & 0xFF) as u32) << 16) | (((y & 0xFF) as u32) << 8) | 0x79
+                // 顶字节 0x00（M37-A1b XRGB 规范化写回同 t77 适配）
+                (((x & 0xFF) as u32) << 16) | (((y & 0xFF) as u32) << 8) | 0x79
             };
             for y in dmg.y..dmg.y + dmg.h as i32 {
                 for x in dmg.x..dmg.x + dmg.w as i32 {
@@ -5812,6 +5815,204 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     };
     report(&mut log, t87, "pipe-block");
 
+    // 88) M37-A1b 多 Surface alpha 合成活体（t88）：注册域五闸（登记/
+    //     重复 id 拒/id 0 保留拒/越屏拒/15 槽满容 + 注销槽复用）→ blend
+    //     电气双锚（prism 宿主 golden 同数同源：不透明蓝底 over 手算
+    //     (100,50,152)；stage 直承载 over 手算 (145,95,69)）+ 隐藏层不
+    //     参混 + 移动/注销回退 + 空表回退 = v0 stage 单层逐位同构
+    //     （ADR-0004 回归锚）→ 交盒外哨兵零触碰（t77 同款对照面）→
+    //     ABI parse 域三操作 roundtrip + 坏参拒 + 派发臂 EFAULT 域。
+    let t88 = {
+        let mut ok = true;
+        // (1) 注册域（stage 底层锚在表——t77 stage_init 已落）
+        ok &= crate::fb::surf_count() == 1;
+        let slot1 = match crate::fb::surf_register(1, 100, 100, 64, 64, 5) {
+            Ok(s) => s,
+            Err(_) => usize::MAX,
+        };
+        ok &= slot1 != usize::MAX;
+        ok &= crate::fb::surf_register(1, 0, 0, 8, 8, 1).is_err(); // 重复 id 拒
+        ok &= crate::fb::surf_register(0, 0, 0, 8, 8, 1).is_err(); // id 0 保留拒
+        ok &= crate::fb::surf_register(2, 1900, 100, 64, 8, 1).is_err(); // 越屏拒（1900+64 > 1920）
+                                                                         // 容量对账：15 覆盖层满容 ENOSPC + 注销槽复用（1×1 微面 ×14）
+        let mut cap_ok = true;
+        for i in 0..14u32 {
+            let dx = (i % 8) as i32 * 8;
+            let dy = (i / 8) as i32 * 8;
+            cap_ok &= crate::fb::surf_register(10 + i, 1800 + dx, 900 + dy, 8, 8, 1).is_ok();
+        }
+        ok &= cap_ok;
+        ok &= crate::fb::surf_register(99, 0, 0, 8, 8, 1).is_err(); // 第 16 层 → 表满拒
+        ok &= crate::fb::surf_count() == 16; // stage + 15 覆盖 = 16 槽满账
+        ok &= crate::fb::surf_remove(10).is_ok(); // 注销 → 槽解绑
+        ok &= crate::fb::surf_register(99, 0, 0, 8, 8, 1).is_ok(); // 槽复用（增长补配纪律）
+        ok &= crate::fb::surf_remove(99).is_ok();
+        ok &= crate::fb::surf_remove(99).is_err(); // 缺席域 fail-visible
+        for id in 11..=23u32 {
+            ok &= crate::fb::surf_remove(id).is_ok();
+        }
+        ok &= crate::fb::surf_count() == 2; // stage + id1
+                                            // (2) blend 电气双锚（stage 涂灰 → id1 不透明蓝 z5 → id2 半透明
+                                            //     z9——prism 宿主 golden 同数同源）
+        for y in 100..164i32 {
+            for x in 100..164i32 {
+                crate::fb::stage_px_write(x, y, 0x005A_5A5A); // stage 灰（box1）
+            }
+        }
+        for y in 100..164i32 {
+            for x in 200..264i32 {
+                crate::fb::stage_px_write(x, y, 0x005A_5A5A); // stage 灰（box2）
+            }
+        }
+        // id1 组帧：不透明纯蓝（a=255, b=255——prism golden 底色；
+        // 面内紧排局部坐标——64×64×4 = 4 页，row stride = w×4）
+        for ly in 0..64i32 {
+            for lx in 0..64i32 {
+                crate::fb::surf_px_write(slot1, 4, 64, lx, ly, 0xFF00_00FF);
+            }
+        }
+        let slot2 = match crate::fb::surf_register(2, 100, 100, 64, 64, 9) {
+            Ok(s) => s,
+            Err(_) => usize::MAX,
+        };
+        ok &= slot2 != usize::MAX;
+        // id2 组帧：半透明（a=128, 200/100/50——prism golden 顶层；
+        // 面内紧排局部坐标同 id1）
+        for ly in 0..64i32 {
+            for lx in 0..64i32 {
+                crate::fb::surf_px_write(slot2, 4, 64, lx, ly, 0x80C8_6432);
+            }
+        }
+        // 哨兵（交盒外对照面——t77 同款；域外零触碰证据）
+        let mut sent_pre = [0u32; 4];
+        let sent_pts = [(40i32, 40i32), (95, 95), (1500, 900), (1595, 995)];
+        for (i, (x, y)) in sent_pts.iter().enumerate() {
+            let c = 0x0200_0000 | (i as u32 * 0x0101_0101);
+            crate::fb::fb_probe_px_write(*x, *y, c);
+            sent_pre[i] = c;
+        }
+        // 相位①：双可见——blend 下沉混合锚（prism golden 同数
+        // over({128,200,100,50}, opaque(0,0,255)) = (100,50,152)）
+        let b1 = crate::fb::sys_fb_sync(100, 100, 64, 64);
+        ok &= b1 == 64 * 64 * 4;
+        let px1 = crate::fb::fb_compose_tick();
+        ok &= px1 == 64 * 64;
+        let mut anchor1 = true;
+        for (x, y) in [
+            (100i32, 100i32),
+            (163, 100),
+            (100, 163),
+            (163, 163),
+            (131, 131),
+        ] {
+            if crate::fb::fb_probe_px_read(x, y) != 0x0064_3298 {
+                anchor1 = false;
+            }
+        }
+        ok &= anchor1;
+        // 相位②：隐藏 id2——不透明快速路径单写同构（id1 蓝胜出）
+        ok &= crate::fb::surf_update(2, 100, 100, 64, 64, 9, false).is_ok();
+        let _ = crate::fb::sys_fb_sync(100, 100, 64, 64);
+        let px2 = crate::fb::fb_compose_tick();
+        ok &= px2 == 64 * 64;
+        let mut anchor2 = true;
+        for (x, y) in [(100i32, 100i32), (163, 163)] {
+            if crate::fb::fb_probe_px_read(x, y) != 0x0000_00FF {
+                anchor2 = false;
+            }
+        }
+        ok &= anchor2;
+        // 相位③：复显 + 移动 box2——双锚（box1 = id1 蓝单写不变；
+        // box2 = stage 直承载 over({128,200,100,50}, (90,90,90)) 手算
+        // (145,95,69)——湮灭域扫描跨层回退至 stage 的电气证据）
+        ok &= crate::fb::surf_update(2, 200, 100, 64, 64, 9, true).is_ok();
+        let b3a = crate::fb::sys_fb_sync(100, 100, 64, 64);
+        let b3b = crate::fb::sys_fb_sync(200, 100, 64, 64);
+        ok &= b3a == 64 * 64 * 4 && b3b == 64 * 64 * 4;
+        let px3 = crate::fb::fb_compose_tick();
+        ok &= px3 == 2 * 64 * 64;
+        let anchor3 = crate::fb::fb_probe_px_read(131, 131) == 0x0000_00FF
+            && crate::fb::fb_probe_px_read(231, 131) == 0x0091_5F45;
+        ok &= anchor3;
+        // 相位④：注销 id2——box2 回退 stage 灰
+        ok &= crate::fb::surf_remove(2).is_ok();
+        let _ = crate::fb::sys_fb_sync(200, 100, 64, 64);
+        let px4 = crate::fb::fb_compose_tick();
+        ok &= px4 == 64 * 64;
+        ok &= crate::fb::fb_probe_px_read(231, 131) == 0x005A_5A5A;
+        // 相位⑤：注销 id1——box1 回退 stage 灰（空表回退 = v0 stage
+        // 单层逐位同构，ADR-0004 回归锚）
+        ok &= crate::fb::surf_remove(1).is_ok();
+        let _ = crate::fb::sys_fb_sync(100, 100, 64, 64);
+        let px5 = crate::fb::fb_compose_tick();
+        ok &= px5 == 64 * 64;
+        ok &= crate::fb::fb_probe_px_read(131, 131) == 0x005A_5A5A;
+        ok &= crate::fb::surf_count() == 1; // 空表（stage 底层锚在账）
+                                            // 哨兵复核（全相位交盒外零触碰）
+        let mut sent_ok = true;
+        for (i, (x, y)) in sent_pts.iter().enumerate() {
+            if crate::fb::fb_probe_px_read(*x, *y) != sent_pre[i] {
+                sent_ok = false;
+            }
+        }
+        ok &= sent_ok;
+        // (3) ABI parse 域（v0.18）：REGISTER roundtrip + 坏参拒
+        ok &= matches!(
+            bedrock::abi::parse(bedrock::abi::SyscallRegs {
+                num: bedrock::abi::SYS_FB_SURFACE,
+                args: [0, 7, (100u64 << 32) | 40, (64u64 << 32) | 32, 5],
+            }),
+            Ok(bedrock::abi::Syscall::FbSurface {
+                op: 0,
+                id: 7,
+                x: 40,
+                y: 100,
+                w: 32,
+                h: 64,
+                z: 5,
+                visible: true
+            })
+        );
+        ok &= matches!(
+            bedrock::abi::parse(bedrock::abi::SyscallRegs {
+                num: bedrock::abi::SYS_FB_SURFACE,
+                args: [3, 7, 0, (8u64 << 32) | 8, 0],
+            }),
+            Err(bedrock::abi::AbiError::BadArgs) // op 越域
+        );
+        ok &= matches!(
+            bedrock::abi::parse(bedrock::abi::SyscallRegs {
+                num: bedrock::abi::SYS_FB_SURFACE,
+                args: [0, 0, 0, (8u64 << 32) | 8, 0],
+            }),
+            Err(bedrock::abi::AbiError::BadArgs) // id 0 保留域
+        );
+        // (4) 派发臂域：kmain 自检段无用户根 → REGISTER 映射 EFAULT(14)
+        //（fail-visible；登记回落注销清场——槽/帧保留复用纪律）
+        ok &= crate::fb::sys_fb_surface(crate::fb::SurfReq {
+            op: 0,
+            id: 9,
+            x: 0,
+            y: 0,
+            w: 8,
+            h: 8,
+            z: 1,
+            visible: true,
+        }) == 14;
+        ok &= crate::fb::surf_remove(9).is_ok();
+        ok &= crate::fb::surf_count() == 1;
+        let _ = writeln!(
+            log,
+            "compose-blend: px={px1}/{px2}/{px3}/{px4}/{px5} anchor1={anchor1} anchor2={anchor2} anchor3={anchor3} sent={sent_ok} ok={ok}"
+        );
+        if ok {
+            let _ = writeln!(log, "LUMINA-T88-BLEND a=255 r=100 g=50 b=152");
+            let _ = writeln!(log, "LUMINA-T88-OK");
+        }
+        ok
+    };
+    report(&mut log, t88, "fb-surface");
+
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {
         let _ = writeln!(log, "LUMINA-SELFTEST-PASS {pass}/{SELFTEST_TOTAL}");
@@ -5884,7 +6085,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                     // 非纯色块——交盒/裁剪证据可读）。
                     let y = ((tick * band as u64) % h as u64) as i32;
                     let tone = (tick & 0xFF) as u32;
-                    let paint = 0x7900_0000u32 | (tone << 16) | (tone << 8) | tone;
+                    let paint = (tone << 16) | (tone << 8) | tone;
                     for yy in y..y + band {
                         for xx in 0..w {
                             crate::fb::stage_px_write(xx, yy, paint ^ (xx as u32 & 0xFF));

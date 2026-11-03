@@ -321,6 +321,40 @@ pub const STAGE_VA_BASE: u64 = 0x5000_0000;
 /// LFB_BYTES 一段，余量给多 Surface 扩容）。
 pub const STAGE_VA_LIMIT: u64 = 0x6000_0000;
 
+/// Surface 注册面（v0.18，M37-A1b）：多 Surface 注册/更新/注销三操作
+/// ——prism `SurfaceTable` 电气化承接（kernel::fb `SURFACES` 表 + 散帧
+/// 后备槽 + `Stack::blend` 合成执行器）。
+///
+/// 参数（寄存器直传，打包域）：
+/// - rdi(a0) = op：0 登记 REGISTER / 1 更新 UPDATE / 2 注销 REMOVE；
+/// - rsi(a1) = id：Surface 标识（1..=u32::MAX——0 保留 stage 底层）；
+/// - rdx(a2) = xy 打包：低 32 位 x（i32 语义）、高 32 位 y（i32 语义）；
+/// - rcx(a3) = wh 打包：低 32 位 w、高 32 位 h（1..=0xFFFF 结构域，
+///   屏域校验在内核承接面 fail-visible）；
+/// - r8(a4)：REGISTER = z（i32 语义，越大越靠上）；UPDATE = 低 32 位
+///   z（i32 语义）+ bit 32 visible；REMOVE 恒 0。
+///
+/// 返回：REGISTER 成功 = 该 Surface 用户写窗基址（[`SURF_VA_BASE`] 域
+/// 按槽 stride 分窗，ring3 以**面内紧排行主序**直写 ARGB8888 像素——
+/// row stride = w×4，页数 = ⌈w×h×4/4096⌉）；UPDATE/REMOVE = 0。
+/// 错误域：EINVAL(22)/EEXIST(17)/ENOENT(2)/ENOSPC(28)/ENOMEM(9)/
+/// EFAULT(14)/ENODEV(19)（语义见内核承接面）。
+///
+/// 合成语义：登记面进入 [`SYS_FB_STAGE`] stage 之上的覆盖层栈（z 序
+/// 仲裁 + alpha over 逐像素混合——不透明层快速路径与胜者单写严格
+/// 同构）；损伤记账仍走 [`SYS_FB_SYNC`]（唯一入口，ADR-0004 双轨
+/// 共存不变）。
+pub const SYS_FB_SURFACE: u64 = 40;
+
+/// Surface 注册窗基址（用户态；与 [`FB_VA_BASE`] LFB 窗 /
+/// [`STAGE_VA_BASE`] stage 窗同处 PDPT[1] 显示分支三窗并存）。
+pub const SURF_VA_BASE: u64 = 0x6000_0000;
+/// Surface 注册窗上限（PDPT[1] 终点，与 [`FB_VA_LIMIT`] 同源；15 槽 ×
+/// 全屏窗 stride 8 MiB = 120 MiB 占用，域内余量充分）。
+pub const SURF_VA_LIMIT: u64 = 0x8000_0000;
+/// Surface 槽窗 stride（8 MiB = 每槽可容全屏 1080p 后备 2026 页）。
+pub const SURF_SLOT_STRIDE: u64 = 0x80_0000;
+
 /// [`SYS_FCNTL`] 命令：复制句柄（rdx = 新句柄号下界）。
 pub const F_DUPFD: u64 = 0;
 /// [`SYS_FCNTL`] 命令：读描述符旗标。
@@ -388,7 +422,9 @@ pub const OPEN_MODE_MASK: u64 = 0b1_1111;
 /// 无独立用户空间 → `ERR_CAP`；帧耗尽 → `ERR_NOMEM(9)`。
 pub const SYS_EXEC: u64 = 17;
 
-/// 系统调用 ABI 版本（v0.17 = M28-K1：新增 SYS_FB_STAGE(39) stage 合成面
+/// 系统调用 ABI 版本（v0.18 = M37-A1b：新增 SYS_FB_SURFACE(40) Surface
+/// 注册面（prism SurfaceTable→Stack 合成电气化承接——登记/更新/注销
+/// 三操作 + SURF_VA_BASE 槽窗三窗并存）；v0.17 = M28-K1：新增 SYS_FB_STAGE(39) stage 合成面
 /// （内核后备缓冲映射 + 损伤驱动局部上屏，ADR-0004 直写双轨共存）；
 /// v0.16 = M24-A1：新增 SYS_PIPE(38) shell 管道/
 /// 分页面（捕获武装/排水/分页重放/弃置四操作——单级 `|` 雏形 + `more`
@@ -405,7 +441,7 @@ pub const SYS_EXEC: u64 = 17;
 /// v0.16 = M15：目录面五落点 MKDIR/REMOVE/READDIR/MOUNT/UMOUNT +
 /// 句柄面深化 DUP/FCNTL（CLOEXEC）+ NANOSLEEP 参数语义升级为 TSC 纳秒。
 /// v0.8 = SYS_QUOTA；v0.7 = 文件面六落点 + NANOSLEEP + 统一句柄面）。
-pub const ABI_VERSION: (u16, u16) = (0, 17);
+pub const ABI_VERSION: (u16, u16) = (0, 18);
 
 /// ---------------------------------------------------------------------------
 /// LXE1 v0 错误码表（具名化事实源，M25-C1）：
@@ -698,11 +734,30 @@ pub enum Syscall {
         /// 操作码（0 捕获武装 / 1 排水 / 2 分页重放 / 3 弃置）。
         op: u64,
     },
+    /// Surface 注册面（v0.18，M37-A1b；见 [`SYS_FB_SURFACE`]）。
+    FbSurface {
+        /// 操作码（0 登记 / 1 更新 / 2 注销）。
+        op: u64,
+        /// Surface 标识（1..=u32::MAX；0 保留 stage 底层）。
+        id: u64,
+        /// 屏上域 x（i32 语义，越屏域内核承接面拒收）。
+        x: i32,
+        /// 屏上域 y（i32 语义）。
+        y: i32,
+        /// 宽（1..=0xFFFF）。
+        w: u32,
+        /// 高（1..=0xFFFF）。
+        h: u32,
+        /// z 序（i32 语义，越大越靠上）。
+        z: i32,
+        /// 可见性（REGISTER 恒 true；UPDATE 域 = r8 bit 32）。
+        visible: bool,
+    },
 }
 
 /// 从寄存器快照解析调用意图。只做结构校验，不做内存访问（由慢路径完成）。
 pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
-    let [a0, a1, a2, a3, _] = regs.args;
+    let [a0, a1, a2, a3, a4] = regs.args;
     match regs.num {
         SYS_LOG if a1 <= 512 => Ok(Syscall::Log { len: a1 }),
         SYS_LOG => Err(AbiError::BadArgs),
@@ -818,6 +873,27 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
         SYS_FB_STAGE => Err(AbiError::BadArgs),
         SYS_PIPE if a0 <= 3 => Ok(Syscall::Pipe { op: a0 }),
         SYS_PIPE => Err(AbiError::BadArgs),
+        SYS_FB_SURFACE
+            if a0 <= 2
+                && a1 != 0
+                && a1 <= u64::from(u32::MAX)
+                && (a3 & 0xFFFF_FFFF) != 0
+                && (a3 & 0xFFFF_FFFF) <= 0xFFFF
+                && (a3 >> 32) != 0
+                && (a3 >> 32) <= 0xFFFF =>
+        {
+            Ok(Syscall::FbSurface {
+                op: a0,
+                id: a1,
+                x: a2 as u32 as i32,
+                y: (a2 >> 32) as u32 as i32,
+                w: (a3 & 0xFFFF_FFFF) as u32,
+                h: (a3 >> 32) as u32,
+                z: if a0 == 2 { 0 } else { a4 as u32 as i32 },
+                visible: a0 != 1 || (a4 >> 32) & 1 == 1,
+            })
+        }
+        SYS_FB_SURFACE => Err(AbiError::BadArgs),
         _ => Err(AbiError::UnknownSyscall),
     }
 }
@@ -1188,7 +1264,7 @@ mod tests {
         assert_eq!(super::SYS_DUP, 31);
         assert_eq!(super::SYS_FCNTL, 32);
         assert_eq!(super::SYS_IMAGE_ENUM, 33);
-        assert_eq!(super::ABI_VERSION, (0, 17));
+        assert_eq!(super::ABI_VERSION, (0, 18));
         assert_eq!(super::SYS_TTY_GETCH, 34);
         assert_eq!(
             super::parse(super::SyscallRegs {
@@ -1203,6 +1279,7 @@ mod tests {
         assert_eq!(super::SYS_FB_TEXT, 37);
         assert_eq!(super::SYS_PIPE, 38);
         assert_eq!(super::SYS_FB_STAGE, 39);
+        assert_eq!(super::SYS_FB_SURFACE, 40);
         assert_eq!(
             super::parse(super::SyscallRegs {
                 num: super::SYS_PIPE,
@@ -1360,5 +1437,137 @@ mod svc_abi_tests {
                 assert_ne!(ids[a], ids[b]);
             }
         }
+    }
+
+    /// SYS_FB_SURFACE(40) 三操作 parse 域（v0.18，M37-A1b）：xy/wh 打包
+    /// 解包 roundtrip + op 域 + id 0 保留域 + wh 零/越域拒收 + UPDATE
+    /// visible 位解码 + REMOVE 恒零域。
+    #[test]
+    fn parse_fb_surface_ops() {
+        let r = |num: u64, args: [u64; 5]| super::SyscallRegs { num, args };
+        // REGISTER roundtrip：xy 低位 x/高位 y、wh 低位 w/高位 h、r8 = z
+        assert_eq!(
+            super::parse(r(
+                super::SYS_FB_SURFACE,
+                [0, 7, (100u64 << 32) | 40, (64u64 << 32) | 32, 5,]
+            )),
+            Ok(super::Syscall::FbSurface {
+                op: 0,
+                id: 7,
+                x: 40,
+                y: 100,
+                w: 32,
+                h: 64,
+                z: 5,
+                visible: true,
+            }),
+            "REGISTER：打包域解包 roundtrip（visible 恒 true）"
+        );
+        // 负坐标 i32 语义透传（位型重解释——屏域校验在内核承接面）
+        assert_eq!(
+            super::parse(r(
+                super::SYS_FB_SURFACE,
+                [
+                    0,
+                    7,
+                    ((-8i64 as u64) << 32) | u64::from(-4i32 as u32),
+                    (8u64 << 32) | 8,
+                    0,
+                ]
+            )),
+            Ok(super::Syscall::FbSurface {
+                op: 0,
+                id: 7,
+                x: -4,
+                y: -8,
+                w: 8,
+                h: 8,
+                z: 0,
+                visible: true,
+            }),
+            "REGISTER：负坐标 i32 语义透传"
+        );
+        // UPDATE：r8 低 32 = z、bit 32 = visible
+        assert_eq!(
+            super::parse(r(
+                super::SYS_FB_SURFACE,
+                [
+                    1,
+                    7,
+                    (60u64 << 32) | 200,
+                    (32u64 << 32) | 32,
+                    (1u64 << 32) | (-3i64 as u64 & 0xFFFF_FFFF),
+                ]
+            )),
+            Ok(super::Syscall::FbSurface {
+                op: 1,
+                id: 7,
+                x: 200,
+                y: 60,
+                w: 32,
+                h: 32,
+                z: -3,
+                visible: true,
+            }),
+            "UPDATE：z + visible 位解码（bit 32 置位）"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_FB_SURFACE, [1, 7, 0, (8u64 << 32) | 8, 2])),
+            Ok(super::Syscall::FbSurface {
+                op: 1,
+                id: 7,
+                x: 0,
+                y: 0,
+                w: 8,
+                h: 8,
+                z: 2,
+                visible: false,
+            }),
+            "UPDATE：bit 32 清零 = 隐藏"
+        );
+        // REMOVE：z 恒零域
+        assert_eq!(
+            super::parse(r(super::SYS_FB_SURFACE, [2, 7, 0, (8u64 << 32) | 8, 0])),
+            Ok(super::Syscall::FbSurface {
+                op: 2,
+                id: 7,
+                x: 0,
+                y: 0,
+                w: 8,
+                h: 8,
+                z: 0,
+                visible: true,
+            }),
+            "REMOVE：z 恒零（visible 与 REGISTER 同域恒 true）"
+        );
+        // 坏参域：op 越域 / id 0 保留 / wh 零 / wh 越 0xFFFF
+        assert_eq!(
+            super::parse(r(super::SYS_FB_SURFACE, [3, 7, 0, (8u64 << 32) | 8, 0])),
+            Err(super::AbiError::BadArgs),
+            "op 3 越域拒收"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_FB_SURFACE, [0, 0, 0, (8u64 << 32) | 8, 0])),
+            Err(super::AbiError::BadArgs),
+            "id 0 = stage 底层保留域拒收"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_FB_SURFACE, [0, 7, 0, 8, 0])),
+            Err(super::AbiError::BadArgs),
+            "w = 0 拒收（wh 低 32 位 = w）"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_FB_SURFACE, [0, 7, 0, 8u64 << 32, 0])),
+            Err(super::AbiError::BadArgs),
+            "h = 0 拒收（wh 高 32 位 = h）"
+        );
+        assert_eq!(
+            super::parse(r(
+                super::SYS_FB_SURFACE,
+                [0, 7, 0, (0x1_0000u64 << 32) | 8, 0,]
+            )),
+            Err(super::AbiError::BadArgs),
+            "h > 0xFFFF 结构域拒收"
+        );
     }
 }

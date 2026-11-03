@@ -16,7 +16,8 @@
 //! - **alpha 混合域（M36-A1 起）**：[`over`] Porter-Duff 非预乘算子 +
 //!   [`Stack::blend`] 透明度感知仲裁（半透明层下沉混合至饱和，不透明
 //!   顶层快速路径与 [`Stack::arbitrate`] 单写语义严格同构）；kernel fb
-//!   电气面挂接随 A1b（挂账续作）；
+//!   电气面 M37-A1b 在库挂接（kernel::fb SURFACES 表 + 散帧后备槽 +
+//!   合成执行器 blend 采样——[`SurfaceTable`]→[`Stack`] 快照电气承接）；
 //! - **零堆零 unsafe**：定容层表（[`MAX_LAYERS`] = 16 槽，与 mirror
 //!   DAMAGE_MAX_RECTS 同量级先例），`forbid(unsafe_code)`；
 //! - **像素内容外置**：prism 只裁几何与序，不触碰像素缓冲——层内容

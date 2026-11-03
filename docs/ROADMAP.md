@@ -353,7 +353,7 @@ M35 退出口径：harbor ≥150 符号机检闸双端在环（P2 DoD 收口）+
 |---|---|---|---|
 | **M37-计划**（笔①） | 本表落盘 + §三 M37 行落盘 + 远线滚动改写 + M36 分解头 ✅ 翻账 | docs/ROADMAP | ✅ 本提交 |
 | **M37-⓪**（笔②，环境复原揭雷批，先于计划落位） | 跨核 FSBASE 上下文接管（task::fs_base 槽记账 + PERCPU_FS_BASE 每核缓存 + set_current_fs_base SCHED 锁窗三面同拍 + prepare_dispatch 恢复面缓存对账 + ARCH_GET_FS 槽值权威化 + fork 继承）+ t69 收讫对账（ARP_SETTLE_BUDGET 命中后回执排水）+ 沙箱复原（工具链 1.99.0/QEMU/busybox 介质） | crates/kernel + scripts | ✅ ba71392（CI-OK 11 阶段全绿 87/87；十轮冒烟实录在案——修复前 t87 3/3 确定性 #PF + t69 4/4 确定性败，修复后 87/87 ×5） |
-| **M37-A1b**（笔③） | kernel fb alpha 电气挂接：SurfaceTable→Stack 合成电气化入 kernel::fb（注册/合成双操作 SYS_ABI 扩面）+ 1080p 活体扩相位 + t88 自检 + SELFTEST 双端同步 | crates/prism + crates/kernel | 🚧 |
+| **M37-A1b**（笔③） | kernel fb alpha 电气挂接：SurfaceTable→Stack 合成电气化入 kernel::fb（注册/合成双操作 SYS_ABI 扩面——SYS_FB_SURFACE(40) 三操作 + SURF_VA_BASE 槽窗 + ABI v0.18）+ 1080p 活体扩相位 + t88 自检 + SELFTEST 双端同步 | crates/prism + crates/kernel | ✅ 本提交（blend 电气双锚——prism golden 同数 (100,50,152) + stage 直承载 (145,95,69)；空表回退 v0 逐位同构；t77 图案 XRGB 规范化适配；注册域五闸 + 15 槽满容/槽复用 + 生命周期 + 哨兵零触碰） |
 | **M37-N1**（笔④） | TCP 重传面：重传定时器（TSC 纳秒）+ 滑动窗口 + 分片重组 + kernel::vnet 电气对接 + t89 自检 + SELFTEST 双端同步 | crates/pulse + crates/kernel | 🚧 |
 | **M37-收尾**（笔⑤） | ROADMAP/METRICS/MATURITY/README 对账 + 挂账复核注 + 近线 M38 + worklog Task ID 对账 | 对账提交 | ⬜ |
 

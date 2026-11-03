@@ -483,6 +483,31 @@ extern "C" fn lumina_syscall_dispatch(frame: &mut SyscallFrame) -> u64 {
             // 登记后 fb_compose_tick 承担帧边界局部上屏）
             crate::fb::sys_fb_stage(va)
         }
+        Syscall::FbSurface {
+            op,
+            id,
+            x,
+            y,
+            w,
+            h,
+            z,
+            visible,
+        } => {
+            task::count_syscall(2);
+            // M37-A1b Surface 注册面：登记/更新/注销三操作（prism
+            // SurfaceTable 电气承接；登记返回 SURF_VA_BASE 槽窗基址，
+            // 合成执行器 blend 仲裁随 fb_compose_tick 帧边界承接）
+            crate::fb::sys_fb_surface(crate::fb::SurfReq {
+                op,
+                id,
+                x,
+                y,
+                w,
+                h,
+                z,
+                visible,
+            })
+        }
         Syscall::Pipe { op } => {
             task::count_syscall(2);
             // M24-A1 shell 管道/分页面：捕获武装/排水/分页重放/弃置

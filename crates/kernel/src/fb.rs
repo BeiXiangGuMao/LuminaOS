@@ -574,6 +574,30 @@ pub fn stage_init() -> Option<u64> {
             }
         }
     }
+    // M37-A1b：stage = 合成栈底入表（id 0 保留层，z=0 全屏）——
+    // SurfaceTable 电气化的栈底锚；空表首插结构性不可满（Err 域不可达
+    // ——fail-closed 不吞：回滚 Latch 整体放弃）。
+    {
+        let mut table = SURFACES.lock();
+        if table
+            .insert(prism::Layer {
+                id: STAGE_LAYER_ID,
+                z: 0,
+                visible: true,
+                bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    w: WIDTH,
+                    h: HEIGHT,
+                },
+            })
+            .is_err()
+        {
+            STAGE_PAGES.store(0, Ordering::Release);
+            STAGE_ACTIVE.store(false, Ordering::Release);
+            return None;
+        }
+    }
     STAGE_ACTIVE.store(true, Ordering::Release);
     Some(STAGE_FRAMES[0].load(Ordering::Acquire))
 }
@@ -720,11 +744,13 @@ pub fn sys_fb_stage(va: u64) -> u64 {
     0
 }
 
-/// 合成执行器（M28-K1 帧边界消费面）：drain [`SYNC_DAMAGE`] 计划 →
-/// prism::Stack 单层仲裁（v0：stage 全屏覆盖层）→ stage→VRAM 交盒
-/// 局部上屏（交盒外字节零触碰）。stage 未激活/未登记时静默清账返回 0
-/// （直写双轨共存——直写像素已在屏，无操作即正确语义）。返回本次
-/// 上屏像素数（活体断言域）。
+/// 合成执行器（M28-K1 帧边界消费面，M37-A1b 多 Surface 电气化）：drain
+/// [`SYNC_DAMAGE`] 计划 → [`compose_snapshot`] SurfaceTable→Stack 快照
+/// → `Stack::blend` 透明度感知逐像素混合（不透明快速路径与胜者单写
+/// 严格同构——空表退化为 stage 单层 v0 语义逐位同构，t77/longrun
+/// 回归锚不变）→ 交盒局部上屏（交盒外字节零触碰）。stage 未激活/
+/// 未登记时静默清账返回 0（直写双轨共存——直写像素已在屏，无操作即
+/// 正确语义）。返回本次上屏像素数（活体断言域）。
 pub fn fb_compose_tick() -> u64 {
     // M34-P4 电源协同显示侧（PR-P04）：blank 态合成器完全无操作——
     // 拦截在 drain 之前，损伤账保留（unblank 后下一拍自然重放，不做
@@ -744,19 +770,10 @@ pub fn fb_compose_tick() -> u64 {
     if pages == 0 || !STAGE_ACTIVE.load(Ordering::Acquire) {
         return 0;
     }
-    // prism 仲裁栈（v0 单层：stage 全屏；PR-P02 内核承接口）
-    let mut stack = prism::Stack::new();
-    let _ = stack.push(prism::Layer {
-        id: 1,
-        z: 0,
-        visible: true,
-        bounds: Rect {
-            x: 0,
-            y: 0,
-            w: fb.w,
-            h: fb.h,
-        },
-    });
+    // prism 合成栈快照（M37-A1b SurfaceTable→Stack 电气化：stage 底层
+    // 在表锚 + 覆盖层 blend 仲裁——空表退化为 [stage] 单层 = v0 语义
+    // 逐位同构，t77/longrun 回归锚不变）
+    let (stack, snaps) = compose_snapshot();
     let full = Rect {
         x: 0,
         y: 0,
@@ -765,10 +782,10 @@ pub fn fb_compose_tick() -> u64 {
     };
     let mut px = 0u64;
     if plan.full {
-        px = compose_one(&stack, &fb, pages, &full);
+        px = compose_one(&stack, &snaps, pages, &fb, &full);
     } else {
         for r in &plan.rects {
-            px += compose_one(&stack, &fb, pages, r);
+            px += compose_one(&stack, &snaps, pages, &fb, r);
         }
     }
     let ticks = COMPOSE_TICKS.fetch_add(1, Ordering::AcqRel) + 1;
@@ -850,9 +867,472 @@ pub fn fb_display_state() -> (bool, u32) {
     )
 }
 
-/// 单交盒合成：prism 仲裁逐像素裁决 → stage→VRAM 拷写（胜者单写）。
-/// 交盒先与屏幅求交（几何单一事实源），空交盒返回 0。
-fn compose_one(stack: &prism::Stack, fb: &Framebuffer, pages: u64, r: &Rect) -> u64 {
+// ---- M37-A1b 多 Surface 合成电气面：注册表 + 散帧后备 + blend 采样 ----
+//
+// prism SurfaceTable（M36-A1 纯函数面）的 kernel 电气承接。stage 后备
+// 缓冲 = 合成栈底（id 0 保留层，[`stage_init`] 入表锚定）；ring3/内核侧
+// 经 [`sys_fb_surface`] / 本节核心面注册/更新/注销 ARGB 覆盖层；
+// [`fb_compose_tick`] 合成执行器自 [`SURFACES`] 快照出栈 →
+// `Stack::blend` 透明度感知逐像素混合（over 结合律——不透明层快速路径
+// 与 v0 胜者单写严格同构）→ 交盒局部上屏。无覆盖层时栈退化为 [stage]
+// 单层——v0 语义逐位同构（ADR-0004 双轨共存不变，t77/longrun 回归锚）。
+//
+// 像素契约：stage = XRGB8888（顶字节无效——采样归一 a=255，VRAM 写回
+// 规范化低 24 位）；Surface = ARGB8888（a=0 全透明，零清基线 = 登记
+// 即不可见；后备 = 面内紧排行主序 row stride = w×4，屏坐标经 bounds
+// 平转入面内局部坐标——采样/写窗/组帧三面同源）。快照语义：合成拍内
+// table/槽页表整体快照后放锁（帧保留
+// 不回收——读面恒在），登记/移动次拍生效（一帧滞后，活体批跑单线程
+// 确定性域不受影响）。槽帧保留纪律：注销不还帧（分配器无 free 面，
+// stage 半程不回滚同源），槽复用时增长补配 + 全零重清。
+
+/// stage 底层保留 id（Surface 注册域 1..=u32::MAX，abi 契约同源）。
+const STAGE_LAYER_ID: u32 = 0;
+/// Surface 槽数（prism MAX_SURFACES 16 − stage 底层 1 = 15 覆盖层）。
+const SURF_SLOTS: usize = 15;
+/// 每槽页帧上限（全屏 1080p = 2026 页 < 2048，STAGE 同源口径）。
+const SURF_MAX_PAGES: usize = STAGE_MAX_PAGES;
+
+/// Surface 散帧后备槽：`frames` 逐页物理基址（恒等区断言同 stage）、
+/// `pages` 已占页数 Latch（发布/订阅同 [`STAGE_PAGES`] 纪律）、`id`
+/// 占用标识（0 = 空槽；Surface id ≥ 1）。
+struct SurfStore {
+    frames: [AtomicU64; SURF_MAX_PAGES],
+    pages: AtomicU64,
+    id: AtomicU64,
+}
+
+/// 槽池（15 槽 × 2048 页 × 8 B = 240 KiB .bss 静态域——定容零堆）。
+static SURF_STORES: [SurfStore; SURF_SLOTS] = [const {
+    SurfStore {
+        frames: [const { AtomicU64::new(0) }; SURF_MAX_PAGES],
+        pages: AtomicU64::new(0),
+        id: AtomicU64::new(0),
+    }
+}; SURF_SLOTS];
+
+/// 多 Surface 注册表（prism 承接；stage 底层 [`stage_init`] 入表）。
+static SURFACES: SpinLock<prism::SurfaceTable> = SpinLock::new(prism::SurfaceTable::new());
+/// 注册会话占用哨兵（v0 单客户 CAS 契约，同 [`STAGE_OWNER`]）。
+static SURF_OWNER: AtomicU64 = AtomicU64::new(SURFACE_FREE);
+
+/// Surface 槽字节偏移 → 恒等区线性地址（散帧翻译同 [`stage_addr`]）。
+#[inline]
+fn surf_addr(slot: usize, pages: u64, byte_off: u64) -> Option<usize> {
+    if slot >= SURF_SLOTS || pages == 0 || byte_off >= pages * 4096 {
+        return None;
+    }
+    let phys = SURF_STORES[slot].frames[(byte_off >> 12) as usize].load(Ordering::Relaxed);
+    if phys == 0 {
+        return None;
+    }
+    Some((phys + (byte_off & 0xFFF)) as usize)
+}
+
+/// Surface 像素读（blend 采样面；局部坐标 + 面内紧排行主序——
+/// row stride = w×4；(lx,ly) 须面内，越域 0 = 全透明 fail-soft）。
+#[inline]
+fn surf_px_read(slot: usize, pages: u64, w: u32, lx: i32, ly: i32) -> u32 {
+    if lx < 0 || ly < 0 {
+        return 0;
+    }
+    let stride = u64::from(w) * 4;
+    let Some(addr) = surf_addr(slot, pages, (ly as u64) * stride + (lx as u64) * 4) else {
+        return 0;
+    };
+    // SAFETY: 前置条件 —— addr 自 surf_addr 界内翻译（页帧恒等映射 +
+    //          恒等域断言）；4 字节对齐（页对齐帧 + 像素步长）。
+    // 不变式 —— read_volatile 防删除/合并；越域路径不可达（None 已滤）。
+    unsafe { core::ptr::read_volatile(addr as *const u32) }
+}
+
+/// Surface 像素写（内核侧组帧面——t88 裸机活体与 ring3 写窗语义同源：
+/// 面内紧排行主序 row stride = w×4；越界静默丢弃同 [`stage_px_write`]）。
+pub fn surf_px_write(slot: usize, pages: u64, w: u32, lx: i32, ly: i32, color: u32) {
+    if lx < 0 || ly < 0 {
+        return;
+    }
+    let stride = u64::from(w) * 4;
+    if let Some(addr) = surf_addr(slot, pages, (ly as u64) * stride + (lx as u64) * 4) {
+        // SAFETY: 前置条件 —— addr 自 surf_addr 界内翻译（页帧恒等映射 +
+        //          恒等域断言）；4 字节对齐（页对齐帧 + 像素步长）。
+        // 不变式 —— write_volatile 防合并/重排；越域路径不可达（None 已滤）。
+        unsafe { core::ptr::write_volatile(addr as *mut u32, color) };
+    }
+}
+
+/// 注册表计数读面（t88 结构断言域——stage 底层锚 + 覆盖层在账数）。
+pub fn surf_count() -> usize {
+    SURFACES.lock().len()
+}
+
+/// Surface 登记核心（内核侧；[`sys_fb_surface`] 与 t88 裸机活体同源）：
+/// 屏域校验 + 表登记（重复 id 拒收）+ 空槽绑定 + 散帧配齐（增长复用——
+/// 已占页保留）+ 全零透明基线。成功返回槽号。
+///
+/// 错误域：EINVAL(22)（id 0 保留/零尺寸/越屏/超页上限）、EEXIST(17)
+/// （id 重复）、ENOSPC(28)（槽池耗尽或表满）、ENOMEM(9)（帧耗尽）。
+pub fn surf_register(id: u32, x: i32, y: i32, w: u32, h: u32, z: i32) -> Result<usize, u64> {
+    const EINVAL: u64 = 22;
+    const EEXIST: u64 = 17;
+    const ENOSPC: u64 = 28;
+    const ENOMEM: u64 = 9;
+    if id == STAGE_LAYER_ID
+        || w == 0
+        || h == 0
+        || x < 0
+        || y < 0
+        || i64::from(x) + i64::from(w) > i64::from(WIDTH)
+        || i64::from(y) + i64::from(h) > i64::from(HEIGHT)
+    {
+        return Err(EINVAL);
+    }
+    let need = (u64::from(w) * u64::from(h) * 4).div_ceil(4096);
+    if need > SURF_MAX_PAGES as u64 {
+        return Err(EINVAL);
+    }
+    let Some(alloc) = crate::vmm::global_frames() else {
+        return Err(ENOMEM);
+    };
+    let mut table = SURFACES.lock();
+    if table.get(id).is_some() {
+        return Err(EEXIST);
+    }
+    let Some(slot) = SURF_STORES
+        .iter()
+        .position(|s| s.id.load(Ordering::Acquire) == 0)
+    else {
+        return Err(ENOSPC);
+    };
+    let store = &SURF_STORES[slot];
+    let have = store.pages.load(Ordering::Acquire);
+    if have < need {
+        for k in have..need {
+            let Some(p) = alloc.alloc() else {
+                // 帧耗尽：已占页保留（增长复用纪律），本次登记放弃
+                return Err(ENOMEM);
+            };
+            if p == 0 || p >= 0x4000_0000 {
+                // 恒等域断言 fail-closed（同 stage_init 域闸）
+                return Err(ENOMEM);
+            }
+            store.frames[k as usize].store(p, Ordering::Release);
+        }
+    }
+    // 全零透明基线（ARGB a=0 全透明 = 登记即不可见；复用槽含陈旧域
+    // 整段重清——确定性基线纪律同 stage_init）
+    for k in 0..need {
+        let phys = store.frames[k as usize].load(Ordering::Relaxed);
+        for off in (0..4096).step_by(4) {
+            let addr = (phys + off) as usize;
+            // SAFETY: 前置条件 —— phys 自帧分配器出且 < 0x4000_0000（恒等
+            //          区），addr = phys+off < 页界；页内 4 字节对齐。
+            // 不变式 —— write_volatile 防合并；零化在表登记生效前
+            //          （SURFACES 锁内单写者窗口）。
+            unsafe {
+                core::ptr::write_volatile(addr as *mut u32, 0);
+            }
+        }
+    }
+    if table
+        .insert(prism::Layer {
+            id,
+            z,
+            visible: true,
+            bounds: Rect { x, y, w, h },
+        })
+        .is_err()
+    {
+        // 表满（16 槽对账破坏——stage + 15 覆盖）：fail-visible
+        return Err(ENOSPC);
+    }
+    store.id.store(u64::from(id), Ordering::Release);
+    store.pages.store(need, Ordering::Release);
+    Ok(slot)
+}
+
+/// Surface 更新核心（移动/显隐/z 改写一体——prism `update` 同构；形状
+/// 锁定：w/h 须与登记一致——缩放域随组合器服务批次挂账，fail-visible）。
+pub fn surf_update(
+    id: u32,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    z: i32,
+    visible: bool,
+) -> Result<(), u64> {
+    const ENOENT: u64 = 2;
+    const EINVAL: u64 = 22;
+    let cur = { SURFACES.lock().get(id) };
+    let Some(cur) = cur else {
+        return Err(ENOENT);
+    };
+    if cur.bounds.w != w || cur.bounds.h != h {
+        return Err(EINVAL);
+    }
+    if x < 0
+        || y < 0
+        || i64::from(x) + i64::from(w) > i64::from(WIDTH)
+        || i64::from(y) + i64::from(h) > i64::from(HEIGHT)
+    {
+        return Err(EINVAL);
+    }
+    if !SURFACES.lock().update(id, Rect { x, y, w, h }, visible, z) {
+        return Err(ENOENT);
+    }
+    Ok(())
+}
+
+/// Surface 注销核心（表移除 + 槽解绑；帧保留不回收——槽复用增长补配
+/// 纪律见 [`surf_register`]）。
+pub fn surf_remove(id: u32) -> Result<(), u64> {
+    const ENOENT: u64 = 2;
+    let removed = {
+        let mut table = SURFACES.lock();
+        table.remove(id)
+    };
+    if !removed {
+        return Err(ENOENT);
+    }
+    for s in SURF_STORES.iter() {
+        if s.id.load(Ordering::Acquire) == u64::from(id) {
+            s.id.store(0, Ordering::Release);
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Surface 注册请求参数（ABI `Syscall::FbSurface` 变体字段直传——
+/// sys_fb_surface 八参收口面）。
+pub struct SurfReq {
+    /// 操作码（0 登记 / 1 更新 / 2 注销）。
+    pub op: u64,
+    /// Surface 标识（1..=u32::MAX；0 保留 stage 底层）。
+    pub id: u64,
+    /// 屏上域 x（i32 语义）。
+    pub x: i32,
+    /// 屏上域 y（i32 语义）。
+    pub y: i32,
+    /// 宽。
+    pub w: u32,
+    /// 高。
+    pub h: u32,
+    /// z 序（i32 语义，越大越靠上）。
+    pub z: i32,
+    /// 可见性（REGISTER 恒 true）。
+    pub visible: bool,
+}
+
+/// SYS_FB_SURFACE 主体（M37-A1b）：三操作分派 + ring3 写窗映射。
+///
+/// - op 0 登记：单客户 CAS（同 [`sys_fb_stage`] 契约）→ [`surf_register`]
+///   → 写窗逐页映射进调用方任务根（P|W|U + [`or_user_chain`]——
+///   [`sys_fb_stage`] 同款）；返回槽窗基址
+///   `bedrock::abi::SURF_VA_BASE + slot×SURF_SLOT_STRIDE`；
+/// - op 1 更新 / op 2 注销：核心面直通（0 = 成功，错误码 fail-visible）。
+///
+/// 无 fb → ENODEV(19)；kmain 自检段语境（无用户根）登记 → EFAULT(14)。
+pub fn sys_fb_surface(req: SurfReq) -> u64 {
+    const EFAULT: u64 = 14;
+    const ENODEV: u64 = 19;
+    const ENOMEM: u64 = 9;
+    const EINVAL: u64 = 22;
+    let SurfReq {
+        op,
+        id,
+        x,
+        y,
+        w,
+        h,
+        z,
+        visible,
+    } = req;
+    if FB_BASE.load(Ordering::Acquire) == 0 {
+        return ENODEV;
+    }
+    match op {
+        0 => {
+            if SURF_OWNER
+                .compare_exchange(
+                    SURFACE_FREE,
+                    crate::procs::current_pid(),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_err()
+            {
+                return 17; // EEXIST：会话占用（v0 单客户）
+            }
+            let slot = match surf_register(id as u32, x, y, w, h, z) {
+                Ok(s) => s,
+                Err(e) => {
+                    SURF_OWNER.store(SURFACE_FREE, Ordering::Release);
+                    return e;
+                }
+            };
+            let Some(frames) = crate::vmm::global_frames() else {
+                SURF_OWNER.store(SURFACE_FREE, Ordering::Release);
+                return ENOMEM;
+            };
+            let user_root = crate::task::current_user_root();
+            if user_root == 0 {
+                SURF_OWNER.store(SURFACE_FREE, Ordering::Release);
+                return EFAULT;
+            }
+            let pages = SURF_STORES[slot].pages.load(Ordering::Acquire);
+            let va = bedrock::abi::SURF_VA_BASE + slot as u64 * bedrock::abi::SURF_SLOT_STRIDE;
+            let mut walker = Walker {
+                mem: &mut IdentityAccess,
+                alloc_table: || frames.alloc(),
+            };
+            let mut mapped = 0u64;
+            for k in 0..pages {
+                let phys = SURF_STORES[slot].frames[k as usize].load(Ordering::Acquire);
+                match walker.map(
+                    user_root,
+                    va + k * 4096,
+                    phys,
+                    Entry::PRESENT | Entry::WRITABLE | Entry::USER,
+                ) {
+                    Ok(()) => mapped += 1,
+                    Err(_) => break,
+                }
+            }
+            if mapped != pages {
+                // 半程不回滚（任务根私有分支；页帧保留——幂等重试仅补映射，
+                // 语义同 sys_fb_stage 注记）
+                SURF_OWNER.store(SURFACE_FREE, Ordering::Release);
+                crate::console::serial_log_bytes(b"LUMINA-FB-SURF-ERR");
+                return ENOMEM;
+            }
+            or_user_chain(user_root, va, va + pages * 4096);
+            // 证据行单调用交付
+            let mut buf = [0u8; 96];
+            let mut n = put(&mut buf, 0, b"LUMINA-FB-SURFACE-REG pid=");
+            n = put_udec(&mut buf, n, crate::procs::current_pid());
+            n = put(&mut buf, n, b" id=");
+            n = put_udec(&mut buf, n, id);
+            n = put(&mut buf, n, b" slot=");
+            n = put_udec(&mut buf, n, slot as u64);
+            n = put(&mut buf, n, b" va=");
+            n = put_udec(&mut buf, n, va);
+            n = put(&mut buf, n, b" pages=");
+            n = put_udec(&mut buf, n, pages);
+            crate::console::serial_log_bytes(&buf[..n]);
+            va
+        }
+        1 => match surf_update(id as u32, x, y, w, h, z, visible) {
+            Ok(()) => 0,
+            Err(e) => e,
+        },
+        2 => match surf_remove(id as u32) {
+            Ok(()) => 0,
+            Err(e) => e,
+        },
+        _ => EINVAL,
+    }
+}
+
+/// Surface 槽快照行（id 占用 + 已占页数 + 屏上域——合成拍一致性视图）。
+struct SurfSnap {
+    id: u32,
+    pages: u64,
+    bounds: Rect,
+}
+
+/// 合成快照：表整体出栈（[`prism::SurfaceTable::to_stack`]——16 槽
+/// 容量对账）+ 槽页表行拷贝，锁内一次成影、拍内消费（登记/移动次拍
+/// 生效——一帧滞后快照语义，批跑活体确定性域不受影响）。
+fn compose_snapshot() -> (prism::Stack, [SurfSnap; SURF_SLOTS]) {
+    let zero = Rect {
+        x: 0,
+        y: 0,
+        w: 0,
+        h: 0,
+    };
+    let (table, snaps) = {
+        let t = SURFACES.lock();
+        let mut snaps = [const {
+            SurfSnap {
+                id: 0,
+                pages: 0,
+                bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 0,
+                    h: 0,
+                },
+            }
+        }; SURF_SLOTS];
+        for (i, s) in SURF_STORES.iter().enumerate() {
+            let sid = s.id.load(Ordering::Acquire) as u32;
+            let bounds = t.get(sid).map_or(zero, |l| l.bounds);
+            snaps[i] = SurfSnap {
+                id: sid,
+                pages: s.pages.load(Ordering::Acquire),
+                bounds,
+            };
+        }
+        (t.clone(), snaps)
+    };
+    let stack = match table.to_stack() {
+        Ok(st) => st,
+        Err(_) => {
+            // 16 槽容量对账破坏（结构域不可达）——取证行 + 空栈退避
+            //（显示路径禁 panic 纪律，fail-visible 不吞）
+            crate::console::serial_log_bytes(b"LUMINA-FB-SURF-SNAP-ERR");
+            prism::Stack::new()
+        }
+    };
+    (stack, snaps)
+}
+
+/// 合成采样（快照域）：id 寻址像素 → Argb 归一。stage = XRGB a=255
+/// （不透明底锚）；Surface = ARGB 直读；缺席 id = 全透明 fail-soft
+/// （快照滞后一帧语义）。
+fn sample_snap(
+    snaps: &[SurfSnap; SURF_SLOTS],
+    stage_pages: u64,
+    x: i32,
+    y: i32,
+    id: u32,
+) -> prism::Argb {
+    if id == STAGE_LAYER_ID {
+        let v = stage_px_read(stage_pages, WIDTH * 4, x, y);
+        return prism::Argb {
+            a: 255,
+            r: (v >> 16) as u8,
+            g: (v >> 8) as u8,
+            b: v as u8,
+        };
+    }
+    for (slot, s) in snaps.iter().enumerate() {
+        if s.id == id {
+            // 屏坐标 → 面内局部坐标（bounds 平移 + 面内紧排行主序）
+            let v = surf_px_read(slot, s.pages, s.bounds.w, x - s.bounds.x, y - s.bounds.y);
+            return prism::Argb {
+                a: (v >> 24) as u8,
+                r: (v >> 16) as u8,
+                g: (v >> 8) as u8,
+                b: v as u8,
+            };
+        }
+    }
+    prism::Argb::transparent()
+}
+
+/// 单交盒合成：prism blend 逐像素混合 → VRAM 规范化写（低 24 位——
+/// XRGB 顶字节归零，X 通道无效应语义）。交盒先与屏幅求交（几何单一
+/// 事实源），空交盒返回 0。
+fn compose_one(
+    stack: &prism::Stack,
+    snaps: &[SurfSnap; SURF_SLOTS],
+    stage_pages: u64,
+    fb: &Framebuffer,
+    r: &Rect,
+) -> u64 {
     let full = Rect {
         x: 0,
         y: 0,
@@ -862,13 +1342,18 @@ fn compose_one(stack: &prism::Stack, fb: &Framebuffer, pages: u64, r: &Rect) -> 
     let Some(clip) = full.intersection(r) else {
         return 0;
     };
-    let stride = fb.stride;
     let mut n = 0u64;
-    stack.compose(clip, |x, y, _| {
-        let c = stage_px_read(pages, stride, x, y);
-        fb.px(x, y, c);
-        n += 1;
-    });
+    for y in clip.y..clip.y + clip.h as i32 {
+        for x in clip.x..clip.x + clip.w as i32 {
+            let (px, _) = stack.blend(x, y, |id| sample_snap(snaps, stage_pages, x, y, id));
+            fb.px(
+                x,
+                y,
+                (u32::from(px.r) << 16) | (u32::from(px.g) << 8) | u32::from(px.b),
+            );
+            n += 1;
+        }
+    }
     n
 }
 
