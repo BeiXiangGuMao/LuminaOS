@@ -895,19 +895,32 @@ pub fn percpu_ticks() -> (u64, u64) {
 static PREEMPT_REQ: [AtomicBool; MAX_CPUS] = [AtomicBool::new(false), AtomicBool::new(false)];
 
 /// 调度切换握手旗（M11-D）：`SWITCHING[id] = 1` = 该槽位现场保存尚未
-/// 完成（重排队已生效但物理切换未落定），拾取面（[`eligible`]）拒绝；
+/// 完成（重排队/唤醒重排队已生效但物理切换未落定），拾取面（[`eligible`]）拒绝；
 /// 清除点唯一性：
 /// - **抢占族**（wall/LAPIC/RESCHED 三源共享 [`execute_switch`] 填
 ///   plan → 桩执行交换）：桩 asm 在旧上下文七槽保存完成后一次性
 ///   清旗（`PreemptPlan.handoff` 单 Store）——保存与清旗同窗口完成，
 ///   从清旗指令起该槽位可被任意核安全拾取；
 /// - **协作族**（yield/block/finish/idle 四路统一 [`switch_funnel`]）：
-///   后继任务的恢复点漏斗读 `LAST_OUT[cpu]` 清除前任旗（前任现场
-///   保存先于控制权移交，后继恢复时保存必然已落定）。
+///   切换机器 asm 在旧现场七槽保存完成后经 `with_handoff` 登记
+///   地址单 Store 清旗（[`ostd::task::SwitchPair::with_handoff`] 契约
+///   ——前任现场保存先于控制权移交，清旗即保存已落定）。
 ///
-/// 置位点唯一性：仅在「任务仍可拾取且即将物理切离」的两族路径置位
-/// （yield 重排队 / preempt 重排队）；block（Blocked）与 finish（Zombie）
-/// 本不可拾取，不置旗（漏斗仍统一清旗，幂等无副作用）。
+/// 置位点唯一性：仅在「任务即将物理切离且保存窗内有第三方可达面」的
+/// 两族路径置位（M38-SP1 定版）：
+/// - **yield / preempt**（重排队可拾取态）——旗拒拾取，封死「锁释放 →
+///   保存完成」跨核拾取窗；
+/// - **block**（M38-SP1 补齐；M22-③ 空槽切换竞态根治）——Blocked 本
+///   不可拾取、不可收割，但**唤醒方**（[`wake_tasks`] /
+///   [`wake_pipes_locked`] / finish Child 唤醒，对侧核持 SCHED 锁即可达）
+///   可在保存微窗内将其转 Ready **入队**：旗=0 时 `eligible` 放行 →
+///   对侧核拾取并在保存半途撕读 cur ctx（cont 已写新值 / rsp 尚陈）→
+///   双核同槽鬼影（M36-BB3b task.rs:1635 unreachable + M37-N1 七拍 S8
+///   窗族两轮同带实录）。旗清前拾取面拒绝、stay-in-queue 下轮自然
+///   拾取——唤醒零丢失；旗生命周期 = 唤醒重排队 → 保存完成，与 yield
+///   同款（asm 单 Store 清除，无后继配合项）；
+/// - **finish**（M21-① 护槽握手）——Zombie 不可拾取但**收割面**会释放
+///   槽位，旗闸收割防「死者鬼影保存写入复用槽 ctx」。
 static SWITCHING: [AtomicU64; MAX_TASKS] = {
     #[allow(clippy::declare_interior_mutable_const)]
     const ZERO: AtomicU64 = AtomicU64::new(0);
@@ -2844,7 +2857,8 @@ fn block_current_impl(what: WaitWhat, resume_if: bool, mut probe: Probe) -> bool
             // 唤醒并令 pick_best 自拾取队列中的自己 → slots_pair 自切换越界，
             // t37 压测实录）。处置：出队 + 回 Running + 返回「已唤醒」，
             // 调用方按语义重扫（收割/消费）。首入不含此态（调用方 Running，
-            // wait 本为 None 但状态非 Ready）。
+            // wait 本为 None 但状态非 Ready）。**M38-SP1 halt 臂自救援：
+            // 出队即清旗**（None 臂停机期旗闸关闭，自救援重开拾取面）。
             let woken = sc.tasks[cur]
                 .as_ref()
                 .is_some_and(|t| t.wait.is_none() && t.state == State::Ready);
@@ -2854,6 +2868,7 @@ fn block_current_impl(what: WaitWhat, resume_if: bool, mut probe: Probe) -> bool
                     t.state = State::Running;
                     t.waited = 0;
                 }
+                SWITCHING[cur].store(0, Ordering::Release);
                 drop(s);
                 if resume_if {
                     ostd::hw::intr::enable();
@@ -2892,6 +2907,8 @@ fn block_current_impl(what: WaitWhat, resume_if: bool, mut probe: Probe) -> bool
                     // 分类返回（调用方唤醒计数如实落账）。探针闭包可能已
                     // 再武装陈值哨兵（nanosleep fetch_min 旧 deadline）——
                     // 到期链「陈值只致多一次空检」无害收敛，语义不变。
+                    // **M38-SP1 halt 臂：退出前清旗**（None 臂置位面）。
+                    SWITCHING[cur].store(0, Ordering::Release);
                     if resume_if {
                         ostd::hw::intr::enable();
                     }
@@ -2910,14 +2927,39 @@ fn block_current_impl(what: WaitWhat, resume_if: bool, mut probe: Probe) -> bool
                     }
                     PERCPU_RUN_TICKS[cpu].store(0, Ordering::Relaxed);
                     CURRENT[cpu].store(id, Ordering::Relaxed);
+                    // M38-SP1（M22-③ 空槽切换竞态根治）：阻塞切换臂补齐
+                    // M11-D 握手旗——cur 已登记 Blocked 本不可拾取、不可
+                    // 收割，但唤醒方（wake_tasks/wake_pipes_locked/finish
+                    // Child 唤醒，对侧核持锁即可达）可在「本臂 SCHED 锁
+                    // 释放 → lumina_context_switch 保存完成」微窗内将其转
+                    // Ready 入队：旗=0 时 eligible 放行 → 对侧核拾取并在
+                    // 保存半途撕读 cur ctx（cont 已写新值 / rsp 尚陈）→
+                    // 双核同槽鬼影（窗族全谱根因，两轮同带实录在案）。
+                    // 置旗后旗清前拾取面拒绝、stay-in-queue 下轮自然拾取
+                    // ——唤醒零丢失；旗随切换机器保存完成单 Store 清除
+                    // （with_handoff 契约，yield 同款无后继配合项）。
+                    SWITCHING[cur].store(1, Ordering::Release);
                     sc.cooperative_switches += 1; // 自愿让出（阻塞）计入协作面
                     let boot = sc.boot_cr3;
                     if let Some(t) = sc.tasks[id].as_ref() {
                         prepare_dispatch(t, boot, cpu);
                     }
-                    Some(slots_pair(sc, cur, id))
+                    Some(slots_pair(sc, cur, id).with_handoff(SWITCHING[cur].as_ptr()))
                 }
-                None => None,
+                None => {
+                    // M38-SP1（M22-③ 竞态根治·halt 臂，旗闸三面之末）：无
+                    // 就绪者 → 开中断停机等节拍/RESCHED。停机期物理语境
+                    // = 本栈 halt 环，ctx 槽仍是**上次切换的陈旧续点**——
+                    // 唤醒方（对侧核持锁即可达）入队后 state=Ready、旗=0
+                    // 时 eligible 放行 → 他核拾取并切入陈续点 = 双重执行/
+                    // 陈 rsp/账态腐坏（窗族全谱之二；t90 风暴实时暴露：
+                    // 齐 halt → 齐唤醒竞速窗放大量级）。旗置位拒绝停机期
+                    // 拾取；自救援即时性由 wake_tasks 的 kick_other IPI
+                    // 打断 halt 环保证（woken 分支出队即清旗；下拍 PIT
+                    // 兜底重扫）。
+                    SWITCHING[cur].store(1, Ordering::Release);
+                    None
+                }
             }
         };
         match pair {

@@ -82,8 +82,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89）。
-const SELFTEST_TOTAL: usize = 89;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90）。
+const SELFTEST_TOTAL: usize = 90;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -127,6 +127,49 @@ static BETA_STEPS: [&str; 3] = ["beta-1", "beta-2", "beta-3"];
 fn proc_alpha() {
     for step in ALPHA_STEPS {
         ORDER_LOG.lock().push(step);
+        task::yield_now();
+    }
+}
+
+/// t90 风暴轮数（M38-SP1）：每任务混合时程 nanosleep 循环上界。
+const T90_ROUNDS: usize = 120;
+
+/// t90 风暴完成计数（M38-SP1 收割锚：kernel spawn 无 parent 链——
+/// wait_pid 不适用〔M9-A 父链仅 fork 面；本笔揭雷实录：wait_pid 全数
+/// ERR_CHILD 立返、风暴任务被弃置成活僵尸〕，完成计数 + 孤儿收割替代）。
+static T90_DONE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// t90 风暴任务本体（M38-SP1 阻塞臂握手旗活体）：R 轮混合时程
+/// nanosleep（0 / 250 µs / 500 µs 交替 = 探针命中域 + 真实阻塞域全覆
+/// 盖）后返回（trampoline 无码终结 u64::MAX 哨兵）。不钉扎——跨核自
+/// 由迁移最大化「唤醒方保存窗入队 → 对侧核拾取」交叉域压力面（M22-③
+/// 竞态根因域）；零堆分配（循环体仅原子计数 + Timer 登记面）。
+fn t90_storm_body() {
+    for i in 0..T90_ROUNDS {
+        let ns = match i % 3 {
+            0 => 0,
+            1 => 250_000,
+            _ => 500_000,
+        };
+        let _ = timer::sys_nanosleep(ns);
+        task::yield_now(); // 协作让渡：与对侧风暴任务/preempt 面交错
+    }
+    T90_DONE.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+}
+
+/// t90 专职 waker（M38-SP1 唤醒面；本笔揭雷实录之二：tickd 于 t52
+/// `timer::shutdown()` 退役——套件尾 Timer 唤醒链已拆，风暴 Timer 阻塞
+/// 永无到期消费〔F14/G1 四轮 blk+=4~7 wake+=0 done=0 取证在案〕）。
+/// 语义 = 用户态 tickd 替身：wake_tasks 直醒 Timer 等待者 + 协作让渡
+/// 轮询，风暴每次真实阻塞下一轮即被醒（电平触发——先醒后堵不丢失，
+/// 下一轮补醒）；同时把 block/wake 交叉频次抬到让渡量级（竞态窗压力
+/// 面强化）。风暴全数完成后退役（孤儿收割面回收）。
+fn t90_waker_body() {
+    for _ in 0..2_000_000 {
+        if T90_DONE.load(core::sync::atomic::Ordering::Acquire) >= 4 {
+            return;
+        }
+        task::wake_tasks(|w| matches!(w, task::WaitWhat::Timer { .. }));
         task::yield_now();
     }
 }
@@ -6277,6 +6320,111 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t89, "tcp-retx");
+
+    // 90) M38-SP1 阻塞臂握手旗活体（M22-③ 空槽切换竞态专项）：四风暴
+    //     任务跨核自由迁移 × 混合时程 nanosleep 高频 block/wake 循环
+    //     ——唤醒方保存窗入队交叉域压力面。四锚断言：① 全数收割 =
+    //     无丢失唤醒（任一风暴任务旗永久置位/唤醒丢失即永挂 → S8 看门
+    //     狗 fail-visible 显形）② 阻塞/唤醒计数下界（登记面全覆盖）
+    //     ③ 握手旗静默期全零（t40 断言同源——block 臂旗生命周期在网）
+    //     ④ canary 零破坏（撕读腐坏活体显形面）。LUMINA-T90-OK。
+    let t90 = {
+        let mut run = || -> bool {
+            let mut ok = true;
+            // (a) 基线记账（blocks/wakes/canary 三锚前值）
+            let b0 = task::blocks();
+            let w0 = task::block_wakes();
+            let cv0 = task::canary_violations();
+            let cov0 = task::canary_audit_all();
+            let _ = writeln!(
+                log,
+                "t90: baseline blocks={b0} wakes={w0} canary-cov={cov0}"
+            );
+            // (b) 风暴四任务 + 专职 waker（不钉扎；120 轮 × 0/250µs/500µs
+            //     混合时程 + 每轮协作让渡——跨核迁移 + 抢占面双压；waker
+            //     以 wake_tasks 直醒 Timer 等待者，tickd t52 退役后的
+            //     唤醒面替代〔揭雷实录之二〕）
+            let ids = [
+                task::spawn("t90-storm-a", t90_storm_body),
+                task::spawn("t90-storm-b", t90_storm_body),
+                task::spawn("t90-storm-c", t90_storm_body),
+                task::spawn("t90-storm-d", t90_storm_body),
+                task::spawn("t90-waker", t90_waker_body),
+            ];
+            ok &= ids.iter().all(|&id| id != usize::MAX);
+            if !ok {
+                let _ = writeln!(log, "t90: storm spawn fail (slots full)");
+                return false;
+            }
+            // (c) 完成收割对账（无丢失唤醒强锚）：风暴任务只能在全部
+            //     nanosleep 阻塞均被唤醒后抵达计数点——完成数 < 4 即有
+            //     丢失唤醒/旗永久置位 → 看门狗 fail-visible 显形。
+            //     kernel spawn 无 parent 链（wait_pid 不适用，M9-A）——
+            //     完成计数 + 协作让渡轮询（t87 anchor 同款）+ 孤儿收割
+            //     （parent=None Zombie 槽位释放面）三段收口。
+            let deadline = ostd::time::now() + 10 * interrupts::TIMER_HZ as u64;
+            while T90_DONE.load(core::sync::atomic::Ordering::Acquire) < 4
+                && ostd::time::now() < deadline
+            {
+                task::yield_now();
+            }
+            let done = T90_DONE.load(core::sync::atomic::Ordering::Acquire);
+            ok &= done == 4;
+            // 收割面：4 风暴 + 1 waker 全 parent=None Zombie（waker 于
+            // done==4 后下一轮询退位——时序竞态由有界收尾环吸收：
+            // 逐轮 reap + 让渡，全槽空即收）。
+            let mut reaped = 0usize;
+            let mut alive_left = 0usize;
+            for _ in 0..4_000 {
+                reaped += task::reap_orphans();
+                alive_left = ids.iter().filter(|&&id| task::task_alive(id)).count();
+                if alive_left == 0 {
+                    break;
+                }
+                task::yield_now();
+            }
+            for (k, &id) in ids.iter().enumerate() {
+                let _ = writeln!(
+                    log,
+                    "t90: storm[{k}] id={id} alive={}",
+                    task::task_alive(id)
+                );
+            }
+            ok &= alive_left == 0;
+            ok &= reaped >= 5;
+            let _ = writeln!(log, "t90: done={done} orphan-reaped={reaped}");
+            // (d) 计数下界 + 旗静默 + canary 零破坏。正实阻塞轮数 =
+            //     4 × 80（2/3 正时程）；入口→探针窗整体流逝的降格面
+            //     （M22-③ [C] 同族，宿主 vCPU 抢占域）留 24 轮裕度。
+            let b1 = task::blocks();
+            let w1 = task::block_wakes();
+            let cv1 = task::canary_violations();
+            let _cov1 = task::canary_audit_all();
+            let blk = b1 - b0;
+            let wak = w1 - w0;
+            let pos_rounds = 4 * (T90_ROUNDS - T90_ROUNDS / 3) as u64;
+            ok &= blk + 24 >= pos_rounds;
+            ok &= wak + 24 >= pos_rounds;
+            ok &= task::handshake_flags_clear();
+            ok &= cv1 == cv0;
+            let _ = writeln!(
+                log,
+                "t90: storm blk+={blk} wake+={wak} (floor {pos_rounds}) flags=clear canary cv+={}",
+                cv1 - cv0
+            );
+            ok
+        };
+        let ok = run();
+        if ok {
+            let _ = writeln!(
+                log,
+                "LUMINA-T90-HANDOFF storm=4x120 gate=armed wake-during-save=closed"
+            );
+            let _ = writeln!(log, "LUMINA-T90-OK");
+        }
+        ok
+    };
+    report(&mut log, t90, "sched-handoff");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {
