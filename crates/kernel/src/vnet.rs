@@ -22,6 +22,18 @@
 //! 应答器（[`build_icmp_reply`] 纯组帧 + [`icmp_echo_reply`] TX 服务，
 //! 消费方对入帧 type8 调用即回——M24 起网络服务契约）。
 //!
+//! M36-N1 段：TCP 回环面（[`pulse::tcp`] 消费）——端口表 + 全闸分派 +
+//! 回环交接 + 外部 TX 电气（t86 活体九相位）。**M37-N1 段：TCP 重传面**
+//! ——TSC 纳秒 RTO 臂（[`pulse::tcp::RtoTimer`] 电气承接：合成拍
+//! [`tcp_retx_arm_at`]/[`tcp_retx_poll_at`] 确定性驱动 + 外部 SYN 真电
+//! 首臂）+ 单流乱序重组窗（[`tcp_reasm_seed`] 播种接管分派链——
+//! InOrder 前缀拼接交付，未播种直通槽 = t86 逐位同构回归锚）+ 外部 RX
+//! 对接收口（[`tcp_external_inject`] 外部形段直注共享交接环——M27-T1
+//! 既登记偏差随本笔收口）；t89 活体六相位（重传拍双击发 + 退避倍增
+//! + ACK 清账 + 乱序拼接字节级对账 + 外部 RX 握手对账 + 统计对账）。
+//!
+//! v0 单流单臂单窗（多连接扩容随服务化批次挂账）。
+//!
 //! unsafe 白名单说明（SPEC 第十七章）：本模块是「框架内核白名单模块」，
 //! virtio MMIO 寄存器访问无法以 safe Rust 表达；逐处携带 SAFETY 注释，
 //! 访问基址一律来自本模块 probe 成功后的映射窗（界内偏移，无越界路径）。
@@ -1488,7 +1500,8 @@ pub fn udp_recv(out: &mut [u8]) -> Option<(u16, usize)> {
 
 // ===================== M36-N1：TCP 回环面（pulse::tcp 消费） =====================
 
-/// TCP 段载荷上限（t86 单段对话面；滑动窗口/重组挂账面不在此域）。
+/// TCP 段载荷上限（t86 单段对话面 + t89 重组窗域；pulse [`pulse::tcp::ReasmBuf`]
+/// 实例化同径——M37-N1 重传面本笔落位）。
 pub const TCP_SEG_MAX: usize = 512;
 
 /// 端口绑定表容量（t86 活体 + 未来 TCP 服务预留域）。
@@ -1544,8 +1557,17 @@ static TCP_BAD_CS: AtomicU64 = AtomicU64::new(0);
 static TCP_NO_PORT: AtomicU64 = AtomicU64::new(0);
 /// 外部 TX 计数（ARP 解析 + virtio 击发成功）。
 static TCP_EXT_TX: AtomicU64 = AtomicU64::new(0);
+/// M37-N1 重传拍计数（RTO 到期电重发实际击发——回环通路）。
+static TCP_RETX: AtomicU64 = AtomicU64::new(0);
+/// M37-N1 重发击发失败计数（环满/态缺失——fail-visible 不静默）。
+static TCP_RETX_MISS: AtomicU64 = AtomicU64::new(0);
+/// M37-N1 乱序重组缓存计数（Queued 受理——段进窗待洞）。
+static TCP_REASM_QUEUED: AtomicU64 = AtomicU64::new(0);
+/// M37-N1 外部 RX 对接收口计数（外部形段注入共享交接环成功——
+/// M27-T1 既登记「外部 RX 对接面」随本笔收口）。
+static TCP_EXT_RX: AtomicU64 = AtomicU64::new(0);
 
-/// TCP 面统计快照（t86 证据行同源；累计口径）。
+/// TCP 面统计快照（t86/t89 证据行同源；累计口径）。
 #[derive(Debug, Clone, Copy)]
 pub struct TcpStats {
     /// 回环注入数。
@@ -1558,6 +1580,14 @@ pub struct TcpStats {
     pub no_port: u64,
     /// 外部 TX 击发数。
     pub ext_tx: u64,
+    /// M37-N1 重传拍击发数（RTO 到期电重发——回环通路）。
+    pub retx: u64,
+    /// M37-N1 重发击发失败数（fail-visible）。
+    pub retx_miss: u64,
+    /// M37-N1 乱序重组缓存数（Queued 受理）。
+    pub reasm_queued: u64,
+    /// M37-N1 外部 RX 形段注入数（对接收口）。
+    pub ext_rx: u64,
 }
 
 /// TCP 面统计读出。
@@ -1568,6 +1598,10 @@ pub fn tcp_stats() -> TcpStats {
         bad_cs: TCP_BAD_CS.load(Ordering::Relaxed),
         no_port: TCP_NO_PORT.load(Ordering::Relaxed),
         ext_tx: TCP_EXT_TX.load(Ordering::Relaxed),
+        retx: TCP_RETX.load(Ordering::Relaxed),
+        retx_miss: TCP_RETX_MISS.load(Ordering::Relaxed),
+        reasm_queued: TCP_REASM_QUEUED.load(Ordering::Relaxed),
+        ext_rx: TCP_EXT_RX.load(Ordering::Relaxed),
     }
 }
 
@@ -1589,8 +1623,11 @@ pub fn tcp_unbind(port: u16) -> Result<(), pulse::udp::BindError> {
 
 /// TCP 帧级分派（接收路径全闸链，t86 回环消费者 + 真实 RX proto 6
 /// 分流共用）：0800 / IPv4 / IHL / proto 6 / IP 总长对账 / IP 校验和 /
-/// 寻我 → pulse 段解析 + 伪头校验和验证 → 端口表路由 → 槽写入。
-/// 返回采纳载荷长；任一闸不过 None（计数分域 fail-visible）。
+/// 寻我 → pulse 段解析 + 伪头校验和验证 → 端口表路由 → **重组或槽写入**
+/// （M37-N1：播种态非空载荷走 [`TCP_REASM`] 乱序重组——InOrder 前缀
+/// 连通即拼接交付；未播种/空载荷直通单槽 = t86 语义逐位保持）。
+/// 返回采纳载荷长（段自身域——重组拼接交付可超该值，证据行显形）；
+/// 任一闸不过 None（计数分域 fail-visible）。
 pub fn tcp_dispatch(frame: &[u8]) -> Option<usize> {
     if frame.len() < 14 + 20 + 20 {
         return None;
@@ -1630,6 +1667,48 @@ pub fn tcp_dispatch(frame: &[u8]) -> Option<usize> {
         return None;
     }
     let n = payload.len().min(TCP_SEG_MAX);
+    // M37-N1 播种态非空载荷：乱序重组面接管（四态判定——InOrder 前缀
+    // 连通即 drain 拼接交付；Queued 缓存待洞；Old/Overflow 段级拒收
+    // ——v0 整段拒偏差登记）。未播种/空载荷直通槽 = t86 逐位同构
+    // 回归锚；重组账面缺失（结构性不可达）同域回退直通槽。
+    let reasm_hit = tcp_reasm_is_seeded() && !payload.is_empty();
+    if reasm_hit {
+        if let Some(outcome) = tcp_reasm_with(|q| q.insert(h.seq, payload)) {
+            TCP_ACCEPTED.fetch_add(1, Ordering::Relaxed);
+            return match outcome {
+                pulse::tcp::ReasmOutcome::InOrder => {
+                    // 前缀连通：拼接交付（可含此前 Queued 段——字节级
+                    // 对账域；触发段头域随槽取证，载荷长为段自身域）。
+                    // 零交付 = 结构性不可达（防御面：不写空槽）。
+                    let mut slot = TcpRxSeg {
+                        src_port: h.src_port,
+                        dst_port: h.dst_port,
+                        seq: h.seq,
+                        ack_seq: h.ack_seq,
+                        flags: h.flags,
+                        window: h.window,
+                        len: 0,
+                        data: [0; TCP_SEG_MAX],
+                    };
+                    match tcp_reasm_with(|q| q.drain(&mut slot.data)) {
+                        Some(d) if d > 0 => {
+                            slot.len = d;
+                            write_rx_slot(slot);
+                        }
+                        _ => {}
+                    }
+                    Some(payload.len())
+                }
+                pulse::tcp::ReasmOutcome::Queued => {
+                    TCP_REASM_QUEUED.fetch_add(1, Ordering::Relaxed);
+                    Some(payload.len())
+                }
+                pulse::tcp::ReasmOutcome::Old | pulse::tcp::ReasmOutcome::Overflow => {
+                    Some(payload.len())
+                }
+            };
+        }
+    }
     let mut slot = TcpRxSeg {
         src_port: h.src_port,
         dst_port: h.dst_port,
@@ -1641,12 +1720,7 @@ pub fn tcp_dispatch(frame: &[u8]) -> Option<usize> {
         data: [0; TCP_SEG_MAX],
     };
     slot.data[..n].copy_from_slice(&payload[..n]);
-    // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
-    unsafe {
-        if let Some(s) = (&raw mut TCP_RX_SLOT).as_mut() {
-            *s = Some(slot);
-        }
-    }
+    write_rx_slot(slot);
     TCP_ACCEPTED.fetch_add(1, Ordering::Relaxed);
     Some(payload.len())
 }
@@ -1719,12 +1793,288 @@ pub fn tcp_recv() -> Option<TcpRxSeg> {
     tcp_slot_take()
 }
 
+/// 接收槽写入（&raw 手法同 [`tcp_slot_take`] 纪律）。
+fn write_rx_slot(slot: TcpRxSeg) {
+    // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+    unsafe {
+        if let Some(s) = (&raw mut TCP_RX_SLOT).as_mut() {
+            *s = Some(slot);
+        }
+    }
+}
+
+// ===================== M37-N1：TCP 重传面（TSC 纳秒定时器 + 滑窗 + 重组电气） =====================
+//
+// pulse::tcp 协议机纵深（[`pulse::tcp::RtoTimer`]/[`pulse::tcp::SendWindow`]/
+// [`pulse::tcp::ReasmBuf`] 纯函数面）的 kernel::vnet 电气承接：重传臂
+// 模板电重发（回环通路）+ 乱序重组窗播种接管（分派链 InOrder 前缀拼接
+// 交付）+ 外部 RX 对接收口（外部形段直注共享交接环——M27-T1 既登记
+// 「外部 RX 对接面」随本笔收口）。v0 单流单臂单窗（多连接扩容随服务化
+// 批次挂账——M36-N1 单段槽先例同构口径）。
+
+/// 单流乱序重组窗（t89 播种域；未播种分派直通槽 = t86 逐位同构回归锚）。
+static mut TCP_REASM: pulse::tcp::ReasmBuf<TCP_SEG_MAX> = pulse::tcp::ReasmBuf::new(0);
+/// 重组窗播种旗（false = 分派直通槽）。
+static mut TCP_REASM_SEED: bool = false;
+/// RTO 重传臂（TSC 纳秒域——[`crate::timer::mononow_ns`] 同源单调面；
+/// 合成时刻面 `*_at` 版本供 t89 确定性驱动）。
+static mut TCP_RTO: pulse::tcp::RtoTimer = pulse::tcp::RtoTimer::new();
+/// 重传臂模板段（电重发载体——组帧参数原样定格；None = 无臂）。
+struct RetxTpl {
+    src_port: u16,
+    dst_port: u16,
+    seq: u32,
+    ack_seq: u32,
+    flags: u16,
+    window: u16,
+    payload: [u8; TCP_SEG_MAX],
+    len: usize,
+}
+static mut TCP_RETX_TPL: Option<RetxTpl> = None;
+
+/// 重组窗账面访问（&raw 手法同款纪律；闭包承载 pulse 面操作）。
+fn tcp_reasm_with<R>(f: impl FnOnce(&mut pulse::tcp::ReasmBuf<TCP_SEG_MAX>) -> R) -> Option<R> {
+    // SAFETY: 单语境独占（kmain 自检串行段）；&raw 手法不建立 static 引用。
+    unsafe { (&raw mut TCP_REASM).as_mut().map(f) }
+}
+
+/// 重组窗播种旗读出。
+fn tcp_reasm_is_seeded() -> bool {
+    // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+    unsafe { (&raw mut TCP_REASM_SEED).as_ref().is_some_and(|s| *s) }
+}
+
+/// 重组窗播种（接收基线 rcv_nxt 定格——单流 v0；重复播种 = 重置窗口
+/// 新基线，t89 相位间隔离用）。
+pub fn tcp_reasm_seed(rcv_nxt: u32) {
+    // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+    unsafe {
+        if let Some(q) = (&raw mut TCP_REASM).as_mut() {
+            *q = pulse::tcp::ReasmBuf::new(rcv_nxt);
+        }
+        if let Some(s) = (&raw mut TCP_REASM_SEED).as_mut() {
+            *s = true;
+        }
+    }
+}
+
+/// 重组窗停用（回退直通槽语义——t86 回归锚复位）。
+pub fn tcp_reasm_unseed() {
+    // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+    unsafe {
+        if let Some(s) = (&raw mut TCP_REASM_SEED).as_mut() {
+            *s = false;
+        }
+    }
+}
+
+/// 重组窗读数：Some((基线 rcv_nxt, 在窗缓存字节))；未播种 None。
+pub fn tcp_reasm_state() -> Option<(u32, usize)> {
+    if !tcp_reasm_is_seeded() {
+        return None;
+    }
+    tcp_reasm_with(|q| (q.rcv_nxt(), q.pending()))
+}
+
+/// 重传臂武装（合成时刻版——t89 确定性驱动面）：模板定格 + RTO 首臂。
+/// payload > [`TCP_SEG_MAX`] 时 fail-visible 拒臂（模板载荷定容域）。
+/// 返回 true = 臂成（模板定格 + 定时器武装）。
+#[allow(clippy::too_many_arguments)]
+pub fn tcp_retx_arm_at(
+    now_ns: u64,
+    src_port: u16,
+    dst_port: u16,
+    seq: u32,
+    ack_seq: u32,
+    flags: u16,
+    window: u16,
+    payload: &[u8],
+) -> bool {
+    if payload.len() > TCP_SEG_MAX {
+        return false;
+    }
+    let tpl = RetxTpl {
+        src_port,
+        dst_port,
+        seq,
+        ack_seq,
+        flags,
+        window,
+        payload: {
+            let mut d = [0u8; TCP_SEG_MAX];
+            d[..payload.len()].copy_from_slice(payload);
+            d
+        },
+        len: payload.len(),
+    };
+    // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+    unsafe {
+        if let Some(t) = (&raw mut TCP_RETX_TPL).as_mut() {
+            *t = Some(tpl);
+        }
+        if let Some(r) = (&raw mut TCP_RTO).as_mut() {
+            r.arm(now_ns, seq);
+        }
+    }
+    true
+}
+
+/// 重传拍（合成时刻版）：RTO 到期判定 → Due 时模板电重发（回环通路——
+/// [`tcp_loopback_tx`] 同构组帧，段参数原样定格）→ [`TCP_RETX`] 计数
+/// 显形；击发失败（环满/态缺失）[`TCP_RETX_MISS`] 计数 fail-visible。
+/// Exhausted 时同步弃模板（拆除判定交消费方）。
+pub fn tcp_retx_poll_at(now_ns: u64) -> pulse::tcp::RtoDecision {
+    let decision = {
+        // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+        unsafe { (&raw mut TCP_RTO).as_mut() }
+            .map(|r| r.poll(now_ns))
+            .unwrap_or(pulse::tcp::RtoDecision::Idle)
+    };
+    if decision == pulse::tcp::RtoDecision::Due {
+        let fired = {
+            // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+            unsafe { (&raw mut TCP_RETX_TPL).as_ref() }
+                .and_then(|t| t.as_ref())
+                .is_some_and(|t| {
+                    tcp_loopback_tx(
+                        t.src_port,
+                        t.dst_port,
+                        t.seq,
+                        t.ack_seq,
+                        t.flags,
+                        t.window,
+                        &t.payload[..t.len],
+                    )
+                })
+        };
+        if fired {
+            TCP_RETX.fetch_add(1, Ordering::Relaxed);
+        } else {
+            TCP_RETX_MISS.fetch_add(1, Ordering::Relaxed);
+        }
+    } else if decision == pulse::tcp::RtoDecision::Exhausted {
+        // 耗尽弃模板（fail-visible——消费方拆除判定随行）
+        // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+        unsafe {
+            if let Some(t) = (&raw mut TCP_RETX_TPL).as_mut() {
+                *t = None;
+            }
+        }
+    }
+    decision
+}
+
+/// 重传臂 ACK 清账：`ack` 越过武装段首序号 → 解除武装 + 退避复位 +
+/// 模板弃置。返回 true = 本臂已清。
+pub fn tcp_retx_clear(ack_seq: u32) -> bool {
+    let cleared = {
+        // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+        unsafe { (&raw mut TCP_RTO).as_mut() }
+            .map(|r| r.on_ack(ack_seq))
+            .unwrap_or(false)
+    };
+    if cleared {
+        // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+        unsafe {
+            if let Some(t) = (&raw mut TCP_RETX_TPL).as_mut() {
+                *t = None;
+            }
+        }
+    }
+    cleared
+}
+
+/// 重传臂取证读出：Some((armed_seq, retries))；未武装 None。
+pub fn tcp_retx_armed() -> Option<(u32, u32)> {
+    // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+    unsafe { (&raw mut TCP_RTO).as_ref() }
+        .and_then(|r| r.is_armed().then_some((r.armed_seq(), r.retries())))
+}
+
+/// 重传臂无条件复位（跨自检隔离面——[`crate::timer::reset_evidence`]
+/// 同款纪律：真电臂随 tcp_external_syn 跨自检存活〔t86-g 武装 → t89
+/// 合成拍被 arm 幂等闸吞没的实录揭雷〕，自检相位入口先复位）。
+pub fn tcp_retx_reset() {
+    // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+    unsafe {
+        if let Some(r) = (&raw mut TCP_RTO).as_mut() {
+            *r = pulse::tcp::RtoTimer::new();
+        }
+        if let Some(t) = (&raw mut TCP_RETX_TPL).as_mut() {
+            *t = None;
+        }
+    }
+}
+
+/// 外部 RX 对接收口（M27-T1 既登记「外部 RX 对接面」随本笔收口）：
+/// 外部形段组帧（src_ip 外部域 + 伪头校验和 src→本机）→ [`PULSE_RX`]
+/// 共享交接环直注（与真实 RX 通路同构电段——分派全闸链照常把关）。
+/// 返回 false = 态缺失/组帧越界/环满（fail-closed）。
+#[allow(clippy::too_many_arguments)]
+pub fn tcp_external_inject(
+    src_ip: [u8; 4],
+    src_port: u16,
+    dst_port: u16,
+    seq: u32,
+    ack_seq: u32,
+    flags: u16,
+    payload: &[u8],
+) -> bool {
+    if net_state_mut().is_none() {
+        return false;
+    }
+    let mut seg = [0u8; 20 + TCP_SEG_MAX];
+    let Some(seg_len) = pulse::tcp::TcpHdr::encode(
+        src_port, dst_port, seq, ack_seq, flags, 8192, payload, &mut seg,
+    ) else {
+        return false;
+    };
+    let cs = pulse::tcp::checksum(src_ip, MY_IP, &seg[..seg_len]);
+    seg[16..18].copy_from_slice(&cs.to_be_bytes());
+    let ip_total = 20 + seg_len;
+    let flen = 14 + ip_total;
+    if flen > PULSE_FRAME_MAX {
+        return false;
+    }
+    let mut f = [0u8; PULSE_FRAME_MAX];
+    let st_mac = net_state_mut().map(|st| st.mac).unwrap_or([0; 6]);
+    f[0..6].copy_from_slice(&st_mac); // dst = 本机（分派链寻我闸域）
+    f[6..12].copy_from_slice(&st_mac); // src MAC 不入闸（t86 回环先例同域）
+    f[12..14].copy_from_slice(&0x0800u16.to_be_bytes());
+    f[14] = 0x45;
+    f[16..18].copy_from_slice(&(ip_total as u16).to_be_bytes());
+    f[22] = 64;
+    f[23] = pulse::tcp::PROTO_TCP;
+    f[26..30].copy_from_slice(&src_ip); // 外部源 IP（对接收口本体域）
+    f[30..34].copy_from_slice(&MY_IP);
+    let ip_ck = cksum16(&f[14..34]);
+    f[24..26].copy_from_slice(&ip_ck.to_be_bytes());
+    f[34..34 + seg_len].copy_from_slice(&seg[..seg_len]);
+    let slot = FrameSlot {
+        len: flen as u16,
+        _pad: [0; 6],
+        data: {
+            let mut d = [0u8; PULSE_FRAME_MAX];
+            d[..flen].copy_from_slice(&f[..flen]);
+            d
+        },
+    };
+    match PULSE_RX.send(slot) {
+        Ok(()) => {
+            TCP_EXT_RX.fetch_add(1, Ordering::Relaxed);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 /// 外部 TX 电气击发（t86 相位面——真实 virtio 通路）：IPv4/TCP SYN 组帧
 /// （[`icmp_echo_tx`] 同款模板 + [`pulse::tcp`] 段编码 + 伪头校验和）→
 /// [`tx_frame`] 击发（发后收讫闸内建）。`dst_mac` 由调用方先经 ARP 解析
-/// （t72/t73 先例——相位域 ARP roundtrip 捕获网关 MAC）。重传定时器
-/// 挂账（M27-T1 既登记偏差——外部 RX 对接面随重传批次同收，本面只
-/// 断言 TX 电气证据）。
+/// （t72/t73 先例——相位域 ARP roundtrip 捕获网关 MAC）。M37-N1 起
+/// SYN 重传臂随击发武装（RTO 首臂 = [`crate::timer::mononow_ns`] 真电
+/// 时刻，TSC 未校准防御面跳过武装——不立虚时基）；重发执行 = 消费方
+/// 同参重击本面（重发容忍域 ≤3 拍先例），`ack` 清账经 [`tcp_retx_clear`]。
 pub fn tcp_external_syn(
     dst_mac: [u8; 6],
     dst_ip: [u8; 4],
@@ -1771,6 +2121,15 @@ pub fn tcp_external_syn(
     // SAFETY: 态自 bring_up 登记；flen ≤ PULSE_FRAME_MAX 界内（单语境）。
     unsafe { tx_frame(st, &f[..flen], flen) };
     TCP_EXT_TX.fetch_add(1, Ordering::Relaxed);
+    // M37-N1：SYN 重传臂武装（RTO 真电首臂——TSC 未校准跳过，不立虚时基）
+    if let Some(now) = ostd::time::tsc_clock::now_ns() {
+        // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+        unsafe {
+            if let Some(r) = (&raw mut TCP_RTO).as_mut() {
+                r.arm(now, seq);
+            }
+        }
+    }
     true
 }
 

@@ -82,8 +82,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88）。
-const SELFTEST_TOTAL: usize = 88;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89）。
+const SELFTEST_TOTAL: usize = 89;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -6012,6 +6012,271 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t88, "fb-surface");
+
+    // t89) TCP 重传面活体（M37-N1）：pulse 协议机纵深 + vnet 电气对接
+    //      六相位——(a) RTO 臂协议级全谱（合成时刻：首臂 200 ms → 到期
+    //      Due 退避倍增 → ACK 清账 → 耗尽 Exhausted fail-visible）；(b)
+    //      滑窗协议级四目（usable 记账 / ACK 开左闭右 / 陈旧越域零动作
+    //      / 回绕域右沿）；(c) 重传电气（合成拍模板电重发——回环通路
+    //      双击发 + seq/载荷字节级对账 + TCP_RETX 计数显形 + ACK 清账）；
+    //      (d) 乱序重组电气（播种 rcv_nxt → 未来段 Queued 槽空显形 →
+    //      基线段 InOrder 拼接交付 22 B 字节级对账 → 停用回退直通槽）；
+    //      (e) 外部 RX 对接收口（M27-T1 既登记偏差随本笔收口——外部形
+    //      段直注共享交接环 + 全闸分派 + syn_sent_recv 握手对账 ESTABLISHED
+    //      + 外部 SYN 真电重传臂武装/清账）；(f) 统计对账 + 收场清账
+    //      （臂清/窗停/解绑——零残留域）。外部 TX 电气（t86-g 同款：
+    //      ARP 解析网关 + virtio 击发 + 重发容忍域 ≤3 拍）随 (e) 承接。
+    let t89 = {
+        let mut run = || -> bool {
+            const CL_PORT: u16 = 42000;
+            const SV_PORT: u16 = 42001;
+            use pulse::tcp::{self, RtoDecision, RtoTimer, SendWindow, RETX_MAX, RTO_INIT_NS};
+            let mut ok = true;
+            // 跨自检隔离：t86-g 外部 SYN 真电臂跨自检存活（arm 幂等闸会
+            // 吞合成拍重臂——tcp_retx_reset 揭雷收口，reset_evidence 同款）
+            vnet::tcp_retx_reset();
+            ok &= vnet::tcp_retx_armed().is_none();
+            // (a) RTO 臂协议级全谱（合成时刻——宿主 8 例同源谱在环）
+            let t0 = 1_000_000u64;
+            let mut r = RtoTimer::new();
+            ok &= !r.is_armed() && r.poll(t0) == RtoDecision::Idle;
+            r.arm(t0, 4242);
+            r.arm(t0 + 1, 9999); // 幂等：最早未确认段主导
+            ok &= r.armed_seq() == 4242;
+            let d1 = t0 + RTO_INIT_NS;
+            ok &= r.poll(d1 - 1) == RtoDecision::Idle; // 差一拍不早醒
+            ok &= r.poll(d1) == RtoDecision::Due && r.retries() == 1;
+            ok &= r.poll(d1 + 2 * RTO_INIT_NS - 1) == RtoDecision::Idle;
+            ok &= r.poll(d1 + 2 * RTO_INIT_NS) == RtoDecision::Due && r.retries() == 2;
+            ok &= !r.on_ack(4242) && r.on_ack(4243); // 陈旧拒清 + 越过清账
+            ok &= !r.is_armed() && r.retries() == 0;
+            // 耗尽谱：RETX_MAX 拍 Due → Exhausted（fail-visible）
+            let mut e = RtoTimer::new();
+            e.arm(0, 100);
+            let mut now = RTO_INIT_NS;
+            for i in 1..=RETX_MAX {
+                ok &= e.poll(now) == RtoDecision::Due;
+                now += RTO_INIT_NS << i.min(4);
+            }
+            ok &= e.poll(now) == RtoDecision::Exhausted && !e.is_armed();
+            // (b) 滑窗协议级四目（回绕域右沿随行）
+            let mut w = SendWindow::new(1000, 4);
+            ok &= w.usable() == 4;
+            w.sent(3);
+            ok &= w.nxt() == 1003 && w.usable() == 1;
+            w.sent(1);
+            ok &= w.usable() == 0; // 零窗耗尽
+            ok &= !w.on_ack(1000, 8) && !w.on_ack(1005, 8); // 陈旧/越域零动作
+            ok &= w.una() == 1000;
+            ok &= w.on_ack(1003, 8) && w.una() == 1003 && w.window() == 8 && w.usable() == 7;
+            let mut w2 = SendWindow::new(u32::MAX - 1, 4);
+            w2.sent(2);
+            ok &= w2.nxt() == 0 && w2.usable() == 2 && w2.on_ack(0, 4) && w2.una() == 0;
+            let _ = writeln!(log, "tcp-retx: rto+win protocol face ok={ok}");
+            // (c) 重传电气：回环端口域 → 模板臂（合成拍）→ 差一拍 Idle →
+            //     到期 Due 电重发（seq/载荷字节级对账）→ 二拍倍增 → ACK 清账
+            ok &= vnet::tcp_bind(SV_PORT).is_ok();
+            ok &= vnet::tcp_bind(CL_PORT).is_ok();
+            const RETX_PAYLOAD: &[u8] = b"LUMINA-T89-RETX";
+            let s0 = vnet::tcp_stats();
+            ok &= vnet::tcp_retx_arm_at(
+                t0,
+                CL_PORT,
+                SV_PORT,
+                500,
+                0,
+                tcp::FLAG_ACK | tcp::FLAG_PSH,
+                8192,
+                RETX_PAYLOAD,
+            );
+            ok &= vnet::tcp_retx_armed().is_some_and(|(seq, retries)| seq == 500 && retries == 0);
+            let mut frame = [0u8; vnet::PULSE_FRAME_MAX];
+            let pop_dispatch = |frame: &mut [u8]| -> Option<vnet::TcpRxSeg> {
+                let mut got = None;
+                let mut spin = 0u64;
+                while spin < 40_000_000 {
+                    if let Some(fl) = vnet::pulse_rx_pop(frame) {
+                        got = Some(fl);
+                        break;
+                    }
+                    spin += 1;
+                    core::hint::spin_loop();
+                }
+                let fl = got?;
+                vnet::tcp_dispatch(&frame[..fl])?;
+                vnet::tcp_recv()
+            };
+            ok &= vnet::tcp_retx_poll_at(t0 + RTO_INIT_NS - 1) == RtoDecision::Idle;
+            let s0b = vnet::tcp_stats();
+            ok &= s0b.retx == s0.retx; // 未到期零击发
+            ok &= vnet::tcp_retx_poll_at(t0 + RTO_INIT_NS) == RtoDecision::Due;
+            let s1 = vnet::tcp_stats();
+            ok &= s1.retx == s0.retx + 1; // 电重发击发
+            let got_seg = pop_dispatch(&mut frame);
+            ok &= got_seg.is_some();
+            let seg = got_seg.unwrap_or(vnet::TcpRxSeg {
+                src_port: 0,
+                dst_port: 0,
+                seq: 0,
+                ack_seq: 0,
+                flags: 0,
+                window: 0,
+                len: 0,
+                data: [0; vnet::TCP_SEG_MAX],
+            });
+            ok &= seg.seq == 500 && seg.len == RETX_PAYLOAD.len();
+            ok &= &seg.data[..RETX_PAYLOAD.len()] == RETX_PAYLOAD; // 重发段字节级同账
+            let d2 = t0 + RTO_INIT_NS + 2 * RTO_INIT_NS;
+            ok &= vnet::tcp_retx_poll_at(d2 - 1) == RtoDecision::Idle;
+            ok &= vnet::tcp_retx_poll_at(d2) == RtoDecision::Due;
+            let s2 = vnet::tcp_stats();
+            ok &= s2.retx == s1.retx + 1; // 二拍电重发（退避倍增窗）
+            let seg2 = pop_dispatch(&mut frame);
+            ok &= seg2.is_some_and(|s| s.seq == 500 && s.len == RETX_PAYLOAD.len());
+            ok &= vnet::tcp_retx_clear(500 + RETX_PAYLOAD.len() as u32); // ACK 越过清账
+            ok &= vnet::tcp_retx_armed().is_none();
+            let _ = writeln!(
+                log,
+                "tcp-retx: retx={} miss={} armed-after-clear={}",
+                s2.retx,
+                s2.retx_miss,
+                vnet::tcp_retx_armed().is_some()
+            );
+            let ok_c = ok;
+            let _ = writeln!(log, "tcp-retx: phase-c ok={ok_c}");
+            // (d) 乱序重组电气：播种 rcv_nxt=1000 → 未来段 Queued（槽空
+            //     显形）→ 基线段 InOrder 拼接交付（22 B 字节级对账）→ 停用
+            const REASM_A: &[u8] = b"T89-REASM-A";
+            const REASM_B: &[u8] = b"T89-REASM-B";
+            vnet::tcp_reasm_seed(1000);
+            ok &= vnet::tcp_reasm_state().is_some_and(|(base, pend)| base == 1000 && pend == 0);
+            ok &= vnet::tcp_loopback_tx(
+                CL_PORT,
+                SV_PORT,
+                1011, // B 队列位 11..22（A 占 0..11——1004 与 A 重叠为实录揭雷已纠正）
+                0,
+                tcp::FLAG_ACK | tcp::FLAG_PSH,
+                8192,
+                REASM_B,
+            );
+            let queued = pop_dispatch(&mut frame);
+            ok &= queued.is_none(); // Queued 槽空显形（乱序滞留）
+            let s3 = vnet::tcp_stats();
+            ok &= s3.reasm_queued == s2.reasm_queued + 1;
+            ok &= vnet::tcp_reasm_state()
+                .is_some_and(|(base, pend)| base == 1000 && pend == REASM_B.len());
+            ok &= vnet::tcp_loopback_tx(
+                CL_PORT,
+                SV_PORT,
+                1000,
+                0,
+                tcp::FLAG_ACK | tcp::FLAG_PSH,
+                8192,
+                REASM_A,
+            );
+            let joined = pop_dispatch(&mut frame);
+            ok &= joined.is_some();
+            let segj = joined.unwrap_or(vnet::TcpRxSeg {
+                src_port: 0,
+                dst_port: 0,
+                seq: 0,
+                ack_seq: 0,
+                flags: 0,
+                window: 0,
+                len: 0,
+                data: [0; vnet::TCP_SEG_MAX],
+            });
+            let mut want = [0u8; REASM_A.len() + REASM_B.len()];
+            want[..REASM_A.len()].copy_from_slice(REASM_A);
+            want[REASM_A.len()..].copy_from_slice(REASM_B);
+            ok &= segj.len == want.len(); // 拼接交付（A+B 连续前缀）
+            ok &= segj.data[..want.len()] == want; // 字节级对账
+            ok &= vnet::tcp_reasm_state()
+                .is_some_and(|(base, pend)| base == 1000 + want.len() as u32 && pend == 0);
+            vnet::tcp_reasm_unseed();
+            ok &= vnet::tcp_reasm_state().is_none(); // 停用回退直通槽
+            let _ = writeln!(
+                log,
+                "tcp-reasm: joined={}B queued+1 base-advanced",
+                want.len()
+            );
+            let ok_d = ok;
+            let _ = writeln!(log, "tcp-reasm: phase-d ok={ok_d}");
+            // (e) 外部 RX 对接收口（M27-T1 既登记偏差随本笔收口）：ARP 解析
+            //     网关（重发容忍域 ≤3 拍——t86-g 同款）→ 外部 SYN 真电击发
+            //     （重传臂随发武装——真电时刻）→ 外部形 SYN|ACK 直注共享交
+            //     接环（src_ip = 网关域）→ 全闸分派 + 握手对账 ESTABLISHED
+            //     → 清账收臂。
+            let mut ext_ok = false;
+            let mut gw = None;
+            for _ in 0..3 {
+                if let Some(echo) = vnet::arp_roundtrip() {
+                    ext_ok = vnet::tcp_external_syn(echo.sha, echo.spa, 9, CL_PORT, 777);
+                    gw = Some(echo.spa);
+                    break;
+                }
+            }
+            ok &= ext_ok;
+            let Some(gw_ip) = gw else { return false }; // ARP 未命中早退（fail-closed）
+            let s4 = vnet::tcp_stats();
+            ok &= s4.ext_tx == s3.ext_tx + 1;
+            ok &= vnet::tcp_retx_armed().is_some_and(|(seq, _)| seq == 777); // SYN 臂真电武装
+            const EXT_ISN: u32 = 9000;
+            ok &= vnet::tcp_external_inject(
+                gw_ip,
+                41002,
+                SV_PORT,
+                EXT_ISN,
+                778,
+                tcp::FLAG_SYN | tcp::FLAG_ACK,
+                &[],
+            );
+            let s5 = vnet::tcp_stats();
+            ok &= s5.ext_rx == s4.ext_rx + 1;
+            let ext_seg = pop_dispatch(&mut frame);
+            ok &= ext_seg.is_some();
+            let exts = ext_seg.unwrap_or(vnet::TcpRxSeg {
+                src_port: 0,
+                dst_port: 0,
+                seq: 0,
+                ack_seq: 0,
+                flags: 0,
+                window: 0,
+                len: 0,
+                data: [0; vnet::TCP_SEG_MAX],
+            });
+            ok &= exts.flags == (tcp::FLAG_SYN | tcp::FLAG_ACK) && exts.seq == EXT_ISN;
+            // 协议机对账：SYN_SENT 收 SYN|ACK（ack = 本端 isn+1）→ ESTABLISHED
+            ok &= tcp::syn_sent_recv(tcp::ConnState::SynSent, 777, exts.flags, 778, EXT_ISN)
+                == Ok((tcp::ConnState::Established, EXT_ISN + 1));
+            ok &= vnet::tcp_retx_clear(778); // SYN 臂 ACK 清账
+            ok &= vnet::tcp_retx_armed().is_none();
+            let _ = writeln!(
+                log,
+                "tcp-ext-rx: inj+dispatch+handshake established ext_rx={}",
+                s5.ext_rx
+            );
+            let ok_e = ok;
+            let _ = writeln!(log, "tcp-ext-rx: phase-e ok={ok_e}");
+            // (f) 统计对账 + 收场清账（解绑——路由失效证据）
+            ok &= vnet::tcp_unbind(SV_PORT).is_ok();
+            ok &= vnet::tcp_unbind(CL_PORT).is_ok();
+            ok &= vnet::tcp_reasm_state().is_none() && vnet::tcp_retx_armed().is_none();
+            let _ = writeln!(
+                log,
+                "tcp-retx: final retx={} miss={} reasm_q={} ext_rx={}",
+                s5.retx, s5.retx_miss, s5.reasm_queued, s5.ext_rx
+            );
+            ok
+        };
+        let ok = run();
+        if ok {
+            let _ = writeln!(log, "LUMINA-T89-RETX retx=2 backoff=2x");
+            let _ = writeln!(log, "LUMINA-T89-OK");
+        }
+        ok
+    };
+    report(&mut log, t89, "tcp-retx");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {

@@ -56,7 +56,10 @@ static MONO_FLOOR: AtomicU64 = AtomicU64::new(0);
 /// 面）读 0 —— 0 < 任何非零 deadline 恒真 → 探针判「仍待」、到期扫描
 /// 判「未到期」，全链保守（不产生虚假唤醒；sleeper 只会睡到校准后首次
 /// 到期扫描，自检序下不可达）。
-fn mononow_ns() -> u64 {
+///
+/// M37-N1 起 [`crate::vnet`] TCP 重传面同源消费（RTO 臂时刻口径——
+/// MONO_FLOOR 单调地板全仓唯一事实源，重传拍判定不得立于裸 TSC 上）。
+pub fn mononow_ns() -> u64 {
     let raw = ostd::time::tsc_clock::now_ns().unwrap_or(0);
     let prev = MONO_FLOOR.fetch_max(raw, Ordering::AcqRel);
     if raw > prev {

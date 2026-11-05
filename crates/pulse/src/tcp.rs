@@ -1,12 +1,21 @@
 //! TCP 传输控制协议首割（RFC 9293 简化面）。
 //!
-//! M27-T1 范围界定（偏差登记）：**协议面结构**——段头编解码 + 连接状态机
-//! 骨架 + 三次握手序号推进面（宿主对账测试承载）；vnet 电气接线、重传
-//! 定时器、滑动窗口流量控制、分片重组属后续批次（挂账）。状态集按
-//! ROADMAP M27-T1 清单八态（FIN_WAIT 合并半关闭双态 v0 简化）。
+//! M27-T1 范围界定（偏差登记，**M37-N1 转正收口**）：协议面结构——段头
+//! 编解码 + 连接状态机骨架 + 三次握手序号推进面（宿主对账测试承载）；
+//! vnet 电气接线（M36-N1 转正）与重传定时器、滑动窗口、分片重组
+//! （**M37-N1 本笔转正**——[`RtoTimer`] TSC 纳秒重传臂 + [`SendWindow`]
+//! 发送滑窗 + [`ReasmBuf`] 接收乱序重组，全纯函数零堆零 unsafe）。
+//! 状态集按 ROADMAP M27-T1 清单八态（FIN_WAIT 合并半关闭双态 v0 简化）。
 //!
 //! 分层定位：pulse 只承载 L4 段面（同 [`crate::udp`]）；校验和伪头核心
 //! 与 UDP 共用（proto 6 vs 17 参数化）。
+//!
+//! 重传面 v0 简化域（偏差如实登记）：RTO 初值 200 ms（RFC 9293 §5 建议
+//! 1 s——回环电气面短臂口径）+ 固定倍增退避封顶 [`RTO_MAX_NS`]（无 RTT
+//! 采样自适应——Karn 算法挂账）；同段重传上限 [`RETX_MAX`] 耗尽
+//! fail-visible（拆除判定交消费方）；滑窗无窗口缩放选项（16 位通告域
+//! 直用）；重组窗旧段/跨基线重叠整段拒收（RFC 9293 允许部分重叠修剪
+//! ——v0 全拒保确定性）；零窗探测挂账。
 
 /// TCP 头最小长（data_offset = 5，无选项域）。
 pub const HDR_LEN: usize = 20;
@@ -267,6 +276,336 @@ pub fn advance(
     }
 }
 
+// ===================== M37-N1：TCP 重传面（定时器/滑窗/重组） =====================
+
+/// 32 位序号串行小于（RFC 1982 回绕安全：`a` 在 `b` 之前当且仅当
+/// `a − b` 的补码解释为负；差距恰 2^31 既不小于也不大于——保守域）。
+#[must_use]
+pub fn seq_lt(a: u32, b: u32) -> bool {
+    ((a.wrapping_sub(b)) as i32) < 0
+}
+
+/// 32 位序号串行小于等于（相等显式先行——回绕比较不覆盖恒等域）。
+#[must_use]
+pub fn seq_le(a: u32, b: u32) -> bool {
+    a == b || seq_lt(a, b)
+}
+
+/// RTO 初值（TSC 纳秒域；200 ms——回环电气面短臂口径，偏差登记见模块头）。
+pub const RTO_INIT_NS: u64 = 200_000_000;
+/// RTO 退避上限（2⁴ × 初值 = 3.2 s；RFC 9293 §5 建议上限 ≥ 60 s——v0
+/// 回环口径取 16 倍封顶，偏差登记）。
+pub const RTO_MAX_NS: u64 = 3_200_000_000;
+/// 同段重传上限（第 6 拍到期判 Exhausted——耗尽 fail-visible，拆除判定
+/// 交消费方；RFC 9293 建议至少 3 次重传，v0 取 5 次上限）。
+pub const RETX_MAX: u32 = 5;
+
+/// 到期拍判定（[`RtoTimer::poll`] 出参；fail-visible 三态）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RtoDecision {
+    /// 未武装或未到期（零动作）。
+    Idle,
+    /// 到期重传拍——调用方必须重发最早未确认段（退避已内部再臂）。
+    Due,
+    /// 重传耗尽（[`RETX_MAX`] 上限）——定时器已解除武装，连接应拆除。
+    Exhausted,
+}
+
+/// 重传定时器（TSC 纳秒域；M15-③ [`crate::time`] 同源单调面——pulse
+/// 侧时间源不可知：`now_ns` 由调用方注入，宿主测试合成时刻，内核侧
+/// `tsc_clock::now_ns` 单调纳秒）。
+///
+/// 口径：最早未确认段主导（RFC 6298 本义简化——`arm` 幂等，已武装不
+/// 重置；ACK 越过武装段首序号清账复位；到期拍固定倍增退避再臂）。
+/// 零堆零 unsafe，`Copy` 语义面（嵌核账面定式）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RtoTimer {
+    /// 到期时刻（纳秒；u64::MAX = 未武装）。
+    deadline: u64,
+    /// 武装段首序号（ACK 清账对账域）。
+    armed_seq: u32,
+    /// 本臂重传计数（退避指数域）。
+    retries: u32,
+}
+
+impl RtoTimer {
+    /// 空闲定时器（未武装）。
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            deadline: u64::MAX,
+            armed_seq: 0,
+            retries: 0,
+        }
+    }
+}
+
+impl Default for RtoTimer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RtoTimer {
+    /// 是否武装中。
+    #[must_use]
+    pub const fn is_armed(&self) -> bool {
+        self.deadline != u64::MAX
+    }
+
+    /// 武装段首序号（未武装时返回最近一次登记值——证据面）。
+    #[must_use]
+    pub const fn armed_seq(&self) -> u32 {
+        self.armed_seq
+    }
+
+    /// 本臂重传计数。
+    #[must_use]
+    pub const fn retries(&self) -> u32 {
+        self.retries
+    }
+
+    /// 武装（幂等：已武装不重置——最早未确认段主导，新段不重启本臂；
+    /// 首臂 deadline = now + [`RTO_INIT_NS`]，退避推进由 [`RtoTimer::poll`]
+    /// 内部承担）。
+    pub fn arm(&mut self, now_ns: u64, seq: u32) {
+        if self.is_armed() {
+            return;
+        }
+        self.deadline = now_ns.saturating_add(RTO_INIT_NS);
+        self.armed_seq = seq;
+        self.retries = 0;
+    }
+
+    /// ACK 清账：`ack` 越过武装段首序号（`armed_seq < ack`，串行域）→
+    /// 解除武装 + 退避复位。返回 true = 本臂已清（false = 陈旧/重复 ACK
+    /// 或未武装——零动作）。
+    pub fn on_ack(&mut self, ack: u32) -> bool {
+        if self.is_armed() && seq_lt(self.armed_seq, ack) {
+            self.deadline = u64::MAX;
+            self.retries = 0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 到期拍：Idle（未武装/未到期）→ Due（重传拍；`retries` 推进 +
+    /// 倍增退避再臂，封顶 [`RTO_MAX_NS`]）→ Exhausted（第 [`RETX_MAX`]+1
+    /// 拍到期——解除武装交消费方拆除，fail-visible）。
+    pub fn poll(&mut self, now_ns: u64) -> RtoDecision {
+        if !self.is_armed() || now_ns < self.deadline {
+            return RtoDecision::Idle;
+        }
+        if self.retries >= RETX_MAX {
+            self.deadline = u64::MAX;
+            return RtoDecision::Exhausted;
+        }
+        self.retries += 1;
+        // 倍增退避：2ⁿ × 初值，指数封顶 2⁴（= RTO_MAX_NS，位移域饱和）
+        let backoff = RTO_INIT_NS << self.retries.min(4);
+        self.deadline = now_ns.saturating_add(backoff.min(RTO_MAX_NS));
+        RtoDecision::Due
+    }
+}
+
+/// 发送侧滑动窗口（v0 无窗口缩放——16 位通告域直用，偏差登记见模块头）。
+///
+/// 序号域全串行算术（[`seq_lt`]/[`seq_le`] 回绕安全）；`peer_win` 随最新
+/// 合法 ACK 更新（陈旧 ACK 不动窗）。零堆零 unsafe。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SendWindow {
+    /// 最早未确认序号（发送窗左沿）。
+    una: u32,
+    /// 下一发送序号（发送窗右沿外）。
+    nxt: u32,
+    /// 对端通告窗（字节）。
+    peer_win: u16,
+}
+
+impl SendWindow {
+    /// 自 ISN 起（una = nxt = isn；握手期 SYN 消耗 1 序号由调用方并入
+    /// `sent` 记账口径）。
+    #[must_use]
+    pub const fn new(isn: u32, peer_win: u16) -> Self {
+        Self {
+            una: isn,
+            nxt: isn,
+            peer_win,
+        }
+    }
+
+    /// 发送窗左沿（最早未确认）。
+    #[must_use]
+    pub const fn una(&self) -> u32 {
+        self.una
+    }
+
+    /// 下一发送序号。
+    #[must_use]
+    pub const fn nxt(&self) -> u32 {
+        self.nxt
+    }
+
+    /// 当前对端通告窗。
+    #[must_use]
+    pub const fn window(&self) -> u16 {
+        self.peer_win
+    }
+
+    /// 可用窗字节 = (una + peer_win) − nxt（串行域，饱和下限 0——零窗
+    /// → 0，零窗探测挂账；nxt 越过右沿 = 窗耗尽同域）。
+    #[must_use]
+    pub fn usable(&self) -> usize {
+        let right = self.una.wrapping_add(u32::from(self.peer_win));
+        if seq_le(self.nxt, right) {
+            right.wrapping_sub(self.nxt) as usize
+        } else {
+            0
+        }
+    }
+
+    /// 发出记账：`nxt` 前进 `len`（载荷 + SYN/FIN 序号消耗由调用方并入
+    /// 口径——[`seq_advance`] 同源）。
+    pub fn sent(&mut self, len: u32) {
+        self.nxt = self.nxt.wrapping_add(len);
+    }
+
+    /// ACK 推进：`ack ∈ (una, nxt]`（串行域开左闭右——恰越 una 才前进）
+    /// → `una = ack` + 窗口更新，true；否则 false（陈旧/重复/越域 ACK
+    /// ——零动作 fail-visible，消费方可显形取证）。
+    pub fn on_ack(&mut self, ack: u32, peer_win: u16) -> bool {
+        if seq_lt(self.una, ack) && seq_le(ack, self.nxt) {
+            self.una = ack;
+            self.peer_win = peer_win;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// 重组注入判定（[`ReasmBuf::insert`] 出参；fail-visible 四态）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasmOutcome {
+    /// 段首恰落基线（rcv_nxt）——前缀立即连续，drain 即可交付。
+    InOrder,
+    /// 段落窗内未来域——缓存待洞补齐（乱序容错本体）。
+    Queued,
+    /// 旧段（段首在基线之前，含跨基线重叠——v0 整段拒收，偏差登记）。
+    Old,
+    /// 越窗（段尾越过基线 + 窗容量 N——v0 整段拒收）。
+    Overflow,
+}
+
+/// 接收侧乱序重组窗（字节粒度 presence 位图 + 定容窗 `N`；M37-N1 v0
+/// 单流单实例——多连接扩容随服务化批次挂账）。
+///
+/// 语义：段按序号定位窗内偏移，presence 标记 + 幂等拷贝（重复域零
+/// 扰动）；`drain` 交付基线起连续前缀并左移对齐（基线推进 = 交付数）。
+/// 全定容零堆零 unsafe（`[u8; N]` + `[bool; N]` 直存——TCP_SEG_MAX
+/// 量级窗 1 KiB 级 .bss 定容，增长复用纪律无关域）。
+#[derive(Debug, Clone, Copy)]
+pub struct ReasmBuf<const N: usize> {
+    /// 重组基线（rcv_nxt——下个期望字节序号）。
+    base: u32,
+    /// 窗内字节存储。
+    buf: [u8; N],
+    /// 字节粒度 presence 位图。
+    have: [bool; N],
+    /// 在窗字节数（presence 计数账——t89 证据域）。
+    have_count: usize,
+}
+
+impl<const N: usize> ReasmBuf<N> {
+    /// 以初始基线（对端 ISN + 1）建窗。
+    #[must_use]
+    pub const fn new(rcv_nxt: u32) -> Self {
+        Self {
+            base: rcv_nxt,
+            buf: [0; N],
+            have: [false; N],
+            have_count: 0,
+        }
+    }
+
+    /// 当前重组基线。
+    #[must_use]
+    pub const fn rcv_nxt(&self) -> u32 {
+        self.base
+    }
+
+    /// 在窗缓存字节数（乱序滞留账）。
+    #[must_use]
+    pub const fn pending(&self) -> usize {
+        self.have_count
+    }
+
+    /// 注入段：序号定位 → 四态判定 → presence 标记 + 幂等拷贝。
+    ///
+    /// 闸序：旧段（段首串行 < 基线——含跨基线重叠）→ [`ReasmOutcome::Old`]；
+    /// 越窗（段首 ≥ 窗容量或段尾越界）→ [`ReasmOutcome::Overflow`]；
+    /// 空载荷段（纯旗域 SYN/ACK/FIN——不参与重组）仅序号域对账判定；
+    /// 否则窗内标记拷贝，段首恰基线 → [`ReasmOutcome::InOrder`]，其余
+    /// → [`ReasmOutcome::Queued`]。
+    pub fn insert(&mut self, seq: u32, data: &[u8]) -> ReasmOutcome {
+        // 空载荷（纯旗段）：不落窗，仅对账判定
+        if data.is_empty() {
+            if seq == self.base {
+                return ReasmOutcome::InOrder;
+            }
+            return if seq_lt(seq, self.base) {
+                ReasmOutcome::Old
+            } else {
+                ReasmOutcome::Queued
+            };
+        }
+        let off = seq.wrapping_sub(self.base) as i32;
+        if off < 0 {
+            return ReasmOutcome::Old; // 旧段（含跨基线重叠——v0 整段拒）
+        }
+        let off_us = off as usize;
+        if off_us >= N || off_us + data.len() > N {
+            return ReasmOutcome::Overflow; // 越窗
+        }
+        for (i, b) in data.iter().enumerate() {
+            let k = off_us + i;
+            if !self.have[k] {
+                self.have[k] = true;
+                self.buf[k] = *b;
+                self.have_count += 1;
+            }
+        }
+        if off_us == 0 {
+            ReasmOutcome::InOrder
+        } else {
+            ReasmOutcome::Queued
+        }
+    }
+
+    /// 交付：基线起连续前缀拷入 `out`（至多窗容量与 `out` 容量的较小
+    /// 值），基线前进交付数，余项左移对齐（定容窗内 memmove 语义）。
+    /// 返回交付字节数（0 = 基线位有洞——乱序滞留中）。
+    pub fn drain(&mut self, out: &mut [u8]) -> usize {
+        let mut k = 0usize;
+        while k < N && self.have[k] {
+            k += 1;
+        }
+        let n = k.min(out.len());
+        out[..n].copy_from_slice(&self.buf[..n]);
+        self.base = self.base.wrapping_add(n as u32);
+        self.buf.copy_within(n..N, 0);
+        for i in 0..N - n {
+            self.have[i] = self.have[i + n];
+        }
+        for i in N - n..N {
+            self.have[i] = false;
+        }
+        self.have_count -= n;
+        n
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -431,5 +770,179 @@ mod tests {
     fn proto_constant_is_tcp() {
         assert_eq!(super::PROTO_TCP, 6);
         assert_ne!(super::PROTO_TCP, PROTO_UDP);
+    }
+
+    // ---- M37-N1：重传面（seq 串行域 / RTO / 滑窗 / 重组） ----
+
+    #[test]
+    fn seq_serial_wrap() {
+        use super::{seq_le, seq_lt};
+        assert!(seq_lt(9, 10));
+        assert!(!seq_lt(10, 9));
+        assert!(!seq_lt(10, 10), "恒等域不属小于");
+        assert!(seq_lt(u32::MAX, 0), "回绕：MAX 在 0 之前");
+        assert!(!seq_lt(0, u32::MAX));
+        assert!(seq_le(10, 10), "恒等域显式覆盖");
+        assert!(seq_le(u32::MAX - 1, 3));
+    }
+
+    /// RTO 三拍全谱：首臂 200 ms → 未到期 Idle → 到期 Due（retries 1，
+    /// 再臂 +400 ms = 2× 初值）→ 第二到期窗边界双向验证 → ACK 清账复位
+    /// → 空闲 poll 恒 Idle。
+    #[test]
+    fn rto_arm_poll_backoff_and_ack() {
+        use super::{RtoDecision, RtoTimer, RTO_INIT_NS};
+        let t0 = 1_000_000;
+        let mut r = RtoTimer::new();
+        assert!(!r.is_armed());
+        assert_eq!(r.poll(t0), RtoDecision::Idle, "未武装 Idle");
+        r.arm(t0, 4242);
+        assert!(r.is_armed() && r.armed_seq() == 4242 && r.retries() == 0);
+        r.arm(t0 + 1, 9999); // 幂等：已武装不重置
+        assert_eq!(r.armed_seq(), 4242, "最早未确认段主导");
+        let d1 = t0 + RTO_INIT_NS;
+        assert_eq!(r.poll(d1 - 1), RtoDecision::Idle, "差一拍不早醒");
+        assert_eq!(r.poll(d1), RtoDecision::Due);
+        assert_eq!(r.retries(), 1);
+        // 再臂 = 2× 初值倍增（d1 + 2 × RTO）
+        let d2 = d1 + 2 * RTO_INIT_NS;
+        assert_eq!(r.poll(d2 - 1), RtoDecision::Idle);
+        assert_eq!(r.poll(d2), RtoDecision::Due);
+        assert_eq!(r.retries(), 2);
+        // 陈旧 ACK 不清账；越过武装段首序号才清
+        assert!(!r.on_ack(4242), "重复 ACK 零动作");
+        assert!(r.on_ack(4243));
+        assert!(!r.is_armed() && r.retries() == 0, "清账复位");
+        assert_eq!(
+            r.poll(d2 + 10 * RTO_INIT_NS),
+            RtoDecision::Idle,
+            "空闲恒 Idle"
+        );
+    }
+
+    /// 耗尽谱：连续 5 拍 Due（每次退避倍增）→ 第 6 拍 Exhausted +
+    /// 解除武装（fail-visible 拆除判定交消费方）。
+    #[test]
+    fn rto_exhaustion_visible() {
+        use super::{RtoDecision, RtoTimer, RETX_MAX, RTO_INIT_NS};
+        let mut r = RtoTimer::new();
+        r.arm(0, 100);
+        let mut now = RTO_INIT_NS;
+        for i in 1..=RETX_MAX {
+            assert_eq!(r.poll(now), RtoDecision::Due, "第 {i} 拍重传");
+            // 倍增窗：min(retries,4) 指数
+            now += RTO_INIT_NS << i.min(4);
+        }
+        assert_eq!(r.retries(), RETX_MAX);
+        assert_eq!(r.poll(now), RtoDecision::Exhausted, "耗尽显形");
+        assert!(!r.is_armed(), "解除武装");
+        assert_eq!(r.poll(now), RtoDecision::Idle);
+    }
+
+    /// 滑窗四目：usable 发送记账 / ACK 开左闭右推进 + 窗更新 / 陈旧与
+    /// 越域 ACK 零动作 / 零窗耗尽 / 回绕域 right 沿。
+    #[test]
+    fn sendwindow_accounting() {
+        use super::SendWindow;
+        let mut w = SendWindow::new(1000, 4);
+        assert_eq!(w.usable(), 4);
+        w.sent(3);
+        assert_eq!(w.nxt(), 1003);
+        assert_eq!(w.usable(), 1);
+        // 恰填满 → 零窗
+        w.sent(1);
+        assert_eq!(w.usable(), 0, "窗耗尽");
+        // 陈旧/重复 ACK 零动作；恰越 nxt 为越域（ack == nxt 是全量确认合法域）
+        assert!(!w.on_ack(1000, 8), "重复 ACK");
+        assert!(!w.on_ack(1005, 8), "越域 ACK（未来域）");
+        assert_eq!(w.una(), 1000, "una 不动");
+        // 合法 ACK 推进 + 窗更新（nxt=1004 在飞——usable = 右沿 − nxt）
+        assert!(w.on_ack(1003, 8));
+        assert_eq!(w.una(), 1003);
+        assert_eq!(w.window(), 8);
+        assert_eq!(w.usable(), 7, "右沿 = 1003 + 8 = 1011，nxt = 1004 在飞");
+        // 回绕域：una 近 MAX，右沿跨 0（MAX−1 + 2 = MAX + 1 ≡ 0 回绕）
+        let mut w2 = SendWindow::new(u32::MAX - 1, 4);
+        assert_eq!(w2.usable(), 4);
+        w2.sent(2);
+        assert_eq!(w2.nxt(), 0, "nxt 回绕（MAX−1+2 ≡ 0）");
+        assert_eq!(w2.usable(), 2, "右沿 = MAX−1+4 ≡ 2（回绕）");
+        assert!(w2.on_ack(0, 4), "ack = nxt = 0 全量确认（回绕域）");
+        assert_eq!(w2.una(), 0);
+    }
+
+    /// 重组主谱：乱序先到 Queued（洞滞留）→ 补洞 InOrder → drain 拼接
+    /// 交付 + 基线推进 + 计数账对账。
+    #[test]
+    fn reasm_reorder_and_drain() {
+        use super::{ReasmBuf, ReasmOutcome};
+        let mut q: ReasmBuf<16> = ReasmBuf::new(100);
+        assert_eq!(q.rcv_nxt(), 100);
+        // (b) 未来段先到：缓存 4 B
+        assert_eq!(q.insert(104, b"efgh"), ReasmOutcome::Queued);
+        assert_eq!(q.pending(), 4);
+        let mut out = [0u8; 16];
+        assert_eq!(q.drain(&mut out), 0, "基线有洞不交付");
+        // (a) 基线段后到：前缀连通
+        assert_eq!(q.insert(100, b"abcd"), ReasmOutcome::InOrder);
+        assert_eq!(q.pending(), 8);
+        assert_eq!(q.drain(&mut out), 8);
+        assert_eq!(&out[..8], b"abcdefgh", "乱序拼接字节级");
+        assert_eq!(q.rcv_nxt(), 108);
+        assert_eq!(q.pending(), 0);
+        // (c) 连续第二段直接 InOrder + 交付
+        assert_eq!(q.insert(108, b"ij"), ReasmOutcome::InOrder);
+        assert_eq!(q.drain(&mut out), 2);
+        assert_eq!(&out[..2], b"ij");
+    }
+
+    /// 重组负例四态：旧段 / 跨基线重叠整段拒 / 越窗 / 重复域幂等
+    /// （先到者胜——重复注入零扰动）。
+    #[test]
+    fn reasm_negative_gates() {
+        use super::{ReasmBuf, ReasmOutcome};
+        let mut q: ReasmBuf<8> = ReasmBuf::new(100);
+        // 旧段（段尾恰基线——整段已确认域）
+        assert_eq!(q.insert(96, b"old!"), ReasmOutcome::Old);
+        // 跨基线重叠（v0 整段拒——偏差登记）
+        assert_eq!(q.insert(99, b"xyzw"), ReasmOutcome::Old);
+        // 越窗（段首出窗 + 段尾越界两形态）
+        assert_eq!(q.insert(108, b"a"), ReasmOutcome::Overflow, "段首出窗");
+        assert_eq!(q.insert(106, b"12345"), ReasmOutcome::Overflow, "段尾越界");
+        // 重复域幂等：先到者胜
+        assert_eq!(q.insert(100, b"AA"), ReasmOutcome::InOrder);
+        assert_eq!(
+            q.insert(100, b"BB"),
+            ReasmOutcome::InOrder,
+            "基线重复仍 InOrder"
+        );
+        let mut out = [0u8; 8];
+        assert_eq!(q.drain(&mut out), 2);
+        assert_eq!(&out[..2], b"AA", "幂等：首写胜出");
+        // 空载荷（纯旗段）序号域对账
+        assert_eq!(q.insert(102, b""), ReasmOutcome::InOrder);
+        assert_eq!(q.insert(101, b""), ReasmOutcome::Old);
+        assert_eq!(q.insert(150, b""), ReasmOutcome::Queued);
+        assert_eq!(q.pending(), 0, "空载荷不落窗");
+    }
+
+    /// 重组 out 容量部分交付：连续前缀超 out 容量 → 分次交付
+    /// （余项左移滞留，基线只按交付数推进）。
+    #[test]
+    fn reasm_partial_drain() {
+        use super::{ReasmBuf, ReasmOutcome};
+        let mut q: ReasmBuf<8> = ReasmBuf::new(0);
+        assert_eq!(q.insert(0, b"abcdef"), ReasmOutcome::InOrder);
+        let mut out = [0u8; 2];
+        assert_eq!(q.drain(&mut out), 2);
+        assert_eq!(&out, b"ab");
+        assert_eq!(q.rcv_nxt(), 2, "基线只按交付数推进");
+        assert_eq!(q.pending(), 4, "余项滞留");
+        assert_eq!(q.drain(&mut out), 2);
+        assert_eq!(&out, b"cd");
+        assert_eq!(q.drain(&mut out), 2);
+        assert_eq!(&out, b"ef");
+        assert_eq!(q.drain(&mut out), 0, "排空");
+        assert_eq!(q.rcv_nxt(), 6);
     }
 }
