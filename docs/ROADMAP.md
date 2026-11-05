@@ -91,9 +91,9 @@
 
 | **M36** | 四候选方向合并轮：crystal xxh3-128 uplift（CR-P10 全量口径重跑——M26 既登记偏差收口：算法 ID 2 + 特性位并存 + 超级块/节点双算法面 + 规范黄金向量锚定）+ TCP 电气接线批次（kernel::vnet TCP 面——挂账②转正）+ alpha 混合与多 Surface 表（prism 合成扩容——挂账④转正）+ busybox 批次三（cat/ls applet + getuid 族 + 阻塞式管道 I/O；ash 启动面超窗拆笔如实挂账） | P2/P3 | CR-P10 全量口径在库重建挂接；TCP 电气活体；alpha 合成面活体；applet 覆盖度扩记；t86+ 活体 | crystal/pulse/kernel/prism/conduit/docs | **✅ 关账**（八笔+收尾：计划 3efeced / C1a 8924209 / C1b 5785410 / N1 a0c8217 / A1a dbe1a91 / BB3a 1cb8532〔修史保序保时〕/ L1 8c3a198〔挂账⑦ 根治〕/ BB3b ad4b478〔探针极性根治 + t87 四相位电化学〕/ 收尾本提交；**M36 闭账注**——xxh3-128 uplift 全量口径落库 + TCP 电气接线 t86 + alpha 混合纯函数面 + busybox 批次三阻塞面 t87 四相位电化学 + 挂账⑦ 根治 + 消费驱动收录四目 + SYS_STAT 车道根治；**MATURITY 6.4/10 如实不动**（维度输入未变——质量修复归入功能完备既有分行）；**近线 M37**：A1b kernel fb alpha 电气挂接（首项候补）+ busybox ls 深链/ash 启动面 + TCP 重传面 + 多用户纵深 + DPMS 电气面——随裁决开工） |
 
-| **M37** | 用户点名双主战场轮：**A1b kernel fb alpha 电气挂接**（prism SurfaceTable→Stack 合成电气化入 kernel::fb 合成路径 + 活体扩相位——M36-A1a 拆笔转正）+ **TCP 重传面**（重传定时器 / 滑动窗口 / 分片重组——M36-N1 电气接线纵深）；随行环境复原揭雷批 M37-⓪（跨核 FSBASE 上下文接管〔M33-T1 挂账收口〕+ t69 收讫对账） | P2/P3 | A1b 合成电气活体（SurfaceTable 消费在环）；TCP 重传活体（定时器/窗口/重组三面）；t88+ 活体 | prism/kernel/pulse/conduit/docs | 🚧 进行中（计划笔本提交） |
+| **M37** | 用户点名双主战场轮：**A1b kernel fb alpha 电气挂接**（prism SurfaceTable→Stack 合成电气化入 kernel::fb 合成路径 + 活体扩相位——M36-A1a 拆笔转正）+ **TCP 重传面**（重传定时器 / 滑动窗口 / 分片重组——M36-N1 电气接线纵深）；随行环境复原揭雷批 M37-⓪（跨核 FSBASE 上下文接管〔M33-T1 挂账收口〕+ t69 收讫对账） | P2/P3 | A1b 合成电气活体（SurfaceTable 消费在环）；TCP 重传活体（定时器/窗口/重组三面）；t88+ 活体 | prism/kernel/pulse/conduit/docs | **✅ 关账**（五笔+收尾：计划 5435747 / ⓪ ba71392〔环境复原揭雷批——FSBASE 接管 + t69 收讫 + 沙箱复原〕/ A1b 3b47811〔kernel fb alpha 电气挂接 + t88〕/ N1 9c6564e〔TCP 重传面——TSC 纳秒 RTO 臂 + 滑窗 + 重组 + 外部 RX 收口 + t89〕/ 收尾本提交；**M37 闭账注**——双主战场双面落库：fb alpha 合成电气化〔SurfaceTable 消费在环——blend 双锚 VRAM 读回〕 + TCP 重传活体三面〔定时器/窗口/重组〕+ M27-T1 外部 RX 对接面偏差收口 + M33-T1 跨核 FSBASE 挂账收口；**MATURITY 6.4/10 如实不动**（维度输入未变——重传面 v0 简化域如实登记，功能完备既有分行微增不升档）；**近线 M38**：busybox ls 深链批次 + ash 启动面 + 多用户纵深 + DPMS 电气面 + slots_pair 竞态专项——随裁决开工） |
 
-远线：M37 点名后余项滚动（busybox ls 深链批次〔statx/readlink/排序分配域〕+ ash 启动面〔M36 超窗挂账转正〕+ 多用户纵深〔安全面 6→8 主批次，独立里程碑量级〕+ DPMS 电气面〔真机窗口裁决不变〕+ harbor C ABI 链接层 + 细则 PDF 逐条对账 + slots_pair 空槽切换竞态 M22-③ 同族专项〔M36-收尾登记③〕——随裁决开工）。
+远线：M38+ 余项滚动（busybox ls 深链批次〔statx/readlink/排序分配域〕+ ash 启动面〔M36 超窗挂账转正〕+ 多用户纵深〔安全面 6→8 主批次，独立里程碑量级〕+ DPMS 电气面〔真机窗口裁决不变〕+ harbor C ABI 链接层 + 细则 PDF 逐条对账 + slots_pair 空槽切换竞态 M22-③ 同族专项〔M36-收尾登记③〕+ TCP 服务化批次〔连接表/拥塞控制/零窗探测——M37-N1 重传面纵深续作〕——随裁决开工）。
 
 ---
 
@@ -345,7 +345,7 @@ M35 退出口径：harbor ≥150 符号机检闸双端在环（P2 DoD 收口）+
 
 ---
 
-### M37 任务级分解（🚧 进行中，用户点名双主战场轮）
+### M37 任务级分解（✅ 关账——五笔+收尾全落，用户点名双主战场轮）
 
 > 主题：用户点名双主战场（裁决实录：候选菜单五项 → **A1b kernel fb alpha 电气挂接** + **③ TCP 重传面** 两项点名）。主战场 prism/kernel::fb + pulse/kernel::vnet。**口径裁决注**（五项）：① A1b 范围 = prism::SurfaceTable → Stack 合成链入 kernel::fb 电气化（SYS_FB 面新增注册/合成双操作——SurfaceTable 消费在环，M28 SYS_FB_STAGE 散帧先例同构）+ 1080p 活体扩相位 + t88 自检网双端同步；② TCP 重传面范围 = pulse::tcp 协议机纵深（重传定时器 TSC 纳秒面〔PU-P03 打点先例〕+ 滑动窗口面 + 分片重组面）+ kernel::vnet 电气对接（M36-N1 tcp_dispatch/外部 TX 电气先例复用——外部 RX 对接面随行收口）+ t89 自检网双端同步；③ M37-⓪ 环境复原揭雷批先于计划落位（沙箱重置批：工具链/QEMU/busybox 介质复原 + 跨核 FSBASE 上下文接管〔M33-T1 v0 口径挂账收口——本宿主 3/3 确定性 #PF 揭雷〕+ t69 收讫对账〔MTTCG TX BH 回执竞速 4/4 确定性败〕——详见 ba71392 提交正文十轮冒烟实录）；④ 残余异常族如实随行：t87 相位 (a) 挂死 ×1 + 相位 (d) #UD@0x13 ×2（10 轮冒烟 3/10——slots_pair 空槽切换竞态 M22-③ 同族〔M36-收尾登记③〕既录家族，专项量级不纳入本轮 scope，重试口径沿用）；⑤ 挂账随行复核制不变；自检网 t88/t89 随活体落点双端同步（SELFTEST_EXPECTED/SELFTEST_TOTAL）。
 
@@ -355,7 +355,7 @@ M35 退出口径：harbor ≥150 符号机检闸双端在环（P2 DoD 收口）+
 | **M37-⓪**（笔②，环境复原揭雷批，先于计划落位） | 跨核 FSBASE 上下文接管（task::fs_base 槽记账 + PERCPU_FS_BASE 每核缓存 + set_current_fs_base SCHED 锁窗三面同拍 + prepare_dispatch 恢复面缓存对账 + ARCH_GET_FS 槽值权威化 + fork 继承）+ t69 收讫对账（ARP_SETTLE_BUDGET 命中后回执排水）+ 沙箱复原（工具链 1.99.0/QEMU/busybox 介质） | crates/kernel + scripts | ✅ ba71392（CI-OK 11 阶段全绿 87/87；十轮冒烟实录在案——修复前 t87 3/3 确定性 #PF + t69 4/4 确定性败，修复后 87/87 ×5） |
 | **M37-A1b**（笔③） | kernel fb alpha 电气挂接：SurfaceTable→Stack 合成电气化入 kernel::fb（注册/合成双操作 SYS_ABI 扩面——SYS_FB_SURFACE(40) 三操作 + SURF_VA_BASE 槽窗 + ABI v0.18）+ 1080p 活体扩相位 + t88 自检 + SELFTEST 双端同步 | crates/prism + crates/kernel | ✅ 本提交（blend 电气双锚——prism golden 同数 (100,50,152) + stage 直承载 (145,95,69)；空表回退 v0 逐位同构；t77 图案 XRGB 规范化适配；注册域五闸 + 15 槽满容/槽复用 + 生命周期 + 哨兵零触碰） |
 | **M37-N1**（笔④） | TCP 重传面：重传定时器（TSC 纳秒）+ 滑动窗口 + 分片重组 + kernel::vnet 电气对接 + t89 自检 + SELFTEST 双端同步 | crates/pulse + crates/kernel | ✅ 本提交（pulse::tcp 协议机纵深——RtoTimer TSC 纳秒重传臂〔RTO 200 ms 初值 + 倍增退避封顶 3.2 s + RETX_MAX 5 拍耗尽 fail-visible + arm 幂等/ACK 清账〕+ SendWindow 发送滑窗〔串行域 usable/on_ack 开左闭右 + 零窗饱和 + 回绕域〕+ ReasmBuf 字节粒度 presence 重组窗〔InOrder/Queued/Old/Overflow 四态 + drain 前缀拼接左移〕宿主 20→27 例〔+7〕；kernel::vnet 电气对接——合成拍 tcp_retx_arm_at/poll_at 模板电重发〔TCP_RETX/RETX_MISS 计数〕+ tcp_reasm_seed 播种接管分派链〔InOrder 前缀拼接交付，未播种直通槽 = t86 逐位同构回归锚〕+ tcp_external_inject 外部 RX 对接收口〔M27-T1 既登记偏差随本笔收口〕+ tcp_external_syn SYN 真电重传臂；t89 活体六相位〔RTO 全谱/滑窗四目/重传电气双击发/乱序拼接 22 B 字节级/外部 RX 握手对账/统计对账收场清账〕+ tcp_retx_reset 跨自检隔离面〔揭雷随行：t86-g 真电臂跨自检存活吞合成拍重臂——reset_evidence 同款纪律〕+ SELFTEST 88→89 双端同步 + mononow_ns 单调面 pub 化同源消费） |
-| **M37-收尾**（笔⑤） | ROADMAP/METRICS/MATURITY/README 对账 + 挂账复核注 + 近线 M38 + worklog Task ID 对账 | 对账提交 | ⬜ |
+| **M37-收尾**（笔⑤） | ROADMAP/METRICS/MATURITY/README 对账 + 挂账复核注 + 近线 M38 + worklog Task ID 对账 | 对账提交 | ✅ 本提交（**M37 五笔全关账**——计划 5435747 / ⓪ ba71392 / A1b 3b47811 / N1 9c6564e / 收尾本提交。**挂账七项随行复核**：① t73 设备级残余（窗口族随机域，193 冷却协议既录——本宿主 M37-N1 期 7 拍 S8 窗族高发实录在案，定性不变）② slots_pair 空槽切换竞态（M22-③ 同族专项量级——t87 入口 #UD vec=6 同带实录，专项续挂）③ busybox ls 深链/ash 启动面（远线滚动不变）④ DPMS 电气面（真机窗口裁决不变）⑤ 细则 PDF 重取逐条对账（介质失联不变——本宿主上传 19 份 PDF 已复原在案，对账批随裁决）⑥ harbor C ABI 指针/链接层（不变）⑦ 重传面 v0 简化域（RTO 200 ms/无 Karn/无窗口缩放/零窗探测/多连接扩容——M37-N1 如实登记，服务化批次收口）。**MATURITY 6.4/10 如实不动**（docs/MATURITY.md M37 复评注）。worklog 对账（ROADMAP 台账 Task ID 22 = 本地 worklog 序 7）。近线 M38 候选：busybox ls 深链批次 + ash 启动面〔M36 超窗挂账转正〕+ 多用户纵深〔安全面 6→8 主批次〕+ DPMS 电气面 + slots_pair 竞态 M22-③ 同族专项 + TCP 服务化批次〔连接表/拥塞控制/零窗探测——随裁决〕——随裁决开工） |
 
 ---
 
