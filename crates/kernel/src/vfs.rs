@@ -573,6 +573,18 @@ fn open_impl(path_bytes: &[u8], mode: u64) -> u64 {
             }
         }
     };
+    // M39-MU 权限域门禁（登记制——未登记路径零扰动；O_TRUNC 前置——
+    // 拒绝域不得截断）：登记路径对当前任务凭据判定，拒绝 EACCES。
+    if let Some((owner, pmode)) = perm_lookup(path.as_str()) {
+        let want = if mode & 0b10 != 0 {
+            PERM_WANT_READ | PERM_WANT_WRITE
+        } else {
+            PERM_WANT_READ
+        };
+        if !perm_check(owner, pmode, want) {
+            return EACCES;
+        }
+    }
     // M16-① O_TRUNC：可写打开成功后截零（只读不截；目录 → EISDIR）。
     // 截断在对象安装前执行，失败路径不铸能力/不占注册表槽。
     if o_trunc && mode & 0b10 != 0 {
@@ -886,7 +898,111 @@ const O_CLOEXEC: u64 = 0o200_0000;
 const O_NONBLOCK: u64 = 0o4000;
 /// 管道对象 id 铸造计数（单调，段位 [`PIPE_OBJECT_BASE`]）。
 static NEXT_PIPE_OBJECT: AtomicU64 = AtomicU64::new(PIPE_OBJECT_BASE);
-/// 内核管道注册表：槽位按对象 id 反查（FILES/CHANNELS 同构）。
+
+// ---- M39-MU 权限域覆盖表（v0 领域门禁——单一事实源） ----
+
+/// 权限域登记条目：路径（规范化字符串）+ 属主 uid + mode 九位域。
+/// 盘上属主域随 crystal 节点格式批次续作（M39-计划 口径注③如实登记）
+/// ——本表为 v0 kernel 侧单一事实源，登记面 = 内核原生 API（t93 领域
+/// 换装消费 + 未来 chown/chmod 车道承接位）。
+struct PermEntry {
+    /// 规范化路径（PERMS 表键）。
+    path: alloc::string::String,
+    /// 属主用户 ID。
+    owner: u32,
+    /// 权限九位域（owner/group/other × rwx；v0 组属主未登记——group
+    /// 位域按 other 位域处理，偏差如实登记随行）。
+    mode: u16,
+}
+
+/// 权限域覆盖表容量（定容 fail-visible——满容 EAGAIN 域拒绝登记）。
+const PERM_CAP: usize = 16;
+/// 权限域覆盖表（登记制——未登记路径不受门禁，v0 领域口径）。
+static PERMS: SpinLock<Vec<Option<PermEntry>>> = SpinLock::new(alloc::vec::Vec::new());
+
+/// 权限域登记（M39-MU）：路径 + 属主 + mode 九位域；重复路径覆盖写
+/// （登记面幂等——chmod/chown 车道同款语义），满容 fail-visible。
+pub fn perm_install(path: &str, owner: u32, mode: u16) -> Result<(), u64> {
+    let normalized = PathBuf::normalize(path).map_err(|e| e.errno())?;
+    let mut perms = PERMS.lock();
+    for slot in perms.iter_mut().flatten() {
+        if slot.path == normalized.as_str() {
+            slot.owner = owner;
+            slot.mode = mode & 0o777;
+            return Ok(());
+        }
+    }
+    if perms.len() < PERM_CAP {
+        perms.push(Some(PermEntry {
+            path: alloc::string::String::from(normalized.as_str()),
+            owner,
+            mode: mode & 0o777,
+        }));
+        return Ok(());
+    }
+    Err(ENOMEM)
+}
+
+/// 权限域摘除（M39-MU）：路径命中摘槽；缺席幂等成功。
+pub fn perm_remove(path: &str) -> Result<(), u64> {
+    let normalized = PathBuf::normalize(path).map_err(|e| e.errno())?;
+    let mut perms = PERMS.lock();
+    for slot in perms.iter_mut() {
+        if slot.as_ref().is_some_and(|e| e.path == normalized.as_str()) {
+            *slot = None;
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+/// 权限域查询（门禁消费面）：返回 (owner, mode)。
+fn perm_lookup(normalized: &str) -> Option<(u32, u16)> {
+    let perms = PERMS.lock();
+    perms
+        .iter()
+        .flatten()
+        .find_map(|e| (e.path == normalized).then_some((e.owner, e.mode)))
+}
+
+/// 权限域门禁字节面（faccessat 消费）：登记路径 → 判定（Some(err)——
+/// 0 = 放行 / EACCES = 拒绝）；未登记 → None（调用方维持既有口径）。
+pub fn access_gate_bytes(path_bytes: &[u8], want: u16) -> Option<u64> {
+    let path = normalize_user_path(path_bytes).ok()?;
+    let (owner, pmode) = perm_lookup(path.as_str())?;
+    Some(if perm_check(owner, pmode, want) {
+        0
+    } else {
+        EACCES
+    })
+}
+
+/// 权限判定（M39-MU 门禁核心）：root(uid 0) 旁路；owner 位域/other
+/// 位域（组属主 v0 未登记——group 位按 other 处理）对 want 位域
+/// （POSIX rwx 位值：4/2/1）全量满足方放行。
+fn perm_check(owner: u32, mode: u16, want: u16) -> bool {
+    let caller = task::current_task_id();
+    let Some(creds) = task::task_creds(caller) else {
+        return false; // 防御域：凭据缺失一律拒绝（fail-visible）
+    };
+    if creds.uid == 0 {
+        return true; // root 旁路
+    }
+    let bits: u16 = if creds.uid == owner {
+        (mode >> 6) & 0o7
+    } else {
+        mode & 0o7
+    };
+    want & bits == want
+}
+
+/// 门禁位域映射（POSIX access 位值）：读 4 / 写 2。
+const PERM_WANT_READ: u16 = 4;
+const PERM_WANT_WRITE: u16 = 2;
+/// 权限拒绝（M39-MU 门禁域）。
+const EACCES: u64 = 13;
+
+/// 管道注册表：槽位按对象 id 反查（FILES/CHANNELS 同构）。
 static PIPES: SpinLock<Vec<Option<PipeEntry>>> = SpinLock::new(alloc::vec::Vec::new());
 /// 管道面容量（与 MAX_FILES 同档）。
 const MAX_PIPES: usize = 32;
@@ -1402,12 +1518,23 @@ pub fn sys_remove(path_ptr: u64, len: u64) -> u64 {
 /// 超出 ENOSYS 的合法 errno，截断即语义损毁）；取证面归 [`sys_remove`]
 /// 外壳。
 pub fn sys_remove_bytes(path_bytes: &[u8]) -> u64 {
-    match normalize_user_path(path_bytes).and_then(|p| resolve_parent(&p)) {
-        Err(e) => e,
+    let path = match normalize_user_path(path_bytes) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    // M39-MU 权限域门禁：登记路径摘除需写位（owner/root 域；POSIX
+    // 父目录位域语义 v0 简化为路径本身，偏差如实登记随行）。
+    if let Some((owner, pmode)) = perm_lookup(path.as_str()) {
+        if !perm_check(owner, pmode, PERM_WANT_WRITE) {
+            return EACCES;
+        }
+    }
+    match resolve_parent(&path) {
         Ok((fs, dir, leaf)) => match fs.unlink(dir, &leaf) {
             Ok(()) => 0,
             Err(e) => e.errno(),
         },
+        Err(e) => e,
     }
 }
 

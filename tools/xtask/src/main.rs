@@ -250,8 +250,8 @@ const KERNEL_ELF: &str =
 const KERNEL_BIN: &str =
     "/home/z/my-project/lumina-build/target/x86_64-unknown-none/release/lumina-kernel.bin";
 
-/// 自检标记总数（与内核 SELFTEST_TOTAL 同步；M12 完成态 = 43，M13-② 起 46，M15 起 52，M16 起 55，M17 起 58，M18 起 62，M21-③ 起 63，M23 起 65，M23-B 起 67，M23-C1 起 68，M23-C2 起 69，M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M25-T1 起 75，M26-T1 起 76，M28-T1 起 77，M27-N2 起 78，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92）。
-const SELFTEST_EXPECTED: &str = "92/92";
+/// 自检标记总数（与内核 SELFTEST_TOTAL 同步；M12 完成态 = 43，M13-② 起 46，M15 起 52，M16 起 55，M17 起 58，M18 起 62，M21-③ 起 63，M23 起 65，M23-B 起 67，M23-C1 起 68，M23-C2 起 69，M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M25-T1 起 75，M26-T1 起 76，M28-T1 起 77，M27-N2 起 78，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93）。
+const SELFTEST_EXPECTED: &str = "93/93";
 
 /// TLV 请求帧：tag 0x0007，value = b"lumina-m5"。
 const TLV_REQ: &[u8] = &[
@@ -509,7 +509,7 @@ fn smoke_inner() -> bool {
     // 3) 串口日志断言：启动标记 + 十五项自检 + 用户态标记 + TLV 双向
     //    （M31-W1 起：Weave 自举装载证据行在环——机器可验）
     let selftest_marker = format!("LUMINA-SELFTEST-PASS {SELFTEST_EXPECTED}");
-    let required: [&[u8]; 24] = [
+    let required: [&[u8]; 27] = [
         b"LUMINA-BOOT-OK",
         selftest_marker.as_bytes(),
         b"LUMINA-TLV-OK",
@@ -553,6 +553,12 @@ fn smoke_inner() -> bool {
         b"LUMINA-T92-OK",
         b"LUMINA-T92-AAA",
         b"LUMINA-T92-ZZZ",
+        // M39-MU：多用户纵深活体（凭据四元真面 + setuid 根域收口 + 权限
+        // 门禁覆盖表——busybox id 领域换装消费 uid=1000 串口取证；t93
+        // 相位汇总标记）
+        b"LUMINA-T93-MU",
+        b"LUMINA-T93-OK",
+        b"uid=1000",
         // M34-D1：驱动服务框架结构面 boot 注册证据（五驱动内核态占位）
         b"LUMINA-SVC-INIT",
     ];
@@ -720,7 +726,7 @@ fn longrun_tlv_check(all: &[u8]) -> (bool, bool) {
 fn longrun_boot_fails(serial: &[u8], tlv_ok: bool, resp_checked: bool) -> Vec<String> {
     let mut fails = Vec::new();
     let selftest_marker = format!("LUMINA-SELFTEST-PASS {SELFTEST_EXPECTED}");
-    let markers: [&[u8]; 24] = [
+    let markers: [&[u8]; 27] = [
         b"LUMINA-BOOT-OK",
         selftest_marker.as_bytes(),
         b"LUMINA-TLV-OK",
@@ -744,6 +750,9 @@ fn longrun_boot_fails(serial: &[u8], tlv_ok: bool, resp_checked: bool) -> Vec<St
         b"LUMINA-T92-OK",
         b"LUMINA-T92-AAA",
         b"LUMINA-T92-ZZZ",
+        b"LUMINA-T93-MU",
+        b"LUMINA-T93-OK",
+        b"uid=1000",
         b"LUMINA-SVC-INIT",
     ];
     for marker in markers {

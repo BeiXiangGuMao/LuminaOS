@@ -190,7 +190,12 @@ pub fn lin_dispatch(frame: &mut SyscallFrame) -> u64 {
         }
         LinAction::Exit => crate::task::exit_current(frame.rdi),
         LinAction::StubOk => 0,
-        LinAction::StubUid => 0, // M34-B2：uid/gid 族合成（v0 单用户 root）
+        LinAction::GetUid => lin_get_cred(0),
+        LinAction::GetGid => lin_get_cred(1),
+        LinAction::SetUid => lin_set_cred(frame.rdi, true),
+        LinAction::SetGid => lin_set_cred(frame.rdi, false),
+        LinAction::GetEUId => lin_get_cred(2),
+        LinAction::GetEGid => lin_get_cred(3),
         LinAction::StubTid => crate::procs::current_pid(),
         LinAction::ArchPrctl => lin_arch_prctl(frame.rdi, frame.rsi),
         LinAction::ChDir => lin_chdir(frame.rdi),
@@ -928,6 +933,67 @@ fn lin_readlink(path: u64) -> u64 {
         Err(e) => err(e),     // ENOENT / EFAULT 解析域直映
     }
 }
+/// 身份四元读取核（M39-MU 真面）：0=uid / 1=gid / 2=euid / 3=egid。
+/// 任务凭据缺失 = 防御域 EPERM 显形。
+fn lin_get_cred(which: usize) -> u64 {
+    let caller = crate::task::current_task_id();
+    match crate::task::task_creds(caller) {
+        Some(c) => match which {
+            0 => c.uid as u64,
+            1 => c.gid as u64,
+            2 => c.euid as u64,
+            _ => c.egid as u64,
+        },
+        None => err(EPERM),
+    }
+}
+
+/// setuid/setgid 语义核（M39-MU 根域收口）：root → 全量改写（uid=euid
+/// 同步写）；非 root → 仅自改写（uid==入参，Linux 同款 noop-合法）；
+/// 其余 EPERM。v0 扁平域（无 saved-set uid）偏差随行登记。真面消费 =
+/// busybox id 族 + ash job-control 检查域。
+/// t93 取证探针（M39-MU）：语义核直调壳——返回明文 errno（0 = 成功 /
+/// 1 = EPERM），内核自检直调消费（err 编码解域）。
+pub fn setuid_probe(uid: u64) -> u64 {
+    if lin_set_cred(uid, true) == 0 {
+        0
+    } else {
+        1
+    }
+}
+
+/// t93 取证探针（M39-MU）：setgid 同壳。
+pub fn setgid_probe(gid: u64) -> u64 {
+    if lin_set_cred(gid, false) == 0 {
+        0
+    } else {
+        1
+    }
+}
+
+fn lin_set_cred(id: u64, is_uid: bool) -> u64 {
+    let new = (id & 0xFFFF_FFFF) as u32;
+    let caller = crate::task::current_task_id();
+    match crate::task::with_task_creds_mut(caller, |c| {
+        let self_now = if is_uid { c.uid } else { c.gid };
+        if (is_uid && c.uid == 0) || (!is_uid && c.gid == 0) || new == self_now {
+            if is_uid {
+                c.uid = new;
+                c.euid = new;
+            } else {
+                c.gid = new;
+                c.egid = new;
+            }
+            0
+        } else {
+            EPERM
+        }
+    }) {
+        Some(0) => 0,
+        Some(e) => err(e),
+        None => err(EPERM),
+    }
+}
 
 /// unlinkat(dirfd, path, flags)（M34-B1 收录）：AT_FDCWD + cwd join →
 /// `vfs::sys_remove_bytes`（RamFs 叶子操作——文件/空目录同域可摘，
@@ -971,6 +1037,20 @@ fn lin_faccessat(dirfd: u64, path: u64, mode: u64) -> u64 {
     };
     if mode == F_OK {
         return 0; // 存在性由 lin_path_stat 打开面承载（Linux F_OK 语义）
+    }
+    // M39-MU 权限域覆盖表真判定（登记路径优先——owner/root 域；未登记
+    // 路径 None → 下方合成位域口径零扰动）。
+    let gate_want = (((mode & R_OK != 0) as u16) * 4)
+        | (((mode & W_OK != 0) as u16) * 2)
+        | ((mode & X_OK != 0) as u16);
+    let gate = lin_path_bytes(path)
+        .and_then(|r| r.ok())
+        .and_then(|b| crate::vfs::access_gate_bytes(&b, gate_want));
+    if let Some(g) = gate {
+        if g != 0 {
+            return err(g);
+        }
+        return 0; // 登记路径放行域直返（合成位域不覆判）
     }
     let bits = pmode & 0o777;
     if mode & R_OK != 0 && bits & 0o444 == 0 {

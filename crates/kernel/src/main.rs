@@ -82,8 +82,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92）。
-const SELFTEST_TOTAL: usize = 92;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93）。
+const SELFTEST_TOTAL: usize = 93;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -6916,6 +6916,152 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t92, "busybox-ls");
+
+    // t93) 多用户纵深活体（M39-MU）：独立函数执行体（帧形态守恒见
+    // t93_run 头注）——凭据四元真面 + setuid 根域收口 + 权限门禁覆盖
+    // 表 + busybox id 领域换装消费。LUMINA-T93-OK 汇总标记。
+    let t93 = t93_run(&mut log);
+    report(&mut log, t93, "multi-user");
+
+    /// t93 多用户纵深活体执行体（M39-MU）：独立函数承载——自检主函数
+    /// 栈帧零扰动（M39-ASH 帧形态教训随行——t87 邻域栈槽形态守恒；
+    /// 内联块撑帧 = t87 窗族确定性复发实录，独立函数形态翻绿在案）。
+    fn t93_run(log: &mut DualLog) -> bool {
+        let mut ok = true;
+        let (mut ok_a, mut ok_b, mut ok_c, mut ok_d, mut ok_e) = (true, true, true, true, true);
+        let me = task::current_task_id();
+        // (a) 凭据四元真面：kmain=root 口径读取
+        let cr = task::task_creds(me);
+        ok_a &= cr.is_some_and(|c| c.uid == 0 && c.gid == 0 && c.euid == 0 && c.egid == 0);
+        ok &= ok_a;
+        // (b) setuid 语义核三目（root 全量 / 非 root 拒他 / 非 root 自改）
+        //     ——lin 语义核直调（号域 105/106 真面；恢域走测试面写回）
+        ok_b &= linux::setuid_probe(1000) == 0; // root → 1000 全量
+        let c1000 = task::task_creds(me).is_some_and(|c| c.uid == 1000 && c.euid == 1000);
+        ok_b &= c1000;
+        ok_b &= linux::setuid_probe(42) == 1; // 非 root 拒他（EPERM=1）
+        ok_b &= linux::setgid_probe(1000) == 0; // 自改写合法（gid==1000 已是）
+        ok_b &= linux::setuid_probe(1000) == 0; // 自改写合法（uid==1000）
+        ok &= ok_b;
+        // (c) busybox id 领域换装消费（uid=1000 派生继承——身份真面
+        //     端到端：musl getuid/geteuid/getgid/getegid 真读取 → id
+        //     输出 uid=1000 gid=1000 串口取证）
+        task::with_task_creds_mut(me, |c| {
+            *c = task::Creds {
+                uid: 1000,
+                gid: 1000,
+                euid: 1000,
+                egid: 1000,
+            };
+        });
+        if let Some(blob) = vfs::read_image("/bin/busybox") {
+            if let Some(frames) = vmm::global_frames() {
+                let argv = ["/bin/busybox", "id"];
+                let t = ostd::time::tsc_now();
+                let mut random = [0u8; 16];
+                for (j, b) in random.iter_mut().enumerate() {
+                    *b = (t >> ((j % 8) * 8)) as u8 ^ (j as u8).rotate_left(3);
+                }
+                match user::build_user_space_elf(
+                    &blob,
+                    &argv,
+                    &["PATH=/bin"],
+                    random,
+                    "busybox",
+                    &mut || frames.alloc(),
+                ) {
+                    Ok(es) => {
+                        let mut slots = [0u64; 15];
+                        slots[0] = 0x202;
+                        slots[1] = es.entry;
+                        slots[7] = es.rsp;
+                        let id_pid = task::spawn_fork_child("busybox-id", es.root, me, slots, true);
+                        if id_pid != usize::MAX {
+                            let r = procs::sys_wait_pid(id_pid as u64);
+                            let code = r & 0xFFFF;
+                            let _ = writeln!(log, "t93: id reaped pid={id_pid} exit={code}");
+                            ok_c &= r >> 32 == 1 && code == 0 && !task::task_alive(id_pid);
+                            ok &= ok_c;
+                        } else {
+                            ok = false;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = writeln!(log, "t93: id build failed ({e:?})");
+                        ok = false;
+                    }
+                }
+            } else {
+                let _ = writeln!(log, "t93: frame service unreachable");
+                ok = false;
+            }
+        } else {
+            let _ = writeln!(log, "t93: /bin/busybox media MISS");
+            ok = false;
+        }
+        // (d) 权限门禁覆盖表：登记 /guard 路径 → 四目（root 旁路 RW /
+        //     owner RW / 他者 EACCES / 他者摘除 EACCES）+ faccessat 真判定
+        const GUARD: &[u8] = b"/t93guard";
+        ok &= vfs::perm_install("/t93guard", 1000, 0o600).is_ok();
+        let hg = vfs::sys_open_bytes(GUARD, bedrock::abi::O_CREAT | 0b10);
+        ok &= hg >> 32 == 1; // root 旁路建写
+        ok &= vfs::sys_close(hg & 0xFFFF_FFFF) == 0;
+        // uid 1000 owner RW（换装域）
+        task::with_task_creds_mut(me, |c| {
+            *c = task::Creds {
+                uid: 1000,
+                gid: 1000,
+                euid: 1000,
+                egid: 1000,
+            };
+        });
+        let ho = vfs::sys_open_bytes(GUARD, 0b10);
+        ok &= ho >> 32 == 1; // owner 写放行
+        ok &= vfs::sys_close(ho & 0xFFFF_FFFF) == 0;
+        // uid 1001 他者域（换装域）
+        task::with_task_creds_mut(me, |c| {
+            *c = task::Creds {
+                uid: 1001,
+                gid: 1001,
+                euid: 1001,
+                egid: 1001,
+            };
+        });
+        ok &= vfs::sys_open_bytes(GUARD, 0b01) == 13; // EACCES
+        ok &= vfs::sys_remove_bytes(GUARD) == 13; // 摘除域 EACCES
+                                                  // faccessat 真判定（登记路径优先——他者 W_OK → EACCES）
+                                                  // W_OK——门禁核直调（未登记域哨兵 u64::MAX——本相位已登记不达）
+        let facc_v = vfs::access_gate_bytes(GUARD, 2).unwrap_or(u64::MAX);
+        let d1 = facc_v == 13;
+        let d2 = vfs::sys_open_bytes(GUARD, 0b01) == 13;
+        let d3 = vfs::sys_remove_bytes(GUARD) == 13;
+        let d4 = ho >> 32 == 1;
+        let d5 = hg >> 32 == 1;
+        ok_d &= d1 && d2 && d3 && d4 && d5;
+        ok &= ok_d;
+        let _ = writeln!(
+            log,
+            "t93: d1={} d2={} d3={} d4={} d5={} facc_raw={facc_v}",
+            d1, d2, d3, d4, d5
+        );
+        // (e) root 回装域：root 旁路清扫（摘除 + 登记摘槽）+ 凭据还原
+        task::with_task_creds_mut(me, |c| *c = task::Creds::ROOT);
+        ok_e &= vfs::sys_remove_bytes(GUARD) == 0;
+        ok_e &= vfs::perm_remove("/t93guard").is_ok();
+        ok_e &= vfs::sys_open_bytes(GUARD, 0b01) == 2; // 已摘除 → ENOENT（未登记域不受门禁）
+        let cr2 = task::task_creds(me);
+        ok_e &= cr2.is_some_and(|c| c.uid == 0 && c.gid == 0);
+        ok &= ok_e;
+        let _ = writeln!(
+            log,
+            "LUMINA-T93-MU a={} b={} c={} d={} e={}",
+            ok_a, ok_b, ok_c, ok_d, ok_e
+        );
+        if ok {
+            let _ = writeln!(log, "LUMINA-T93-OK");
+        }
+        ok
+    }
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {

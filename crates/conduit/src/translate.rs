@@ -144,11 +144,24 @@ pub enum LinAction {
     /// 同形直通（wc/fopen 路径——M34-B2 t83 实证收录；musl 层本应走
     /// openat，busybox 部分路径直发旧号）。
     Open,
-    /// getuid(102)/getgid(104)/geteuid(105)/getegid(106) 合成桩：v0
-    /// 单用户 root 口径全量 0（busybox libbb 公共路径身份检查——M34-B2
-    /// t83 实证收录；多用户随纵深批次挂账）。四号共用一变体，
-    /// COVERED 计数口径 = 变体数 + ioctl 显形 1。
-    StubUid,
+    /// 身份 syscall 真面（M39-MU 收录——合成桩域转正）：getuid(102)/
+    /// getgid(104)/setuid(105)/setgid(106)/geteuid(107)/getegid(108)。
+    /// **号域勘误随行揭雷**：M34-B2 登记 105/106 为 geteuid/getegid——
+    /// x86_64 号域实为 setuid/setgid（107/108 方是 geteuid/getegid），
+    /// v0 单用户 root 口径下三号共享全 0 合成无实际消费差异，本批真面
+    /// 落域随行改正。setuid/setgid 根域收口：root 全量改写 / 非 root
+    /// 仅自改写 / 其余 EPERM（v0 扁平域无 saved-set，偏差随行登记）。
+    GetUid,
+    /// getgid(104) 真读取。
+    GetGid,
+    /// setuid(105) 根域收口。
+    SetUid,
+    /// setgid(106) 根域收口。
+    SetGid,
+    /// geteuid(107) 真读取（号域勘误随行）。
+    GetEUId,
+    /// getegid(108) 真读取（号域勘误随行）。
+    GetEGid,
     // ---- 合成桩档（返回合成成功值；语义实体挂账） ----
     /// rt_sigaction(13) / rt_sigprocmask(14)：信号面挂账，合成 0；
     /// munmap(11)：v0 匿名区不回收口径合成 0（musl free/realloc 大块
@@ -188,10 +201,16 @@ pub fn translate(num: u64) -> LinAction {
         60 | 231 => LinAction::Exit, // exit / exit_group
         61 => LinAction::Wait4,
         63 => LinAction::UName,
-        80 => LinAction::ChDir, // M34-B1 收录（busybox 覆盖度扩容批次一）
-        102 | 104 | 105 | 106 => LinAction::StubUid, // M34-B2 收录（uid/gid 族合成；真身份面随 M39-MU）
+        80 => LinAction::ChDir,    // M34-B1 收录（busybox 覆盖度扩容批次一）
+        102 => LinAction::GetUid,  // M39-MU 收录（真读取——合成桩域转正）
+        104 => LinAction::GetGid,  // M39-MU 收录
+        105 => LinAction::SetUid,  // M39-MU 收录（根域收口——号域勘误随行）
+        106 => LinAction::SetGid,  // M39-MU 收录（根域收口——号域勘误随行）
+        107 => LinAction::GetEUId, // M39-MU 收录（号域勘误：107 = geteuid）
+        108 => LinAction::GetEGid, // M39-MU 收录（号域勘误：108 = getegid）
         109 | 110 => LinAction::StubOk, // M39-ASH 收录（getppid/getpgrp 合成桩——v0 无父链/进程组域：ash 启动链 job-control 检查消费，110 ENOSYS 滞死实录在案；真面随进程族批次）
-        158 => LinAction::ArchPrctl,    // M33-T1 收录（musl TLS 初始化链）
+        115 => LinAction::StubOk, // M39-MU 收录（getgroups 合成桩——v0 无补充组域恒 0：busybox id groups 域消费，首拍 ENOSYS 败码 1 实录在案；真面随进程组批次）
+        158 => LinAction::ArchPrctl, // M33-T1 收录（musl TLS 初始化链）
         72 => LinAction::Fcntl,
         79 => LinAction::GetCwd,
         217 => LinAction::GetDents64,
@@ -229,9 +248,9 @@ pub const W_OK: u64 = 2;
 pub const R_OK: u64 = 4;
 
 /// 映射面覆盖度成像（数与 [`translate`] 收录一致；测试对账断言）。
-/// 口径 = LinAction 变体数 + ioctl 显形 1（StubUid 一变体承载 uid/gid
-/// 族四号——号域覆盖另见 BINDINGS 名表快照）。
-pub const COVERED: usize = 31;
+/// 口径 = LinAction 变体数 + ioctl 显形 1（M39-MU 身份六号真面转正，
+/// 合成桩域收缩；号域覆盖另见 BINDINGS 名表快照）。
+pub const COVERED: usize = 36;
 
 /// 相对路径 cwd join（M34-B1 单一事实源）：绝对路径原样；相对路径
 /// `cwd + path`（cwd 尾随分隔符去重——根哨兵 `"/"` 自然吞并）。词法
@@ -307,14 +326,18 @@ mod tests {
         assert_eq!(translate(262), LinAction::FStatAt);
         assert_eq!(translate(263), LinAction::UnlinkAt);
         assert_eq!(translate(269), LinAction::FAccessAt);
-        // M34-B2 收录（t83 实证导航）
+        // M34-B2 收录（t83 实证导航）→ M39-MU 真面转正（号域勘误随行：
+        // 105/106 = setuid/setgid，107/108 = geteuid/getegid）
         assert_eq!(translate(2), LinAction::Open);
         assert_eq!(translate(11), LinAction::StubOk); // munmap 合成
-        assert_eq!(translate(102), LinAction::StubUid);
-        assert_eq!(translate(104), LinAction::StubUid);
-        assert_eq!(translate(105), LinAction::StubUid);
-        assert_eq!(translate(106), LinAction::StubUid);
-        // M35-BBa 收录（fork fd 继承面同批摘牌）
+        assert_eq!(translate(102), LinAction::GetUid);
+        assert_eq!(translate(104), LinAction::GetGid);
+        assert_eq!(translate(105), LinAction::SetUid);
+        assert_eq!(translate(106), LinAction::SetGid);
+        assert_eq!(translate(107), LinAction::GetEUId);
+        assert_eq!(translate(108), LinAction::GetEGid);
+        assert_eq!(translate(115), LinAction::StubOk); // M39-MU getgroups 合成桩
+                                                       // M35-BBa 收录（fork fd 继承面同批摘牌）
         assert_eq!(translate(293), LinAction::Pipe2);
         // M36-BB3b 收录（cat/ls applet 消费驱动——M34-B1 先例）
         assert_eq!(translate(4), LinAction::Stat);

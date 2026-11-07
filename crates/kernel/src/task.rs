@@ -256,6 +256,10 @@ struct Task {
     /// trampoline 分流至 [`lumina_enter_user_fork`]（定点 iretq：父
     /// syscall 返回点 + rax=0 协议）。非 fork 子代恒 false。
     fork_child: bool,
+    /// 任务凭据四元（M39-MU）：uid/gid/euid/egid——fork/spawn 全量继承
+    /// （Linux 同款），kmain=root(0,0) 口径；euid/egid 随 setuid/setgid
+    /// 同步写（v0 扁平域无 saved-set，偏差如实登记随行）。
+    creds: Creds,
     /// fork 子代全量寄存器快照（M33-P1；槽序 = SyscallFrame repr(C)
     /// 布局 15 槽，槽 8 = num/rax 已焊接为 0——Linux 子代返回协议）。
     /// 非 fork 子代无义（全零）。spawn_fork_child 锁窗内焊接（与遗传
@@ -304,6 +308,7 @@ impl Task {
             fork_child: false,
             fork_frame: [0; 15],
             cwd: None,
+            creds: Creds::ROOT,
         }
     }
 
@@ -391,8 +396,34 @@ impl Task {
             fork_child: false,
             fork_frame: [0; 15],
             cwd: None,
+            creds: Creds::ROOT,
         }
     }
+}
+
+/// 任务凭据四元（M39-MU）：uid/gid/euid/egid（LP64 u32 域——Linux uid_t
+/// 同宽）。kmain = ROOT(0,0,0,0) 口径；fork/spawn 全量继承（Linux 同款）。
+/// v0 扁平域：setuid/setgid 同步写 uid/euid（无 saved-set，偏差随行登记）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Creds {
+    /// 真实用户 ID。
+    pub uid: u32,
+    /// 真实组 ID。
+    pub gid: u32,
+    /// 有效用户 ID（v0 与 uid 同步写）。
+    pub euid: u32,
+    /// 有效组 ID（v0 与 gid 同步写）。
+    pub egid: u32,
+}
+
+impl Creds {
+    /// root 凭据（kmain 口径）。
+    pub const ROOT: Creds = Creds {
+        uid: 0,
+        gid: 0,
+        euid: 0,
+        egid: 0,
+    };
 }
 
 /// 主任务入口占位（主任务从不经 trampoline 进入；永不调用）。
@@ -1292,6 +1323,14 @@ fn spawn_fork_child_impl(
     // 同窗纪律；P1 缺口修复：fork 子代继承父 ABI 链，lin_fork 恒 true，
     // 缺位则子代恢复后 Linux 号域走 Lumina 原生派发语义错乱）。
     t.lin_abi = lin_abi;
+    // M39-MU：凭据全量继承（fork/spawn Linux 同款——父槽缺失防御回退
+    // root 哨兵；kmain=root 口径，t93 领域换装派生消费面）。
+    t.creds = s
+        .tasks
+        .get(parent)
+        .and_then(|p| p.as_ref())
+        .map(|p| p.creds)
+        .unwrap_or(Creds::ROOT);
     // M34-B1：cwd 继承（fork 子代 = 父工作目录——Linux 同款；
     // 父槽缺失防御回退根哨兵 None）。
     t.cwd = s
@@ -2133,6 +2172,27 @@ pub fn task_is_lin_abi(id: usize) -> bool {
         .and_then(|t| t.as_mut())
         .map(|t| t.lin_abi)
         .unwrap_or(false)
+}
+
+/// 任务凭据四元读取（M39-MU）：任务不存在返回 None（防御域）。
+pub fn task_creds(id: usize) -> Option<Creds> {
+    let _w = IntWindow::new();
+    let mut s = sched_lock!();
+    s.tasks
+        .get_mut(id)
+        .and_then(|t| t.as_mut())
+        .map(|t| t.creds)
+}
+
+/// 任务凭据在锁窗内改写（M39-MU）：setuid/setgid 执行面 + t93 领域
+/// 换装消费面；任务不存在返回 None。
+pub fn with_task_creds_mut<R>(id: usize, f: impl FnOnce(&mut Creds) -> R) -> Option<R> {
+    let _w = IntWindow::new();
+    let mut s = sched_lock!();
+    s.tasks
+        .get_mut(id)
+        .and_then(|t| t.as_mut())
+        .map(|t| f(&mut t.creds))
 }
 
 /// 在调度锁窗口内访问目标任务工作目录（M34-B1 chdir 收录面）：
