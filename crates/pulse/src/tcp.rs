@@ -16,6 +16,19 @@
 //! fail-visible（拆除判定交消费方）；滑窗无窗口缩放选项（16 位通告域
 //! 直用）；重组窗旧段/跨基线重叠整段拒收（RFC 9293 允许部分重叠修剪
 //! ——v0 全拒保确定性）；零窗探测挂账。
+//!
+//! **M38-TCP1 转正注（TCP 服务化批次——重传面 v0 简化域收口）**：上列
+//! 偏差四目随本笔落域——Karn 算法（[`RttEst`] RFC 6298 整数式 RTT
+//! 估计：首样 `srtt=r, rttvar=r/2` + 滑动 `srtt=(7s+r)/8,
+//! rttvar=(3v+Δ)/8` + 重传样窄化不采 + RTO 夹逼导出）、窗口缩放
+//! （[`ws_encode`]/[`ws_decode`]/[`ws_negotiate`]/[`ws_effective_window`]
+//! RFC 7323 选项面——双方 SYN 才生效、缺省移位 0、有效窗 `wire <<
+//! shift` 封顶算术；旧 [`TcpHdr::encode`] 路径保留作未缩放回归锚）、
+//! 零窗探测（[`PersistTimer`] 幂等武装 + 退避 Probe + 独立拍数上限
+//! Broken fail-visible + 窗重开解除）、多连接（[`ConnTable`] 定容 8 槽
+//! 四元组查表——槽体 [`TcpConn`] 六面聚合）。仍不在域（如实记账不扩
+//! 域）：快速重传/快速恢复（RFC 5681 §3.2——[`CcState`] v0 只承载慢
+//! 启动/拥塞避免/RTO 折叠三态）、SACK、时间戳选项（kind=8）。
 
 /// TCP 头最小长（data_offset = 5，无选项域）。
 pub const HDR_LEN: usize = 20;
@@ -505,7 +518,7 @@ pub enum ReasmOutcome {
 /// 扰动）；`drain` 交付基线起连续前缀并左移对齐（基线推进 = 交付数）。
 /// 全定容零堆零 unsafe（`[u8; N]` + `[bool; N]` 直存——TCP_SEG_MAX
 /// 量级窗 1 KiB 级 .bss 定容，增长复用纪律无关域）。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReasmBuf<const N: usize> {
     /// 重组基线（rcv_nxt——下个期望字节序号）。
     base: u32,
@@ -603,6 +616,588 @@ impl<const N: usize> ReasmBuf<N> {
         }
         self.have_count -= n;
         n
+    }
+}
+
+// ===================== M38-TCP1：TCP 服务化批次五面（重传面 v0 简化域收口） =====================
+//
+// 五面纯函数域（零堆零 unsafe——crate 级 [`forbid(unsafe_code)`] 不变，
+// PU-P06 预算内固定布局：连接状态定容、重传/探测账面定式，无无界增长
+// 载体）。面次依定式清单：WinScale / RttEst / CongestCtl / PersistTimer
+// / ConnTable。
+
+// ---- 面 1：WinScale（RFC 7323 窗口缩放选项） ------------------------------
+
+/// WS 选项 kind（RFC 7323 §2.2：window scale = kind 3）。
+pub const WS_KIND: u8 = 3;
+/// WS 选项定长（kind + len + shift = 3 B）。
+pub const WS_OPT_LEN: u8 = 3;
+/// WS 移位上限（RFC 7323：shift ≤ 14——65535 << 14 = 2³⁰−2¹⁴ 界内，
+/// u32 不溢；越域值拒收 fail-visible）。
+pub const WS_SHIFT_MAX: u8 = 14;
+
+/// WS 选项编码：`[WS_KIND, WS_OPT_LEN, shift]` 三字节写 `out`，返回 3。
+///
+/// 闸序：容量 ≥ 3 → shift ≤ 14（越域拒——fail-visible，静默截断禁令
+/// 同 [`TcpHdr::encode`] 族口径）。
+#[must_use]
+pub fn ws_encode(shift: u8, out: &mut [u8]) -> Option<usize> {
+    if out.len() < 3 || shift > WS_SHIFT_MAX {
+        return None;
+    }
+    out[0] = WS_KIND;
+    out[1] = WS_OPT_LEN;
+    out[2] = shift;
+    Some(3)
+}
+
+/// 选项区解析：TLV 步进扫描，kind=3 命中返回 `Some(shift)`。
+///
+/// 闸序：kind 0（EOL）停扫 / kind 1（NOP）单字节步进 / 其余 kind 取
+/// len 界内闸（len < 2 或越缓冲 = 畸形 → None）→ WS 命中须定长 3 且
+/// shift ≤ 14。未见 WS → None（缺省域——协商降 0 的解析侧输入）。
+#[must_use]
+pub fn ws_decode(opts: &[u8]) -> Option<u8> {
+    let mut i = 0usize;
+    while i < opts.len() {
+        match opts[i] {
+            0 => break,  // EOL：剩余填充域
+            1 => i += 1, // NOP：单字节步进
+            kind => {
+                let len = usize::from(*opts.get(i + 1)?);
+                if len < 2 || i + len > opts.len() {
+                    return None; // 畸形（len 越界）fail-visible
+                }
+                if kind == WS_KIND {
+                    if len != usize::from(WS_OPT_LEN) {
+                        return None; // WS 定长闸
+                    }
+                    let shift = opts[i + 2];
+                    return (shift <= WS_SHIFT_MAX).then_some(shift);
+                }
+                i += len;
+            }
+        }
+    }
+    None
+}
+
+/// WS 协商：双方 SYN 均携 WS 选项才生效，缺省移位 0（RFC 7323 §6.1.2
+/// ——任一侧未发选项即全双工未缩放）。
+///
+/// 语义（§2.2 通告域）：选项值 = 通告方的**接收窗移位**——本端解释
+/// 对端来窗的移位 = **对端通告值**（对端来窗 wire 域已按其接收粒度
+/// 缩除）。`local_shift` 只作合法性闸（越域 = 协商不成同域降 0——v0
+/// 确定性面）；生效输出即对端移位（对端合法界内取值）。
+#[must_use]
+pub fn ws_negotiate(
+    local_syn: bool,
+    local_shift: u8,
+    peer_syn: bool,
+    peer_shift: Option<u8>,
+) -> u8 {
+    let local_ok = local_syn && local_shift <= WS_SHIFT_MAX;
+    match (local_ok, peer_syn, peer_shift) {
+        (true, true, Some(p)) if p <= WS_SHIFT_MAX => p,
+        _ => 0,
+    }
+}
+
+/// 有效窗算术：对端来窗 `wire << shift`（饱和封顶——移位/溢出域不回
+/// 绕不翻转，u32 上限饱和；shift 先夹逼 [`WS_SHIFT_MAX`]，RFC 7323
+/// 界内值域 65535 << 14 不触顶，封顶算术为越域防御面）。
+#[must_use]
+pub fn ws_effective_window(wire: u16, shift: u8) -> u32 {
+    u32::from(wire)
+        .checked_shl(u32::from(shift.min(WS_SHIFT_MAX)))
+        .unwrap_or(u32::MAX)
+}
+
+// ---- 面 2：RttEst（RFC 6298 整数式 RTT 估计） ------------------------------
+
+/// rttvar 夹逼下限（整数化防零——`(3v+Δ)/8` 向零塌缩域的退化禁令）。
+pub const RTTVAR_MIN: u64 = 1;
+
+/// RTT 估计器（RFC 6298 整数式——TSC 纳秒域；pulse 侧时间源不可知：
+/// 样本由调用方注入，宿主测试合成时刻，内核侧 TSC 单调纳秒同源）。
+///
+/// 口径（RFC 6298 §2 整数化，增益 1/8 = 移位除）：
+/// - 首样（§2.2 第一测）：`srtt = r`，`rttvar = r / 2`；
+/// - 滑动（§2.3，RTTVAR 先行序）：`Δ = |旧 srtt − r|` → `rttvar =
+///   (3v + Δ) / 8`（夹逼下限 [`RTTVAR_MIN`]）→ `srtt = (7s + r) / 8`；
+/// - Karn 窄化：重传段样本不采（`sample` 带 `from_retx` 旗——窄化
+///   域，调用方按段重传史挂旗）；
+/// - RTO 导出（§2.1 + §2.4）：`srtt + 4·rttvar` 夹逼域
+///   [`RTO_INIT_NS`]（下限——回环短臂口径同源）到 [`RTO_MAX_NS`]
+///   （上限——退避封顶同源）。
+///
+/// 零堆零 unsafe，`Copy` 语义面（嵌核账面定式）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RttEst {
+    /// 平滑 RTT（纳秒；未 primed 恒 0）。
+    srtt: u64,
+    /// RTT 偏差平滑（纳秒）。
+    rttvar: u64,
+    /// 首样已落（首样/滑动两域闸）。
+    primed: bool,
+}
+
+impl RttEst {
+    /// 空估计器（未 primed）。
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            srtt: 0,
+            rttvar: 0,
+            primed: false,
+        }
+    }
+
+    /// 平滑 RTT 读数（纳秒）。
+    #[must_use]
+    pub const fn srtt(&self) -> u64 {
+        self.srtt
+    }
+
+    /// RTT 偏差平滑读数（纳秒）。
+    #[must_use]
+    pub const fn rttvar(&self) -> u64 {
+        self.rttvar
+    }
+
+    /// 首样已落（滑动域准入）。
+    #[must_use]
+    pub const fn primed(&self) -> bool {
+        self.primed
+    }
+
+    /// 首样（§2.2）：`srtt = r`，`rtttvar = r / 2`。已 primed 重入拒
+    /// （首样唯一性——滑动域走 [`RttEst::sample`]）；`r == 0` 退化样
+    /// 拒。返回 true = 样本已采。
+    pub fn first_sample(&mut self, r: u64) -> bool {
+        if self.primed || r == 0 {
+            return false;
+        }
+        self.srtt = r;
+        self.rttvar = r / 2;
+        self.primed = true;
+        true
+    }
+
+    /// 滑动样（§2.3 整数式，RTTVAR 先行序）：Δ = |旧 srtt − r| →
+    /// `rttvar = (3v + Δ) / 8`（下限夹逼）→ `srtt = (7s + r) / 8`。
+    /// Karn 窄化：`from_retx` = 样本出自重传段 → 不采（false，账面
+    /// 零扰动）。未 primed → false（首样须走 [`RttEst::first_sample`]）。
+    pub fn sample(&mut self, r: u64, from_retx: bool) -> bool {
+        if from_retx || !self.primed || r == 0 {
+            return false;
+        }
+        let delta = self.srtt.abs_diff(r);
+        self.rttvar = ((3 * self.rttvar + delta) / 8).max(RTTVAR_MIN);
+        self.srtt = (7 * self.srtt + r) / 8;
+        true
+    }
+
+    /// RTO 导出（§2.1 + §2.4 整数化）：`srtt + 4·rttvar` 夹逼域
+    /// [`RTO_INIT_NS`]…[`RTO_MAX_NS`]（上下限同 [`RtoTimer`] 退避域
+    /// ——单一定时器时间基）。
+    #[must_use]
+    pub fn rto(&self) -> u64 {
+        let raw = self.srtt.saturating_add(self.rttvar.saturating_mul(4));
+        raw.clamp(RTO_INIT_NS, RTO_MAX_NS)
+    }
+}
+
+impl Default for RttEst {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---- 面 3：CongestCtl（RFC 5681 简化域） ----------------------------------
+
+/// 慢启动初值倍数（RFC 5681 §3.1 原初域：IW = 2·SMSS 下限口径——
+/// RFC 9293/modern 10·SMSS 建议不入 v0，偏差如实登记）。
+pub const IW_SMSS_MULT: u32 = 2;
+
+/// 拥塞控制账面（RFC 5681 简化域：慢启动 + 拥塞避免 + RTO 折叠三态）。
+///
+/// 口径：
+/// - 慢启动（§3.1）：`cwnd += acked_bytes`（每 ACK 字节域直加）；
+/// - 越阈转换：`cwnd ≥ ssthresh` 转拥塞避免 `cwnd += SMSS²/cwnd`
+///   （整数除，下限 1——单调不凝滞）；
+/// - RTO 折叠（§3.1 原初域）：`ssthresh = max(flight/2, 2·SMSS)` +
+///   `cwnd` 回初值 IW（慢启动重启）；
+/// - 发送资格：`min(可用窗, cwnd)`（窗域与拥塞域取小——门控面）。
+///
+/// **快速重传/快速恢复不在 v0 域清单（如实记账不扩域）**：RFC 5681
+/// §3.2 三重复制 ACK 触发面未落——虚耗域（丢包恢复退化为 RTO 折叠拍）
+/// 随服务化后续批次裁决。零堆零 unsafe，`Copy` 语义面。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CcState {
+    /// 拥塞窗（字节）。
+    cwnd: u32,
+    /// 慢启动阈值（字节；初态 u32::MAX = 有效无穷——直达首个 RTO 定标）。
+    ssthresh: u32,
+    /// 初值 IW（RTO 折叠回退锚）。
+    iw: u32,
+    /// 发送方最大段长 SMSS（字节；折叠算术域）。
+    smss: u32,
+}
+
+impl CcState {
+    /// 初值态：`cwnd = IW = IW_SMSS_MULT·SMSS`，`ssthresh = u32::MAX`
+    /// （有效无穷——慢启动直达首个 RTO 折叠定标）。
+    #[must_use]
+    pub const fn new(smss: u32) -> Self {
+        Self {
+            cwnd: smss.saturating_mul(IW_SMSS_MULT),
+            ssthresh: u32::MAX,
+            iw: smss.saturating_mul(IW_SMSS_MULT),
+            smss,
+        }
+    }
+
+    /// 拥塞窗读数。
+    #[must_use]
+    pub const fn cwnd(&self) -> u32 {
+        self.cwnd
+    }
+
+    /// 慢启动阈值读数。
+    #[must_use]
+    pub const fn ssthresh(&self) -> u32 {
+        self.ssthresh
+    }
+
+    /// SMSS 读数。
+    #[must_use]
+    pub const fn smss(&self) -> u32 {
+        self.smss
+    }
+
+    /// ACK 拍：`cwnd < ssthresh` → 慢启动 `+= acked_bytes`；否则拥塞
+    /// 避免 `+= max(SMSS²/cwnd, 1)`（整数除下限 1）。全饱和封顶 u32
+    /// （不回绕）。
+    pub fn on_ack(&mut self, acked_bytes: u32) {
+        if self.cwnd < self.ssthresh {
+            self.cwnd = self.cwnd.saturating_add(acked_bytes);
+        } else {
+            let inc = (self.smss.saturating_mul(self.smss) / self.cwnd).max(1);
+            self.cwnd = self.cwnd.saturating_add(inc);
+        }
+    }
+
+    /// RTO 折叠拍（§3.1 原初域）：`ssthresh = max(flight/2, 2·SMSS)`
+    /// （下限 2·SMSS 闸——深折叠域），`cwnd` 回初值 IW。
+    pub fn on_rto(&mut self, flight: u32) {
+        self.ssthresh = (flight / 2).max(self.smss.saturating_mul(IW_SMSS_MULT));
+        self.cwnd = self.iw;
+    }
+
+    /// 发送资格：`min(avail_window, cwnd)`（对端窗域与拥塞域取小）。
+    #[must_use]
+    pub const fn send_credit(&self, avail_window: u32) -> u32 {
+        if self.cwnd < avail_window {
+            self.cwnd
+        } else {
+            avail_window
+        }
+    }
+}
+
+// ---- 面 4：PersistTimer（零窗探测） ----------------------------------------
+
+/// 零窗探测独立拍数上限（与 [`RETX_MAX`] 分账——独立计数域；第 6 拍
+/// 到期判 Broken fail-visible）。
+pub const PERSIST_MAX_PROBES: u32 = 5;
+/// 探测段长（重发 una 起 1 字节——RFC 9293 §3.7.3 探测口径）。
+pub const PROBE_SEG_LEN: usize = 1;
+
+/// 探测拍判定（[`PersistTimer::poll`] 出参；fail-visible 三态）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersistDecision {
+    /// 未武装或未到期（零动作）。
+    Idle,
+    /// 到期探测拍——调用方必须发探测段（una 起 [`PROBE_SEG_LEN`] 字节；
+    /// 退避已内部再臂）。
+    Probe,
+    /// 独立拍数上限（[`PERSIST_MAX_PROBES`]）耗尽——定时器已解除武装，
+    /// 连接应拆除（fail-visible）。
+    Broken,
+}
+
+/// 零窗探测定时器（TSC 纳秒域——[`RtoTimer`] 同源单调面）。
+///
+/// 口径：零窗臂幂等武装（已武装不重置不换基——臂时基 RTO 定格）→
+/// 到期拍 Probe（退避 `rto << retries` 封顶 [`RTO_MAX_NS`]）→ 对端窗
+/// 重开解除（[`PersistTimer::release`]，幂等）→ 独立拍数上限
+/// [`PERSIST_MAX_PROBES`] 耗尽 Broken（解除武装，拆除判定交消费方）。
+/// 零堆零 unsafe，`Copy` 语义面。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PersistTimer {
+    /// 到期时刻（纳秒；u64::MAX = 未武装）。
+    deadline: u64,
+    /// 武装基 RTO（臂时定格——退避基域）。
+    base_rto: u64,
+    /// 本臂探测计数（退避指数域——独立账面）。
+    retries: u32,
+}
+
+impl PersistTimer {
+    /// 空闲定时器（未武装）。
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            deadline: u64::MAX,
+            base_rto: RTO_INIT_NS,
+            retries: 0,
+        }
+    }
+
+    /// 是否武装中。
+    #[must_use]
+    pub const fn is_armed(&self) -> bool {
+        self.deadline != u64::MAX
+    }
+
+    /// 本臂探测计数。
+    #[must_use]
+    pub const fn retries(&self) -> u32 {
+        self.retries
+    }
+
+    /// 武装（幂等：已武装不重置——零窗期单臂域，重入零动作；首臂
+    /// deadline = now + `rto_ns`（下限 1 夹逼），退避推进由
+    /// [`PersistTimer::poll`] 内部承担）。
+    pub fn arm(&mut self, now_ns: u64, rto_ns: u64) {
+        if self.is_armed() {
+            return;
+        }
+        self.base_rto = rto_ns.max(1);
+        self.deadline = now_ns.saturating_add(self.base_rto);
+        self.retries = 0;
+    }
+
+    /// 对端窗重开解除：武装态 → 解除 + 计数复位（true）；未武装幂等
+    /// 零动作（false——消费方证据面）。
+    pub fn release(&mut self) -> bool {
+        if !self.is_armed() {
+            return false;
+        }
+        self.deadline = u64::MAX;
+        self.retries = 0;
+        true
+    }
+
+    /// 到期拍：Idle（未武装/未到期）→ Probe（探测拍；`retries` 推进 +
+    /// `rto << retries` 封顶 [`RTO_MAX_NS`] 再臂）→ Broken（第
+    /// [`PERSIST_MAX_PROBES`]+1 拍到期——解除武装交消费方拆除，
+    /// fail-visible）。
+    pub fn poll(&mut self, now_ns: u64) -> PersistDecision {
+        if !self.is_armed() || now_ns < self.deadline {
+            return PersistDecision::Idle;
+        }
+        if self.retries >= PERSIST_MAX_PROBES {
+            self.deadline = u64::MAX;
+            return PersistDecision::Broken;
+        }
+        self.retries += 1;
+        // 退避：rto << retries，指数域夹逼（1 << 24 移位界）+ 封顶
+        // RTO_MAX_NS（饱和乘法域——不回绕不翻转）
+        let backoff = self
+            .base_rto
+            .saturating_mul(1u64 << self.retries.min(24))
+            .min(RTO_MAX_NS);
+        self.deadline = now_ns.saturating_add(backoff);
+        PersistDecision::Probe
+    }
+}
+
+impl Default for PersistTimer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---- 面 5：ConnTable<N, C>（定容四元组连接表） ------------------------------
+
+/// 连接槽重组窗容量（同 kernel vnet [`TCP_SEG_MAX`] 口径——PU-P06 预算
+/// 内固定布局：单槽 ≈ 1.1 KiB，8 槽表 ≈ 9 KiB 量级）。
+pub const TCP_CONN_REASM_CAP: usize = 512;
+
+/// TCP 四元组键（查表域——(源 IP, 源端口, 目的 IP, 目的端口)）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TcpKey {
+    /// 源 IP（四段）。
+    pub src_ip: [u8; 4],
+    /// 源端口。
+    pub src_port: u16,
+    /// 目的 IP（四段）。
+    pub dst_ip: [u8; 4],
+    /// 目的端口。
+    pub dst_port: u16,
+}
+
+/// 连接槽体（服务化批次聚合账面——状态/重传/估计/拥塞/持久/滑窗/重组
+/// 七域全置；零堆零 unsafe，`Copy` 语义面嵌核账面定式）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TcpConn {
+    /// 连接状态（八态机）。
+    pub state: ConnState,
+    /// RTO 重传定时器。
+    pub rto: RtoTimer,
+    /// RTT 估计器（RFC 6298 整数式——Karn 窄化域）。
+    pub rttest: RttEst,
+    /// 拥塞控制账面（RFC 5681 简化域三态）。
+    pub cwnd: CcState,
+    /// 零窗探测定时器（独立拍数域）。
+    pub persist: PersistTimer,
+    /// 发送滑窗（16 位通告域——缩放有效窗解释面在消费方）。
+    pub swnd: SendWindow,
+    /// 接收乱序重组窗（定容 [`TCP_CONN_REASM_CAP`]）。
+    pub reasm: ReasmBuf<TCP_CONN_REASM_CAP>,
+}
+
+impl TcpConn {
+    /// 建槽：重组基线 = 对端 ISN + 1（SYN 消耗 1 序号——RFC 9293
+    /// §3.3.1），发送窗自本端 ISN 起。
+    #[must_use]
+    pub const fn new(state: ConnState, isn: u32, peer_isn: u32, peer_win: u16, smss: u32) -> Self {
+        Self {
+            state,
+            rto: RtoTimer::new(),
+            rttest: RttEst::new(),
+            cwnd: CcState::new(smss),
+            persist: PersistTimer::new(),
+            swnd: SendWindow::new(isn, peer_win),
+            reasm: ReasmBuf::new(peer_isn.wrapping_add(1)),
+        }
+    }
+}
+
+/// 连接表错误（fail-visible 三态）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnTableError {
+    /// 四元组已占用（重复键拒）。
+    Duplicate,
+    /// 定容槽满（耗尽 fail-visible——PU-P06 预算面，无无界增长）。
+    Exhausted,
+    /// 键/槽位不存在。
+    NotFound,
+}
+
+/// 表项（键 + 槽体——`Option<ConnEntry<C>>` 直存定容数组）。
+#[derive(Debug, Clone, Copy)]
+struct ConnEntry<C: Copy> {
+    key: TcpKey,
+    conn: C,
+}
+
+/// 定容 N 槽四元组查找表（零堆零 unsafe——`[Option<ConnEntry<C>>; N]`
+/// 直存 .bss 定容，线性扫描域；PU-P06 预算内固定布局）。
+///
+/// 语义：`alloc` 重复键拒 + 槽满拒 + 首个空槽低址优先（`close` 释放
+/// 复用自然回收——释放槽即下轮 `alloc` 落点）；`lookup`/`slot` 双访问
+/// 面（键查 + 槽位直驱）；`close` 槽释放并归还槽体（证据面）。全
+/// fail-visible（[`ConnTableError`] 三态）。
+pub struct ConnTable<const N: usize, C: Copy> {
+    /// 定容槽阵（None = 空）。
+    slots: [Option<ConnEntry<C>>; N],
+    /// 在册连接数（占用账——O(1) 读出）。
+    live: usize,
+}
+
+impl<const N: usize, C: Copy> ConnTable<N, C> {
+    /// 空表（定容 N 槽全空——const 面供 static 初始化）。
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            slots: [None; N],
+            live: 0,
+        }
+    }
+
+    /// 在册连接数。
+    #[must_use]
+    pub const fn live(&self) -> usize {
+        self.live
+    }
+
+    /// 槽位键读出（None = 空槽/越界）。
+    #[must_use]
+    pub fn key_at(&self, idx: usize) -> Option<&TcpKey> {
+        self.slots.get(idx)?.as_ref().map(|e| &e.key)
+    }
+
+    /// 键查找（`&C` 只读面）。
+    #[must_use]
+    pub fn lookup(&self, key: &TcpKey) -> Option<&C> {
+        self.slots
+            .iter()
+            .find(|s| s.as_ref().is_some_and(|e| e.key == *key))?
+            .as_ref()
+            .map(|e| &e.conn)
+    }
+
+    /// 键查找（`&mut C` 驱动面）。
+    pub fn lookup_mut(&mut self, key: &TcpKey) -> Option<&mut C> {
+        self.slots
+            .iter_mut()
+            .find(|s| s.as_ref().is_some_and(|e| e.key == *key))?
+            .as_mut()
+            .map(|e| &mut e.conn)
+    }
+
+    /// 槽位直读（tick 驱动域证据面）。
+    #[must_use]
+    pub fn slot(&self, idx: usize) -> Option<&C> {
+        self.slots.get(idx)?.as_ref().map(|e| &e.conn)
+    }
+
+    /// 槽位直写（tick 驱动域）。
+    pub fn slot_mut(&mut self, idx: usize) -> Option<&mut C> {
+        self.slots.get_mut(idx)?.as_mut().map(|e| &mut e.conn)
+    }
+
+    /// 分配：重复键拒（[`ConnTableError::Duplicate`]——四元组唯一性）
+    /// → 槽满拒（[`ConnTableError::Exhausted`]）→ 首个空槽低址优先
+    /// 写入，返回槽位号。释放复用：`close` 腾出的低址槽即下轮落点。
+    pub fn alloc(&mut self, key: TcpKey, conn: C) -> Result<usize, ConnTableError> {
+        if self.lookup(&key).is_some() {
+            return Err(ConnTableError::Duplicate);
+        }
+        let Some(idx) = (0..N).find(|&i| self.slots[i].is_none()) else {
+            return Err(ConnTableError::Exhausted);
+        };
+        self.slots[idx] = Some(ConnEntry { key, conn });
+        self.live += 1;
+        Ok(idx)
+    }
+
+    /// 槽位关闭：释放槽（复用域）并归还槽体；空槽/越界 →
+    /// [`ConnTableError::NotFound`]。
+    pub fn close(&mut self, idx: usize) -> Result<C, ConnTableError> {
+        let slot = self.slots.get_mut(idx).ok_or(ConnTableError::NotFound)?;
+        let entry = slot.take().ok_or(ConnTableError::NotFound)?;
+        self.live -= 1;
+        Ok(entry.conn)
+    }
+
+    /// 四元组关闭：键查（[`ConnTableError::NotFound`] fail-visible）→
+    /// 释放复用同 [`ConnTable::close`]。
+    pub fn close_key(&mut self, key: &TcpKey) -> Result<C, ConnTableError> {
+        let idx = (0..N).find(|&i| self.slots[i].as_ref().is_some_and(|e| e.key == *key));
+        match idx {
+            Some(i) => self.close(i),
+            None => Err(ConnTableError::NotFound),
+        }
+    }
+}
+
+impl<const N: usize, C: Copy> Default for ConnTable<N, C> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -944,5 +1539,503 @@ mod tests {
         assert_eq!(&out, b"ef");
         assert_eq!(q.drain(&mut out), 0, "排空");
         assert_eq!(q.rcv_nxt(), 6);
+    }
+
+    // ---- M38-TCP1：服务化批次五面（WS / RTT / 拥塞 / 持久 / 连接表） ----
+
+    /// WS 往返：kind=3 编解码往返 + 选项区 TLV 扫描（NOP 前垫 / EOL 后
+    /// 填）+ 畸形四态拒（len 越界 / 定长破 / 越域 shift / 未见）。
+    #[test]
+    fn ws_option_roundtrip() {
+        use super::{ws_decode, ws_encode, WS_KIND, WS_OPT_LEN, WS_SHIFT_MAX};
+        let mut buf = [0u8; 4];
+        assert_eq!(ws_encode(2, &mut buf), Some(3));
+        assert_eq!(&buf[..3], &[WS_KIND, WS_OPT_LEN, 2]);
+        assert_eq!(ws_decode(&buf[..3]), Some(2), "裸选项往返");
+        // NOP 前垫 + EOL 后填（真实 SYN 选项区布局）
+        let padded = [0x01, WS_KIND, WS_OPT_LEN, 2, 0x00, 0x00];
+        assert_eq!(ws_decode(&padded), Some(2), "NOP/EOL 域内命中");
+        // 容量不足拒 + 越域 shift 拒
+        assert_eq!(ws_encode(2, &mut [0u8; 2]), None, "容量闸");
+        assert_eq!(ws_encode(WS_SHIFT_MAX + 1, &mut buf), None, "shift 越域闸");
+        // 畸形：len 越缓冲 / WS 定长破 / 越域 shift / 未见 WS
+        assert_eq!(ws_decode(&[WS_KIND, 8, 2]), None, "len 越缓冲");
+        assert_eq!(ws_decode(&[WS_KIND, 2, 2]), None, "WS 定长破");
+        assert_eq!(
+            ws_decode(&[WS_KIND, WS_OPT_LEN, WS_SHIFT_MAX + 1]),
+            None,
+            "shift 越域"
+        );
+        assert_eq!(ws_decode(&[0x01, 0x00]), None, "未见 WS");
+    }
+
+    /// WS 协商：双方 SYN 才生效（对端通告移位为生效值）+ 缺省移位 0
+    /// 六目（缺本端 SYN / 缺对端 SYN / 缺选项 / 本端越域 / 对端越域 /
+    /// 全缺）。
+    #[test]
+    fn ws_negotiation_both_syn() {
+        use super::ws_negotiate;
+        assert_eq!(
+            ws_negotiate(true, 2, true, Some(3)),
+            3,
+            "双 SYN 生效——对端通告移位"
+        );
+        assert_eq!(ws_negotiate(true, 2, true, Some(0)), 0, "对端显式 0 生效域");
+        assert_eq!(ws_negotiate(true, 2, true, Some(14)), 14, "上限域");
+        assert_eq!(ws_negotiate(false, 2, true, Some(3)), 0, "缺本端 SYN → 0");
+        assert_eq!(ws_negotiate(true, 2, false, Some(3)), 0, "缺对端 SYN → 0");
+        assert_eq!(ws_negotiate(true, 2, true, None), 0, "对端缺选项 → 0");
+        assert_eq!(
+            ws_negotiate(true, 15, true, Some(3)),
+            0,
+            "本端越域 → 协商不成"
+        );
+        assert_eq!(ws_negotiate(true, 2, true, Some(15)), 0, "对端越域 → 0");
+    }
+
+    /// WS 移位：有效窗 wire << shift 封顶算术 + 未缩放回归锚（旧
+    /// encode 路径窗域原样直写——M37-N1 语义逐位保持）。
+    #[test]
+    fn ws_effective_window_cap() {
+        use super::{ws_effective_window, TcpHdr, FLAG_ACK, FLAG_PSH, HDR_LEN};
+        assert_eq!(ws_effective_window(16384, 2), 65_536, "wire << 2");
+        assert_eq!(
+            ws_effective_window(65535, 14),
+            1_073_725_440,
+            "上限域 2³⁰−2¹⁴ 界内"
+        );
+        assert_eq!(ws_effective_window(8192, 0), 8192, "移位 0 = 未缩放直通");
+        // 未缩放回归锚：旧 encode 路径 data_offset=5 + 窗域原样（无选项域）
+        let mut seg = [0u8; HDR_LEN];
+        TcpHdr::encode(1000, 2000, 0, 0, FLAG_ACK | FLAG_PSH, 8192, &[], &mut seg).expect("encode");
+        assert_eq!(seg[12], 0x50, "旧路径 offset=5 逐位保持");
+        assert_eq!(u16::from_be_bytes([seg[14], seg[15]]), 8192, "窗域原样直写");
+    }
+
+    /// RTT 首样（RFC 6298 §2.2 整数式）：srtt=r, rttvar=r/2 + 首样
+    /// 唯一性（重入拒）+ 退化样拒。
+    #[test]
+    fn rtt_first_sample() {
+        use super::RttEst;
+        let mut e = RttEst::new();
+        assert!(!e.primed());
+        assert!(
+            !e.sample(1000, false),
+            "未 primed 滑动拒（首样须走 first_sample）"
+        );
+        assert!(e.first_sample(10_000), "首样受理");
+        assert_eq!(e.srtt(), 10_000);
+        assert_eq!(e.rttvar(), 5_000, "rttvar = r/2");
+        assert!(e.primed());
+        assert!(!e.first_sample(4_000), "首样重入拒（滑动域唯一入口）");
+        assert_eq!(e.srtt(), 10_000, "重入零扰动");
+        assert!(!e.first_sample(0), "退化样拒");
+    }
+
+    /// RTT 滑动（RFC 6298 §2.3 整数式 RTTVAR 先行序）：Δ=|旧 srtt−r|
+    /// → var=(3v+Δ)/8 → srtt=(7s+r)/8，两次样手算锚逐位对账。
+    #[test]
+    fn rtt_sliding_update() {
+        use super::RttEst;
+        let mut e = RttEst::new();
+        assert!(e.first_sample(800), "首样受理");
+        // 样 2：r=400 → Δ=|800−400|=400；var=(3·400+400)/8=200；srtt=(7·800+400)/8=750
+        assert!(e.sample(400, false));
+        assert_eq!(e.srtt(), 750, "(7s+r)/8 整数除");
+        assert_eq!(e.rttvar(), 200, "(3v+Δ)/8 RTTVAR 先行序");
+        // 样 3：r=900 → Δ=|750−900|=150；var=(3·200+150)/8=93；srtt=(7·750+900)/8=768
+        assert!(e.sample(900, false));
+        assert_eq!(e.srtt(), 768);
+        assert_eq!(e.rttvar(), 93, "整数下取整域");
+    }
+
+    /// RTT Karn 窄化：重传段样本不采（from_retx 旗——账面零扰动）+
+    /// 清样对照（同值非重传样正常入账）。
+    #[test]
+    fn rtt_karn_narrowing() {
+        use super::RttEst;
+        let mut e = RttEst::new();
+        assert!(e.first_sample(10_000), "首样受理");
+        let (s0, v0) = (e.srtt(), e.rttvar());
+        assert!(!e.sample(4_000, true), "Karn：重传样窄化不采");
+        assert_eq!(e.srtt(), s0, "窄化域 srtt 零扰动");
+        assert_eq!(e.rttvar(), v0, "窄化域 rttvar 零扰动");
+        assert!(e.sample(4_000, false), "同值非重传样正常入账（对照域）");
+        assert_eq!(e.srtt(), (7 * 10_000 + 4_000) / 8, "滑动账随行");
+        assert_eq!(e.rttvar(), (3 * 5_000 + 6_000) / 8);
+    }
+
+    /// RTT 夹逼：RTO 导出 = srtt + 4·rttvar 夹逼域 [RTO_INIT_NS,
+    /// RTO_MAX_NS] 双向 + rttvar 下限夹逼（(3v+Δ)/8 向零塌缩禁令）。
+    #[test]
+    fn rtt_clamp_bounds() {
+        use super::{RttEst, RTO_INIT_NS, RTO_MAX_NS, RTTVAR_MIN};
+        // 下限域：微样 → 原始导出远低于 RTO_INIT_NS → 夹逼下限
+        let mut lo = RttEst::new();
+        assert!(lo.first_sample(4), "首样受理"); // srtt=4, var=2 → raw=12
+        assert_eq!(lo.srtt(), 4);
+        assert_eq!(lo.rttvar(), 2);
+        assert_eq!(lo.rto(), RTO_INIT_NS, "下限夹逼（回环短臂口径）");
+        // 上限域：巨样 → 原始导出远超 RTO_MAX_NS → 夹逼上限
+        let mut hi = RttEst::new();
+        assert!(hi.first_sample(4_000_000_000), "首样受理"); // raw = 4e9 + 8e9 = 1.2e10
+        assert_eq!(hi.rto(), RTO_MAX_NS, "上限夹逼（退避封顶同源）");
+        // rttvar 下限夹逼：Δ=0 收敛拍 → (3v+0)/8 向零塌缩 → RTTVAR_MIN 兜底
+        let mut z = RttEst::new();
+        assert!(z.first_sample(8), "首样受理"); // var=4
+        assert!(z.sample(8, false), "Δ=0 收敛样");
+        assert_eq!(z.rttvar(), RTTVAR_MIN, "(3·4+0)/8=1 → 下限兜底");
+    }
+
+    /// 拥塞三态之一·慢启动（RFC 5681 §3.1）：IW = 2·SMSS 起步 +
+    /// cwnd += acked_bytes + 有效无穷阈域 + 发送资格 min 门控。
+    #[test]
+    fn cc_slow_start() {
+        use super::CcState;
+        let mut c = CcState::new(100);
+        assert_eq!(c.cwnd(), 200, "IW = 2·SMSS");
+        assert_eq!(c.ssthresh(), u32::MAX, "初态有效无穷（慢启动直达）");
+        assert_eq!(c.smss(), 100);
+        c.on_ack(100);
+        assert_eq!(c.cwnd(), 300, "慢启动 += acked_bytes");
+        c.on_ack(150);
+        assert_eq!(c.cwnd(), 450);
+        // 发送资格：min(可用窗, cwnd) 双向门控
+        assert_eq!(c.send_credit(1_000), 450, "窗域大于 cwnd → cwnd 主导");
+        assert_eq!(c.send_credit(120), 120, "窗域小于 cwnd → 窗主导");
+    }
+
+    /// 拥塞三态之二·拥塞避免（越 ssthresh 转 SMSS²/cwnd）：RTO 定标
+    /// 后越阈转换 + 整数除下限 1 单调域。
+    #[test]
+    fn cc_congestion_avoidance() {
+        use super::CcState;
+        let mut c = CcState::new(64); // IW=128
+        c.on_rto(512); // ssthresh = max(256, 128) = 256, cwnd 回 128
+        assert_eq!(c.ssthresh(), 256);
+        assert_eq!(c.cwnd(), 128);
+        c.on_ack(128); // 慢启动尾拍：128 < 256 → += 128 → 256
+        assert_eq!(c.cwnd(), 256, "慢启动顶满阈域");
+        c.on_ack(0); // 256 ≥ 256 → 拥塞避免：4096/256 = 16
+        assert_eq!(c.cwnd(), 272, "SMSS²/cwnd = 16");
+        c.on_ack(0); // 4096/272 = 15
+        assert_eq!(c.cwnd(), 287, "整数除随行");
+        c.on_ack(0); // 4096/287 = 14
+        assert_eq!(c.cwnd(), 301);
+        // 下限 1 域：cwnd 越过 SMSS² → inc 兜底 1（单调不凝滞）
+        // smss=4 → IW=8；on_rto(8) → ssthresh=max(4,8)=8、cwnd=8
+        //（== 阈域即转 CA——RFC 5681 cwnd ≥ ssthresh 口径）
+        let mut big = CcState::new(4);
+        big.on_rto(8);
+        assert_eq!(big.ssthresh(), 8);
+        assert_eq!(big.cwnd(), 8);
+        big.on_ack(8); // CA：16/8 = 2
+        assert_eq!(big.cwnd(), 10, "== 阈域即转 CA：16/8 = 2");
+        big.on_ack(0); // CA：16/10 = 1（整数除）
+        assert_eq!(big.cwnd(), 11);
+        big.on_ack(0); // CA：16/11 = 1 → 兜底 1 域
+        assert_eq!(big.cwnd(), 12, "SMSS²/cwnd 兜底 1（单调不凝滞）");
+    }
+
+    /// 拥塞三态之三·RTO 折叠回升（§3.1 原初域）：ssthresh =
+    /// max(flight/2, 2·SMSS) 下限闸 + cwnd 回初值 + 折叠后回升弧
+    /// （慢启动 → 越阈 → 拥塞避免）。
+    #[test]
+    fn cc_rto_collapse_recovery() {
+        use super::CcState;
+        let mut c = CcState::new(100); // IW=200
+                                       // 折叠前爬升（慢启动域）
+        c.on_ack(300);
+        assert_eq!(c.cwnd(), 500);
+        // RTO 折叠：flight=800 → ssthresh = max(400, 200) = 400，cwnd 回 200
+        c.on_rto(800);
+        assert_eq!(c.ssthresh(), 400);
+        assert_eq!(c.cwnd(), 200, "回初值 IW");
+        // 回升弧：慢启动 200→300→400（越阈前 SS 域），随后 CA
+        c.on_ack(100);
+        c.on_ack(100);
+        assert_eq!(c.cwnd(), 400, "慢启动回升至阈域（== 边界）");
+        c.on_ack(0); // CA：10_000/400 = 25
+        assert_eq!(c.cwnd(), 425, "越阈转拥塞避免");
+        c.on_ack(0); // 10_000/425 = 23
+        assert_eq!(c.cwnd(), 448);
+        // 深折叠域：2·SMSS 下限闸 + == 阈域即转 CA（RFC 5681 ≥ 口径）
+        c.on_rto(100);
+        assert_eq!(c.ssthresh(), 200, "2·SMSS 下限闸");
+        assert_eq!(c.cwnd(), 200);
+        c.on_ack(100); // CA：10_000/200 = 50（== 阈域不再走 SS）
+        assert_eq!(c.cwnd(), 250, "== 阈域即转 CA 域随行取证");
+        // 发送资格门控随行（折叠深谷域资格被 cwnd 压制）
+        assert_eq!(c.send_credit(10_000), 250);
+        assert_eq!(c.send_credit(64), 64);
+    }
+
+    /// 持久四态之一·零窗臂幂等武装 + 窗重开解除：arm 幂等（重入不换
+    /// 基）→ release 解除 + 未武装幂等 false → 解除后 poll 恒 Idle。
+    #[test]
+    fn persist_arm_release() {
+        use super::{PersistDecision, PersistTimer};
+        let t0 = 1_000_000;
+        let mut p = PersistTimer::new();
+        assert!(!p.is_armed());
+        p.arm(t0, 1000);
+        assert!(p.is_armed() && p.retries() == 0);
+        p.arm(t0 + 500, 999_999); // 幂等：已武装不重置不换基
+        assert_eq!(
+            p.poll(t0 + 999),
+            PersistDecision::Idle,
+            "臂时基定格（原基 1000）"
+        );
+        assert_eq!(
+            p.poll(t0 + 1000),
+            PersistDecision::Probe,
+            "原基到期（非重入基）"
+        );
+        // 窗重开解除 + 幂等域
+        assert!(p.release());
+        assert!(!p.is_armed() && p.retries() == 0, "解除复位");
+        assert!(!p.release(), "未武装幂等 false（证据面）");
+        assert_eq!(p.poll(t0 + 9_999), PersistDecision::Idle, "解除后恒 Idle");
+    }
+
+    /// 持久四态之二·到期探测拍退避封顶：Probe 拍退避 rto << retries
+    /// 逐拍对账 + 大基 RTO 封顶 RTO_MAX_NS + 探测段 1 字节常量域。
+    #[test]
+    fn persist_probe_backoff() {
+        use super::{PersistDecision, PersistTimer, PROBE_SEG_LEN, RTO_MAX_NS};
+        assert_eq!(PROBE_SEG_LEN, 1, "探测段 = una 起 1 字节");
+        let t0 = 0;
+        let mut p = PersistTimer::new();
+        p.arm(t0, 1000);
+        assert_eq!(p.poll(t0 + 999), PersistDecision::Idle, "差一拍不早醒");
+        assert_eq!(p.poll(t0 + 1000), PersistDecision::Probe, "首探测拍");
+        assert_eq!(p.retries(), 1);
+        assert_eq!(
+            p.poll(t0 + 1000 + 2000 - 1),
+            PersistDecision::Idle,
+            "退避 2× 前不醒"
+        );
+        assert_eq!(
+            p.poll(t0 + 3000),
+            PersistDecision::Probe,
+            "二探测拍（rto<<1 再臂）"
+        );
+        assert_eq!(p.retries(), 2);
+        assert_eq!(
+            p.poll(t0 + 3000 + 4000),
+            PersistDecision::Probe,
+            "三探测拍（rto<<2）"
+        );
+        assert_eq!(p.retries(), 3);
+        // 大基 RTO 封顶域：base = RTO_MAX_NS → 退避 << 不超 RTO_MAX_NS
+        let mut cap = PersistTimer::new();
+        cap.arm(t0, RTO_MAX_NS);
+        assert_eq!(cap.poll(t0 + RTO_MAX_NS), PersistDecision::Probe);
+        assert_eq!(
+            cap.poll(t0 + RTO_MAX_NS + RTO_MAX_NS),
+            PersistDecision::Probe,
+            "退避封顶 RTO_MAX_NS（<<1 饱和截断）"
+        );
+    }
+
+    /// 持久四态之三·独立拍数上限 Broken fail-visible：PERSIST_MAX_PROBES
+    /// 拍 Probe 全谱 → 下一到期 Broken + 解除武装（拆除判定交消费方）。
+    #[test]
+    fn persist_broken_fail_visible() {
+        use super::{PersistDecision, PersistTimer, PERSIST_MAX_PROBES};
+        let mut p = PersistTimer::new();
+        p.arm(0, 1000);
+        let mut now = 1000u64;
+        for i in 1..=PERSIST_MAX_PROBES {
+            assert_eq!(p.poll(now), PersistDecision::Probe, "第 {i} 探测拍");
+            now += 1000 << i; // 退避 rto << retries（基 1000）
+        }
+        assert_eq!(p.retries(), PERSIST_MAX_PROBES);
+        assert_eq!(p.poll(now), PersistDecision::Broken, "上限耗尽显形");
+        assert!(!p.is_armed(), "解除武装（fail-visible）");
+        assert_eq!(p.poll(now), PersistDecision::Idle);
+    }
+
+    /// 连接表之一·alloc/lookup/close 基础谱：分配落位 + 键查双访问面
+    /// + 槽位直驱 + 关闭归还槽体 + 关闭后键失（fail-visible）。
+    #[test]
+    fn conntable_alloc_lookup_close() {
+        use super::{ConnState, ConnTable, ConnTableError, TcpConn, TcpKey};
+        let k0 = TcpKey {
+            src_ip: [10, 0, 2, 15],
+            src_port: 42000,
+            dst_ip: [10, 0, 2, 2],
+            dst_port: 80,
+        };
+        let k1 = TcpKey {
+            src_ip: [10, 0, 2, 15],
+            src_port: 42002,
+            dst_ip: [10, 0, 2, 2],
+            dst_port: 443,
+        };
+        let mut t: ConnTable<8, TcpConn> = ConnTable::new();
+        assert_eq!(t.live(), 0);
+        assert_eq!(
+            t.alloc(
+                k0,
+                TcpConn::new(ConnState::Established, 1000, 2000, 512, 536)
+            ),
+            Ok(0)
+        );
+        assert_eq!(
+            t.alloc(k1, TcpConn::new(ConnState::SynSent, 3000, 4000, 512, 536)),
+            Ok(1)
+        );
+        assert_eq!(t.live(), 2);
+        // 键查双访问面
+        assert_eq!(t.lookup(&k0).map(|c| c.state), Some(ConnState::Established));
+        if let Some(c) = t.lookup_mut(&k1) {
+            c.state = ConnState::Established;
+        }
+        assert_eq!(
+            t.lookup(&k1).map(|c| c.state),
+            Some(ConnState::Established),
+            "mut 面驱动随行"
+        );
+        // 槽位直驱 + 槽体六面聚合账（reasm 基线 = 对端 ISN+1）
+        assert_eq!(t.key_at(0), Some(&k0));
+        assert_eq!(t.slot(0).map(|c| c.reasm.rcv_nxt()), Some(2001));
+        assert_eq!(t.key_at(8), None, "越界 fail-visible");
+        // 关闭归还槽体 + 关闭后键失
+        let closed = t.close(0);
+        assert_eq!(closed.map(|c| c.state), Ok(ConnState::Established));
+        assert_eq!(t.live(), 1);
+        assert_eq!(t.lookup(&k0), None, "关闭后键失");
+        assert_eq!(t.close(0), Err(ConnTableError::NotFound), "空槽再关拒");
+        assert_eq!(t.close(9), Err(ConnTableError::NotFound), "越界拒");
+    }
+
+    /// 连接表之二·重复键拒：同四元组二次 alloc 拒（槽体零扰动）+
+    /// 不同端口对并存域。
+    #[test]
+    fn conntable_duplicate_reject() {
+        use super::{ConnState, ConnTable, ConnTableError, TcpConn, TcpKey};
+        let k = TcpKey {
+            src_ip: [10, 0, 2, 15],
+            src_port: 42004,
+            dst_ip: [10, 0, 2, 2],
+            dst_port: 8080,
+        };
+        let mut t: ConnTable<8, TcpConn> = ConnTable::new();
+        assert_eq!(
+            t.alloc(
+                k,
+                TcpConn::new(ConnState::Established, 1000, 2000, 512, 536)
+            ),
+            Ok(0)
+        );
+        assert_eq!(t.lookup(&k).map(|c| c.swnd.una()), Some(1000));
+        // 重复键：拒 + 原槽零扰动
+        assert_eq!(
+            t.alloc(k, TcpConn::new(ConnState::SynSent, 9999, 9999, 512, 536)),
+            Err(ConnTableError::Duplicate)
+        );
+        assert_eq!(t.live(), 1, "重复分配不入账");
+        assert_eq!(t.lookup(&k).map(|c| c.swnd.una()), Some(1000), "原槽体保持");
+        assert_eq!(t.key_at(1), None, "未落新槽");
+        // 四元组任一分量不同 = 新键（端口对区分域）
+        let k2 = TcpKey {
+            src_port: 42005,
+            ..k
+        };
+        assert_eq!(
+            t.alloc(
+                k2,
+                TcpConn::new(ConnState::Established, 1000, 2000, 512, 536)
+            ),
+            Ok(1)
+        );
+        assert_eq!(t.live(), 2);
+    }
+
+    /// 连接表之三·释放复用：中位槽关闭 → 下轮 alloc 低址落位（复用
+    /// 域）+ close_key 键关闭路径随行。
+    #[test]
+    fn conntable_release_reuse() {
+        use super::{ConnState, ConnTable, TcpConn, TcpKey};
+        let key = |p: u16| TcpKey {
+            src_ip: [10, 0, 2, 15],
+            src_port: p,
+            dst_ip: [10, 0, 2, 2],
+            dst_port: 80,
+        };
+        let mut t: ConnTable<8, TcpConn> = ConnTable::new();
+        for (i, p) in [42010u16, 42011, 42012].iter().enumerate() {
+            assert_eq!(
+                t.alloc(
+                    key(*p),
+                    TcpConn::new(ConnState::Established, 1000, 2000, 512, 536)
+                ),
+                Ok(i)
+            );
+        }
+        // 中位槽释放 → 新键低址复用槽 1
+        assert!(t.close(1).is_ok());
+        let k4 = key(42013);
+        assert_eq!(
+            t.alloc(
+                k4,
+                TcpConn::new(ConnState::Established, 1000, 2000, 512, 536)
+            ),
+            Ok(1),
+            "释放槽低址复用"
+        );
+        // close_key 键关闭路径
+        assert!(t.close_key(&k4).is_ok());
+        assert_eq!(t.live(), 2);
+        assert_eq!(
+            t.close_key(&k4),
+            Err(super::ConnTableError::NotFound),
+            "键失 fail-visible"
+        );
+    }
+
+    /// 连接表之四·耗尽 fail-visible：8 槽填满 → 第 9 分配 Exhausted →
+    /// 释放一槽恢复受理（预算面 fail-visible，无无界增长）。
+    #[test]
+    fn conntable_exhaustion() {
+        use super::{ConnState, ConnTable, ConnTableError, TcpConn, TcpKey};
+        let key = |p: u16| TcpKey {
+            src_ip: [10, 0, 2, 15],
+            src_port: p,
+            dst_ip: [10, 0, 2, 2],
+            dst_port: 80,
+        };
+        let mut t: ConnTable<8, TcpConn> = ConnTable::new();
+        for i in 0u16..8 {
+            assert_eq!(
+                t.alloc(
+                    key(43000 + i),
+                    TcpConn::new(ConnState::Established, 1000, 2000, 512, 536)
+                ),
+                Ok(i as usize),
+                "第 {} 槽受理",
+                i
+            );
+        }
+        assert_eq!(t.live(), 8);
+        assert_eq!(
+            t.alloc(
+                key(43099),
+                TcpConn::new(ConnState::Established, 1000, 2000, 512, 536)
+            ),
+            Err(ConnTableError::Exhausted),
+            "耗尽 fail-visible"
+        );
+        // 释放一槽 → 恢复受理（复用域闭环）
+        assert!(t.close(3).is_ok());
+        assert_eq!(
+            t.alloc(
+                key(43099),
+                TcpConn::new(ConnState::Established, 1000, 2000, 512, 536)
+            ),
+            Ok(3),
+            "释放后恢复受理"
+        );
     }
 }

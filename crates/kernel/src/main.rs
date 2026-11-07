@@ -82,8 +82,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90）。
-const SELFTEST_TOTAL: usize = 90;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91）。
+const SELFTEST_TOTAL: usize = 91;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -6425,6 +6425,318 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t90, "sched-handoff");
+
+    // 91) M38-TCP1 TCP 服务化批次活体（笔③）：五面 pulse 协议机 + vnet
+    //     连接表驱动六相位——(a) 双连接并行交付（双四元组入表 + 交错
+    //     回环段逐连接独立基线推进 + 拼接字节级对账 + 重复键/越界槽
+    //     fail-visible 随行）；(b) Karn 窄化（首样 → 重传样拒零扰动 →
+    //     滑动样整数账 RFC 6298）；(c) 拥塞折叠回升（慢启动 → RTO 折叠
+    //     定标 → 回升弧越阈转 CA + 发送资格门控）；(d) 零窗探测击发
+    //     （幂等臂 → Probe 电击发 una 起 1 字节探测段 + 退避二拍 → 窗
+    //     重开解除）；(e) 窗缩放有效窗（双 SYN 协商生效 + wire<<shift
+    //     有效窗 + 未缩放直通回归锚）；(f) 统计清账（probe 计数对账 +
+    //     双连接 close 释放复用域 + 模板/WS/重组零残留）。LUMINA-T91-OK。
+    let t91 = {
+        let mut run = || -> bool {
+            const A_CL: u16 = 42010;
+            const A_SV: u16 = 42011;
+            const B_CL: u16 = 42012;
+            const B_SV: u16 = 42013;
+            const SMSS: u32 = 536;
+            use pulse::tcp::{
+                self, ConnState, PersistDecision, RtoDecision, TcpKey, PROBE_SEG_LEN,
+            };
+            let mut ok = true;
+            // 跨自检隔离（t89 揭雷纪律同款——真电臂跨自检存活防御面）
+            vnet::tcp_retx_reset();
+            vnet::tcp_conn_reset_all();
+            let mut frame = [0u8; vnet::PULSE_FRAME_MAX];
+            // 杂帧排水（共享交接环非空域——t86-g/t89-e 外部 SYN 的 slirp
+            // 迟到应答经 t90 风暴窗异步落入 PULSE_RX；全量过真实分派链
+            // 排空，绑定前执行不落槽——t69 ARP_SETTLE 同族时序面）
+            let mut drained = 0usize;
+            while let Some(fl) = vnet::pulse_rx_pop(&mut frame) {
+                let _ = vnet::tcp_dispatch(&frame[..fl]);
+                drained += 1;
+                if drained >= 64 {
+                    break;
+                }
+            }
+            let _ = writeln!(log, "tcp-svc: pre-drain stray frames = {drained}");
+            let blank = || vnet::TcpRxSeg {
+                src_port: 0,
+                dst_port: 0,
+                seq: 0,
+                ack_seq: 0,
+                flags: 0,
+                window: 0,
+                len: 0,
+                data: [0; vnet::TCP_SEG_MAX],
+            };
+            let pop_dispatch = |frame: &mut [u8]| -> Option<vnet::TcpRxSeg> {
+                let mut got = None;
+                let mut spin = 0u64;
+                while spin < 40_000_000 {
+                    if let Some(fl) = vnet::pulse_rx_pop(frame) {
+                        got = Some(fl);
+                        break;
+                    }
+                    spin += 1;
+                    core::hint::spin_loop();
+                }
+                let fl = got?;
+                vnet::tcp_dispatch(&frame[..fl])?;
+                vnet::tcp_recv()
+            };
+            // (a) 双连接并行交付：双四元组入表（低址 0/1）+ 交错回环段
+            let f_bind = vnet::tcp_bind(A_SV).is_ok()
+                && vnet::tcp_bind(A_CL).is_ok()
+                && vnet::tcp_bind(B_SV).is_ok()
+                && vnet::tcp_bind(B_CL).is_ok();
+            ok &= f_bind;
+            let ka = TcpKey {
+                src_ip: [10, 0, 2, 15],
+                src_port: A_CL,
+                dst_ip: [10, 0, 2, 15],
+                dst_port: A_SV,
+            };
+            let kb = TcpKey {
+                src_ip: [10, 0, 2, 15],
+                src_port: B_CL,
+                dst_ip: [10, 0, 2, 15],
+                dst_port: B_SV,
+            };
+            let o0 = vnet::tcp_conn_open(ka, ConnState::Established, 1000, 2000, 512, SMSS);
+            let o1 = vnet::tcp_conn_open(kb, ConnState::Established, 3000, 4000, 512, SMSS);
+            ok &= o0 == Ok(0) && o1 == Ok(1);
+            let f_tab = vnet::tcp_conn_count() == 2
+                && vnet::tcp_conn_key_at(0) == Some(ka)
+                && vnet::tcp_conn_key_at(1) == Some(kb)
+                && vnet::tcp_conn_state(0) == Some(ConnState::Established)
+                && vnet::tcp_conn_state(1) == Some(ConnState::Established);
+            ok &= f_tab;
+            let s0r = vnet::tcp_stats();
+            // 重复键拒（连接表负例随行——fail-visible）
+            let f_dup =
+                vnet::tcp_conn_open(ka, ConnState::Established, 1000, 2000, 512, SMSS).is_err();
+            ok &= f_dup;
+            // 交错：a1 → b1 → a2（逐连接独立重组窗——基线各自推进）
+            const A1: &[u8] = b"T91-A1";
+            const A2: &[u8] = b"-A2";
+            const B1: &[u8] = b"T91-B1";
+            ok &=
+                vnet::tcp_loopback_tx(A_CL, A_SV, 2001, 0, tcp::FLAG_ACK | tcp::FLAG_PSH, 512, A1);
+            ok &=
+                vnet::tcp_loopback_tx(B_CL, B_SV, 4001, 0, tcp::FLAG_ACK | tcp::FLAG_PSH, 512, B1);
+            ok &= vnet::tcp_loopback_tx(
+                A_CL,
+                A_SV,
+                2001 + A1.len() as u32,
+                0,
+                tcp::FLAG_ACK | tcp::FLAG_PSH,
+                512,
+                A2,
+            );
+            let mut out = [0u8; vnet::TCP_SEG_MAX];
+            let sa1 = pop_dispatch(&mut frame).unwrap_or_else(blank);
+            let f_seg1 = sa1.seq == 2001 && sa1.len == A1.len();
+            ok &= f_seg1;
+            let sb1 = pop_dispatch(&mut frame).unwrap_or_else(blank);
+            let f_segb = sb1.seq == 4001 && sb1.len == B1.len();
+            ok &= f_segb;
+            let sa2 = pop_dispatch(&mut frame).unwrap_or_else(blank);
+            let f_seg2 = sa2.seq == 2007 && sa2.len == A2.len();
+            ok &= f_seg2;
+            // 逐连接交付：a1 → conn0（InOrder 即排空）；b1 → conn1（并行独立
+            // 域）；a2 → conn0（后继段单独交付——乱序拼接域归 t89-d 锚）
+            let d1 = vnet::tcp_conn_deliver(
+                0,
+                sa1.seq,
+                sa1.ack_seq,
+                sa1.flags,
+                sa1.window,
+                &sa1.data[..sa1.len],
+                &mut out,
+            );
+            let f_d1 = d1 == Some(A1.len()) && &out[..A1.len()] == A1;
+            ok &= f_d1;
+            let d_b = vnet::tcp_conn_deliver(
+                1,
+                sb1.seq,
+                sb1.ack_seq,
+                sb1.flags,
+                sb1.window,
+                &sb1.data[..sb1.len],
+                &mut out,
+            );
+            let f_db = d_b == Some(B1.len()) && &out[..B1.len()] == B1;
+            ok &= f_db;
+            let d2 = vnet::tcp_conn_deliver(
+                0,
+                sa2.seq,
+                sa2.ack_seq,
+                sa2.flags,
+                sa2.window,
+                &sa2.data[..sa2.len],
+                &mut out,
+            );
+            let f_d2 = d2 == Some(A2.len()) && &out[..A2.len()] == A2;
+            ok &= f_d2;
+            // 逐连接基线独立推进（双窗互不干扰——conn0 基线 2001+6+3=2010）
+            ok &= vnet::tcp_conn_reasm_state(0) == Some((2010, 0));
+            ok &= vnet::tcp_conn_reasm_state(1) == Some((4001 + B1.len() as u32, 0));
+            // fail-visible 随行：越界槽位交付 None
+            let f_neg = vnet::tcp_conn_deliver(9, 0, 0, 0, 0, b"x", &mut out).is_none();
+            ok &= f_neg;
+            let _ = writeln!(
+                log,
+                "tcp-svc: phase-a bind={f_bind} o0={o0:?} o1={o1:?} tab={f_tab} dup={f_dup} \\\n                 seg1={f_seg1} segb={f_segb} seg2={f_seg2} d1={f_d1} db={f_db} d2={f_d2} \\\n                 rs0={:?} rs1={:?} neg={f_neg}",
+                vnet::tcp_conn_reasm_state(0),
+                vnet::tcp_conn_reasm_state(1)
+            );
+            // (b) Karn 窄化（协议级——t89 (a)/(b) 同款先例）：首样 → 重传
+            //     样拒零扰动 → 滑动样 RFC 6298 整数账（RTTVAR 先行序）
+            ok &= vnet::tcp_conn_rtt_sample(0, 10_000_000, false) == Some(true); // 首样
+            let rt0 = vnet::tcp_conn_rtt_state(0);
+            ok &= rt0.is_some_and(|(s, v, _)| s == 10_000_000 && v == 5_000_000);
+            ok &= vnet::tcp_conn_rtt_sample(0, 4_000_000, true) == Some(false); // Karn 拒
+            ok &= vnet::tcp_conn_rtt_state(0) == rt0; // 窄化域零扰动
+            ok &= vnet::tcp_conn_rtt_sample(0, 4_000_000, false) == Some(true); // 滑动
+            ok &= vnet::tcp_conn_rtt_state(0)
+                .is_some_and(|(s, v, _)| s == 9_250_000 && v == 2_625_000);
+            let _ = writeln!(
+                log,
+                "tcp-svc: karn narrowed srtt={:?}",
+                vnet::tcp_conn_rtt_state(0)
+            );
+            // (c) 拥塞折叠回升（SMSS=536 → IW=1072）：慢启动 → RTO 折叠
+            //     定标 → 回升弧越阈转 CA + 发送资格门控双向
+            ok &= vnet::tcp_conn_send_credit(1, u32::MAX) == Some(1072); // IW
+            ok &= vnet::tcp_conn_cc_ack(1, 1072) == Some((2144, u32::MAX)); // SS
+            ok &= vnet::tcp_conn_cc_ack(1, 1072) == Some((3216, u32::MAX)); // SS
+                                                                            // RTO 折叠：flight=3216 → ssthresh = max(1608, 1072) = 1608；cwnd 回 IW
+            ok &= vnet::tcp_conn_cc_rto(1, 3216) == Some((1072, 1608));
+            // 回升弧：SS 1072→1608；== 阈域转 CA（536²/1608=178 → 160）
+            ok &= vnet::tcp_conn_cc_ack(1, 536) == Some((1608, 1608));
+            ok &= vnet::tcp_conn_cc_ack(1, 0) == Some((1786, 1608));
+            ok &= vnet::tcp_conn_cc_ack(1, 0) == Some((1946, 1608));
+            ok &= vnet::tcp_conn_send_credit(1, 1_000_000) == Some(1946); // cwnd 主导
+            ok &= vnet::tcp_conn_send_credit(1, 64) == Some(64); // 窗主导
+            let _ = writeln!(
+                log,
+                "tcp-svc: cc collapse-recovered cwnd=1946 ssthresh=1608"
+            );
+            // (d) 零窗探测击发（电气域）：模板 9 字节 @1000..1009 → 零窗
+            //     ACK → 幂等臂 → Probe 电击发 una 起 1 字节探测段 → 退避
+            //     二拍 → 窗重开解除
+            const PROBE_TPL: &[u8] = b"PROBEDATA";
+            let t_d = 10_000_000u64;
+            ok &= vnet::tcp_conn_sent(0, 1).is_some_and(|nxt| nxt == 1001);
+            ok &= vnet::tcp_conn_retx_arm_at(
+                0,
+                t_d,
+                A_CL,
+                A_SV,
+                1000,
+                0,
+                tcp::FLAG_ACK | tcp::FLAG_PSH,
+                512,
+                PROBE_TPL,
+            );
+            ok &= vnet::tcp_conn_retx_armed(0)
+                .is_some_and(|(seq, retries)| seq == 1000 && retries == 0);
+            // 重传拍（合成拍模板→连接表驱动）：差一拍不早醒
+            ok &= vnet::tcp_conn_retx_tick_at(0, t_d + pulse::tcp::RTO_INIT_NS - 1)
+                == RtoDecision::Idle;
+            ok &= vnet::tcp_conn_deliver(0, 0, 1001, tcp::FLAG_ACK, 0, &[], &mut out) == Some(0); // 零窗 ACK
+            ok &= vnet::tcp_conn_swnd_state(0)
+                .is_some_and(|(una, nxt, w)| una == 1001 && nxt == 1001 && w == 0);
+            let pt = t_d + pulse::tcp::RTO_INIT_NS;
+            ok &= vnet::tcp_conn_persist_arm(0, pt, 1000);
+            ok &= vnet::tcp_conn_persist_arm(0, pt + 1, 999); // 幂等：臂时基定格
+            let pr0 = vnet::tcp_probe_count();
+            ok &= vnet::tcp_conn_persist_tick_at(0, pt + 999) == PersistDecision::Idle; // 差一拍
+            ok &= vnet::tcp_conn_persist_tick_at(0, pt + 1000) == PersistDecision::Probe; // 电击发
+            ok &= vnet::tcp_probe_count() == pr0 + 1;
+            let prseg = pop_dispatch(&mut frame).unwrap_or_else(blank);
+            ok &= prseg.seq == 1001 && prseg.len == PROBE_SEG_LEN && prseg.data[0] == b'R';
+            let _ = writeln!(
+                log,
+                "tcp-svc: probe-1 fired seq={} len={PROBE_SEG_LEN}",
+                prseg.seq
+            );
+            // 二拍退避（1000 << 1 = 2000）
+            ok &= vnet::tcp_conn_persist_tick_at(0, pt + 1000 + 2000 - 1) == PersistDecision::Idle;
+            ok &= vnet::tcp_conn_persist_tick_at(0, pt + 3000) == PersistDecision::Probe;
+            ok &= vnet::tcp_probe_count() == pr0 + 2;
+            // 第二探测段出环对账（退避拍电击发——字节级同账）
+            let prseg2 = pop_dispatch(&mut frame).unwrap_or_else(blank);
+            ok &= prseg2.seq == 1001 && prseg2.len == PROBE_SEG_LEN && prseg2.data[0] == b'R';
+            // 窗重开：探测字节入账（nxt 1002）→ ACK ack=1002 窗=4 → 解除
+            ok &= vnet::tcp_conn_sent(0, 1).is_some_and(|nxt| nxt == 1002);
+            ok &= vnet::tcp_conn_deliver(0, 0, 1002, tcp::FLAG_ACK, 4, &[], &mut out) == Some(0);
+            ok &= vnet::tcp_conn_swnd_state(0)
+                .is_some_and(|(una, nxt, w)| una == 1002 && nxt == 1002 && w == 4);
+            ok &= vnet::tcp_conn_persist_release(0);
+            ok &= vnet::tcp_conn_persist_tick_at(0, pt + 999_999) == PersistDecision::Idle; // 解除后恒 Idle
+            let _ = writeln!(log, "tcp-svc: window-reopened persist released ok={ok}");
+            // d-2 连接表驱动重传拍收口：到期 Due → 全模板 9 B 电重发（字节
+            //     级对账 + TCP_RETX 计数显形）→ ACK 越过清账（模板弃置）
+            ok &= vnet::tcp_conn_retx_tick_at(0, t_d + pulse::tcp::RTO_INIT_NS) == RtoDecision::Due;
+            let rtseg = pop_dispatch(&mut frame).unwrap_or_else(blank);
+            ok &= rtseg.seq == 1000
+                && rtseg.len == PROBE_TPL.len()
+                && &rtseg.data[..PROBE_TPL.len()] == PROBE_TPL;
+            ok &= vnet::tcp_stats().retx == s0r.retx + 1; // 连接表驱动电重发击发
+            ok &= vnet::tcp_conn_retx_clear(0, 1002); // ACK 越过清账
+            ok &= vnet::tcp_conn_retx_armed(0).is_none();
+            let _ = writeln!(log, "tcp-svc: conn-retx full-template fired + ack-cleared");
+            // (e) 窗缩放有效窗：双 SYN 协商生效（对端通告移位 = 2）→
+            //     wire 16384 << 2 = 65536；未缩放直通回归锚（conn0 移位 0）
+            ok &= vnet::tcp_conn_ws_negotiate(1, true, 2, true, Some(2)) == Some(2);
+            ok &= vnet::tcp_conn_ws_negotiate(0, true, 2, false, Some(2)) == Some(0); // 对端缺 SYN → 0
+            ok &= vnet::tcp_conn_sent(1, 1).is_some_and(|nxt| nxt == 3001);
+            ok &=
+                vnet::tcp_conn_deliver(1, 0, 3001, tcp::FLAG_ACK, 16384, &[], &mut out) == Some(0);
+            ok &= vnet::tcp_conn_swnd_state(1)
+                .is_some_and(|(una, nxt, w)| una == 3001 && nxt == 3001 && w == 16384);
+            ok &= vnet::tcp_conn_effective_win(1) == Some(65_536); // wire << 2
+            ok &= vnet::tcp_conn_effective_win(0) == Some(4); // 移位 0 直通（wire==effective）
+            let _ = writeln!(
+                log,
+                "tcp-svc: ws effective win conn1=65536 conn0=wire-passthrough"
+            );
+            // (f) 统计清账：probe 计数对账 + 双连接 close（归还槽体 +
+            //     模板/WS 清零）+ 释放复用域 + 零残留收场
+            ok &= vnet::tcp_probe_count() == 2;
+            let sf = vnet::tcp_stats();
+            ok &= sf.probe == 2;
+            ok &= vnet::tcp_conn_close(0).is_ok();
+            ok &= vnet::tcp_conn_close(1).is_ok();
+            ok &= vnet::tcp_conn_count() == 0;
+            ok &= vnet::tcp_conn_key_at(0).is_none() && vnet::tcp_conn_key_at(1).is_none();
+            ok &= vnet::tcp_conn_retx_armed(0).is_none() && vnet::tcp_conn_retx_armed(1).is_none();
+            ok &= vnet::tcp_conn_deliver(0, 0, 0, 0, 0, b"x", &mut out).is_none(); // 关闭后槽失
+            ok &= vnet::tcp_unbind(A_SV).is_ok();
+            ok &= vnet::tcp_unbind(A_CL).is_ok();
+            ok &= vnet::tcp_unbind(B_SV).is_ok();
+            ok &= vnet::tcp_unbind(B_CL).is_ok();
+            // 收场清账：连接面全清（下轮自检隔离域）
+            vnet::tcp_conn_reset_all();
+            vnet::tcp_retx_reset();
+            ok
+        };
+        let ok = run();
+        if ok {
+            let _ = writeln!(
+                log,
+                "LUMINA-T91-TCP conns=2 probe=2 ws=2 karn=narrowed cc=recovered"
+            );
+            let _ = writeln!(log, "LUMINA-T91-OK");
+        }
+        ok
+    };
+    report(&mut log, t91, "tcp-svc");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {

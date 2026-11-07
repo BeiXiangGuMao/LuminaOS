@@ -34,6 +34,17 @@
 //!
 //! v0 单流单臂单窗（多连接扩容随服务化批次挂账）。
 //!
+//! **M38-TCP1 段：TCP 服务化批次（连接表驱动五面承接）**——pulse::tcp
+//! 五面（WinScale、RttEst、CongestCtl、PersistTimer、ConnTable——重传
+//! 面 v0 简化域收口）的电气承接：**合成拍模板 → 连接表驱动**——定容
+//! 8 槽四元组查表 [`TCP_CONNS`]，每槽 RTO 重传臂 [`tcp_conn_retx_tick_at`]
+//! 与零窗探测电击发 [`tcp_conn_persist_tick_at`]（重发 una 起 1 字节
+//! ——RFC 9293 §3.7.3），交付管线 [`tcp_conn_deliver`]（ACK 滑窗推进、
+//! 槽内重组），WS 有效窗解释面 [`tcp_conn_effective_win`]。t91 活体
+//! 六相位：双连接并行交付、Karn 窄化、拥塞折叠回升、零窗探测电击发、
+//! 窗缩放有效窗、统计清账。M37-N1 单流单臂单窗三件保留作 t89 逐位回
+//! 归锚不迁移不删除。
+//!
 //! unsafe 白名单说明（SPEC 第十七章）：本模块是「框架内核白名单模块」，
 //! virtio MMIO 寄存器访问无法以 safe Rust 表达；逐处携带 SAFETY 注释，
 //! 访问基址一律来自本模块 probe 成功后的映射窗（界内偏移，无越界路径）。
@@ -1588,6 +1599,8 @@ pub struct TcpStats {
     pub reasm_queued: u64,
     /// M37-N1 外部 RX 形段注入数（对接收口）。
     pub ext_rx: u64,
+    /// M38-TCP1 零窗探测拍电击发数（Probe 回环击发——una 起 1 字节）。
+    pub probe: u64,
 }
 
 /// TCP 面统计读出。
@@ -1602,6 +1615,7 @@ pub fn tcp_stats() -> TcpStats {
         retx_miss: TCP_RETX_MISS.load(Ordering::Relaxed),
         reasm_queued: TCP_REASM_QUEUED.load(Ordering::Relaxed),
         ext_rx: TCP_EXT_RX.load(Ordering::Relaxed),
+        probe: TCP_PROBE.load(Ordering::Relaxed),
     }
 }
 
@@ -2131,6 +2145,455 @@ pub fn tcp_external_syn(
         }
     }
     true
+}
+
+// ===================== M38-TCP1：TCP 服务化批次（连接表驱动五面承接） =====================
+//
+// pulse::tcp 五面（WinScale / RttEst / CongestCtl / PersistTimer /
+// ConnTable——重传面 v0 简化域收口）的 kernel::vnet 电气承接：**合成拍
+// 模板 → 连接表驱动**（每槽 RTO 重传臂 + 零窗探测电击发 + 交付管线，
+// 模板阵与 WS 旁账随槽一一对应）。M37-N1 单流单臂单窗（[`TCP_REASM`]/
+// [`TCP_RTO`]/[`TCP_RETX_TPL`] 静态三件）保留作 t89 逐位回归锚——不迁
+// 移不删除（旧 encode 路径未缩放回归锚同款纪律）。
+
+/// 连接表容量（定容 8 槽——[`pulse::tcp::ConnTable`] N 实参；PU-P06
+/// 预算内固定布局，单槽 ≈ 1.1 KiB、8 槽表 ≈ 9 KiB 量级 .bss 定容）。
+pub const TCP_CONN_SLOTS: usize = 8;
+
+/// 连接表（四元组键 → [`pulse::tcp::TcpConn`] 槽体；单语境 static——
+/// 访问纪律同 [`TCP_PORTS`]）。
+static mut TCP_CONNS: pulse::tcp::ConnTable<TCP_CONN_SLOTS, pulse::tcp::TcpConn> =
+    pulse::tcp::ConnTable::new();
+
+/// 每槽重传/探测模板（电重发载体——与槽位一一对应；close 随行弃置）。
+static mut TCP_CONN_TPL: [Option<RetxTpl>; TCP_CONN_SLOTS] = [const { None }; TCP_CONN_SLOTS];
+
+/// 每槽 WS 协商移位（旁账——v0 槽体定式不扩域，有效窗解释面；
+/// [`pulse::tcp::ws_negotiate`] 生效值落位域）。
+static mut TCP_CONN_WS: [u8; TCP_CONN_SLOTS] = [0; TCP_CONN_SLOTS];
+
+/// 零窗探测拍电击发计数（Probe 回环击发——t91 证据域）。
+static TCP_PROBE: AtomicU64 = AtomicU64::new(0);
+
+/// 连接表句柄（&raw 手法同 [`tcp_ports_mut`] 纪律）。
+fn tcp_conns_mut() -> Option<&'static mut pulse::tcp::ConnTable<TCP_CONN_SLOTS, pulse::tcp::TcpConn>>
+{
+    // SAFETY: 单语境（kmain 自检串行段）独占访问；&raw 手法不建立
+    //         static 引用（static_mut_refs 免疫）。
+    unsafe { (&raw mut TCP_CONNS).as_mut() }
+}
+
+/// 连接表驱动开连接：四元组键 → [`pulse::tcp::TcpConn`] 建槽入表
+/// （重组基线 = 对端 ISN + 1，发送窗自本端 ISN 起，拥塞账 IW =
+/// 2·SMSS）。槽满/重复键 fail-visible（[`pulse::tcp::ConnTableError`]）。
+pub fn tcp_conn_open(
+    key: pulse::tcp::TcpKey,
+    state: pulse::tcp::ConnState,
+    isn: u32,
+    peer_isn: u32,
+    peer_win: u16,
+    smss: u32,
+) -> Result<usize, pulse::tcp::ConnTableError> {
+    let conn = pulse::tcp::TcpConn::new(state, isn, peer_isn, peer_win, smss);
+    match tcp_conns_mut() {
+        Some(t) => t.alloc(key, conn),
+        // 结构性不可达（static const 初始化）——防御面 NotFound
+        None => Err(pulse::tcp::ConnTableError::NotFound),
+    }
+}
+
+/// 在册连接数。
+pub fn tcp_conn_count() -> usize {
+    tcp_conns_mut().map_or(0, |t| t.live())
+}
+
+/// 槽位键读出（None = 空槽/越界）。
+pub fn tcp_conn_key_at(idx: usize) -> Option<pulse::tcp::TcpKey> {
+    tcp_conns_mut()?.key_at(idx).copied()
+}
+
+/// 槽位连接状态读出。
+pub fn tcp_conn_state(idx: usize) -> Option<pulse::tcp::ConnState> {
+    tcp_conns_mut()?.slot(idx).map(|c| c.state)
+}
+
+/// 槽位重组窗读数：Some((基线 rcv_nxt, 在窗缓存字节))。
+pub fn tcp_conn_reasm_state(idx: usize) -> Option<(u32, usize)> {
+    tcp_conns_mut()?
+        .slot(idx)
+        .map(|c| (c.reasm.rcv_nxt(), c.reasm.pending()))
+}
+
+/// 连接表驱动接收管线（交付域）：ACK 滑窗推进（陈旧/越域 ACK 零动作
+/// ——M37-N1 语义逐位保持）+ 非空载荷乱序重组（槽内 reasm——InOrder
+/// 前缀拼接交付 / Queued 缓存待洞 / Old/Overflow 段级拒收 v0 偏差同
+/// 源）。拼接交付字节写 `out`，返回交付数（None = 槽位缺失
+/// fail-visible；0 = 纯旗段/基线有洞/段级拒收）。
+#[allow(clippy::too_many_arguments)]
+pub fn tcp_conn_deliver(
+    idx: usize,
+    seq: u32,
+    ack_seq: u32,
+    flags: u16,
+    window: u16,
+    payload: &[u8],
+    out: &mut [u8],
+) -> Option<usize> {
+    let conn = tcp_conns_mut()?.slot_mut(idx)?;
+    if flags & pulse::tcp::FLAG_ACK != 0 {
+        conn.swnd.on_ack(ack_seq, window); // 陈旧/越域 ACK 零动作（显形域）
+    }
+    if payload.is_empty() {
+        return Some(0);
+    }
+    match conn.reasm.insert(seq, payload) {
+        pulse::tcp::ReasmOutcome::InOrder => Some(conn.reasm.drain(out)),
+        _ => Some(0), // Queued/Old/Overflow：零交付（缓存/拒收域）
+    }
+}
+
+/// 槽位重传臂武装（合成时刻版——t91 确定性驱动面）：模板定格 + 槽内
+/// RTO 首臂（幂等——已武装不重置，最早未确认段主导）。payload 越域
+/// fail-visible 拒臂。
+#[allow(clippy::too_many_arguments)]
+pub fn tcp_conn_retx_arm_at(
+    idx: usize,
+    now_ns: u64,
+    src_port: u16,
+    dst_port: u16,
+    seq: u32,
+    ack_seq: u32,
+    flags: u16,
+    window: u16,
+    payload: &[u8],
+) -> bool {
+    if payload.len() > TCP_SEG_MAX {
+        return false;
+    }
+    let tpl = RetxTpl {
+        src_port,
+        dst_port,
+        seq,
+        ack_seq,
+        flags,
+        window,
+        payload: {
+            let mut d = [0u8; TCP_SEG_MAX];
+            d[..payload.len()].copy_from_slice(payload);
+            d
+        },
+        len: payload.len(),
+    };
+    // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+    unsafe {
+        if idx >= TCP_CONN_SLOTS {
+            return false;
+        }
+        if let Some(arr) = (&raw mut TCP_CONN_TPL).as_mut() {
+            arr[idx] = Some(tpl);
+        }
+    }
+    tcp_conns_mut()
+        .and_then(|t| t.slot_mut(idx))
+        .map(|c| {
+            c.rto.arm(now_ns, seq);
+            true
+        })
+        .unwrap_or(false)
+}
+
+/// 槽位重传拍（合成时刻版）：槽内 RTO 到期判定 → Due 时槽模板电重发
+/// （回环通路——[`tcp_loopback_tx`] 同构组帧，段参数原样定格）→
+/// [`TCP_RETX`] 计数显形；Exhausted 弃槽模板（拆除判定交消费方）。
+pub fn tcp_conn_retx_tick_at(idx: usize, now_ns: u64) -> pulse::tcp::RtoDecision {
+    let decision = tcp_conns_mut()
+        .and_then(|t| t.slot_mut(idx))
+        .map(|c| c.rto.poll(now_ns))
+        .unwrap_or(pulse::tcp::RtoDecision::Idle);
+    if decision == pulse::tcp::RtoDecision::Due {
+        let fired = {
+            // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+            unsafe { (&raw mut TCP_CONN_TPL).as_ref() }
+                .and_then(|arr| arr.get(idx))
+                .and_then(|t| t.as_ref())
+                .is_some_and(|t| {
+                    tcp_loopback_tx(
+                        t.src_port,
+                        t.dst_port,
+                        t.seq,
+                        t.ack_seq,
+                        t.flags,
+                        t.window,
+                        &t.payload[..t.len],
+                    )
+                })
+        };
+        if fired {
+            TCP_RETX.fetch_add(1, Ordering::Relaxed);
+        } else {
+            TCP_RETX_MISS.fetch_add(1, Ordering::Relaxed);
+        }
+    } else if decision == pulse::tcp::RtoDecision::Exhausted {
+        // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+        unsafe {
+            if let Some(arr) = (&raw mut TCP_CONN_TPL).as_mut() {
+                if idx < TCP_CONN_SLOTS {
+                    arr[idx] = None;
+                }
+            }
+        }
+    }
+    decision
+}
+
+/// 槽位重传臂取证读出：Some((armed_seq, retries))；未武装/槽缺失 None。
+pub fn tcp_conn_retx_armed(idx: usize) -> Option<(u32, u32)> {
+    tcp_conns_mut()?.slot(idx).and_then(|c| {
+        c.rto
+            .is_armed()
+            .then_some((c.rto.armed_seq(), c.rto.retries()))
+    })
+}
+
+/// 槽位重传臂 ACK 清账：`ack` 越过武装段首序号 → 解除武装、退避复位、
+/// 槽模板弃置（[`tcp_retx_clear`] 同构——连接表驱动域）。返回 true =
+/// 本臂已清（false = 陈旧/重复 ACK 或未武装——零动作）。
+pub fn tcp_conn_retx_clear(idx: usize, ack_seq: u32) -> bool {
+    let cleared = tcp_conns_mut()
+        .and_then(|t| t.slot_mut(idx))
+        .map(|c| c.rto.on_ack(ack_seq))
+        .unwrap_or(false);
+    if cleared {
+        // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+        unsafe {
+            if let Some(arr) = (&raw mut TCP_CONN_TPL).as_mut() {
+                if idx < TCP_CONN_SLOTS {
+                    arr[idx] = None;
+                }
+            }
+        }
+    }
+    cleared
+}
+
+/// 槽位零窗探测臂武装（幂等——已武装不重置不换基）。
+pub fn tcp_conn_persist_arm(idx: usize, now_ns: u64, rto_ns: u64) -> bool {
+    tcp_conns_mut()
+        .and_then(|t| t.slot_mut(idx))
+        .map(|c| {
+            c.persist.arm(now_ns, rto_ns);
+            true
+        })
+        .unwrap_or(false)
+}
+
+/// 槽位零窗探测解除（对端窗重开——幂等，未武装 false）。
+pub fn tcp_conn_persist_release(idx: usize) -> bool {
+    tcp_conns_mut()
+        .and_then(|t| t.slot_mut(idx))
+        .map(|c| c.persist.release())
+        .unwrap_or(false)
+}
+
+/// 槽位探测拍（合成时刻版）：到期判定 → Probe 时探测段电击发——
+/// **重发 una 起 1 字节**（RFC 9293 §3.7.3；槽模板域内按
+/// `una − 模板 seq` 取偏移字节，回环通路 1 字节段）→ [`TCP_PROBE`]
+/// 计数显形；Broken 时同步解除武装（拆除判定交消费方，fail-visible）。
+pub fn tcp_conn_persist_tick_at(idx: usize, now_ns: u64) -> pulse::tcp::PersistDecision {
+    let decision = tcp_conns_mut()
+        .and_then(|t| t.slot_mut(idx))
+        .map(|c| c.persist.poll(now_ns))
+        .unwrap_or(pulse::tcp::PersistDecision::Idle);
+    if decision == pulse::tcp::PersistDecision::Probe {
+        let probe_src: Option<(u32, &RetxTpl)> = {
+            // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+            unsafe { (&raw mut TCP_CONN_TPL).as_ref() }.and_then(|arr| {
+                arr.get(idx).and_then(|t| {
+                    t.as_ref().map(|tpl| {
+                        let una = tcp_conns_mut()
+                            .and_then(|tab| tab.slot(idx))
+                            .map(|c| c.swnd.una())
+                            .unwrap_or(tpl.seq);
+                        (una, tpl)
+                    })
+                })
+            })
+        };
+        let fired = probe_src.is_some_and(|(una, t)| {
+            let off = una.wrapping_sub(t.seq) as usize;
+            if off < t.len {
+                tcp_loopback_tx(
+                    t.src_port,
+                    t.dst_port,
+                    una,
+                    t.ack_seq,
+                    t.flags,
+                    t.window,
+                    &t.payload[off..off + pulse::tcp::PROBE_SEG_LEN],
+                )
+            } else {
+                false
+            }
+        });
+        if fired {
+            TCP_PROBE.fetch_add(1, Ordering::Relaxed);
+        } else {
+            TCP_RETX_MISS.fetch_add(1, Ordering::Relaxed);
+        }
+    } else if decision == pulse::tcp::PersistDecision::Broken {
+        // Broken：解除武装已由槽内 poll 承担（fail-visible——拆除判定
+        // 交消费方；模板同步弃置）
+        // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+        unsafe {
+            if let Some(arr) = (&raw mut TCP_CONN_TPL).as_mut() {
+                if idx < TCP_CONN_SLOTS {
+                    arr[idx] = None;
+                }
+            }
+        }
+    }
+    decision
+}
+
+/// 零窗探测拍计数读出（t91 证据域）。
+pub fn tcp_probe_count() -> u64 {
+    TCP_PROBE.load(Ordering::Relaxed)
+}
+
+/// 槽位 RTT 采样（首样/滑动自动分域——未 primed 走首样、已 primed 走
+/// 滑动；Karn 窄化 = `from_retx` 拒采双域通行）。返回 Some(true) = 采
+/// 样入账；Some(false) = 拒采（窄化/退化域——fail-visible）；None = 槽
+/// 位缺失。
+pub fn tcp_conn_rtt_sample(idx: usize, r_ns: u64, from_retx: bool) -> Option<bool> {
+    tcp_conns_mut().and_then(|t| t.slot_mut(idx)).map(|c| {
+        if c.rttest.primed() {
+            c.rttest.sample(r_ns, from_retx)
+        } else {
+            !from_retx && c.rttest.first_sample(r_ns)
+        }
+    })
+}
+
+/// 槽位 RTT 估计读数：Some((srtt, rttvar, rto))——rto 为 RFC 6298
+/// 导出夹逼域值（证据面）。
+pub fn tcp_conn_rtt_state(idx: usize) -> Option<(u64, u64, u64)> {
+    tcp_conns_mut()?.slot(idx).map(|c| {
+        let e = &c.rttest;
+        (e.srtt(), e.rttvar(), e.rto())
+    })
+}
+
+/// 槽位拥塞 ACK 拍：返回 Some((cwnd, ssthresh)) 后读数。
+pub fn tcp_conn_cc_ack(idx: usize, acked_bytes: u32) -> Option<(u32, u32)> {
+    tcp_conns_mut().and_then(|t| t.slot_mut(idx)).map(|c| {
+        c.cwnd.on_ack(acked_bytes);
+        (c.cwnd.cwnd(), c.cwnd.ssthresh())
+    })
+}
+
+/// 槽位拥塞 RTO 折叠拍：返回 Some((cwnd, ssthresh)) 后读数。
+pub fn tcp_conn_cc_rto(idx: usize, flight: u32) -> Option<(u32, u32)> {
+    tcp_conns_mut().and_then(|t| t.slot_mut(idx)).map(|c| {
+        c.cwnd.on_rto(flight);
+        (c.cwnd.cwnd(), c.cwnd.ssthresh())
+    })
+}
+
+/// 槽位发送资格（拥塞域门控）：min(avail_window, cwnd)。
+pub fn tcp_conn_send_credit(idx: usize, avail_window: u32) -> Option<u32> {
+    tcp_conns_mut()?
+        .slot(idx)
+        .map(|c| c.cwnd.send_credit(avail_window))
+}
+
+/// 槽位 WS 协商落账：生效移位（双方 SYN 域）写 WS 旁账并回读。
+pub fn tcp_conn_ws_negotiate(
+    idx: usize,
+    local_syn: bool,
+    local_shift: u8,
+    peer_syn: bool,
+    peer_shift: Option<u8>,
+) -> Option<u8> {
+    let shift = pulse::tcp::ws_negotiate(local_syn, local_shift, peer_syn, peer_shift);
+    // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+    unsafe {
+        if let Some(arr) = (&raw mut TCP_CONN_WS).as_mut() {
+            if idx < TCP_CONN_SLOTS {
+                arr[idx] = shift;
+                return Some(shift);
+            }
+        }
+    }
+    None
+}
+
+/// 槽位有效窗读出：`wire << 协商移位`（[`pulse::tcp::ws_effective_window`]
+/// ——未协商槽移位 0 = 未缩放直通回归锚）。
+pub fn tcp_conn_effective_win(idx: usize) -> Option<u32> {
+    let c = tcp_conns_mut()?.slot(idx)?;
+    // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+    let shift = unsafe {
+        (&raw mut TCP_CONN_WS)
+            .as_ref()
+            .and_then(|arr| arr.get(idx))
+            .copied()
+            .unwrap_or(0)
+    };
+    Some(pulse::tcp::ws_effective_window(c.swnd.window(), shift))
+}
+
+/// 槽位发送窗读数：Some((una, nxt, peer_win))。
+pub fn tcp_conn_swnd_state(idx: usize) -> Option<(u32, u32, u16)> {
+    tcp_conns_mut()?
+        .slot(idx)
+        .map(|c| (c.swnd.una(), c.swnd.nxt(), c.swnd.window()))
+}
+
+/// 槽位发出记账：`nxt` 前进 `len`，返回新 nxt（None = 槽位缺失）。
+pub fn tcp_conn_sent(idx: usize, len: u32) -> Option<u32> {
+    tcp_conns_mut().and_then(|t| t.slot_mut(idx)).map(|c| {
+        c.swnd.sent(len);
+        c.swnd.nxt()
+    })
+}
+
+/// 槽位关闭：连接表释放复用 + 槽模板弃置 + WS 旁账清零（零残留域）。
+pub fn tcp_conn_close(idx: usize) -> Result<pulse::tcp::TcpConn, pulse::tcp::ConnTableError> {
+    // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+    unsafe {
+        if let Some(arr) = (&raw mut TCP_CONN_TPL).as_mut() {
+            if idx < TCP_CONN_SLOTS {
+                arr[idx] = None;
+            }
+        }
+        if let Some(ws) = (&raw mut TCP_CONN_WS).as_mut() {
+            if idx < TCP_CONN_SLOTS {
+                ws[idx] = 0;
+            }
+        }
+    }
+    match tcp_conns_mut() {
+        Some(t) => t.close(idx),
+        None => Err(pulse::tcp::ConnTableError::NotFound),
+    }
+}
+
+/// 连接面跨自检隔离（[`tcp_retx_reset`] 同款纪律——表/模板/WS 旁账/
+/// 探测计数全清）。
+pub fn tcp_conn_reset_all() {
+    // SAFETY: 单语境独占；&raw 手法不建立 static 引用。
+    unsafe {
+        if let Some(t) = (&raw mut TCP_CONNS).as_mut() {
+            *t = pulse::tcp::ConnTable::new();
+        }
+        if let Some(arr) = (&raw mut TCP_CONN_TPL).as_mut() {
+            *arr = [const { None }; TCP_CONN_SLOTS];
+        }
+        if let Some(ws) = (&raw mut TCP_CONN_WS).as_mut() {
+            *ws = [0; TCP_CONN_SLOTS];
+        }
+    }
+    TCP_PROBE.store(0, Ordering::Relaxed);
 }
 
 /// ARP 回声活体成果（t69 断言域）。
