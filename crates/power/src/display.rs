@@ -10,6 +10,15 @@
 //! `kernel::fb`（M34-P4 小节）。与电源三阶段（[`crate::decide`]）的
 //! 协同经 [`directive_for`] 闭集映射 + [`crate::can_transition`] 迁移闸
 //! 上游把关：`Active→Restore / Idle→DimTo(25) / Suspend|Hibernate→Blank`。
+//!
+//! **M39-DPMS 电气面随行摘牌注**：QEMU stdvga 可取证域电气落位
+//! （kernel::fb::dpms_set 四态——SR01 消隐位 + Misc Output 同步极性域
+//! 写/读回在环，blank/unblank 登记面电气挂接随行）；真机 DPMS 语义
+//! （背光调光/面板响应）窗口裁决不变——亮度档位契约仍为登记面（无
+//! 物理调光效应，不虚报）。**引用偏差随行登记**：本模块头注旧引
+//! 「PR-P04 口径」——指标手册 v1.0/v1.2 与 Prism 细则双源一致定义
+//! PR-P04 = Vulkan 计算着色器可用（docs/PDF-RECON.md §二 2.11 勘误），
+//! 电源协同语义面在手册无对应编号项，引用注记随本批勘误。
 
 use crate::PowerState;
 

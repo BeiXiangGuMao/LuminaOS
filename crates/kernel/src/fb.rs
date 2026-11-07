@@ -834,6 +834,9 @@ pub fn fb_display_blank() -> bool {
     }
     DISPLAY_BLANKED.store(true, Ordering::Release);
     DISPLAY_BRIGHTNESS.store(0, Ordering::Release);
+    // M39-DPMS：Blank 语义域电气挂接（消隐位 + 双极性翻转——SR01/MISCC
+    // 读回取证面 t94；真机 DPMS 语义窗口裁决不变）。
+    dpms_set(DpmsLevel::Off);
     true
 }
 
@@ -845,6 +848,8 @@ pub fn fb_display_unblank() -> bool {
     }
     DISPLAY_BLANKED.store(false, Ordering::Release);
     DISPLAY_BRIGHTNESS.store(100, Ordering::Release);
+    // M39-DPMS：Restore 语义域电气挂接（消隐清 + 极性正——全亮活跃域）。
+    dpms_set(DpmsLevel::On);
     true
 }
 
@@ -1497,4 +1502,92 @@ impl Framebuffer {
         }
         n
     }
+}
+
+// ---- M39-DPMS 电气面（stdvga VGA 寄存器域——M39-计划 口径注④） ----
+//
+// 真机 DPMS 语义（背光调光/面板响应）窗口裁决不变（M34-P4 既录）；本面
+// 落 QEMU stdvga 可取证域：序列器 SR01 消隐位 + Misc Output 同步极性域，
+// 写/读回电气在环（t94）。端口 IO 经 [`ostd::hw::ports`] 白名单原语
+// （内核 unsafe 允许层 +N 随行登记）。
+
+/// VGA 序列器索引端口。
+const VGA_SEQ_INDEX: u16 = 0x3C4;
+/// VGA 序列器数据端口。
+const VGA_SEQ_DATA: u16 = 0x3C5;
+/// VGA 杂项输出寄存器写端口。
+const VGA_MISC_WRITE: u16 = 0x3C2;
+/// VGA 杂项输出寄存器读端口。
+const VGA_MISC_READ: u16 = 0x3CC;
+
+/// SR01 bit5 = screen off（消隐位——VGA 序列器时钟域口径）。
+const SR01_SCREEN_OFF: u8 = 1 << 5;
+/// Misc Output bit6 = hsync 极性选择（DPMS Standby 域）。
+const MISCC_HSYNC_POL: u8 = 1 << 6;
+/// Misc Output bit7 = vsync 极性选择（DPMS Suspend 域）。
+const MISCC_VSYNC_POL: u8 = 1 << 7;
+
+/// DPMS 电气四态（VESA 显示电源口径的 VGA 寄存器域映射）：
+/// On = 消隐清 + 双极性正；Standby = hsync 极性翻转；Suspend = vsync
+/// 极性翻转；Off = 消隐置位 + 双极性翻转（no-sync）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DpmsLevel {
+    /// 全亮活跃（消隐清 + 极性正）。
+    On,
+    /// 待机（hsync 极性翻转）。
+    Standby,
+    /// 挂起（vsync 极性翻转）。
+    Suspend,
+    /// 熄屏（消隐置位 + 双极性翻转）。
+    Off,
+}
+
+/// 序列器寄存器读（索引写 + 数据读回——QEMU stdvga 读路径可取证）。
+fn dpms_seq_read(index: u8) -> u8 {
+    ports::write_u8(VGA_SEQ_INDEX, index);
+    ports::read_u8(VGA_SEQ_DATA)
+}
+
+/// 序列器寄存器写。
+fn dpms_seq_write(index: u8, value: u8) {
+    ports::write_u8(VGA_SEQ_INDEX, index);
+    ports::write_u8(VGA_SEQ_DATA, value);
+}
+
+/// SR01 消隐位读回（bit5 域——t94 相位断言消费）。
+pub fn dpms_sr01_screen_off() -> bool {
+    dpms_seq_read(1) & SR01_SCREEN_OFF != 0
+}
+
+/// Misc Output 寄存器读回（极性位域取证面——t94 相位断言消费）。
+pub fn dpms_misc_read() -> u8 {
+    ports::read_u8(VGA_MISC_READ)
+}
+
+/// DPMS 电气设定（唯一入口——AF-P06 同构纪律）：四态 → SR01 消隐位 +
+/// Misc Output 同步极性域一次成型写。读回域经 [`dpms_sr01_screen_off`]
+/// / [`dpms_misc_read`] 取证（写/读回闭环在环）。
+pub fn dpms_set(level: DpmsLevel) {
+    let sr01 = dpms_seq_read(1);
+    let misc = ports::read_u8(VGA_MISC_READ);
+    let (new_sr01, new_misc) = match level {
+        DpmsLevel::On => (
+            sr01 & !SR01_SCREEN_OFF,
+            misc & !(MISCC_HSYNC_POL | MISCC_VSYNC_POL),
+        ),
+        DpmsLevel::Standby => (
+            sr01 & !SR01_SCREEN_OFF,
+            (misc & !MISCC_VSYNC_POL) | MISCC_HSYNC_POL,
+        ),
+        DpmsLevel::Suspend => (
+            sr01 & !SR01_SCREEN_OFF,
+            (misc & !MISCC_HSYNC_POL) | MISCC_VSYNC_POL,
+        ),
+        DpmsLevel::Off => (
+            sr01 | SR01_SCREEN_OFF,
+            misc | MISCC_HSYNC_POL | MISCC_VSYNC_POL,
+        ),
+    };
+    dpms_seq_write(1, new_sr01);
+    ports::write_u8(VGA_MISC_WRITE, new_misc);
 }

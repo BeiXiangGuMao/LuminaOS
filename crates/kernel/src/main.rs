@@ -82,8 +82,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93）。
-const SELFTEST_TOTAL: usize = 93;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94）。
+const SELFTEST_TOTAL: usize = 94;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -6923,6 +6923,12 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t93 = t93_run(&mut log);
     report(&mut log, t93, "multi-user");
 
+    // t94) DPMS 电气面活体（M39-DPMS）：stdvga VGA 寄存器域写/读回
+    //      四相位（SR01 消隐位 + Misc Output 同步极性域）+ M34-P4 登记
+    //      面电气挂接（blank/unblank → dpms_set）。LUMINA-T94-OK。
+    let t94 = t94_run(&mut log);
+    report(&mut log, t94, "dpms-elec");
+
     /// t93 多用户纵深活体执行体（M39-MU）：独立函数承载——自检主函数
     /// 栈帧零扰动（M39-ASH 帧形态教训随行——t87 邻域栈槽形态守恒；
     /// 内联块撑帧 = t87 窗族确定性复发实录，独立函数形态翻绿在案）。
@@ -7344,4 +7350,59 @@ fn panic(info: &PanicInfo) -> ! {
     let _ = writeln!(vga, "\nKERNEL-PANIC: {info}");
     let _ = writeln!(serial, "LUMINA-PANIC-EXIT");
     kernel_exit(EXIT_FAILURE);
+}
+
+/// t94 DPMS 电气面活体执行体（M39-DPMS）：独立函数承载（帧形态守恒
+/// 纪律——M39-ASH/M39-MU 两度实录：内联块撑帧 = t87 窗族确定性复发，
+/// 独立函数形态守恒翻绿）。
+fn t94_run(log: &mut DualLog) -> bool {
+    let mut ok = true;
+    // (a) 基线读回：SR01 消隐位清（On 域）+ Misc Output 读通路在环
+    let misc0 = crate::fb::dpms_misc_read();
+    ok &= !crate::fb::dpms_sr01_screen_off();
+    let _ = writeln!(
+        log,
+        "t94: baseline sr01-off={} misc0={misc0:#04x}",
+        crate::fb::dpms_sr01_screen_off()
+    );
+    // (b) Off 电气：消隐置位 + 双极性翻转 → 读回对账 → On 恢复
+    crate::fb::dpms_set(crate::fb::DpmsLevel::Off);
+    let off_sr = crate::fb::dpms_sr01_screen_off();
+    let off_misc = crate::fb::dpms_misc_read();
+    ok &= off_sr;
+    ok &= off_misc & 0xC0 == 0xC0; // hsync+vsync 极性位域双置
+    crate::fb::dpms_set(crate::fb::DpmsLevel::On);
+    ok &= !crate::fb::dpms_sr01_screen_off();
+    ok &= crate::fb::dpms_misc_read() & 0xC0 == 0x00;
+    let _ = writeln!(log, "t94: off sr01={off_sr} misc={off_misc:#04x} restored");
+    // (c) Standby/Suspend 极性域：单边翻转读回对账
+    crate::fb::dpms_set(crate::fb::DpmsLevel::Standby);
+    let sb_misc = crate::fb::dpms_misc_read();
+    ok &= sb_misc & 0xC0 == 0x40; // hsync 翻转单独置位
+    crate::fb::dpms_set(crate::fb::DpmsLevel::Suspend);
+    let sp_misc = crate::fb::dpms_misc_read();
+    ok &= sp_misc & 0xC0 == 0x80; // vsync 翻转单独置位
+    crate::fb::dpms_set(crate::fb::DpmsLevel::On);
+    ok &= crate::fb::dpms_misc_read() & 0xC0 == 0x00;
+    let _ = writeln!(
+        log,
+        "t94: standby={sb_misc:#04x} suspend={sp_misc:#04x} restored"
+    );
+    // (d) M34-P4 登记面电气挂接：blank → Off 域 / unblank → On 域
+    ok &= crate::fb::fb_display_blank();
+    ok &= crate::fb::dpms_sr01_screen_off();
+    ok &= crate::fb::fb_display_unblank();
+    ok &= !crate::fb::dpms_sr01_screen_off();
+    let _ = writeln!(
+        log,
+        "t94: display-face blank/unblank electrical chain in-loop"
+    );
+    if ok {
+        let _ = writeln!(
+            log,
+            "LUMINA-T94-DPMS baseline={misc0:#04x} levels=on/off/standby/suspend readback=ok"
+        );
+        let _ = writeln!(log, "LUMINA-T94-OK");
+    }
+    ok
 }
