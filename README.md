@@ -6,10 +6,10 @@ workspace。内核可经 multiboot1 在 QEMU（`-smp 2`）上裸机启动，物�
 系统调用、能力化 IPC、swap 换页、持久化存储面全部在环；键盘/TTY 交互、
 显示面（1080p LFB/Surface 服务化/文本渲染/stage 合成器）、virtio-net 网络面
 （UDP/TCP 协议栈）全部在环；crystal 格式 v1 文件系统（WAL/快照）在环；
-**85 项裸机自检全绿并自动验收**（QEMU 退出码 33）。
+**91 项裸机自检全绿并自动验收**（QEMU 退出码 33）。
 
-当前状态：**v0.26.0（M37 双主战场轮收口：M37-⓪ 环境复原揭雷批〔跨核 FSBASE 上下文接管 + t69 收讫对账〕+ A1b kernel fb alpha 电气挂接〔SurfaceTable→Stack blend 电气化 + SYS_FB_SURFACE(40) + t88〕+ N1 TCP 重传面〔TSC 纳秒 RTO 臂 + 滑动窗口 + 分片重组 + 外部 RX 对接收口 + t89〕；自检 89/89）** · ROADMAP 制度化（M24→M35 十二里程碑逐笔
-落账）· 取证证据链全程落账（t 系活体 t66-t85 续编）· ADR 八项裁决在库
+当前状态：**v0.26.0（M38 用户点名质量轮收口：SP1 slots_pair 空槽切换竞态根治〔block/halt 双臂 SWITCHING 握手旗闸——M22-③ 同族窗族根治 + t90 风暴四相位零丢失唤醒活体〕+ TCP1 重传面 v0 简化域收口〔pulse::tcp 服务化五面 WinScale/RttEst/CongestCtl/PersistTimer/ConnTable + vnet 合成拍连接表驱动 + t91 活体六相位——Karn 窄化/拥塞折叠回升/零窗探测击发/窗缩放有效窗〕；自检 91/91）** · ROADMAP 制度化（M24→M38 十五里程碑逐笔
+落账）· 取证证据链全程落账（t 系活体 t66-t91 续编）· ADR 八项裁决在库
 （docs/adr/）· 五维成熟度 v3 = 6.4/10（docs/MATURITY.md）。
 
 ## 特性一览
