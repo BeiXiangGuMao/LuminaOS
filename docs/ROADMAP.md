@@ -378,7 +378,7 @@ M35 退出口径：harbor ≥150 符号机检闸双端在环（P2 DoD 收口）+
 |---|---|---|---|
 | **M39-计划**（笔①） | 本表落盘 + §三 M39 行落盘 + 远线滚动改写（六候选升入 M39 开工——M38-收尾 裁决实录） | docs/ROADMAP | ✅ 本提交 |
 | **M39-BBLS**（笔②） | busybox ls 深链批次：readlink(90) 收录（translate + kernel 语义落点）+ t92 活体（乱序目录制备 → `busybox ls` 派生消费 → 排序输出串口取证）+ BUSYBOX.md 成像表扩记 + SELFTEST 91→92 三面同步 | conduit/kernel/tools/xtask/docs | 🚧 |
-| **M39-ASH**（笔③） | ash 启动面：t93 活体（`busybox sh -c` 启动链 + 内建命令面 + 退出码传导对账）+ uid 族 StubUid 域扩容随行（若消费路径击发）+ SELFTEST 92→93 三面同步 | kernel/conduit/tools/xtask/docs | 🚧 |
+| **M39-ASH**（笔③） | ash 启动面揭雷批：getppid(109)/getpgrp(110) 合成桩收录（ash 启动链 job-control 消费——110 ENOSYS 滞死实录在案；真身份/进程族面随 M39-MU/进程族批次）+ ash 启动链滞域三滞点取证（① getpgrp ENOSYS 滞死→收录转正；② t52 timer::shutdown 后无抢占自旋族滞死——`busybox sh -c 'exit 7'` 纯退出命令亦滞 + t92 同车道 applet 收割全绿对照 + 布局扰动/独立函数/移尾三实验滞域鲁棒——非窗族定性；③ 有界收割时基失效面——t52 后 time::now() 刻度链退役，M38-SP1 既录，t87 anchor 定迭代同款不可用）——t93 活体转挂账 M40 标本流程（ash -c 启动链滞点定位），SELFTEST 92 维持如实不虚报 | conduit/docs | ⏸ 揭雷转挂账（本提交——t93/SELFTEST 93 计划面随滞域定性转挂账） |
 | **M39-MU**（笔④） | 多用户纵深 v0：任务凭据四元（task 面 + fork/spawn 继承）+ 身份 syscall 真面（getuid 族真读取 + setuid/setgid 根域——号域勘误随行）+ VFS 权限门禁覆盖表（open/unlink/faccessat + root 旁路）+ t94 活体 + SELFTEST 93→94 三面同步 | kernel/conduit/tools/xtask/docs | 🚧 |
 | **M39-DPMS**（笔⑤） | DPMS 电气面：stdvga VGA 寄存器域（SR01 消隐 + Misc Output 同步极性——写/读回电气）+ power::display 三态→电气目标映射挂接 + t95 活体 + SELFTEST 94→95 三面同步（真机窗口裁决不变） | kernel/power/tools/xtask/docs | 🚧 |
 | **M39-HBI**（笔⑥） | harbor C ABI 链接层：ostd 指针基元（checked/fail-visible）+ harbor::abi 薄壳（extern "C" 指针签名 mem/str 族 + kernel 目标导出面）+ 宿主对账测试 + H-P01 清点扩记（零内核自检增量） | ostd/harbor/docs | 🚧 |

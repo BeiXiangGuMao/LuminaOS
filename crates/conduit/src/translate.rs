@@ -189,8 +189,9 @@ pub fn translate(num: u64) -> LinAction {
         61 => LinAction::Wait4,
         63 => LinAction::UName,
         80 => LinAction::ChDir, // M34-B1 收录（busybox 覆盖度扩容批次一）
-        102 | 104 | 105 | 106 => LinAction::StubUid, // M34-B2 收录（uid/gid 族合成）
-        158 => LinAction::ArchPrctl, // M33-T1 收录（musl TLS 初始化链）
+        102 | 104 | 105 | 106 => LinAction::StubUid, // M34-B2 收录（uid/gid 族合成；真身份面随 M39-MU）
+        109 | 110 => LinAction::StubOk, // M39-ASH 收录（getppid/getpgrp 合成桩——v0 无父链/进程组域：ash 启动链 job-control 检查消费，110 ENOSYS 滞死实录在案；真面随进程族批次）
+        158 => LinAction::ArchPrctl,    // M33-T1 收录（musl TLS 初始化链）
         72 => LinAction::Fcntl,
         79 => LinAction::GetCwd,
         217 => LinAction::GetDents64,
