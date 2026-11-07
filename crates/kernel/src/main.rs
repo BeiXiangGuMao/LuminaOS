@@ -82,8 +82,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91）。
-const SELFTEST_TOTAL: usize = 91;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92）。
+const SELFTEST_TOTAL: usize = 92;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -6737,6 +6737,185 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t91, "tcp-svc");
+
+    // t92) busybox ls 深链活体（M39-BBLS）：乱序目录制备 → `busybox ls -1`
+    //      派生消费（openat 目录域 + getdents64 目录读 + musl 排序分配域
+    //      qsort/malloc 增长 + writev 输出）→ 串口排序取证（制备 ZZZ 首建
+    //      vs 输出 AAA 首行——xtask 双面板 pos(AAA)<pos(ZZZ) 断言）+
+    //      readlink(89) 语义落点消费（非链接域败码 1 + readlink -f realpath
+    //      链恒等）+ **stdio 保留域揭雷根治随行**（lin_abi 任务 open 槽搜索
+    //      自 3 起——本缺口下 applet「先开后写」stdout 全数被首开句柄互踩
+    //      吞没：t92 首拍 opendir 拾 fd 1 → writev(1) 写目录 EBADF raw=0x9
+    //      95 B 输出域蒸发 + t83 wc 计数行同伤回溯在案——仅因内容级断言
+    //      缺席而隐匿）。LUMINA-T92-OK 汇总标记（xtask S8/longrun 双面板
+    //      required）。
+    let t92 = {
+        let mut ok = true;
+        const DIR92: &[u8] = b"/t92d";
+        // (a) 乱序制备域：12 条目（ZZZ 首建 → AAA 末建——制备顺序与字典
+        //     序反相；f01..f10 中段填充——排序分配域 malloc 增长面消费）
+        const NAMES92: [&[u8]; 12] = [
+            b"LUMINA-T92-ZZZ",
+            b"f01-t92",
+            b"f02-t92",
+            b"f03-t92",
+            b"f04-t92",
+            b"f05-t92",
+            b"f06-t92",
+            b"f07-t92",
+            b"f08-t92",
+            b"f09-t92",
+            b"f10-t92",
+            b"LUMINA-T92-AAA",
+        ];
+        ok &= vfs::sys_mkdir(DIR92.as_ptr() as u64, DIR92.len() as u64) == 0;
+        let mut prep = 0usize;
+        let mut pbuf = [0u8; 48];
+        for name in NAMES92.iter() {
+            pbuf[..DIR92.len()].copy_from_slice(DIR92);
+            pbuf[DIR92.len()] = b'/';
+            pbuf[DIR92.len() + 1..DIR92.len() + 1 + name.len()].copy_from_slice(name);
+            let plen = DIR92.len() + 1 + name.len();
+            let h = vfs::sys_open_bytes(&pbuf[..plen], bedrock::abi::O_CREAT | 0b10);
+            if h >> 32 == 1 {
+                let payload: &[u8] = b"t92\n";
+                let w = vfs::sys_write(
+                    h & 0xFFFF_FFFF,
+                    payload.as_ptr() as u64,
+                    payload.len() as u64,
+                );
+                ok &= w >> 32 == 1 && (w & 0xFFFF_FFFF) as usize == payload.len();
+                prep += 1;
+                let _ = vfs::sys_close(h & 0xFFFF_FFFF);
+            } else {
+                ok = false;
+            }
+        }
+        // (a2) 内核侧目录域探针：open /t92d（0b01 读）→ readdir64_page
+        //      一页遍历 → 条目计数断言 12（fs 域满域实证——applet 空输出
+        //      鉴别面：fs 域 vs applet 车道）
+        let hd = vfs::sys_open_bytes(DIR92, 0b01);
+        ok &= hd >> 32 == 1;
+        let mut kbuf = [0u8; 2048];
+        let ktotal = vfs::readdir64_page(hd & 0xFFFF_FFFF, &mut kbuf).unwrap_or(0);
+        let mut kcount = 0usize;
+        let mut koff = 0usize;
+        while koff + 19 <= ktotal {
+            let reclen = u16::from_le_bytes([kbuf[koff + 16], kbuf[koff + 17]]) as usize;
+            if reclen == 0 {
+                break;
+            }
+            kcount += 1;
+            koff += reclen;
+        }
+        ok &= kcount == 12;
+        let _ = vfs::sys_close(hd & 0xFFFF_FFFF);
+        // (b) ls 派生消费 + readlink 双相位：四 applet 串行派生收割
+        //     （t83 同款装载链 + stdio 保留域根治随行；readlink 非链接域
+        //     → EINVAL → applet 败码 1；readlink -f = musl realpath 链
+        //     消费——首步 readlink(path) 非链接 EINVAL → lstat 环 → 无
+        //     链接恒等路径返回；**号域勘误揭雷随行**：M39-计划 笔① 登记
+        //     readlink(90) 误记——x86_64 号域 readlink=89（90=chmod），
+        //     首拍 LIN-DISPATCH-ERR num=89 errno=38 实录，90→89 随本笔
+        //     改正后 -f 相位转正）
+        let applets: [(&[&str], u64); 4] = [
+            (&["/bin/busybox", "ls", "-1", "/t92d"], 0),
+            (&["/bin/busybox", "readlink", "/t92d/f01-t92"], 1),
+            // -f 相位 = musl realpath 链恒等（89 收录后转正——打印原
+            // 路径 exit 0；号域勘误揭雷随行）
+            (&["/bin/busybox", "readlink", "-f", "/t92d"], 0),
+            // 对照面：/bin 命名空间目录 ls（applet 目录读第二数据点——
+            // stdio 保留域根治后与 /t92d 同车道）
+            (&["/bin/busybox", "ls", "-1", "/bin"], 0),
+        ];
+        let mut reaped: [u64; 4] = [u64::MAX; 4];
+        if let Some(blob) = vfs::read_image("/bin/busybox") {
+            for (i, (argv, expect)) in applets.iter().enumerate() {
+                let Some(frames) = vmm::global_frames() else {
+                    let _ = writeln!(log, "t92[{}]: frame service unreachable", i);
+                    ok = false;
+                    break;
+                };
+                // AT_RANDOM 熵：TSC 纪元拆字节（t82 同款）
+                let t = ostd::time::tsc_now();
+                let mut random = [0u8; 16];
+                for (j, b) in random.iter_mut().enumerate() {
+                    *b = (t >> ((j % 8) * 8)) as u8 ^ (j as u8).rotate_left(3);
+                }
+                match user::build_user_space_elf(
+                    &blob,
+                    argv,
+                    &["PATH=/bin"],
+                    random,
+                    "busybox",
+                    &mut || frames.alloc(),
+                ) {
+                    Ok(es) => {
+                        let mut slots = [0u64; 15];
+                        slots[0] = 0x202; // RFLAGS：IF=1
+                        slots[1] = es.entry;
+                        slots[7] = es.rsp;
+                        let id = task::spawn_fork_child(
+                            "busybox-applet",
+                            es.root,
+                            task::current_task_id(),
+                            slots,
+                            true,
+                        );
+                        if id == usize::MAX {
+                            let _ = writeln!(log, "t92[{}]: task slot exhausted", i);
+                            ok = false;
+                            break;
+                        }
+                        let r = procs::sys_wait_pid(id as u64);
+                        let rpid = (r >> 16) & 0xFFFF;
+                        let code = r & 0xFFFF;
+                        reaped[i] = code;
+                        let _ = writeln!(
+                            log,
+                            "t92[{}] {} reaped pid={rpid} exit={code} (expect {expect})",
+                            i, argv[1]
+                        );
+                        ok &= r >> 32 == 1; // WAITPID_OK_BIT
+                        ok &= rpid == id as u64;
+                        ok &= code == *expect;
+                        ok &= !task::task_alive(id);
+                    }
+                    Err(e) => {
+                        let _ = writeln!(log, "t92[{}]: user space build failed ({e:?})", i);
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+        } else {
+            let _ = writeln!(log, "t92: /bin/busybox media MISS");
+            ok = false;
+        }
+        // (c) 制备域清扫（叶子同域可摘——非空目录域由制备完整性保障）
+        let mut cleaned = 0usize;
+        for name in NAMES92.iter() {
+            pbuf[..DIR92.len()].copy_from_slice(DIR92);
+            pbuf[DIR92.len()] = b'/';
+            pbuf[DIR92.len() + 1..DIR92.len() + 1 + name.len()].copy_from_slice(name);
+            let plen = DIR92.len() + 1 + name.len();
+            if vfs::sys_remove_bytes(&pbuf[..plen]) == 0 {
+                cleaned += 1;
+            }
+        }
+        ok &= cleaned == 12;
+        ok &= vfs::sys_remove_bytes(DIR92) == 0; // 空目录摘除
+        let _ = writeln!(
+            log,
+            "LUMINA-T92-LS prepared={prep} kcount={kcount} cleaned={cleaned} order=ZZZ-first expect-output=AAA-first ls={} rlneg={} rlf={} lsbin={}",
+            reaped[0], reaped[1], reaped[2], reaped[3]
+        );
+        if ok {
+            let _ = writeln!(log, "LUMINA-T92-OK");
+        }
+        ok
+    };
+    report(&mut log, t92, "busybox-ls");
 
     let _ = writeln!(log, "----");
     if pass == SELFTEST_TOTAL {

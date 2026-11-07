@@ -580,12 +580,23 @@ fn open_impl(path_bytes: &[u8], mode: u64) -> u64 {
             return e.errno();
         }
     }
-    // 2) 调用方句柄表空闲位预检（满 → EMFILE，先验免泄漏）
+    // 2) 调用方句柄表空闲位预检（满 → EMFILE，先验免泄漏）。
+    // M39-BBLS stdio 保留域：lin_abi 任务 fd 0/1/2 = stdio 虚拟控制台
+    // 保留域（Linux 进程语义——open 槽搜索自 3 起；与 fstat fd<3 字符
+    // 设备合成 / lin_write fd 1/2 控制台回退同源语义的搜索面收口）。
+    // 揭雷回溯：本缺口下 applet「先开后写」stdout 全数被首开句柄互踩
+    // 吞没（t92 ls 实录——opendir 拾 fd 1 → stdio_redirect_active(1)
+    // → writev(1) 写目录 EBADF raw=0x9，95 B 输出域蒸发；t83 wc 计数
+    // 行同伤回溯在案——仅因内容级断言缺席而隐匿）；dup2/接线域不受
+    // 此限（直接写槽——sh 管道 dup2 等价面语义保持）。原生任务搜索
+    // 面 skip(1) 不变（句柄 0 = NULL 保留，M9-A）。
     let caller = task::current_task_id();
+    let stdio_reserved = task::task_is_lin_abi(caller);
+    let search_from = if stdio_reserved { 3 } else { 1 };
     let free = task::with_task_handles(caller, |t| {
         t.iter()
             .enumerate()
-            .skip(1)
+            .skip(search_from)
             .find_map(|(h, s)| s.is_none().then_some(h))
     });
     let Some(Some(free_handle)) = free else {

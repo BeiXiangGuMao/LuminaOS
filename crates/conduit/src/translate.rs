@@ -85,6 +85,13 @@ pub enum LinAction {
     /// sendfile(40)：文件→fd 拷贝（M36-BB3b 收录——cat applet 消费驱动；
     /// v0 内核侧 read+write 循环语义承载）。
     SendFile,
+    /// readlink(89)：M39-BBLS 收录（ls 深链批次——v0 无 symlink 实体，
+    /// 语义落点成形：路径存在域 ENOENT/EFAULT 由解析面显形，已存在
+    /// 非链接域 EINVAL fail-visible；真 readlink 随 symlink 实体批次。
+    /// **号域勘误随行揭雷**：M39-计划 笔① 登记 readlink(90) 误记——
+    /// x86_64 号域 readlink=89（90=chmod），busybox 实证 num=89
+    /// LIN-DISPATCH-ERR 取证在案）。
+    ReadLink,
     /// statx(332)：扩展 stat（M36-BB3b 收录——ls applet 条目域 musl 1.2
     /// lstat 落点消费驱动；v0 stat64 最小合成域 256 B）。
     Statx,
@@ -173,6 +180,7 @@ pub fn translate(num: u64) -> LinAction {
         20 => LinAction::WriteV,
         33 => LinAction::Dup2,
         40 => LinAction::SendFile, // M36-BB3b 收录（cat 消费驱动）
+        89 => LinAction::ReadLink, // M39-BBLS 收录（ls 深链批次——x86_64 号域勘误：readlink=89，90=chmod）
         332 => LinAction::Statx,   // M36-BB3b 收录（ls 条目域 musl lstat 落点）
         39 => LinAction::GetPid,
         57 => LinAction::Fork,
@@ -222,7 +230,7 @@ pub const R_OK: u64 = 4;
 /// 映射面覆盖度成像（数与 [`translate`] 收录一致；测试对账断言）。
 /// 口径 = LinAction 变体数 + ioctl 显形 1（StubUid 一变体承载 uid/gid
 /// 族四号——号域覆盖另见 BINDINGS 名表快照）。
-pub const COVERED: usize = 30;
+pub const COVERED: usize = 31;
 
 /// 相对路径 cwd join（M34-B1 单一事实源）：绝对路径原样；相对路径
 /// `cwd + path`（cwd 尾随分隔符去重——根哨兵 `"/"` 自然吞并）。词法
@@ -312,7 +320,11 @@ mod tests {
         assert_eq!(translate(6), LinAction::LStat);
         assert_eq!(translate(40), LinAction::SendFile);
         assert_eq!(translate(332), LinAction::Statx);
-        // 显形拒绝（未收录）
+        // M39-BBLS 收录（ls 深链批次——readlink 语义落点；号域勘误
+        // 随行揭雷：x86_64 readlink=89 非 90，busybox 实证取证）
+        assert_eq!(translate(89), LinAction::ReadLink);
+        assert_eq!(translate(90), LinAction::Err(ENOSYS)); // chmod 未收录（v0）
+                                                           // 显形拒绝（未收录）
         assert_eq!(translate(56), LinAction::Err(ENOSYS)); // clone（M33-P1 后仍挂账——vfork/clone 旗标面随后续批次）
         assert_eq!(translate(59), LinAction::Execve); // M33-P1 收录
         assert_eq!(translate(57), LinAction::Fork); // M33-P1 收录

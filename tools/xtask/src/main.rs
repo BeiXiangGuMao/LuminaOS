@@ -250,8 +250,8 @@ const KERNEL_ELF: &str =
 const KERNEL_BIN: &str =
     "/home/z/my-project/lumina-build/target/x86_64-unknown-none/release/lumina-kernel.bin";
 
-/// 自检标记总数（与内核 SELFTEST_TOTAL 同步；M12 完成态 = 43，M13-② 起 46，M15 起 52，M16 起 55，M17 起 58，M18 起 62，M21-③ 起 63，M23 起 65，M23-B 起 67，M23-C1 起 68，M23-C2 起 69，M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M25-T1 起 75，M26-T1 起 76，M28-T1 起 77，M27-N2 起 78，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91）。
-const SELFTEST_EXPECTED: &str = "91/91";
+/// 自检标记总数（与内核 SELFTEST_TOTAL 同步；M12 完成态 = 43，M13-② 起 46，M15 起 52，M16 起 55，M17 起 58，M18 起 62，M21-③ 起 63，M23 起 65，M23-B 起 67，M23-C1 起 68，M23-C2 起 69，M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M25-T1 起 75，M26-T1 起 76，M28-T1 起 77，M27-N2 起 78，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92）。
+const SELFTEST_EXPECTED: &str = "92/92";
 
 /// TLV 请求帧：tag 0x0007，value = b"lumina-m5"。
 const TLV_REQ: &[u8] = &[
@@ -509,7 +509,7 @@ fn smoke_inner() -> bool {
     // 3) 串口日志断言：启动标记 + 十五项自检 + 用户态标记 + TLV 双向
     //    （M31-W1 起：Weave 自举装载证据行在环——机器可验）
     let selftest_marker = format!("LUMINA-SELFTEST-PASS {SELFTEST_EXPECTED}");
-    let required: [&[u8]; 20] = [
+    let required: [&[u8]; 24] = [
         b"LUMINA-BOOT-OK",
         selftest_marker.as_bytes(),
         b"LUMINA-TLV-OK",
@@ -546,6 +546,13 @@ fn smoke_inner() -> bool {
         // t91 取证行 + 相位汇总标记）
         b"LUMINA-T91-TCP",
         b"LUMINA-T91-OK",
+        // M39-BBLS：busybox ls 深链活体（乱序目录制备 → ls -1 派生消费
+        // → 排序输出串口取证——AAA/ZZZ 位置序断言随面板尾 + readlink
+        // 双相位；t92 取证行 + 相位汇总标记）
+        b"LUMINA-T92-LS",
+        b"LUMINA-T92-OK",
+        b"LUMINA-T92-AAA",
+        b"LUMINA-T92-ZZZ",
         // M34-D1：驱动服务框架结构面 boot 注册证据（五驱动内核态占位）
         b"LUMINA-SVC-INIT",
     ];
@@ -556,6 +563,17 @@ fn smoke_inner() -> bool {
                 "[FAIL] S8-smoke：串口日志缺少标记 {}",
                 String::from_utf8_lossy(marker)
             );
+            ok = false;
+        }
+    }
+    // t92 排序取证：ls 输出字典序断言（制备反相 ZZZ 首建 vs 输出 AAA
+    // 首行——pos(AAA) < pos(ZZZ)；缺席由 required 面报，此处只判序）
+    if let (Some(pa), Some(pz)) = (
+        find(all.as_slice(), b"LUMINA-T92-AAA"),
+        find(all.as_slice(), b"LUMINA-T92-ZZZ"),
+    ) {
+        if pa >= pz {
+            eprintln!("[FAIL] S8-smoke：t92 排序取证失序（pos(AAA)={pa} >= pos(ZZZ)={pz}）");
             ok = false;
         }
     }
@@ -702,7 +720,7 @@ fn longrun_tlv_check(all: &[u8]) -> (bool, bool) {
 fn longrun_boot_fails(serial: &[u8], tlv_ok: bool, resp_checked: bool) -> Vec<String> {
     let mut fails = Vec::new();
     let selftest_marker = format!("LUMINA-SELFTEST-PASS {SELFTEST_EXPECTED}");
-    let markers: [&[u8]; 20] = [
+    let markers: [&[u8]; 24] = [
         b"LUMINA-BOOT-OK",
         selftest_marker.as_bytes(),
         b"LUMINA-TLV-OK",
@@ -722,11 +740,27 @@ fn longrun_boot_fails(serial: &[u8], tlv_ok: bool, resp_checked: bool) -> Vec<St
         b"LUMINA-T90-OK",
         b"LUMINA-T91-TCP",
         b"LUMINA-T91-OK",
+        b"LUMINA-T92-LS",
+        b"LUMINA-T92-OK",
+        b"LUMINA-T92-AAA",
+        b"LUMINA-T92-ZZZ",
         b"LUMINA-SVC-INIT",
     ];
     for marker in markers {
         if find(serial, marker).is_none() {
             fails.push(format!("缺标记 {}", String::from_utf8_lossy(marker)));
+        }
+    }
+    // t92 排序取证：ls 输出字典序断言（pos(AAA) < pos(ZZZ)；缺席由
+    // required 面报，此处只判序）
+    if let (Some(pa), Some(pz)) = (
+        find(serial, b"LUMINA-T92-AAA"),
+        find(serial, b"LUMINA-T92-ZZZ"),
+    ) {
+        if pa >= pz {
+            fails.push(format!(
+                "t92 排序取证失序（pos(AAA)={pa} >= pos(ZZZ)={pz}）"
+            ));
         }
     }
     if !resp_checked {

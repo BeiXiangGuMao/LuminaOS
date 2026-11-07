@@ -137,6 +137,7 @@ pub fn lin_dispatch(frame: &mut SyscallFrame) -> u64 {
         LinAction::LStat => lin_fstat_at(AT_FDCWD, frame.rdi, frame.rsi, AT_SYMLINK_NOFOLLOW),
         LinAction::SendFile => lin_send_file(frame.rdi, frame.rsi, frame.rdx, frame.r10),
         LinAction::Statx => lin_statx(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8),
+        LinAction::ReadLink => lin_readlink(frame.rdi),
         LinAction::Wait4 => lin_wait4(frame),
         LinAction::Fork => lin_fork(frame),
         LinAction::Execve => lin_execve(frame),
@@ -814,8 +815,15 @@ fn lin_path_bytes(path_ptr: u64) -> Option<Result<alloc::vec::Vec<u8>, u64>> {
     }
 }
 
-/// 路径域三目公共核：join → 试开（只读）→ vfs stat → 关闭 →
+/// 路径域三目公共核：join → 试开（只读）→ fd 车道 stat → 关闭 →
 /// （mode, size）合成。chdir/fstatat/faccessat 共享单一事实源。
+/// M39-BBLS 揭雷随行根治：本核旧读 `sys_stat` 编码 16 位 size 域 +
+/// `st>>32==1` 检查——**≥64 KiB 文件 size<<16 漫出 OK 位检查域**
+/// （M36-BB3b fd 车道同族缺陷的第二车道——/bin/busybox 1 MiB 域
+/// stat-fail raw=0 实录：statx 条目域 ls /bin 揭形，三代潜伏——
+/// t83 wc 路径域 fstatat 静默容忍在案）。尺寸权威 = lseek-END
+/// 混合式（kind = sys_stat 低 8 位权威 + size = lseek-END——
+/// M36-BB3b fd 车道先例同源；目录域 seek 失败降级 0）。
 fn lin_path_stat(path_ptr: u64) -> Result<(u64, u64), u64> {
     let bytes = match lin_path_bytes(path_ptr) {
         Some(Ok(b)) => b,
@@ -827,12 +835,18 @@ fn lin_path_stat(path_ptr: u64) -> Result<(u64, u64), u64> {
         return Err(h.min(ENOSYS));
     }
     let fd = h & 0xFFFF_FFFF;
+    // kind 权威 = sys_stat 低 8 位（size<<16 漫位不扰低 8 位；成功域
+    // 判定放宽 ≥2^32——错误域 errno 恒 < 2^32，漫位成功值恒 ≥ 2^32）。
+    // 尺寸权威 = lseek-END（M36-BB3b fd 车道先例同源）；目录域 seek
+    // 失败降级 0（v0 合成域 size 语义无扰——目录 kind 判定不受扰）。
     let st = crate::vfs::sys_stat(fd);
+    let end = crate::vfs::sys_seek(fd, 2, 0);
     let _ = crate::vfs::sys_close(fd);
-    if st >> 32 != 1 {
+    if st < (1 << 32) {
         return Err(st.min(ENOSYS));
     }
-    Ok(synth_mode_size(st & 0xFF, (st >> 16) & 0xFFFF))
+    let size = if end >> 32 == 1 { end & 0xFFFF_FFFF } else { 0 };
+    Ok(synth_mode_size(st & 0xFF, size))
 }
 
 /// chdir(path)（M34-B1 收录）：join → 词法规范化（meridian 重导出
@@ -901,6 +915,18 @@ fn lin_fstat_at(dirfd: u64, path: u64, statbuf: u64, flags: u64) -> u64 {
         Err(e) => return err(e),
     };
     write_stat64_user(statbuf, mode, size)
+}
+
+/// readlink(path, buf, size)（M39-BBLS 收录）：v0 无 symlink 实体——
+/// 语义落点成形：路径解析面 ENOENT/EFAULT 域显形（lin_path_stat 承载），
+/// 已存在非链接域 EINVAL fail-visible（Linux readlink 非符号链接同款
+/// errno）；buf/size 域 v0 零写（无链接目标可回）——真 readlink 随
+/// symlink 实体批次落域（ROADMAP 远线登记）。
+fn lin_readlink(path: u64) -> u64 {
+    match lin_path_stat(path) {
+        Ok(_) => err(EINVAL), // 存在且为常规文件/目录——非链接域显形
+        Err(e) => err(e),     // ENOENT / EFAULT 解析域直映
+    }
 }
 
 /// unlinkat(dirfd, path, flags)（M34-B1 收录）：AT_FDCWD + cwd join →

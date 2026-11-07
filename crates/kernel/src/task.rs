@@ -2121,6 +2121,20 @@ pub fn with_task_hflags<R>(id: usize, f: impl FnOnce(&mut [u8; HANDLE_MAX]) -> R
         .map(|t| f(&mut t.hflags))
 }
 
+/// 任务 lin ABI 标志读取（M39-BBLS stdio 保留域判定面）：lin_abi 任务
+/// open 槽搜索自 3 起（fd 0/1/2 = stdio 虚拟控制台保留域——与 fstat
+/// fd<3 字符设备合成 / lin_write 控制台回退同源语义的搜索面收口）；
+/// 任务不存在返回 false（防御域——按原生语义搜索）。
+pub fn task_is_lin_abi(id: usize) -> bool {
+    let _w = IntWindow::new();
+    let mut s = sched_lock!();
+    s.tasks
+        .get_mut(id)
+        .and_then(|t| t.as_mut())
+        .map(|t| t.lin_abi)
+        .unwrap_or(false)
+}
+
 /// 在调度锁窗口内访问目标任务工作目录（M34-B1 chdir 收录面）：
 /// 任务不存在返回 None。
 pub fn with_task_cwd<R>(
