@@ -29,6 +29,7 @@ extern crate alloc;
 
 pub mod acpi;
 pub mod boot;
+pub mod capi;
 pub mod console;
 pub mod heap;
 #[cfg(target_arch = "x86_64")]

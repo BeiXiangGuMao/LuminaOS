@@ -24,6 +24,15 @@ ledger_version = 1
 
 # ADR-0003（M29-N1）销账注：原 harbor→ostd 边随分配器迁出 + harbor 清库退役；
 # harbor 重铸为 POSIX libc 符号面（纯 safe 零依赖），细则依赖方向声明不变。
+# M39-HBI 复立注：C ABI 指针/链接层挂账转正——「ostd 出指针基元 + harbor 薄壳」
+# 方案（harbor lib.rs v0 范围界定既登记）随 M39-HBI 落域，harbor→ostd 边按
+# 工作区依赖方向声明（ostd → {harbor, vanguard}）复立；unsafe 收口 ostd::capi，
+# harbor crate 级 forbid(unsafe_code) 不破。
+
+[[allowed_edges]]
+from = "harbor"
+to = "ostd"
+note = "M39-HBI：C ABI 指针基元面（ostd::capi checked 原语）——harbor lib.rs v0 范围界定既登记外置方案落域" 
 
 [[allowed_edges]]
 from = "vanguard"

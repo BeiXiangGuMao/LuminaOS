@@ -31,11 +31,12 @@
 //!
 //! # v0 范围界定（偏差登记，见 ROADMAP §四 M29 计划注）
 //!
-//! - **C ABI 链接层**（`#[unsafe(no_mangle)]` 导出 + raw ptr 指针层）暂缓：
-//!   指针解引用需 unsafe，与 crate 级 forbid 承诺冲突；待用户态链接面成形
-//!   后以外置方案（如 ostd 出指针基元 + harbor 薄壳）补位。当前所有
-//!   `extern "C"` 函数为值语义（C 调用约定、Rust 符号修饰），切片面为
-//!   纯 safe Rust 签名。
+//! - **C ABI 链接层**（`#[no_mangle]` 导出 + raw ptr 指针层）——
+//!   **M39-HBI 摘牌转正**：外置方案落域（`ostd::capi` 指针基元承载全部
+//!   指针解引用 unsafe——ostd 全 crate 允许层，本 crate 级
+//!   `forbid(unsafe_code)` 不破；`harbor::abi` 薄壳 `extern "C"` 指针
+//!   签名 mem/str 核心 12 符号，kernel 目标 `#[no_mangle]` 导出、宿主
+//!   测试面 cfg 隔离零符号冲突）。号域覆盖 158→170（H-P01 清点扩记）。
 //! - **平台 ABI 面板（LP64 决策）**：`c_char = u8`（LuminaOS 自定 ABI，
 //!   非 x86_64-linux 的 i8 惯例）、`c_int = i32`、`c_long = c_longlong =
 //!   i64`（LP64，`long` 与 `long long` 同宽——`strtol`/`strtoll` 等价但
@@ -53,6 +54,7 @@
 
 extern crate alloc;
 
+pub mod abi;
 pub mod ctype;
 pub mod errno;
 pub mod search;
@@ -237,6 +239,7 @@ mod tests {
             "wcschr", "wcsrchr", "wcsstr", "wcsspn", "wcscspn", "wcspbrk", "wcsdup", "wmemchr",
             "wmemcmp", "wmemcpy", "wmemmove", "wmemset",
         ];
+        const ABI: &[&str] = crate::abi::ABI_SYMBOLS;
         let total = ERRNO.len()
             + CTYPE.len()
             + STRING.len()
@@ -245,12 +248,13 @@ mod tests {
             + SEARCH.len()
             + UNISTD.len()
             + WCTYPE.len()
-            + WCHAR.len();
+            + WCHAR.len()
+            + ABI.len();
         assert!(
             total >= 150,
             "H-P01 upgraded gate: must export >= 150 symbols, got {total}"
         );
-        assert_eq!(total, 158);
+        assert_eq!(total, 170);
         // 域内抽查（防清单漂移）：每域至少 1 名逐一比对实际公开面。
         assert_eq!(crate::errno::strerror(crate::errno::EINVAL), "EINVAL");
         assert_eq!(crate::ctype::isdigit(b'7' as crate::c_int), 1);

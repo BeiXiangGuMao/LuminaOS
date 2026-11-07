@@ -44,6 +44,9 @@ version = "0.26.0"
 [[package]]
 name = "harbor"
 version = "0.26.0"
+dependencies = [
+ "ostd",
+]
 
 [[package]]
 name = "loom"
