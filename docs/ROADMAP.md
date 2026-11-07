@@ -377,12 +377,12 @@ M35 退出口径：harbor ≥150 符号机检闸双端在环（P2 DoD 收口）+
 | 任务 | 内容 | 战场 | 状态 |
 |---|---|---|---|
 | **M39-计划**（笔①） | 本表落盘 + §三 M39 行落盘 + 远线滚动改写（六候选升入 M39 开工——M38-收尾 裁决实录） | docs/ROADMAP | ✅ 本提交 |
-| **M39-BBLS**（笔②） | busybox ls 深链批次：readlink(90) 收录（translate + kernel 语义落点）+ t92 活体（乱序目录制备 → `busybox ls` 派生消费 → 排序输出串口取证）+ BUSYBOX.md 成像表扩记 + SELFTEST 91→92 三面同步 | conduit/kernel/tools/xtask/docs | 🚧 |
-| **M39-ASH**（笔③） | ash 启动面揭雷批：getppid(109)/getpgrp(110) 合成桩收录（ash 启动链 job-control 消费——110 ENOSYS 滞死实录在案；真身份/进程族面随 M39-MU/进程族批次）+ ash 启动链滞域三滞点取证（① getpgrp ENOSYS 滞死→收录转正；② t52 timer::shutdown 后无抢占自旋族滞死——`busybox sh -c 'exit 7'` 纯退出命令亦滞 + t92 同车道 applet 收割全绿对照 + 布局扰动/独立函数/移尾三实验滞域鲁棒——非窗族定性；③ 有界收割时基失效面——t52 后 time::now() 刻度链退役，M38-SP1 既录，t87 anchor 定迭代同款不可用）——t93 活体转挂账 M40 标本流程（ash -c 启动链滞点定位），SELFTEST 92 维持如实不虚报 | conduit/docs | ⏸ 揭雷转挂账（本提交——t93/SELFTEST 93 计划面随滞域定性转挂账） |
-| **M39-MU**（笔④） | 多用户纵深 v0：任务凭据四元（task 面 + fork/spawn 继承）+ 身份 syscall 真面（getuid 族真读取 + setuid/setgid 根域——号域勘误随行）+ VFS 权限门禁覆盖表（open/unlink/faccessat + root 旁路）+ t94 活体 + SELFTEST 93→94 三面同步 | kernel/conduit/tools/xtask/docs | 🚧 |
-| **M39-DPMS**（笔⑤） | DPMS 电气面：stdvga VGA 寄存器域（SR01 消隐 + Misc Output 同步极性——写/读回电气）+ power::display 三态→电气目标映射挂接 + t95 活体 + SELFTEST 94→95 三面同步（真机窗口裁决不变） | kernel/power/tools/xtask/docs | 🚧 |
-| **M39-HBI**（笔⑥） | harbor C ABI 链接层：ostd 指针基元（checked/fail-visible）+ harbor::abi 薄壳（extern "C" 指针签名 mem/str 族 + kernel 目标导出面）+ 宿主对账测试 + H-P01 清点扩记（零内核自检增量） | ostd/harbor/docs | 🚧 |
-| **M39-PDF**（笔⑦） | 细则 PDF 逐条对账：22 份原件需求族逐条对账表落 docs/PDF-RECON.md（在库证据/偏差/挂账三态成像 + PR-P04 引用偏差复核）（零内核自检增量） | docs | 🚧 |
+| **M39-BBLS**（笔②） | busybox ls 深链批次：readlink(89) 收录（translate + kernel 语义落点——**号域勘误随行揭雷：90→89**，M39-计划 90 误记 90=chmod）+ t92 活体（乱序目录制备 → `busybox ls -1` 派生消费 → 排序输出串口取证 + readlink 双相位 + /bin 对照面）+ **stdio 保留域揭雷根治** + **lin_path_stat stat 车道漫位根治** + BUSYBOX.md 成像表扩记 + SELFTEST 91→92 三面同步 | conduit/kernel/tools/xtask/docs | ✅ 6695f1f（详见提交正文——双揭雷三代潜伏回溯在案） |
+| **M39-ASH**（笔③） | ash 启动面揭雷批：getppid(109)/getpgrp(110) 合成桩收录（ash 启动链 job-control 消费——110 ENOSYS 滞死实录在案；真身份/进程族面随 M39-MU/进程族批次）+ ash 启动链滞域三滞点取证（① getpgrp ENOSYS 滞死→收录转正；② t52 timer::shutdown 后无抢占自旋族滞死——`busybox sh -c 'exit 7'` 纯退出命令亦滞 + t92 同车道 applet 收割全绿对照 + 布局扰动/独立函数/移尾三实验滞域鲁棒——非窗族定性；③ 有界收割时基失效面——t52 后 time::now() 刻度链退役，M38-SP1 既录，t87 anchor 定迭代同款不可用）——t93 活体转挂账 M40 标本流程（ash -c 启动链滞点定位），SELFTEST 92 维持如实不虚报 | conduit/docs | ⏸ 揭雷转挂账 ✅ d446fdf（t93/SELFTEST 93 计划面随滞域定性转挂账——M40 标本流程续作） |
+| **M39-MU**（笔④） | 多用户纵深 v0：任务凭据四元（task::Creds + spawn_fork_child 全量继承）+ 身份 syscall 真面（六号真面转正——**号域勘误随行揭雷：105/106 = setuid/setgid、107/108 = geteuid/getegid**）+ getgroups(115) 合成桩 + VFS 权限门禁覆盖表（PERMS 定容 16 槽登记制 + open/unlink/faccessat 门禁 + root 旁路）+ t93 活体（busybox id 领域换装消费 uid=1000 串口取证 + setuid 语义核三目 + 门禁五子目）+ SELFTEST 92→93 三面同步 | kernel/conduit/tools/xtask/docs | ✅ 713e66a（盘上属主域随 crystal 格式批次续作；安全面 6→7 增量随收尾复评） |
+| **M39-DPMS**（笔⑤） | DPMS 电气面：stdvga VGA 寄存器域（SR01 bit5 消隐 + Misc Output 同步极性——四态写/读回电气 + blank/unblank 登记面电气挂接）+ power::display 头注摘牌注（**PR-P04 引用偏差勘误随行**）+ METRICS PR-P04 行扩记 + t94 活体（baseline 0x27/off 0xC0/standby 0x40/suspend 0x80 读回闭环）+ SELFTEST 93→94 三面同步（真机窗口裁决不变） | kernel/power/tools/xtask/docs | ✅ 81ca388 |
+| **M39-HBI**（笔⑥） | harbor C ABI 链接层：ostd::capi 指针基元六枚（volatile 步进防内建替换自递归 + fail-visible + 有界扫描防御化——unsafe 收口 ostd 允许层）+ harbor::abi 薄壳（extern "C" 指针签名 mem/str 核心 12 符号 + kernel 目标 #[no_mangle] 导出面 + 宿主 cfg 隔离——forbid(unsafe_code) 不破）+ harbor→ostd 政策边复立 + H-P01 清点扩记 158→170 双面在环 + 宿主对账测试全谱（零内核自检增量） | ostd/harbor/docs | ✅ effc24f |
+| **M39-PDF**（笔⑦） | 细则 PDF 逐条对账：22 份原件需求族逐条对账表落 docs/PDF-RECON.md（15 细则 108 项三态成像〔落库 15/结构面 42/挂账 47/偏差 1〕+ 手册 v1.0/v1.2 双版本对账 + 三组指南对账 + PR-P04 引用偏差勘误）+ ROADMAP §七 5 介质失联挂账摘牌（零内核自检增量） | docs | ✅ 本提交 |
 | **M39-收尾**（笔⑧） | ROADMAP/METRICS/MATURITY/README 对账 + 挂账复核注 + 近线 M40 + worklog 对账 | 对账提交 | 🚧 |
 
 ---
@@ -416,4 +416,4 @@ M35 退出口径：harbor ≥150 符号机检闸双端在环（P2 DoD 收口）+
 2. 阶段日历：里程碑序列制替代 spec 日历制（指标编号口径不变）。
 3. framekernel 混合态：syscall 热路径暂居内核，策略面外移 Meridian（ADR-0004），迁移完成前豁免「services 全用户态」条款。
 4. targets/x86_64-lumina.json：stable 工具链门控期以 x86_64-unknown-none + rustflags 等效承载（METRICS.md 既有登记）。
-5. 细则 PDF 介质失联（M28-计划 登记）：会话沙盒重置致 22 份指南原件丢失；M28 结构面对照以在库引用面（ADR-0006 引文 + METRICS MI·PR 编号口径 + ROADMAP P3 行）为准，PDF 重取后补 Prism/Mirror 细则逐条对账（挂账，不阻塞结构面）。
+5. 细则 PDF 介质失联（M28-计划 登记）——**M39-PDF 摘牌**：22 份指南原件本宿主复原在案（M35-收尾既录），逐需求族三态对账落 docs/PDF-RECON.md（15 细则 108 项成像〔落库 15/结构面 42/挂账 47/偏差 1〕+ 手册双版本对账 + 三组指南对账 + PR-P04 引用偏差勘误随行）。
