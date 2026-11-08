@@ -355,6 +355,54 @@ pub const SURF_VA_LIMIT: u64 = 0x8000_0000;
 /// Surface 槽窗 stride（8 MiB = 每槽可容全屏 1080p 后备 2026 页）。
 pub const SURF_SLOT_STRIDE: u64 = 0x80_0000;
 
+/// 用户态设备端口访问面（v0.19，M42-FBDEV1）：`dev_pio(op, port, value)`。
+///
+/// **定位（ADR-0004 混合态渐进——M42 阶段一「用户态 fb 驱动进程」端口
+/// 访问面首割）**：x86 IOPB/IOPL 硬件裁量面零起点登记（M42-计划 三域
+/// 挂账之一），本号先行落 **内核代执车道**——ring3 不直接执行 in/out
+/// 指令（IOPL 保持 0、TSS IOPB 不挂），端口电气由内核以白名单原语
+/// （`ostd::hw::ports`）代执，授权域 = kernel::dev 端口裁量注册表
+/// （per-pid 区间授予，boot/spawn 路径铸授——用户态不可自授）。硬件
+/// 面转化（IOPL 提权 / IOPB 挂 TSS）随驱动进程基础设施批次落域，
+/// 本号寄存器面冻结不变（代执车道与硬件车道同语义承接）。
+///
+/// 参数（寄存器直传）：
+/// - rdi(a0) = op：0 IN8 / 1 OUT8 / 2 IN16 / 3 OUT16 / 4 IN32 / 5 OUT32；
+/// - rsi(a1) = port：x86 I/O 端口号（0..=0xFFFF）；
+/// - rdx(a2) = value：OUT 域写入值（按宽度掩码；IN 域忽略）。
+///
+/// 返回：IN = 读得值（零扩展）；OUT = 0。错误域：端口裁量未授予
+/// = [`ERR_CAP`]（1）——授权注册表 miss 即拒，不泄露端口占用拓扑。
+pub const SYS_DEV_PIO: u64 = 41;
+
+/// [`SYS_DEV_PIO`] op：IN u8。
+pub const PIO_IN8: u64 = 0;
+/// [`SYS_DEV_PIO`] op：OUT u8。
+pub const PIO_OUT8: u64 = 1;
+/// [`SYS_DEV_PIO`] op：IN u16。
+pub const PIO_IN16: u64 = 2;
+/// [`SYS_DEV_PIO`] op：OUT u16。
+pub const PIO_OUT16: u64 = 3;
+/// [`SYS_DEV_PIO`] op：IN u32。
+pub const PIO_IN32: u64 = 4;
+/// [`SYS_DEV_PIO`] op：OUT u32。
+pub const PIO_OUT32: u64 = 5;
+
+/// [`SYS_DEV_PIO`] op 解码（宿主可测纯函数；kernel::dev 执行面单一
+/// 事实源）：op →（宽度字节数，是否 OUT）。域外 op → `None`（parse
+/// 层先行拒收，本函数为执行面纵深防御对账面）。
+pub fn pio_op_decode(op: u64) -> Option<(u8, bool)> {
+    match op {
+        PIO_IN8 => Some((1, false)),
+        PIO_OUT8 => Some((1, true)),
+        PIO_IN16 => Some((2, false)),
+        PIO_OUT16 => Some((2, true)),
+        PIO_IN32 => Some((4, false)),
+        PIO_OUT32 => Some((4, true)),
+        _ => None,
+    }
+}
+
 /// [`SYS_FCNTL`] 命令：复制句柄（rdx = 新句柄号下界）。
 pub const F_DUPFD: u64 = 0;
 /// [`SYS_FCNTL`] 命令：读描述符旗标。
@@ -422,7 +470,9 @@ pub const OPEN_MODE_MASK: u64 = 0b1_1111;
 /// 无独立用户空间 → `ERR_CAP`；帧耗尽 → `ERR_NOMEM(9)`。
 pub const SYS_EXEC: u64 = 17;
 
-/// 系统调用 ABI 版本（v0.18 = M37-A1b：新增 SYS_FB_SURFACE(40) Surface
+/// 系统调用 ABI 版本（v0.19 = M42-FBDEV1：新增 SYS_DEV_PIO(41) 用户态
+/// 设备端口访问面（内核裁量注册表 v0——IOPB/IOPL 硬件面挂账）；
+/// v0.18 = M37-A1b：新增 SYS_FB_SURFACE(40) Surface
 /// 注册面（prism SurfaceTable→Stack 合成电气化承接——登记/更新/注销
 /// 三操作 + SURF_VA_BASE 槽窗三窗并存）；v0.17 = M28-K1：新增 SYS_FB_STAGE(39) stage 合成面
 /// （内核后备缓冲映射 + 损伤驱动局部上屏，ADR-0004 直写双轨共存）；
@@ -441,7 +491,7 @@ pub const SYS_EXEC: u64 = 17;
 /// v0.16 = M15：目录面五落点 MKDIR/REMOVE/READDIR/MOUNT/UMOUNT +
 /// 句柄面深化 DUP/FCNTL（CLOEXEC）+ NANOSLEEP 参数语义升级为 TSC 纳秒。
 /// v0.8 = SYS_QUOTA；v0.7 = 文件面六落点 + NANOSLEEP + 统一句柄面）。
-pub const ABI_VERSION: (u16, u16) = (0, 18);
+pub const ABI_VERSION: (u16, u16) = (0, 19);
 
 /// ---------------------------------------------------------------------------
 /// LXE1 v0 错误码表（具名化事实源，M25-C1）：
@@ -753,6 +803,15 @@ pub enum Syscall {
         /// 可见性（REGISTER 恒 true；UPDATE 域 = r8 bit 32）。
         visible: bool,
     },
+    /// 用户态设备端口访问面（v0.19，M42-FBDEV1；见 [`SYS_DEV_PIO`]）。
+    DevPio {
+        /// 操作码（0..=5，宽度 × 方向——[`pio_op_decode`] 解码域）。
+        op: u64,
+        /// x86 I/O 端口号（0..=0xFFFF）。
+        port: u16,
+        /// OUT 域写入值（宽度掩码；IN 域忽略）。
+        value: u64,
+    },
 }
 
 /// 从寄存器快照解析调用意图。只做结构校验，不做内存访问（由慢路径完成）。
@@ -894,6 +953,12 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
             })
         }
         SYS_FB_SURFACE => Err(AbiError::BadArgs),
+        SYS_DEV_PIO if a0 <= PIO_OUT32 && a1 <= 0xFFFF => Ok(Syscall::DevPio {
+            op: a0,
+            port: a1 as u16,
+            value: a2,
+        }),
+        SYS_DEV_PIO => Err(AbiError::BadArgs),
         _ => Err(AbiError::UnknownSyscall),
     }
 }
@@ -1264,7 +1329,7 @@ mod tests {
         assert_eq!(super::SYS_DUP, 31);
         assert_eq!(super::SYS_FCNTL, 32);
         assert_eq!(super::SYS_IMAGE_ENUM, 33);
-        assert_eq!(super::ABI_VERSION, (0, 18));
+        assert_eq!(super::ABI_VERSION, (0, 19));
         assert_eq!(super::SYS_TTY_GETCH, 34);
         assert_eq!(
             super::parse(super::SyscallRegs {
@@ -1280,6 +1345,8 @@ mod tests {
         assert_eq!(super::SYS_PIPE, 38);
         assert_eq!(super::SYS_FB_STAGE, 39);
         assert_eq!(super::SYS_FB_SURFACE, 40);
+        // M42-FBDEV1：SYS_DEV_PIO(41) 号域续接（ABI v0.19）
+        assert_eq!(super::SYS_DEV_PIO, 41);
         assert_eq!(
             super::parse(super::SyscallRegs {
                 num: super::SYS_PIPE,
@@ -1569,5 +1636,73 @@ mod svc_abi_tests {
             Err(super::AbiError::BadArgs),
             "h > 0xFFFF 结构域拒收"
         );
+    }
+
+    /// SYS_DEV_PIO(41) parse 域（v0.19，M42-FBDEV1）：op 0..=5 × port
+    /// 0..=0xFFFF 收录 + op 越域/port 越域拒收 + value 透传 + 解码器
+    /// 对账（pio_op_decode 六臂全谱 + 域外 None）。
+    #[test]
+    fn parse_dev_pio_ops() {
+        let r = |num: u64, args: [u64; 5]| super::SyscallRegs { num, args };
+        // IN16 roundtrip：dispi 数据口读（M42-FBDEV1 fbdev 车道）
+        assert_eq!(
+            super::parse(r(super::SYS_DEV_PIO, [super::PIO_IN16, 0x1CF, 0, 0, 0])),
+            Ok(super::Syscall::DevPio {
+                op: super::PIO_IN16,
+                port: 0x1CF,
+                value: 0,
+            }),
+            "IN16：dispi 数据口（0x1CF）收录"
+        );
+        // OUT16：dispi 索引口写 + value 透传
+        assert_eq!(
+            super::parse(r(super::SYS_DEV_PIO, [super::PIO_OUT16, 0x1CE, 0, 0, 0])),
+            Ok(super::Syscall::DevPio {
+                op: super::PIO_OUT16,
+                port: 0x1CE,
+                value: 0,
+            }),
+            "OUT16：dispi 索引口（0x1CE）收录"
+        );
+        // 六 op 全谱 + 端口边界（0 / 0xFFFF）
+        for op in 0..=5u64 {
+            for port in [0u64, 0xFFFF] {
+                assert_eq!(
+                    super::parse(r(super::SYS_DEV_PIO, [op, port, 0x1234, 0, 0])),
+                    Ok(super::Syscall::DevPio {
+                        op,
+                        port: port as u16,
+                        value: 0x1234,
+                    }),
+                    "op={op} port={port}：域内收录"
+                );
+            }
+        }
+        // op 越域拒收（6 起）
+        assert_eq!(
+            super::parse(r(super::SYS_DEV_PIO, [6, 0x1CE, 0, 0, 0])),
+            Err(super::AbiError::BadArgs),
+            "op 6 越域拒收"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_DEV_PIO, [u64::MAX, 0x1CE, 0, 0, 0])),
+            Err(super::AbiError::BadArgs),
+            "op u64::MAX 越域拒收"
+        );
+        // port 越域拒收（0x10000 起）
+        assert_eq!(
+            super::parse(r(super::SYS_DEV_PIO, [super::PIO_IN8, 0x1_0000, 0, 0, 0])),
+            Err(super::AbiError::BadArgs),
+            "port 0x10000 越域拒收"
+        );
+        // 解码器对账：六臂全谱（宽度 × 方向）
+        assert_eq!(super::pio_op_decode(super::PIO_IN8), Some((1, false)));
+        assert_eq!(super::pio_op_decode(super::PIO_OUT8), Some((1, true)));
+        assert_eq!(super::pio_op_decode(super::PIO_IN16), Some((2, false)));
+        assert_eq!(super::pio_op_decode(super::PIO_OUT16), Some((2, true)));
+        assert_eq!(super::pio_op_decode(super::PIO_IN32), Some((4, false)));
+        assert_eq!(super::pio_op_decode(super::PIO_OUT32), Some((4, true)));
+        assert_eq!(super::pio_op_decode(6), None);
+        assert_eq!(super::pio_op_decode(u64::MAX), None);
     }
 }

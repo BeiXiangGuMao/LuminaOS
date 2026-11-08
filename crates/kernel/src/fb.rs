@@ -317,6 +317,13 @@ static FB_BASE: AtomicU64 = AtomicU64::new(0);
 /// 屏宽/屏高（bring_up 登记后只读；sys_fb_sync 求交域）。
 static FB_W: AtomicU32 = AtomicU32::new(0);
 static FB_H: AtomicU32 = AtomicU32::new(0);
+
+/// LFB 物理基址读出（t101 (g) 成像对账面——fbdev 用户态直写 × 内核
+/// 侧 VRAM 物理读回同源锚；bring_up 登记后非零，未上电 = 0）。
+pub fn fb_base() -> u64 {
+    FB_BASE.load(Ordering::Acquire)
+}
+
 /// Surface 表（v0 单面）：owner pid（`u64::MAX` = 未占用）。首请求者
 /// 独占（CAS 登记），二次请求 → `EEXIST`——多任务 Surface 复用属
 /// 后续里程碑（abi [`bedrock::abi::SYS_FB_MAP`] 契约同源）。

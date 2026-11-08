@@ -508,6 +508,12 @@ extern "C" fn lumina_syscall_dispatch(frame: &mut SyscallFrame) -> u64 {
                 visible,
             })
         }
+        Syscall::DevPio { op, port, value } => {
+            task::count_syscall(2);
+            // M42-FBDEV1 设备端口访问面：裁量注册表闸 → 内核代执
+            // （IOPB/IOPL 硬件面挂账——kernel::dev 承接面）
+            crate::dev::sys_dev_pio(op, port, value)
+        }
         Syscall::Pipe { op } => {
             task::count_syscall(2);
             // M24-A1 shell 管道/分页面：捕获武装/排水/分页重放/弃置

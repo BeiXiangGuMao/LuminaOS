@@ -43,6 +43,9 @@ pub enum SvcError {
     InvalidChannel,
     /// 服务 id 段位越域（0x5E00 段外）。
     BadId,
+    /// 用户态承接冲突：服务已由其它任务承接（幂等同 pid 放行——
+    /// M42-FBDEV1 Owner 承接面重复改写拒绝）。
+    AlreadyAdopted,
 }
 
 /// 驱动进程形态（M31-N1 三分分级承载）。
@@ -147,6 +150,37 @@ pub fn lookup(id: u64) -> Option<(&'static str, u64, u64, Owner)> {
             },
         )
     })
+}
+
+/// 服务 Owner 用户态承接面（M42-FBDEV1 首割——ADR-0004 混合态渐进）：
+/// 把既有注册项的形态 [`Owner::KernelResident`] 转为 [`Owner::UserTask`]。
+///
+/// **混合态语义（如实登记）**：承接的是**进程归属记账面**——服务注册
+/// 表内的 owner 槽位改写为驱动进程任务号；内核电气面（fb 驱动代码
+/// 路径 / prism 合成仲裁 / fb_compose_tick）零触碰，双轨共存不变
+/// （M42-计划 阶段一口径：prism 合成仲裁内核态暂留）。电气面缩编
+/// 随阶段三进程面批次。
+///
+/// 幂等面：同 pid 重复承接 = 成功（幂等放行）；异 pid 冲突 =
+/// [`SvcError::AlreadyAdopted`]（fail-visible）；id 未注册 =
+/// [`SvcError::BadId`]。返回承接槽位号。
+pub fn adopt_user(id: u64, pid: u64) -> Result<usize, SvcError> {
+    let mut svcs = SVCS.lock();
+    let Some((slot, entry)) = svcs
+        .iter_mut()
+        .enumerate()
+        .find_map(|(i, s)| s.as_mut().filter(|e| e.id == id).map(|e| (i, e)))
+    else {
+        return Err(SvcError::BadId);
+    };
+    match entry.owner {
+        Owner::UserTask(t) if t == pid as usize => Ok(slot), // 幂等放行
+        Owner::UserTask(_) => Err(SvcError::AlreadyAdopted),
+        Owner::KernelResident => {
+            entry.owner = Owner::UserTask(pid as usize);
+            Ok(slot)
+        }
+    }
 }
 
 /// 注册表快照（取证面）：(已用槽位, SVC_MAX, 已注册 id 位图——bit n =

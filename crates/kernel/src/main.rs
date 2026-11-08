@@ -38,6 +38,7 @@ mod boot;
 mod caps;
 mod census;
 mod console;
+mod dev;
 mod fb;
 mod font_gen;
 mod hostlink;
@@ -82,8 +83,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100）。
-const SELFTEST_TOTAL: usize = 100;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101）。
+const SELFTEST_TOTAL: usize = 101;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7029,6 +7030,16 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t100 = t100_run(&mut log);
     report(&mut log, t100, "ash-interactive");
 
+    // t101) 用户态 fb 驱动进程移交链活体（M42-阶段一 笔①）：fbdev 映像
+    //       spawn → SYS_FB_MAP LFB 映射移交（SURFACE_OWNER 首认领者 =
+    //       驱动进程）→ SYS_DEV_PIO dispi 探测（端口裁量注册表——内核
+    //       代执车道）→ LFB 直写成像 × 内核侧 VRAM 物理读回对账 →
+    //       svc::adopt_user Owner 用户态承接（KernelResident(fb) →
+    //       UserTask——电气面零改动混合态如实登记）→ exit=0 收割 +
+    //       裁量闸负例（未授予 pid 即 ERR_CAP）。LUMINA-T101-FBDEV/OK。
+    let t101 = t101_run(&mut log);
+    report(&mut log, t101, "fbdev-driver");
+
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
     //      pf_hook 入口扩判「U 位 或 CR2 落增长栈窗口域」——CPL0 用户
@@ -8241,6 +8252,131 @@ fn t100_run(log: &mut DualLog) -> bool {
     let _ = writeln!(log, "LUMINA-T100-ASH st={st} exit={code:#x} ok={ok}");
     if ok {
         let _ = writeln!(log, "LUMINA-T100-OK");
+    }
+    ok
+}
+
+/// t101 用户态 fb 驱动进程移交链活体执行体（M42-阶段一 笔①）：独立
+/// 函数承载（帧形态守恒纪律——t93/t95 先例）。相位序：
+/// (a) 承接前形态对账：svc fb = KernelResident（boot 注册 v0 口径）；
+/// (b) 裁量闸负例：kmain（未授予 pid）直调 sys_dev_pio → ERR_CAP——
+///     用户态不可自授 + 无授权即拒的裁量面显形；
+/// (c) fbdev 映像装载 + spawn（native ABI——build_user_space_lxe 直装，
+///     spawn_fork_child 同 t100 装置形态）；
+/// (d) 承接面落账：pio_grant(dispi 索引/数据口 0x1CE..0x1CF) +
+///     svc::adopt_user(SVC_FB, fbdev_pid)（spawn→grant 登记窗由映像侧
+///     64 拍 YIELD 重试免疫——t100 先例同款）；
+/// (e) 有界收割（t95/t100 零锁轮询 per-CPU exit 槽 60 拍）→ exit=0
+///     断言 + Zombie 收割 + 存活面清账；
+/// (f) Owner 承接对账：svc lookup(SVC_FB) = UserTask(fbdev_pid)——
+///     混合态记账面落域显形（电气面零触碰如实登记）；
+/// (g) 端口访问面对账：pio_stamps——dispi 数据口 0x1CF 末读值 ≥
+///     0xB0C0（OUT16 索引口写 + IN16 数据口读全链在环）；
+/// (h) LFB 移交成像对账：内核侧 VRAM 物理读回行 0 x=0..63 全 64 px ==
+///     FBDEV_PAINT（用户态直写车道端到端——映射移交真面取证）。
+fn t101_run(log: &mut DualLog) -> bool {
+    use bedrock::abi::{PIO_IN16, SVC_FB};
+    let mut ok = true;
+    task::reset_user_evidence(); // 零锁判据面清零（t100 退出码残留摘除）
+                                 // (a) 承接前形态对账（KernelResident boot 口径）
+    let pre = crate::svc::lookup(SVC_FB);
+    ok &=
+        pre.is_some_and(|(n, _, _, o)| n == "fb" && matches!(o, crate::svc::Owner::KernelResident));
+    // (b) 裁量闸负例：未授予 pid（kmain）→ ERR_CAP
+    let neg = crate::dev::sys_dev_pio(PIO_IN16, 0x1CF, 0);
+    ok &= neg == bedrock::abi::ERR_CAP;
+    let _ = writeln!(log, "t101: gate-negative kmain→{neg} (expect 1 ERR_CAP)");
+    // (c) fbdev 映像装载（LXE1 双段——gen 脚本产物直装）
+    let Some(frames) = vmm::global_frames() else {
+        let _ = writeln!(log, "t101: frame service unreachable");
+        return false;
+    };
+    let es = match user::build_user_space_lxe(&user::FBDEV_LXE, &mut || frames.alloc()) {
+        Ok(es) => es,
+        Err(e) => {
+            let _ = writeln!(log, "t101: fbdev image build failed ({e:?})");
+            return false;
+        }
+    };
+    let mut slots = [0u64; 15];
+    slots[0] = 0x202;
+    slots[1] = es.entry;
+    slots[7] = es.stack_top;
+    let me = task::current_task_id();
+    let fbdev_id = task::spawn_fork_child("fbdev", es.root, me, slots, false);
+    if fbdev_id == usize::MAX {
+        let _ = writeln!(log, "t101: task slot exhausted");
+        return false;
+    }
+    // (d) 承接面落账：端口裁量授予 + svc Owner 用户态承接（登记窗由
+    //     映像侧重试免疫——本行先于 fbdev 首拍下收窄竞态窗）
+    let g = crate::dev::pio_grant(fbdev_id as u64, 0x1CE, 0x1CF);
+    ok &= g.is_ok();
+    let adopt = crate::svc::adopt_user(SVC_FB, fbdev_id as u64);
+    ok &= adopt.is_ok();
+    let _ = writeln!(
+        log,
+        "t101: grant-ok={} adopt-ok={} pid={fbdev_id}",
+        g.is_ok(),
+        adopt.is_ok(),
+    );
+    // (e) 有界收割（60 拍 = 0.6 s——fbdev 轻载荷：FB_MAP 2026 页走查 +
+    //     PIO 双拍 + 64 px 直写 + LOG，无阻塞源）
+    let now0 = ostd::time::now();
+    let deadline = now0 + 60;
+    let mut iters: u64 = 0;
+    while task::user_exit_codes().1 == u64::MAX
+        && ostd::time::now() < deadline
+        && iters < 2_000_000_000
+    {
+        iters += 1;
+        core::hint::spin_loop();
+    }
+    let st = task::task_debug_state(fbdev_id);
+    let code = task::task_debug_exit_code(fbdev_id);
+    let dhit = ostd::time::now() >= deadline;
+    let _ = writeln!(
+        log,
+        "t101: spec i={iters} s1={st} exit={code:#x} deadline-hit={dhit}"
+    );
+    if st == 4 {
+        let r = procs::sys_wait_pid(fbdev_id as u64);
+        let rcode = r & 0xFFFF;
+        ok &= r >> 32 == 1 && rcode == 0 && !task::task_alive(fbdev_id);
+        let _ = writeln!(log, "t101: reaped exit={rcode} (expect 0)");
+    } else {
+        ok = false; // 滞域 fail-visible（装置不静默——bail 码 70/71/72 显形）
+    }
+    // (f) Owner 承接对账（混合态记账面——UserTask(fbdev)）
+    let post = crate::svc::lookup(SVC_FB);
+    let owner_ok = post
+        .is_some_and(|(_, _, _, o)| matches!(o, crate::svc::Owner::UserTask(t) if t == fbdev_id));
+    ok &= owner_ok;
+    // (g) 端口访问面对账（OUT16 索引口 + IN16 数据口全链）
+    let (pio_in, pio_out, last_port, last_val, last_op) = crate::dev::pio_stamps();
+    ok &= pio_in >= 1
+        && pio_out >= 1
+        && last_port == 0x1CF
+        && last_op == PIO_IN16
+        && last_val >= 0xB0C0;
+    // (h) LFB 移交成像对账：内核侧 VRAM 物理读回 64 px 全 FBDEV_PAINT
+    let base = crate::fb::fb_base();
+    let mut vram_ok = base != 0;
+    if vram_ok {
+        for i in 0..64u64 {
+            if ostd::hw::phys::read_u32(base + i * 4) != user::FBDEV_PAINT {
+                vram_ok = false;
+                break;
+            }
+        }
+    }
+    ok &= vram_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T101-FBDEV pid={fbdev_id} dispi={last_val:#06x} pio-in={pio_in} pio-out={pio_out} owner=user vram-ok={vram_ok}"
+    );
+    if ok {
+        let _ = writeln!(log, "LUMINA-T101-OK");
     }
     ok
 }
