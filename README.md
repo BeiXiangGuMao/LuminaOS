@@ -8,8 +8,8 @@ workspace。内核可经 multiboot1 在 QEMU（`-smp 2`）上裸机启动，物�
 （UDP/TCP 协议栈）全部在环；crystal 格式 v1 文件系统（WAL/快照）在环；
 **91 项裸机自检全绿并自动验收**（QEMU 退出码 33）。
 
-当前状态：**v0.26.0（M39 用户点名六候选全落账：busybox ls 深链〔t92 排序输出内容级断言 + stdio 保留域/stat 车道漫位双揭雷根治〕+ ash 启动面〔getppid/getpgrp 收录——启动链滞域揭雷转挂账〕+ 多用户纵深 v0〔凭据四元 + 身份六号真面 + setuid 根域收口 + VFS 门禁覆盖表——t93 busybox id 端到端〕+ DPMS 电气面〔SR01 消隐位 + Misc Output 极性域四态读回闭环——t94〕+ harbor C ABI 链接层〔ostd::capi + harbor::abi 12 符号——H-P01 170〕+ 细则 PDF 逐条对账〔PDF-RECON 108 项三态成像——介质失联五代挂账摘牌〕；自检 94/94）** · ROADMAP 制度化（M24→M39 十六里程碑逐笔
-落账）· 取证证据链全程落账（t 系活体 t66-t94 续编）· ADR 八项裁决在库
+当前状态：**v0.26.0（M40 用户点名四候选全落账：ash 启动链滞点标本流程〔pf-evidence 定根因→互斥→回归三步全落——栈 grow 缺陷族 × syscall entry 致命域定性 + M22-③ 族 ISR 抢占窗互斥三闸 + t34/t40 装置事件驱动化适配 + 号域勘误 109/110/111〔getppid 真面〕〕+ 盘上属主域〔crystal InodeRec v2 uid/gid/mode 落盘——FORMAT_VERSION 2 + chown(92)/chmod(90) 车道 + 门禁回源双车道 + stat 真面 + t96 六相位——M39-MU 盘上属主挂账摘牌〕+ cat applet 实证〔t97 内容级断言 + sendfile 车道 + 负例——applet 10 目〕+ PR-P04 Vulkan 计算域语义面 v0〔prism::compute SPIR-V 解析壳 + 管线登记面 + 标量求算核——旧误引标签收口〕；自检 96/96）** · ROADMAP 制度化（M24→M40 十七里程碑逐笔
+落账）· 取证证据链全程落账（t 系活体 t66-t97 续编）· ADR 八项裁决在库
 （docs/adr/）· 五维成熟度 v3 = 6.4/10（docs/MATURITY.md）。
 
 ## 特性一览
