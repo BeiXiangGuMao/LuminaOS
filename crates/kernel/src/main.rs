@@ -82,8 +82,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96）。
-const SELFTEST_TOTAL: usize = 96;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97）。
+const SELFTEST_TOTAL: usize = 97;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7006,8 +7006,10 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t97 = t97_run(&mut log);
     report(&mut log, t97, "busybox-cat");
 
-    // t95) ash 启动链标本流程装置（M40-ASH2 置首笔）——**备置撤闸**
-    //      （M39-ASH 先例如实不虚报）：标本流程三步已落——① 定根因
+    // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
+    //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
+    //      pf_hook 入口扩判「U 位 或 CR2 落增长栈窗口域」——CPL0 用户
+    //      栈 push #PF e=2 漏救域收口）：标本流程三步已落——① 定根因
     //      （-d int 标本在案：ash 用户栈 #PF-grow 循环正常推进
     //      〔CR2=0x1803fe800→0x1803ba000 逐页〕+ **lumina_syscall_entry
     //      CPL0 用户栈 push #PF e=2〔无 U 位〕不走 stack_grow 通路 →
@@ -7016,10 +7018,10 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     //      定性随本标本修正为「栈 grow 缺陷族 × syscall entry 致命域 +
     //      ISR 抢占窗族」）；② 互斥（PERCPU_IS_USER 三闸——ring3 ISR
     //      交换触发面移除 + t34/t40 装置事件驱动化适配，两活体 PASS
-    //      在案）；③ 回归（t95 标本装置备置——ash 栈缺陷族修复批次
-    //      转正，SELFTEST 94 维持）。
-    //      let t95 = t95_run(&mut log);
-    //      report(&mut log, t95, "ash-spec");
+    //      在案）；③ 回归（t95 标本装置本笔转正——ash -c 'exit 7'
+    //      全量启动链活体收割，SELFTEST 96→97）。
+    let t95 = t95_run(&mut log);
+    report(&mut log, t95, "ash-spec");
 
     /// t93 多用户纵深活体执行体（M39-MU）：独立函数承载——自检主函数
     /// 栈帧零扰动（M39-ASH 帧形态教训随行——t87 邻域栈槽形态守恒；
@@ -7510,7 +7512,7 @@ fn t94_run(log: &mut DualLog) -> bool {
 /// Timer 即 t52 后唤醒链退役域死锁标本〕双假设判别面）→ 回归域
 /// exit=7 传导对账 + Zombie 收割。滞域 fail-visible（装置不静默——
 /// M39-ASH 撤闸先例随标本定性裁决）。
-#[allow(dead_code)] // M40-ASH2 备置撤闸（栈缺陷族修复批次转正）
+/// M41-笔① 转正（栈 grow 缺陷族修复落域——pf_hook 入口扩判）。
 fn t95_run(log: &mut DualLog) -> bool {
     let mut ok = true;
     task::reset_user_evidence(); // 零锁判据面清零（前置 user 测试残留摘除）

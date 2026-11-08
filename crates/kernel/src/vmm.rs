@@ -783,7 +783,18 @@ fn pf_hook(cr2: u64, error_code: u64) -> bool {
     // 栈增长分支（M14-①）：ring3 源（error_code bit2）+ 增长窗口内
     // 叶未映射 → 补帧扩栈（COW 后/DEFERRED 前；窗口页永不 COW/swap，
     // 分支次序无碰撞面）。
-    if error_code & 0x4 != 0 && stack_grow(va_page) {
+    // M41-笔①（栈 grow 缺陷族 × syscall entry 致命域修复——M40-ASH2
+    // 标本 12496 条 trace 定性转正）：CPL0 现场（error_code 无 U 位）
+    // 的用户栈 push #PF（e=2 = supervisor+write+non-present）同落增长
+    // 语义——syscall entry 在 CPL0 保存现场 push 用户栈触达未映射窗
+    // 口页，原 U 位单判漏救 → 未登记 → 致命 #DF 核瘫痪。入口扩为
+    // 「U 位 或 CR2 落增长栈窗口域」：stack_grow 内部全闸（窗口
+    // floor/扩展带/硬顶 + 四级走表 + 叶未映射 + 帧闸）不变——窗口域
+    // 外（内核高半区/代码/堆/SWAP/DEMO 域）一律 false 交回原路径，
+    // 越窗致命 fail-visible 语义保持；内核线程 CR3 无用户走表 → 走表
+    // 闸 false。救援新增面闭合于「CPL0 × 窗口域 × 叶未映射」——与
+    // M14-① 增长语义同域，无新增越权面。
+    if (error_code & 0x4 != 0 || va_page < crate::user::STACK_TOP_GROW) && stack_grow(va_page) {
         return true;
     }
     let Some(e) = DEFERRED.lock().iter().find(|e| e.va == va_page).copied() else {

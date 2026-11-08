@@ -897,10 +897,55 @@ pub mod gdt {
             self.words[1] = addr as u32;
             self.words[2] = (addr >> 32) as u32;
         }
+
+        /// IST1 写入（SDM 偏移 0x24..0x2C = words[9..10]；M41-笔①）。
+        fn set_ist1_raw(&mut self, addr: u64) {
+            self.words[9] = addr as u32;
+            self.words[10] = (addr >> 32) as u32;
+        }
     }
 
     /// per-CPU 上界（与 kernel::task::MAX_CPUS 同源：MADT 探测契约）。
     const MAX_TSS_CPUS: usize = 2;
+
+    /// IST1 应急栈容量（M41-笔①）：#PF 门专用——CPL0 现场用户栈未映
+    /// 射时中断帧仍需有保底栈（Linux page_fault 同款设计；栈 grow
+    /// 缺陷族 × syscall entry 致命域根治面）。#PF handler 链（stub
+    /// 十 push + pf_hook + stack_grow 补帧）深度远小于 8 KiB。
+    const IST1_SIZE: usize = 8192;
+
+    /// IST1 per-CPU 应急栈（静态存储期，内核映像内；16 对齐——
+    /// CPU 对 IST 值无对齐强制，但栈机约定对齐 16 保持）。
+    #[repr(C, align(16))]
+    struct IstStack {
+        bytes: [u8; IST1_SIZE],
+    }
+
+    static mut IST1_STACKS: [IstStack; MAX_TSS_CPUS] = [
+        IstStack {
+            bytes: [0; IST1_SIZE],
+        },
+        IstStack {
+            bytes: [0; IST1_SIZE],
+        },
+    ];
+
+    /// IST1 初始化：写 `TSS[cpu].IST1` = 本核应急栈顶（栈内高地址端）。
+    ///
+    /// 调用点：GDT/TSS 装载前置（`install`/`location_cpu`，lgdt/ltr 之
+    /// 前）——TR 装载后 CPU 即可按门 IST 域切栈，IST1 必须先行就位。
+    /// 幂等（重复写同值）；仅本核装载窗口调用（无并发写者）。
+    fn init_ist1(cpu: usize) {
+        // SAFETY: 仅取静态存储地址（不 deref）；装载窗口内无并发读者。
+        let top = unsafe { core::ptr::addr_of!(IST1_STACKS[cpu]) } as u64 + IST1_SIZE as u64;
+        // SAFETY: 前置条件 —— GDT/TSS 装载窗口（见函数级义务）；
+        // 并发 —— per-CPU 索引隔离；违反后果 —— IST1 悬垂即
+        // #PF 切入无效栈（三重故障，与 RSP0 悬垂同谱）。
+        unsafe {
+            let tss = core::ptr::addr_of_mut!(TSS[cpu]);
+            (*tss).set_ist1_raw(top);
+        }
+    }
 
     // TSS per-CPU 实例；RSP0 仅由本核调度点独占写入（见 set_rsp0）。
     static mut TSS: [TaskStateSegment; MAX_TSS_CPUS] =
@@ -967,6 +1012,16 @@ pub mod gdt {
         }
     }
 
+    /// 读取本核 TSS.IST1 当前值（M41-笔① 自检取证用；与 init_ist1
+    /// 同一 per-CPU 纪律）。
+    pub fn ist1(cpu: usize) -> u64 {
+        // SAFETY: 仅读取静态 TSS 的 words 字段（不产生中间引用）。
+        unsafe {
+            let tss = core::ptr::addr_of!(TSS[cpu]);
+            u64::from((*tss).words[9]) | (u64::from((*tss).words[10]) << 32)
+        }
+    }
+
     /// 填写 `GDTS[cpu]` 的 TSS 描述符两槽（幂等；lgdt 前调用）。
     fn fill_tss_descriptor(cpu: usize) {
         // SAFETY: 静态表槽位填写；调用点在 lgdt 之前（无并发读者）。
@@ -978,6 +1033,8 @@ pub mod gdt {
             (*gdt_ptr).slots[5] = tlo;
             (*gdt_ptr).slots[6] = thi;
         }
+        // M41-笔①：IST1 应急栈随描述符填写同窗就位（lgdt/ltr 前）。
+        init_ist1(cpu);
     }
 
     /// AP 侧装载任务寄存器（TR ← SEL_TSS）：AP trampoline 已 lgdt 本核
@@ -1036,6 +1093,10 @@ pub mod gdt {
             let (tlo, thi) = tss_descriptor(tss_base, tss_len);
             (*gdt_ptr).slots[5] = tlo;
             (*gdt_ptr).slots[6] = thi;
+            // M41-笔①：BSP IST1 应急栈随描述符填写同窗就位（install 与
+            // fill_tss_descriptor 双路径同构——BSP 走本内联路径，漏写即
+            // TSS.IST1=0，#PF 门 IST 切栈形同虚设——首轮冒烟实测在案）。
+            init_ist1(0);
             let dp = DescPtr {
                 limit: (core::mem::size_of::<GdtTable>() - 1) as u16,
                 base: gdt_ptr as u64,

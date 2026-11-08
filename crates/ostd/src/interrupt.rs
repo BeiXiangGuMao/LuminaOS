@@ -72,6 +72,24 @@ impl IdtEntry {
         }
     }
 
+    /// 以处理程序线性地址构造中断门（IST 指定版，M41-笔①）。
+    ///
+    /// 布局同上；`ist` ∈ 1..=7 时填入门 IST 域（[39:32]）——中断入
+    /// 场 CPU 无条件切换至 `TSS.IST[ist]`（含 CPL0 现场——RSP0 语义
+    /// 只在特权切换时生效），故障门专用（保底栈：CPL0 用户栈未映射时
+    /// 中断帧不再压同一页 → 嵌套 #PF/#DF 链根治）。
+    pub const fn interrupt_ist(handler: u64, ist: u8) -> Self {
+        debug_assert!(ist <= 7);
+        Self {
+            lo: (handler & 0xFFFF)
+                | (KERNEL_CS << 16)
+                | ((ist as u64) << 32)
+                | (GATE_INTERRUPT << 40)
+                | ((handler & 0xFFFF_0000) << 32),
+            hi: handler >> 32,
+        }
+    }
+
     /// 门是否指向给定处理程序地址（自检用）。
     pub const fn points_to(self, handler: u64) -> bool {
         (self.lo & 0xFFFF) | ((self.lo >> 32) & 0xFFFF_0000) | (self.hi << 32) == handler
@@ -96,6 +114,14 @@ impl Idt {
     pub fn set_raw(&mut self, vector: usize, handler_addr: u64) {
         if let Some(slot) = self.entries.get_mut(vector) {
             *slot = IdtEntry::interrupt(handler_addr);
+        }
+    }
+
+    /// 以原始地址 + IST 槽设置向量 `vector`（0..=255）的中断门
+    /// （M41-笔①：#PF 门挂 IST1 应急栈）；越界忽略（防御式）。
+    pub fn set_raw_ist(&mut self, vector: usize, handler_addr: u64, ist: u8) {
+        if let Some(slot) = self.entries.get_mut(vector) {
+            *slot = IdtEntry::interrupt_ist(handler_addr, ist);
         }
     }
 
@@ -1037,6 +1063,18 @@ mod tests {
         let e = IdtEntry::interrupt(addr);
         assert!(e.points_to(addr));
         assert!(!e.points_to(0xDEAD_BEEF));
+    }
+
+    #[test]
+    fn interrupt_gate_ist_encodes_handler_and_ist() {
+        // M41-笔①：IST 版门——同 handler 编码 + IST 域置位（位 32）
+        let addr: u64 = 0x1_2345_6789_ABCD;
+        let e = IdtEntry::interrupt_ist(addr, 1);
+        assert!(e.points_to(addr));
+        // IST 域 = 1：lo 位 32 置位（interrupt() 版恒 0）
+        assert!(e.lo & (1 << 32) != 0);
+        let e0 = IdtEntry::interrupt(addr);
+        assert!(e0.lo & (1 << 32) == 0);
     }
 
     #[test]

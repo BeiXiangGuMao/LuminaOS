@@ -48,7 +48,12 @@ pub fn init_and_enable(log: &mut DualLog) -> u32 {
         idt.set_raw(13, ostd::interrupt::stub_addr(Stub::FaultGp));
         // 向量 14：可恢复 #PF 桩（M5）。未注册恢复钩子时与致命版行为
         // 严格一致（主体返回 0 → 转原致命路径），现网语义零回归。
-        idt.set_raw(14, pf_rec_addr);
+        // M41-笔①：门挂 IST1 应急栈——CPL0 现场用户栈未映射时中断帧
+        // 仍压在未映射页上 → 嵌套 #PF → #DF（栈 grow 缺陷族 ×
+        // syscall entry 致命域标本 12496 条 trace 在案）；IST 切栈
+        // 无条件生效（含 CPL0）→ handler 链在保底栈上跑，pf_hook
+        // → stack_grow 补帧救援可达。
+        idt.set_raw_ist(14, pf_rec_addr, 1);
         idt.set_raw(10, ostd::interrupt::stub_addr(Stub::FaultTs));
         idt.set_raw(8, ostd::interrupt::stub_addr(Stub::FaultDf));
         // 向量 0x40：LAPIC IPI（TLB 击落；M5）
