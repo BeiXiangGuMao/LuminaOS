@@ -26,6 +26,141 @@
 - **v0.13.0（M13）**：VFS 骨架移植入真链。
 - **v0.14.0–v0.15.0（真链定版）**：云盘包（打包时刻 2026-10-10）。
 
+## v0.27.0（2026-11-08）—— M32–M40 九里程碑连发：SDK/权限中心 + busybox 全链 + 服务化纵深 + 多用户 + 桌面电气化 + 网络收口
+
+> 九里程碑（M32 七笔 / M33 九笔 / M34 七笔 / M35 八笔 / M36 八笔 / M37 五笔 /
+> M38 三笔 / M39 八笔 / M40 六笔，各含收尾对账）+ M41-DEV 装置适配笔连续落账；
+> 本版为 workspace 升版定版（v0.26.0 → v0.27.0），裸机自检 80 → **96** 项
+> （t81…t97 续编；t95 号位随 ash 撤闸跳号如实登记）。五维成熟度 v1 6.0 →
+> **v4 6.7**（docs/MATURITY.md 复评链）。
+
+### M32（Aurora SDK/权限中心）
+- **A1 权限中心首割**：aurora 转 no_std+alloc + perm 四相面（声明 schema 闸 →
+  承接授予〔vanguard 桥，本体零改动〕→ 检查显形 → 撤销显形）。
+- **S1 SDK 最小服务面**：声明式注册折叠 + 生命周期框架面（AF-P06 唯一入口 +
+  终态权限收口）+ 意图路由骨架。
+- **B1 AF-P01 基准口径**：宿主冷启动基准桩 0.18 ms（满载 16 应用 × 48 能力，
+  预算余量 663 倍 + 回归哨兵闸）；端到端口径随用户态进程基础设施挂账。
+- **t81 aurora 活体**（三面内核态收口，80/80）。
+
+### M33（P1 末 DoD 收口：busybox Linux 兼容全链）
+- **bedrock::elf** ELF64 静态加载器（十三目解析防线 fail-visible）+ Linux
+  初始栈（AT_ 哨兵集）；**conduit::translate** Linux 号域映射面首批
+  （M33-L1）；**fork**（COW 地址空间复制 + 子代全量快照定点恢复，M33-P1）；
+  multiboot1 module 制备通道（M33-F1）。
+- **t82 busybox 活体**：Alpine 官方静态 busybox 裸机真跑全链（ELF 直载 →
+  musl 初始化 arch_prctl/brk/mmap → fork 族 → applet 分发 → write(1) 取证 →
+  exit_group → waitpid 收割）——Linux 兼容路径从纸面绑定面兑现为执行面。
+- **M33-R1** 长稳 harness（S10-longrun 双面板 + RUNBOOK 前置）；**M33-X1**
+  五维成熟度首评 v1 = 6.0/10。
+
+### M34（服务化首割 + 旁路缩编二批 + 电源语义面）
+- **kernel::svc** 服务注册表定容面（SVC_MAX=8 + 五驱动 boot 注册 + LUMINA-SVC-INIT
+  证据行）+ bedrock svc 契约单一事实源（M34-D1）。
+- **quill 新 crate**：console/tty 纯函数面 crate 化外移（旁路缩编批次二——
+  串口日志翻译核 + tty 行分类核，宿主 golden 21 目）（M34-D2）。
+- **power 电源协同显示语义面**（M34-P4）：DisplayState 三态 + Directive 协同
+  指令集 + DIM_STEPS 亮度档位契约 + can_transition 迁移表（AF-P06 同构）。
+- **t83 applet 扩容**（true/false/printf/wc）+ **BUSYBOX.md 覆盖度成像表**落库 +
+  M34-R1 RUNBOOK 执行手册（真机窗口机制面收口）。
+
+### M35（H-P01 闸 50→150 + busybox 批次二）
+- **harbor 四批扩容 57→158 符号**（H1a time 14 / H1b search 15 / H1c unistd 7 +
+  string/stdlib 28 / H1d wctype/wchar 37）——**H-P01 ≥150 细则 DoD 硬锚兑现**
+  （forbid unsafe 全 crate 纪律保持）。
+- **M35-BBa** fork fd 继承 + pipe2(293) 执行面；**M35-BBb** sh 流水线首割
+  t85（`yes | head -n 3` 两段真流串联——`|` 解析 + fork 锁窗铸槽 dup2 等价 +
+  stdio 重定向分流面）。
+
+### M36（xxh3-128 + TCP 电气 + 阻塞管道 + 布局根治）
+- **crystal xxh3-128 全量口径**（M36-C1a/C1b——CR-P10 转正：双算法并存互拒 +
+  40 长度点规范向量 × python 参考实现 + 单位翻转雪崩 + 条带边界扫描）。
+- **kernel::vnet TCP 电气接线** t86（M36-N1——TCP_PORT_CAP 16 端口表 + 回环
+  交接 + 外部 TX）+ **prism alpha 混合纯函数面**（M36-A1a Argb8888）。
+- **M36-L1 布局敏感缺陷根治**：boot 页表移出栈下行火线（.boot.bss 重排 +
+  boot 栈 64→256 KiB + L3 涂鸦哨兵显形——缩栈证伪实验双形态在案）。
+- **M36-BB3a/b 阻塞式管道 I/O**：等待队列内核面（O_NONBLOCK 收录 +
+  WaitWhat::PipeRead/PipeWrite + 死亡唤醒双链）+ t87 四相位电化学 +
+  **stat 车道根治**（fd_stat_mode_size lseek-END 权威——SYS_STAT 16 位尺寸
+  三代潜伏溢出）。
+
+### M37（fb 合成电气化 + TCP 重传面）
+- **M37-⓪ 环境复原批**：跨核 FSBASE 上下文接管根治（跨核迁移 musl errno 域
+  #PF 3/3 确定性根治）+ t69 收讫对账。
+- **M37-A1b 合成电气化**：prism::SurfaceTable→Stack::blend（SYS_FB_SURFACE(40)
+  三操作 ABI v0.18 + t88 alpha 双锚 VRAM 读回 + 空表回退逐位同构）。
+- **M37-N1 重传面 v0**：pulse::tcp 协议机纵深（RtoTimer TSC 纳秒重传臂 +
+  SendWindow 滑窗 + ReasmBuf 字节粒度重组窗，t89 六相位——M27-T1 偏差转正）。
+
+### M38（质量轮：竞态根治 + TCP 服务化）
+- **M38-SP1 slots_pair 空槽切换竞态根治**：block/halt 双臂 M11-D 握手旗闸
+  （M22-③ 双核同槽鬼影根治——旗清前拾取面拒绝 + 停机臂 woken/probe 自救援）
+  + t90 风暴活体（blk+=318/wake+=318 严格配对零丢失唤醒）。
+- **M38-TCP1 服务化五面**：WinScale RFC 7323 选项面 + RttEst RFC 6298 整数式
+  Karn 窄化 + CcState RFC 5681 简化域三态 + PersistTimer 零窗探测 +
+  ConnTable 定容 8 槽四元组查表——t91 六相位 + 宿主 27→44 例。
+
+### M39（六候选全落账）
+- **BBLS**：busybox ls 深链 t92（乱序制备→排序输出内容级断言首例 +
+  **stdio 保留域三代隐匿根治**〔「先开后写」stdout 互踩——open 槽搜索自 3 起〕
+  + readlink(89) 号域勘误 90→89）。
+- **MU 多用户纵深 v0**：任务凭据四元（spawn/fork 全量继承）+ 身份六号真面
+  （105/106=setuid/setgid 勘误）+ setuid 根域收口 + VFS 权限门禁覆盖表 +
+  t93 busybox id 端到端。
+- **DPMS 电气面**：stdvga SR01 消隐位 + Misc Output 同步极性域四态读回闭环
+  t94 + M34-P4 登记面电气挂接 + PR-P04 引用偏差勘误。
+- **HBI**：ostd::capi 指针基元层 + harbor::abi 12 符号 extern "C" 导出面
+  （H-P01 158→170 双面在环）。
+- **PDF 对账**：docs/PDF-RECON.md 落盘——22 份指南原件 15 族 108 项三态对账
+  （细则 PDF 介质失联五代挂账摘牌）。
+- **MATURITY v4 = 6.7/10**（功能 6.8→7.0 / 安全 6→7.0 双升档）。
+
+### M40（四候选全落账）
+- **ASH2 ash 启动链滞点标本流程**（置首）：三步全落——定根因（-d int 标本：
+  lumina_syscall_entry CPL0 用户栈 push #PF e=2 不走 stack_grow → 致命 #DF，
+  M22-③ 族 ISR 抢占窗高能击发）→ 互斥（PERCPU_IS_USER 三闸 + 换入向闸——ring3
+  回归事件驱动调度，S8 24s→9s 提速实录）→ 回归（t34/t40 装置事件驱动化适配 +
+  t95 备置撤闸 + 号域勘误 109=setpgid/110=getppid 真面/111=getpgrp）。
+- **CRYSTAL 盘上属主域**：Lfs InodeRec v2（FORMAT_VERSION 2 bump——uid/gid/mode
+  三域 64B 定容重排）+ chown(92)/chmod(90) 号域收录 + 门禁回源双车道 +
+  stat 属主真面 + t96 六相位（**M17-① ATA PIO 块层字节域缺陷标本随行揭雷**：
+  @1..7 域值域相关 <<4 错位——组位域判定与 grp mode 裸机读回如实降级随块层
+  批次清账）。
+- **CAT cat applet 实证**：t97 内容级断言（sendfile 车道实测 + 负例域）——
+  applet 覆盖度第 10 目，M36-BB3b/M39-收尾 双挂账摘牌。
+- **PRP04 Vulkan 计算域语义面 v0**：prism::compute（SPIR-V 1.3 解析壳
+  fail-visible 防线 + 计算管线登记面定容 8 槽 + 标量求算核 GLSLstd450 子集
+  逐位确定性感）+ 旧误引标签收口（硬件 Vulkan 队列挂账不变——真机窗口）。
+
+### M41 起步（装置适配笔）
+- **M41-DEV 门禁装置适配批**（沙箱重建介质复原后基线复绿）：T90F t90 收割
+  计数锚全局化（idle-reap 桥竞态——ORPHAN_REAPS 窗口增量）+ T87F t87 同步锚
+  PIT 墙钟预算（5 s deadline，M40-ASH2 t95 装置同款）+ T40F t40 coop 存在性
+  锚降级（事件驱动化后 yield 计数归属随主机时序漂移——证据面保留）+
+  S4F harbor 测试面串行（errno 进程级全局模型对齐）。**w 长度域跨 reap 调用
+  值漂移一次实录随行登记（M22-③ ctx 切换窗族观察样本）**。
+
+### 工程与门禁面
+- 裸机自检 80 → **96**（t81 aurora / t82 busybox / t83 applet / t85 流水线 /
+  t86-t91 网络 / t92 ls / t93 多用户 / t94 DPMS / t96 属主 / t97 cat——双端
+  计数同步；t95 号位随 ash 撤闸跳号如实登记）。
+- 宿主测试 ~470 例 / 40 套件（crystal 112 / harbor 57 / pulse 44 / ostd 42 /
+  bedrock 39 / meridian 35 / loom 24 / conduit 21 / weave 21 / aurora 19 /
+  prism 19…）。
+- 文档体系：ADR 八篇维持 + docs/PDF-RECON.md 新落 + docs/BUSYBOX.md 成像表 +
+  docs/RUNBOOK.md 执行手册 + METRICS 全表扩记 + MATURITY v1→v4 复评链。
+- 全部提交 xtask ci 十一阶段门禁全绿；窗族（t73 残余 / t15 转投竞速）冷却
+  重试口径如实登记。
+
+### 既有偏差与挂账（随版延续）
+- ash 全量启动面（栈 grow 缺陷族 × syscall entry 致命域——M22-③ 同族量级，
+  M41 近线置首）；M17-① ATA PIO 块层字节域缺陷族（InodeRec v2 首用显形）。
+- ash 交互面（阻塞式 tty read）+ 多用户纵深二批（saved-set/补充组）+
+  重传面域外余项（快速重传/快速恢复、SACK、时间戳选项）。
+- t73 残余窗族 + t15 转投竞速窗族；24h/72h 长稳正式记录 + DPMS 背光调光 +
+  PR-P04 硬件 Vulkan 队列 + 环境 B 绝对基准全谱（真机窗口）。
+- [B] rip=-1 蹲守挂账延续（哨兵面不动）。
+
 ## v0.26.0（2026-10-25）—— M29–M31 三季连发：Harbor libc + Weave 对象库 + 桌面骨架 + 自举预备
 
 > 三里程碑（M29 五笔 / M30 七笔 / M31 六笔）+ M32 计划笔连续落账；本版为
