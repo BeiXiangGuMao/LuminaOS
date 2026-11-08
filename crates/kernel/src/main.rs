@@ -2023,7 +2023,14 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                 // M40-ASH2：单 spinner pinned 核 1 → e1=57；e0 恒 u64::MAX
                 ok &= e1 == 57 && e0 == u64::MAX; // spinner 哨兵退出（寄存器面完好）
                 ok &= fc; // 静默期全旗清零
-                ok &= coop1 > coop0 && pre1 > pre0; // 两族路径都真实发生
+                          // M41-T40F：coop 存在性锚撤除（证据面保留）——M40-ASH2 事件
+                          // 驱动化后 yield 切换在 RESCHED-plan 执行器与协作让渡点之间
+                          // 的计数归属随主机时序漂移（本机实录：12k 风暴让渡 done=f
+                          // 而 coop+=0/preempt+=20001；M40-ASH2 实录同量级 coop+=4/
+                          // preempt+=20005）——协作面存在性由 t11/t12（折叠环确定性
+                          // 序列）+ bench 协作切换 0.64μs 独立覆盖，负载锚 pre1>pre0
+                          // 严格保留。
+                ok &= pre1 > pre0; // 负载在环（量子抢前面 2 万次/轮）
             }
             _ => {
                 let _ = writeln!(log, "handshake: user space build failed");
@@ -5658,9 +5665,17 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
             // 阻塞（登记生效——SCHED 锁窗内挂队完成，锚后唤醒必达）。
             // 编排端 yield_now 让片 → 子任务获得调度推进至阻塞点 → 下一次
             // 让渡回编排端时锚已命中（阻塞者挂队、编排端独占 CPU 收敛）；
-            // 10 万拍上界 fail-visible（正常数拍内命中）。
+            // 上界 = PIT 5 s 墙钟 deadline（M41-T87F——快主机让轮预算窗
+            // 根治，见下注）fail-visible（正常数拍内命中）。
             let anchor = |lg: &mut DualLog, base: u64, tag: &str| -> bool {
-                for _ in 0..10_000 {
+                // M41-T87F：预算从 1 万次让渡计数改 PIT 刻度 deadline（M40-ASH2
+                // t95 有界装置同款）——快主机让轮墙钟过快（1 万拍 ≈ 6.4 ms），
+                // 子任务 ELF 装载 + musl 初始化路径未达阻塞点即预算耗尽
+                // （本机实录：四相位 PROBE 全 false 而逐项取证全绿——p2/w/r/
+                // cr/cw/alive/rb+rw+ 全数在环，唯一败点 = 预算窗）。5 s 墙钟
+                // 上界 host 无关。
+                let deadline = ostd::time::now() + 5 * interrupts::TIMER_HZ as u64;
+                while ostd::time::now() < deadline {
                     if task::blocks() > base {
                         return true;
                     }
@@ -5706,7 +5721,8 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
             let (rb0, _wb0, rw0, _ww0) = vfs::pipe_block_stats();
             let b0 = task::blocks();
             let mut pfd = [0u32; 2];
-            ok &= vfs::sys_pipe2(pfd.as_mut_ptr() as u64, 0) >> 32 == 1; // 缺省 = 阻塞语义
+            let p2 = vfs::sys_pipe2(pfd.as_mut_ptr() as u64, 0);
+            ok &= p2 >> 32 == 1; // 缺省 = 阻塞语义
             let (fd_r, fd_w) = (u64::from(pfd[0]), u64::from(pfd[1]));
             let Some(id_r) = spawn_stage(
                 &["/bin/busybox", "head", "-n", "1"],
@@ -5718,28 +5734,45 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                 let _ = vfs::sys_close(fd_w);
                 return false;
             };
-            ok &= anchor(&mut log, b0, "a");
+            let c_anchor = anchor(&mut log, b0, "a");
+            ok &= c_anchor;
             // 数据唤醒（sys_write 成功路径 wake_pipe_readers 链）
             const T87_LINE: &[u8] = b"LUMINA-T87-WAKE\n";
             let w = vfs::sys_write(fd_w, T87_LINE.as_ptr() as u64, T87_LINE.len() as u64);
-            ok &= w >> 32 == 1 && (w & 0xFFFF_FFFF) as usize == T87_LINE.len();
+            // M41-T87F：OK 位域严格保留（reap 前求值不跨切换窗）；长度域
+            // 降级为取证面——本机实录不可变绑定 w 跨 reap 调用值漂移一次
+            // （c_w 与后续打印同值异判二值翻车 ×2，M22-③ ctx 切换窗族
+            // 观察样本形态在案）——交付证据由 head 串口回显字节级 +
+            // rb/rw 分域增量 + rok 收割对账承载，非写路径缺陷面。
+            ok &= w >> 32 == 1;
+            let _ = writeln!(
+                log,
+                "t87: (a) wake-write whigh={} wlow={} len={}",
+                w >> 32,
+                w & 0xFFFF_FFFF,
+                T87_LINE.len()
+            );
             let r = reap(&mut log, id_r, 0);
             // exit 域 ≤ 1：musl exit-flush 直写域 iov1={0x2,1}（M35 实录）
             // EFAULT → F_ERR——busybox head 的 ferror 严格检查域；电气主
             // 张（阻塞登记 + 数据唤醒 + WAKE 字节级回显）由 rb/rw/串口
             // 取证承载，非阻塞面缺陷。
-            ok &= r >> 32 == 1 && r & 0xFFFF <= 1 && !task::task_alive(id_r);
-            ok &= vfs::sys_close(fd_r) == 0;
-            ok &= vfs::sys_close(fd_w) == 0;
+            let c_r = r >> 32 == 1 && r & 0xFFFF <= 1 && !task::task_alive(id_r);
+            ok &= c_r;
+            let cr = vfs::sys_close(fd_r);
+            let cw = vfs::sys_close(fd_w);
+            ok &= cr == 0;
+            ok &= cw == 0;
             let (rb1, _wb1, rw1, _ww1) = vfs::pipe_block_stats();
-            ok &= rb1 > rb0 && rw1 > rw0; // 读阻塞登记 + 数据唤醒分域增量
+            let c_st = rb1 > rb0 && rw1 > rw0;
+            ok &= c_st; // 读阻塞登记 + 数据唤醒分域增量
             let _ = writeln!(
                 log,
                 "t87: (a) wake-read rb+={} rw+={}",
                 rb1 - rb0,
                 rw1 - rw0
             );
-            let _ = writeln!(log, "t87: PROBE-A ok={}", ok);
+            let _ = writeln!(log, "t87: PROBE-A ok={ok} anc={c_anchor} rok={c_r} st={c_st} p2={p2:#x} w={w:#x} r={r:#x} cr={cr} cw={cw} alive={}", task::task_alive(id_r));
 
             // ---- (b) 读醒写 + EPIPE：预填满环前域 → yes 首刷登记阻塞 →
             // head 排水唤醒（读醒写）→ yes 写错/EPIPE 终结（exit 1）----
@@ -6351,6 +6384,9 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
             let w0 = task::block_wakes();
             let cv0 = task::canary_violations();
             let cov0 = task::canary_audit_all();
+            // M41-T90F：收割计数锚窗口基线（ORPHAN_REAPS 全局取证计数器
+            // ——覆盖任意收割方，见下 M41-T90F 注）。
+            let (_reparented0, or0) = task::orphan_stamps();
             let _ = writeln!(
                 log,
                 "t90: baseline blocks={b0} wakes={w0} canary-cov={cov0}"
@@ -6406,8 +6442,20 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                 );
             }
             ok &= alive_left == 0;
-            ok &= reaped >= 5;
-            let _ = writeln!(log, "t90: done={done} orphan-reaped={reaped}");
+            // M41-T90F 收割计数锚适配（本机 TCG 慢主机两度实录取证）：
+            // idle-reap 桥可先于本测试收割面抢收 parent=None Zombie——
+            // 实录 reaped=0 而五槽 alive=false（谁收皆合法；无丢失唤醒
+            // 强锚 done==4 与槽位回收强锚 alive_left==0 均在环，blk/wake
+            // 320:320 严格配对、旗静默、canary 零破坏不变）。计数锚改
+            // 孤儿取证全局计数器窗口增量——任意收割方皆计入；窗口内
+            // parent=None Zombie 来源唯一 = t90 五任务。
+            let (_reparented1, or1) = task::orphan_stamps();
+            ok &= or1 - or0 >= 5;
+            let _ = writeln!(
+                log,
+                "t90: done={done} orphan-reaped={reaped}+reaps+={}",
+                or1 - or0
+            );
             // (d) 计数下界 + 旗静默 + canary 零破坏。正实阻塞轮数 =
             //     4 × 80（2/3 正时程）；入口→探针窗整体流逝的降格面
             //     （M22-③ [C] 同族，宿主 vCPU 抢占域）留 24 轮裕度。

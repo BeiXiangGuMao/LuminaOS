@@ -1323,7 +1323,26 @@ fn main() -> ExitCode {
         "test" => {
             stage_log_header("S4-test");
             let t0 = Instant::now();
-            let code = run_logged("S4-test", "cargo", &["test", "--workspace"]);
+            // M41-S4F：harbor 测试面串行（--test-threads=1）——errno 面 =
+            // 进程级全局 AtomicI32（errno.rs 文档口径），并行测试线程的
+            // errno 写入互踩构成固有竞态（本机实录 strtol_overflow_erange
+            // 二值翻车：期望 ERANGE(34) 读得 0——他线程 set_errno(0) 落窗）。
+            // POSIX errno 语义 = 线程局部，harbor v0 = 进程全局——测试面
+            // 与库模型对齐取串行，生产面零改动；workspace 其余套件并行不变。
+            let code_harbor = run_logged(
+                "S4-test",
+                "cargo",
+                &["test", "-p", "harbor", "--", "--test-threads=1"],
+            );
+            let code_rest = run_logged(
+                "S4-test",
+                "cargo",
+                &["test", "--workspace", "--exclude", "harbor"],
+            );
+            let code = match (code_harbor, code_rest) {
+                (Some(0), Some(0)) => Some(0),
+                _ => Some(1),
+            };
             println!(
                 "[{}] cargo test ({} ms)",
                 if code == Some(0) { "PASS" } else { "FAIL" },
