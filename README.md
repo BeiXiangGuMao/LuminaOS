@@ -8,8 +8,8 @@ workspace。内核可经 multiboot1 在 QEMU（`-smp 2`）上裸机启动，物�
 （UDP/TCP 协议栈）全部在环；crystal 格式 v1 文件系统（WAL/快照）在环；
 **96 项裸机自检全绿并自动验收**（QEMU 退出码 33）。
 
-当前状态：**v0.27.0（M40 用户点名四候选全落账：ash 启动链滞点标本流程〔pf-evidence 定根因→互斥→回归三步全落——栈 grow 缺陷族 × syscall entry 致命域定性 + M22-③ 族 ISR 抢占窗互斥三闸 + t34/t40 装置事件驱动化适配 + 号域勘误 109/110/111〔getppid 真面〕〕+ 盘上属主域〔crystal InodeRec v2 uid/gid/mode 落盘——FORMAT_VERSION 2 + chown(92)/chmod(90) 车道 + 门禁回源双车道 + stat 真面 + t96 六相位——M39-MU 盘上属主挂账摘牌〕+ cat applet 实证〔t97 内容级断言 + sendfile 车道 + 负例——applet 10 目〕+ PR-P04 Vulkan 计算域语义面 v0〔prism::compute SPIR-V 解析壳 + 管线登记面 + 标量求算核——旧误引标签收口〕；自检 96/96）** · ROADMAP 制度化（M24→M40 十七里程碑逐笔
-落账）· 取证证据链全程落账（t 系活体 t66-t97 续编）· ADR 八项裁决在库
+当前状态：**v0.27.0（M41 四候选全落账：栈 grow 缺陷族 × syscall entry 致命域三面根治〔#PF 门挂 IST1 应急栈——Linux page_fault 同款 + pf_hook 入口扩判 + t95 撤闸转正〕+ M17-① 块层字节域清账〔t98 取证矩阵全绿消解 + t96 三相位翻正〕+ 多用户纵深二批〔saved-set 三态 + 补充组 + 号域四目 COVERED 43 + t99 交换链矩阵〕+ ash 交互面〔lin_read fd 0 阻塞化 + t100 交互模式端到端——echo 消费/exit 收割〕；v0.27.0 定版八步全闭环——tag/双 tar/SHA256SUMS/GitHub Release 四资产/ls-remote 回环，M32–M40 九里程碑成果固化；原 M40 四候选：ash 启动链滞点标本流程〔pf-evidence 定根因→互斥→回归三步全落——栈 grow 缺陷族 × syscall entry 致命域定性 + M22-③ 族 ISR 抢占窗互斥三闸 + t34/t40 装置事件驱动化适配 + 号域勘误 109/110/111〔getppid 真面〕〕+ 盘上属主域〔crystal InodeRec v2 uid/gid/mode 落盘——FORMAT_VERSION 2 + chown(92)/chmod(90) 车道 + 门禁回源双车道 + stat 真面 + t96 六相位——M39-MU 盘上属主挂账摘牌〕+ cat applet 实证〔t97 内容级断言 + sendfile 车道 + 负例——applet 10 目〕+ PR-P04 Vulkan 计算域语义面 v0〔prism::compute SPIR-V 解析壳 + 管线登记面 + 标量求算核——旧误引标签收口〕；自检 100/100）** · ROADMAP 制度化（M24→M41 十八里程碑逐笔
+落账）· 取证证据链全程落账（t 系活体 t66-t100 续编）· ADR 八项裁决在库
 （docs/adr/）· 五维成熟度 v4 = 6.7/10（docs/MATURITY.md）。
 
 ## 特性一览
@@ -174,7 +174,7 @@ BeiXiangGuMao）；M20-① / M22-① 两个开发提交按原时刻 cherry-pick 
 | v0.24.0 | M24 | 服务边界元年：v0.24.0 定版 + ADR 八篇裁决 + Meridian dispatcher 首割 + IDL 纪律 + lint-deps/unsafe 台账 + mirror 损伤细则 + vnet 背压/ICMP（t72-t74） |
 | v0.25.0 | M25–M27 | 兼容与栈收口三季连发：M25 Conduit abi-defs 20 结构/布局双闸 C-P04=0/25 调用绑定（t75）→ M26 Crystal 文件系统首割（格式 v1 + WAL + COW B-tree + O(1) 快照 + crash-fs ≥1000 注入，ADR-0002 vfs 迁移，t76）→ M27 网络栈收口（ADR-0005 环归位 + t73 丢帧类排水限流收口 + UDP 协议面 + t78 回环活体 + PU-P03 口径挂接 + TCP 首割） |
 | v0.26.0 | M29–M31 | 服务与桌面三季连发：M29 Harbor libc 首版（ADR-0003 分配器归 ostd::heap + H-P01 首批 57 符号 forbid unsafe）+ Weave 对象库/WE-P02 四相断电注入 → M30 桌面骨架（Loom Elm 架构 + Cascade shell 语义四面 + Glyph 同源渲染 + t79 活体）→ M31 自举预备（驱动旁路台账首版成像 + morse 翻译面外移首割 + V-P05 注入矩阵 + Weave 自举装载面 + t80 活体） |
-| v0.27.0 | M32–M40 | 九里程碑连发：M32 Aurora SDK/权限中心（perm 四相 + SDK 注册折叠/意图路由 + AF-P01 基准 + t81）→ M33 busybox Linux 兼容全链（ELF 直载/fork/号域转换层 + t82 活体 + 成熟度首评 6.0）→ M34 服务化首割（kernel::svc + quill 外移 + 电源语义面）→ M35 H-P01 闸 150（harbor 158 符号 + sh 流水线 t85）→ M36 xxh3-128/TCP 电气/阻塞管道/boot 布局根治 → M37 fb 合成电气化（t88 alpha 双锚）+ TCP 重传面 t89 → M38 slots_pair 竞态根治 + TCP 服务化五面 t91 → M39 六候选（ls 深链 t92/多用户 t93/DPMS t94/C ABI/PDF 对账/成熟度 6.7）→ M40 四候选（ash 标本三步/盘上属主 t96/cat t97/Vulkan 语义面） |
+| v0.27.0 | M32–M40 | 九里程碑连发：M32 Aurora SDK/权限中心（perm 四相 + SDK 注册折叠/意图路由 + AF-P01 基准 + t81）→ M33 busybox Linux 兼容全链（ELF 直载/fork/号域转换层 + t82 活体 + 成熟度首评 6.0）→ M34 服务化首割（kernel::svc + quill 外移 + 电源语义面）→ M35 H-P01 闸 150（harbor 158 符号 + sh 流水线 t85）→ M36 xxh3-128/TCP 电气/阻塞管道/boot 布局根治 → M37 fb 合成电气化（t88 alpha 双锚）+ TCP 重传面 t89 → M38 slots_pair 竞态根治 + TCP 服务化五面 t91 → M39 六候选（ls 深链 t92/多用户 t93/DPMS t94/C ABI/PDF 对账/成熟度 6.7）→ M40 四候选（ash 标本三步/盘上属主 t96/cat t97/Vulkan 语义面）；**v0.27.0 定版八步全闭环**（tag/双 tar/SHA256SUMS/GitHub Release 四资产/ls-remote 回环）+ **M41 四候选**（栈 grow 缺陷族三面根治 t95 转正/M17-① 块层字节域清账 t98/多用户纵深二批 t99/ash 交互面 t100——自检 100/100） |
 
 最新发布：**[Release v0.27.0](../../releases)**——src / artifacts（门禁日志 +
 ci-summary 报告）/ RELEASE_NOTES / SHA256SUMS 四资产。
