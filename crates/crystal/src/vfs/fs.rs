@@ -53,6 +53,14 @@ pub trait FileSystem: Send + Sync {
         Err(FsError::NotSupported)
     }
 
+    /// 属主域写面（M40-CRYSTAL chown/chmod 车道承接位）：uid/gid/mode
+    /// 三域一次成型写。缺省不支持（[`FsError::NotSupported`]）——实现
+    /// 方按域承接（RamFs 内存节点 / Lfs 盘上 InodeRec 落盘 + 脏旗）。
+    fn set_attr(&self, vnode: VnodeId, _uid: u16, _gid: u16, _mode: u16) -> Result<(), FsError> {
+        let _ = vnode;
+        Err(FsError::NotSupported)
+    }
+
     /// 列举目录 `dir` 的全部目录项（骨架一次性返回全量；流式列举留待文件面块）。
     fn readdir(&self, dir: VnodeId) -> Result<Vec<DirEntry>, FsError>;
 

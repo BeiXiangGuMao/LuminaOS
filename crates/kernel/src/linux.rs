@@ -205,6 +205,20 @@ pub fn lin_dispatch(frame: &mut SyscallFrame) -> u64 {
         LinAction::FStatAt => lin_fstat_at(frame.rdi, frame.rsi, frame.rdx, frame.r10),
         LinAction::UnlinkAt => lin_unlink_at(frame.rdi, frame.rsi, frame.rdx),
         LinAction::FAccessAt => lin_faccessat(frame.rdi, frame.rsi, frame.rdx),
+        // M40-CRYSTAL 盘上属主域双号：chmod(90)/chown(92)——路径字节面
+        // → vfs 车道（root/owner 门禁在 sys_chmod/sys_chown 内聚）。
+        LinAction::Chmod => {
+            let Some(Ok(b)) = lin_path_bytes(frame.rdi) else {
+                return err(EFAULT);
+            };
+            crate::vfs::sys_chmod_bytes(&b, (frame.rsi & 0xFFFF) as u16)
+        }
+        LinAction::Chown => {
+            let Some(Ok(b)) = lin_path_bytes(frame.rdi) else {
+                return err(EFAULT);
+            };
+            crate::vfs::sys_chown_bytes(&b, frame.rsi as u32, frame.rdx as u32)
+        }
         LinAction::Err(e) => {
             let _ = (EBADF, ENOTTY); // 事实源引用锚（errno 值域单源）
                                      // M34-B2 取证线：未收录/显形拒绝号串口成像（fail-visible——
@@ -442,7 +456,7 @@ fn lin_fstat(fd: u64, statbuf: u64) -> u64 {
             Err(e) => return err(e),
         }
     };
-    write_stat64_user(statbuf, mode, size)
+    write_stat64_user(statbuf, mode, size, 0, 0)
 }
 
 /// vfs stat →（合成 mode, size）（M34-B1 提取：fstat/fstatat 共享）。
@@ -482,27 +496,29 @@ fn synth_mode_size(kind: u64, size: u64) -> (u64, u64) {
 }
 
 /// stat64 144 B 用户写入核外壳（M34-B1；校验 + 错误域归本层）。
-fn write_stat64_user(statbuf: u64, mode: u64, size: u64) -> u64 {
+/// M40-CRYSTAL：uid/gid 属主真面参数（fd 车道维持 0/0 合成——偏差登记）。
+fn write_stat64_user(statbuf: u64, mode: u64, size: u64, uid: u64, gid: u64) -> u64 {
     const STAT64_LEN: u64 = 144;
     let Some(dst) = validate_user_slice_mut(statbuf, STAT64_LEN) else {
         return err(EFAULT);
     };
-    write_stat64(dst, mode, size);
+    write_stat64(dst, mode, size, uid, gid);
     0
 }
 
 /// stat64 144 B 写入纯核（M34-B1 单一事实源）：st_dev=0 / st_nlink=1 /
 /// st_mode / st_uid=st_gid=st_rdev=0 / st_size（布局同 Linux x86_64
 /// struct stat 前 64 B 消费域——musl isatty/stat 路径零展口径）。
-fn write_stat64(dst: &mut [u8], mode: u64, size: u64) {
+fn write_stat64(dst: &mut [u8], mode: u64, size: u64, uid: u64, gid: u64) {
     for b in dst.iter_mut() {
         *b = 0;
     }
     dst[0..8].copy_from_slice(&0u64.to_le_bytes()); // st_dev
     dst[16..24].copy_from_slice(&1u64.to_le_bytes()); // st_nlink
     dst[24..32].copy_from_slice(&mode.to_le_bytes()); // st_mode
-    dst[32..40].copy_from_slice(&0u64.to_le_bytes()); // st_uid
-    dst[40..48].copy_from_slice(&0u64.to_le_bytes()); // st_gid
+                                                      // M40-CRYSTAL：属主真面（路径车道透出；fd 车道 0/0 合成偏差登记）
+    dst[32..40].copy_from_slice(&uid.to_le_bytes()); // st_uid
+    dst[40..48].copy_from_slice(&gid.to_le_bytes()); // st_gid
     dst[48..56].copy_from_slice(&0u64.to_le_bytes()); // st_rdev
     dst[56..64].copy_from_slice(&size.to_le_bytes()); // st_size
 }
@@ -913,7 +929,7 @@ fn lin_fstat_at(dirfd: u64, path: u64, statbuf: u64, flags: u64) -> u64 {
                 Err(e) => return err(e),
             }
         };
-        return write_stat64_user(statbuf, mode, size);
+        return write_stat64_user(statbuf, mode, size, 0, 0);
     }
     if dirfd != AT_FDCWD {
         return err(EINVAL); // 相对目录 fd 未收录（v0 同 openat 口径）
@@ -922,7 +938,31 @@ fn lin_fstat_at(dirfd: u64, path: u64, statbuf: u64, flags: u64) -> u64 {
         Ok(v) => v,
         Err(e) => return err(e),
     };
-    write_stat64_user(statbuf, mode, size)
+    // M40-CRYSTAL 属主真面透出：路径域盘上属主三元（uid/gid）——
+    // 读取失败/越域降级 0/0 合成（既有形态，偏差如实登记）；mode
+    // 位域以盘上真面覆写（synth 合成域让位——盘上属主权威面）。
+    let (st_uid, st_gid, st_mode_disk) = lin_path_owner(path).unwrap_or((0, 0, 0));
+    let mode_eff = if st_mode_disk != 0 {
+        (mode & !0o777) | st_mode_disk
+    } else {
+        mode
+    };
+    write_stat64_user(statbuf, mode_eff, size, st_uid, st_gid)
+}
+
+/// 盘上属主三元读取（M40-CRYSTAL stat 车道消费面）：路径字节面 →
+/// vfs::sys_stat_owner_bytes 打包域拆解（uid/gid/mode 九位域）。
+fn lin_path_owner(path_ptr: u64) -> Result<(u64, u64, u64), u64> {
+    let bytes = match lin_path_bytes(path_ptr) {
+        Some(Ok(b)) => b,
+        Some(Err(e)) => return Err(e),
+        None => return Err(EFAULT),
+    };
+    let v = crate::vfs::sys_stat_owner_bytes(&bytes);
+    if v < (1 << 32) {
+        return Err(v.min(ENOSYS));
+    }
+    Ok((v & 0xFFFF, (v >> 48) & 0xFFFF, (v >> 16) & 0xFFFF))
 }
 
 /// readlink(path, buf, size)（M39-BBLS 收录）：v0 无 symlink 实体——

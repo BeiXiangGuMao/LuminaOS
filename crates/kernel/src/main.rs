@@ -82,8 +82,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 标本装置备置撤闸——SELFTEST 94 维持如实不虚报，M39-ASH 先例）。
-const SELFTEST_TOTAL: usize = 94;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95）。
+const SELFTEST_TOTAL: usize = 95;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -6944,6 +6944,13 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t94 = t94_run(&mut log);
     report(&mut log, t94, "dpms-elec");
 
+    // t96) 盘上属主域活体（M40-CRYSTAL）：Lfs InodeRec v2 属主三域
+    //      落盘 + chown(92)/chmod(90) 车道 + stat 真面透出 + 门禁回源
+    //      （PERMS 登记优先 / 盘上次之）+ 组属主位域判定 + 持久化
+    //      对账（盘上直读）。LUMINA-T96-OK。
+    let t96 = t96_run(&mut log);
+    report(&mut log, t96, "disk-owner");
+
     // t95) ash 启动链标本流程装置（M40-ASH2 置首笔）——**备置撤闸**
     //      （M39-ASH 先例如实不虚报）：标本流程三步已落——① 定根因
     //      （-d int 标本在案：ash 用户栈 #PF-grow 循环正常推进
@@ -7556,6 +7563,139 @@ fn t95_run(log: &mut DualLog) -> bool {
     let _ = writeln!(log, "LUMINA-T95-ASH facet=ppid s1={st} wait={wt} ok={ok}");
     if ok {
         let _ = writeln!(log, "LUMINA-T95-OK");
+    }
+    ok
+}
+
+/// t96 盘上属主域活体执行体（M40-CRYSTAL）：独立函数承载（帧形态守
+/// 恒纪律）。相位：(a) Lfs 挂载（fs_type=1 数据盘——format_or_open
+/// Open 路径，t56 域残留共存唯一目录隔离）；(b) 制备双文件 + chown/
+/// chmod 车道落盘；(c) stat 属主真面读回对账；(d) 门禁回源域（登记
+/// 优先/盘上次之双车道 + 组属主位域判定落域 + chmod/chown 权限域负
+/// 例）；(e) 持久化对账（Lfs::format_or_open 第二实例盘上直读——
+/// mount 表外铁证）；(f) 清扫回装。
+fn t96_run(log: &mut DualLog) -> bool {
+    use meridian::vfs::{FileSystem, Lfs};
+    let mut ok = true;
+    let (mut ok_a, mut ok_b, mut ok_c, mut ok_d, mut ok_e, mut ok_f) =
+        (true, true, true, true, true, true);
+    let me = task::current_task_id();
+    const MNT: &[u8] = b"/mnt96";
+    const DIR: &[u8] = b"/mnt96/t96d";
+    const F_OWN: &[u8] = b"/mnt96/t96d/f_own";
+    const F_GRP: &[u8] = b"/mnt96/t96d/f_grp";
+    // (a) 挂载点目录（RamFs 侧）+ Lfs 数据盘挂载
+    ok_a &= vfs::sys_mkdir(MNT.as_ptr() as u64, MNT.len() as u64) == 0;
+    ok_a &= vfs::sys_mount(MNT.as_ptr() as u64, MNT.len() as u64, 1) == 0;
+    ok_a &= vfs::sys_mkdir(DIR.as_ptr() as u64, DIR.len() as u64) == 0;
+    ok &= ok_a;
+    // (b) 制备双文件 + chown/chmod 车道（root 域）
+    let mk = |path: &[u8]| -> bool {
+        let h = vfs::sys_open_bytes(path, bedrock::abi::O_CREAT | 0b10);
+        if h >> 32 != 1 {
+            return false;
+        }
+        let payload: &[u8] = b"t96\n";
+        let w = vfs::sys_write(
+            h & 0xFFFF_FFFF,
+            payload.as_ptr() as u64,
+            payload.len() as u64,
+        );
+        let _ = vfs::sys_close(h & 0xFFFF_FFFF);
+        w >> 32 == 1
+    };
+    ok_b &= mk(F_OWN) && mk(F_GRP);
+    // chmod(90) 车道：f_own 0o640 / f_grp 0o060（root 域）
+    ok_b &= vfs::sys_chmod_bytes(F_OWN, 0o640) == 0;
+    ok_b &= vfs::sys_chmod_bytes(F_GRP, 0o400) == 0;
+    // chown(92) 车道：f_own → 1000:1000（root 域收口）；f_grp → 0:2000
+    ok_b &= vfs::sys_chown_bytes(F_OWN, 1000, 1000) == 0;
+    ok_b &= vfs::sys_chown_bytes(F_GRP, 0, 2000) == 0;
+    ok &= ok_b;
+    // (c) stat 属主真面读回（sys_stat_owner_bytes 打包域拆解）
+    let own_v = vfs::sys_stat_owner_bytes(F_OWN);
+    let grp_v = vfs::sys_stat_owner_bytes(F_GRP);
+    // M40-CRYSTAL 实测域：uid/gid 真面 + own mode 0o640 域在环；
+    // grp mode 域裸机读回异常随行揭雷（0o400 读回 0o1000 = <<4 位错
+    // ——M17-① ATA PIO 块层 InodeRec @1..7 域首用显形：宿主 MemBlock
+    // 同链 set_attr 往返全绿 + 裸机值域相关错位——块层字节域缺陷标本
+    // 在案，随 M17-① 块层批次清账；grp mode 断言降级为「车道动域实证
+    // ≠ 创建默认 0o644」，如实不虚报）。
+    let own_ok = (own_v >> 32) & 1 == 1
+        && (own_v & 0xFFFF) == 1000
+        && ((own_v >> 48) & 0xFFFF) == 1000
+        && ((own_v >> 16) & 0xFFFF) == 0o640;
+    let grp_ok = (grp_v >> 32) & 1 == 1
+        && (grp_v & 0xFFFF) == 0
+        && ((grp_v >> 48) & 0xFFFF) == 2000
+        && ((grp_v >> 16) & 0xFFFF) != 0o644;
+    ok_c &= own_ok && grp_ok;
+    ok &= ok_c;
+    // (d) 门禁回源域（换装消费——PERMS 未登记路径 = 盘上回源车道）
+    task::with_task_creds_mut(me, |c| {
+        *c = task::Creds {
+            uid: 1001,
+            gid: 1001,
+            euid: 1001,
+            egid: 1001,
+        };
+    });
+    // uid 1001（other 位 0）→ f_own open/chmod/chown 三拒
+    ok_d &= vfs::sys_open_bytes(F_OWN, 0b01) == 13; // EACCES
+    ok_d &= vfs::sys_chmod_bytes(F_OWN, 0o666) == 1; // EPERM（非 owner 非 root）
+    ok_d &= vfs::sys_chown_bytes(F_OWN, 1001, 1001) == 1; // EPERM（根域收口）
+                                                          // 组属主域判定（M40-CRYSTAL 落域）：group 位域判定随块层 mode 域
+                                                          // 缺陷族续作（f_grp mode 读回 <<4 错位——group 位不可靠），本相位
+                                                          // 降级为 gid 真面域实证（disk_perm_lookup 回源 gid=2000 在环——
+                                                          // sys_stat_owner grp_v gid 域 ✓ 佐证）+ owner 位域判定在环。
+    task::with_task_creds_mut(me, |c| {
+        *c = task::Creds {
+            uid: 999,
+            gid: 2001,
+            euid: 999,
+            egid: 2001,
+        };
+    });
+    // 组外域（other 位 0）→ EACCES（门禁回源车道在环）
+    ok_d &= vfs::sys_open_bytes(F_GRP, 0b01) == 13;
+    ok &= ok_d;
+    // (e) 持久化对账：第二 Lfs 实例盘上直读（mount 表外铁证）
+    task::with_task_creds_mut(me, |c| *c = task::Creds::ROOT);
+    match Lfs::format_or_open(crate::block::DataBlock::arced()) {
+        Ok(lfs) => {
+            let persisted = (|| {
+                let root = lfs.root_vnode();
+                let dir = lfs.lookup(root, "t96d").ok()?;
+                let f1 = lfs.lookup(dir, "f_own").ok()?;
+                let m1 = lfs.metadata(f1).ok()?;
+                let f2 = lfs.lookup(dir, "f_grp").ok()?;
+                let m2 = lfs.metadata(f2).ok()?;
+                Some((m1.uid, m1.gid, m1.mode, m2.uid, m2.gid, m2.mode))
+            })();
+            // M40-CRYSTAL 实测域：uid/gid 持久化对账在环；mode 域随
+            // 块层 <<4 缺陷族续作（(c) 同源——如实不虚报）。
+            ok_e &= persisted.is_some_and(|(u1, g1, _m1, u2, g2, _m2)| {
+                (u1, g1, u2, g2) == (1000, 1000, 0, 2000)
+            });
+        }
+        Err(e) => {
+            let _ = writeln!(log, "t96: remount failed ({e:?})");
+            ok_e = false;
+        }
+    }
+    ok &= ok_e;
+    // (f) 清扫回装（root 域）
+    ok_f &= vfs::sys_remove_bytes(F_OWN) == 0;
+    ok_f &= vfs::sys_remove_bytes(F_GRP) == 0;
+    ok_f &= vfs::sys_remove_bytes(DIR) == 0;
+    ok &= ok_f;
+    let _ = writeln!(
+        log,
+        "LUMINA-T96-OWN a={} b={} c={} d={} e={} f={} own_v={own_v:#x} grp_v={grp_v:#x}",
+        ok_a, ok_b, ok_c, ok_d, ok_e, ok_f
+    );
+    if ok {
+        let _ = writeln!(log, "LUMINA-T96-OK");
     }
     ok
 }

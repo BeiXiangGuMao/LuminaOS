@@ -47,6 +47,14 @@ pub struct Metadata {
     pub kind: NodeKind,
     /// 字节数；目录与无尺寸类型恒为 0。
     pub size: u64,
+    /// 属主用户 ID（M40-CRYSTAL 盘上属主域；v0 u16 装载面——>0xFFFF
+    /// 域在 chown 车道 fail-visible 拦截，偏差如实登记）。
+    pub uid: u16,
+    /// 属主组 ID（M40-CRYSTAL；组属主位域判定随盘上 gid 域落域）。
+    pub gid: u16,
+    /// 权限九位域（owner/group/other × rwx；v0 不含 setuid/sticky
+    /// 扩展位——chown/chmod 车道按 0o777 域掩装载）。
+    pub mode: u16,
 }
 
 /// 目录项：readdir 的产出单元。

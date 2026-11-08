@@ -76,6 +76,10 @@ const ENOMEM: u64 = 12;
 const EFAULT: u64 = 14;
 /// 零模式 / whence 越界 / seek 结果为负 / 路径非 UTF-8。
 const EINVAL: u64 = 22;
+/// 权限拒绝（M40-CRYSTAL chown/chmod 门禁域）。
+const EPERM: u64 = 1;
+/// 节点缺席（M40-CRYSTAL chown/chmod 车道域）。
+const ENOENT: u64 = 2;
 /// 内核文件注册表满。
 const ENFILE: u64 = 23;
 /// 调用方句柄表满。
@@ -575,14 +579,22 @@ fn open_impl(path_bytes: &[u8], mode: u64) -> u64 {
     };
     // M39-MU 权限域门禁（登记制——未登记路径零扰动；O_TRUNC 前置——
     // 拒绝域不得截断）：登记路径对当前任务凭据判定，拒绝 EACCES。
-    if let Some((owner, pmode)) = perm_lookup(path.as_str()) {
+    // M40-CRYSTAL 双车道：未登记路径 → 盘上属主回源判定（disk_perm_
+    // lookup——resolve 节点 metadata 真面；解析失败维持既有口径）。
+    {
         let want = if mode & 0b10 != 0 {
             PERM_WANT_READ | PERM_WANT_WRITE
         } else {
             PERM_WANT_READ
         };
-        if !perm_check(owner, pmode, want) {
-            return EACCES;
+        if let Some((owner, pmode)) = perm_lookup(path.as_str()) {
+            if !perm_check(owner, 0, pmode, want) {
+                return EACCES;
+            }
+        } else if let Some((owner, gid, pmode)) = disk_perm_lookup(path.as_str()) {
+            if !perm_check(owner, gid, pmode, want) {
+                return EACCES;
+            }
         }
     }
     // M16-① O_TRUNC：可写打开成功后截零（只读不截；目录 → EISDIR）。
@@ -965,22 +977,32 @@ fn perm_lookup(normalized: &str) -> Option<(u32, u16)> {
         .find_map(|e| (e.path == normalized).then_some((e.owner, e.mode)))
 }
 
-/// 权限域门禁字节面（faccessat 消费）：登记路径 → 判定（Some(err)——
-/// 0 = 放行 / EACCES = 拒绝）；未登记 → None（调用方维持既有口径）。
+/// 权限域门禁字节面（faccessat 消费；M40-CRYSTAL 双车道）：① PERMS
+/// 登记命中 → 登记制判定（M39-MU 语义零扰动，gid 恒 0）；② 未登记 →
+/// 盘上属主回源判定（disk_perm_lookup——解析节点 metadata 真面）。
+/// 两车道均未命中 → None（调用方维持既有口径）。
 pub fn access_gate_bytes(path_bytes: &[u8], want: u16) -> Option<u64> {
     let path = normalize_user_path(path_bytes).ok()?;
-    let (owner, pmode) = perm_lookup(path.as_str())?;
-    Some(if perm_check(owner, pmode, want) {
+    if let Some((owner, pmode)) = perm_lookup(path.as_str()) {
+        return Some(if perm_check(owner, 0, pmode, want) {
+            0
+        } else {
+            EACCES
+        });
+    }
+    let (owner, gid, pmode) = disk_perm_lookup(path.as_str())?;
+    Some(if perm_check(owner, gid, pmode, want) {
         0
     } else {
         EACCES
     })
 }
 
-/// 权限判定（M39-MU 门禁核心）：root(uid 0) 旁路；owner 位域/other
-/// 位域（组属主 v0 未登记——group 位按 other 处理）对 want 位域
-/// （POSIX rwx 位值：4/2/1）全量满足方放行。
-fn perm_check(owner: u32, mode: u16, want: u16) -> bool {
+/// 权限判定（M39-MU 门禁核心；M40-CRYSTAL 组属主落域）：root(uid 0)
+/// 旁路；owner/group/other 三位域对 want 位域（POSIX rwx 位值：4/2/1）
+/// 全量满足方放行。gid 入参 = 节点组属主（PERMS 登记域恒 0——v0 登记
+/// 面无 gid 槽，盘上回源域带真 gid）。
+fn perm_check(owner: u32, gid: u32, mode: u16, want: u16) -> bool {
     let caller = task::current_task_id();
     let Some(creds) = task::task_creds(caller) else {
         return false; // 防御域：凭据缺失一律拒绝（fail-visible）
@@ -990,10 +1012,23 @@ fn perm_check(owner: u32, mode: u16, want: u16) -> bool {
     }
     let bits: u16 = if creds.uid == owner {
         (mode >> 6) & 0o7
+    } else if creds.gid == gid {
+        (mode >> 3) & 0o7
     } else {
         mode & 0o7
     };
     want & bits == want
+}
+
+/// 盘上属主回源判定（M40-CRYSTAL 门禁回源制第二车道）：路径解析节点
+/// → fs.metadata 盘上属主域（uid/gid/mode）→ perm_check 三元判定。
+/// 解析失败 / 越域 → None（调用方维持既有口径——语义零扰动）。
+fn disk_perm_lookup(path: &str) -> Option<(u32, u32, u16)> {
+    let pb = PathBuf::normalize(path).ok()?;
+    let ns = NAMESPACE.lock();
+    let resolved = ns.as_ref()?.resolve(&pb).ok()?;
+    let meta = resolved.fs.metadata(resolved.vnode).ok()?;
+    Some((u32::from(meta.uid), u32::from(meta.gid), meta.mode))
 }
 
 /// 门禁位域映射（POSIX access 位值）：读 4 / 写 2。
@@ -1524,9 +1559,16 @@ pub fn sys_remove_bytes(path_bytes: &[u8]) -> u64 {
     };
     // M39-MU 权限域门禁：登记路径摘除需写位（owner/root 域；POSIX
     // 父目录位域语义 v0 简化为路径本身，偏差如实登记随行）。
+    // M40-CRYSTAL 双车道：未登记路径 → 盘上属主回源判定。
     if let Some((owner, pmode)) = perm_lookup(path.as_str()) {
-        if !perm_check(owner, pmode, PERM_WANT_WRITE) {
+        if !perm_check(owner, 0, pmode, PERM_WANT_WRITE) {
             return EACCES;
+        }
+    } else if let Ok(dn) = PathBuf::normalize(path.as_str()) {
+        if let Some((owner, gid, pmode)) = disk_perm_lookup(dn.as_str()) {
+            if !perm_check(owner, gid, pmode, PERM_WANT_WRITE) {
+                return EACCES;
+            }
         }
     }
     match resolve_parent(&path) {
@@ -1536,6 +1578,157 @@ pub fn sys_remove_bytes(path_bytes: &[u8]) -> u64 {
         },
         Err(e) => e,
     }
+}
+
+/// SYS_CHMOD 主体（M40-CRYSTAL chmod(90) 车道）：路径 → 权限门禁
+/// （root/owner 域——POSIX chmod 语义，root 旁路）→ fs.set_attr
+/// （mode 九位域落盘/内存落域）+ PERMS 登记同步（已登记路径覆盖写
+/// ——M39-MU「重复路径覆盖写」承接位；未登记路径零登记扰动）。
+/// mode 入参为九位域（>0o777 扩展位域 set_attr 域掩拒绝 EINVAL）。
+pub fn sys_chmod_bytes(path_bytes: &[u8], mode: u16) -> u64 {
+    let path = match normalize_user_path(path_bytes) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    // 权限门禁：root 旁路 / owner 位域判定（POSIX chmod——仅文件属主
+    // 与 root 可改 mode；组/他者 → EPERM 域拒绝）。
+    let (owner, gid, _pmode) = match node_owner(path.as_str()) {
+        Some(t) => t,
+        None => return ENOENT,
+    };
+    let caller = task::current_task_id();
+    let creds = task::task_creds(caller);
+    let is_root = creds.is_some_and(|c| c.uid == 0);
+    let is_owner = creds.is_some_and(|c| c.uid == owner);
+    if !is_root && !is_owner {
+        return EPERM;
+    }
+    let _ = gid;
+    // 节点 set_attr：mode 落域（uid/gid 保持原值——chmod 不改属主）。
+    let pb = match PathBuf::normalize(path.as_str()) {
+        Ok(p) => p,
+        Err(e) => return e.errno(),
+    };
+    let resolved = {
+        let ns = NAMESPACE.lock();
+        let Some(ns) = ns.as_ref() else {
+            return EBADF;
+        };
+        match ns.resolve(&pb) {
+            Ok(r) => r,
+            Err(e) => return e.errno(),
+        }
+    };
+    let meta = match resolved.fs.metadata(resolved.vnode) {
+        Ok(m) => m,
+        Err(e) => return e.errno(),
+    };
+    match resolved
+        .fs
+        .set_attr(resolved.vnode, meta.uid, meta.gid, mode & 0o777)
+    {
+        Ok(()) => {
+            // PERMS 登记同步（已登记路径覆盖写——车道承接位语义）。
+            if perm_lookup(path.as_str()).is_some() {
+                let _ = perm_install(path.as_str(), meta.uid as u32, mode);
+            }
+            0
+        }
+        Err(e) => e.errno(),
+    }
+}
+
+/// SYS_CHOWN 主体（M40-CRYSTAL chown(92) 车道）：路径 → 权限门禁
+/// （root 旁路——POSIX chown 仅 root/CAP_CHOWN 域）→ fs.set_attr
+/// （uid/gid 落域 + mode 保持原值）+ PERMS 登记同步。u16 装载面：
+/// >0xFFFF 域 fail-visible EINVAL（偏差如实登记）。
+pub fn sys_chown_bytes(path_bytes: &[u8], uid: u32, gid: u32) -> u64 {
+    let path = match normalize_user_path(path_bytes) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    if uid > 0xFFFF || gid > 0xFFFF {
+        return EINVAL; // u16 装载面 fail-visible（M40-CRYSTAL 偏差登记）
+    }
+    let caller = task::current_task_id();
+    let is_root = task::task_creds(caller).is_some_and(|c| c.uid == 0);
+    if !is_root {
+        return EPERM; // POSIX chown 根域收口
+    }
+    let Some((owner, _gid, _pmode)) = node_owner(path.as_str()) else {
+        return ENOENT;
+    };
+    let _ = owner;
+    let pb = match PathBuf::normalize(path.as_str()) {
+        Ok(p) => p,
+        Err(e) => return e.errno(),
+    };
+    let resolved = {
+        let ns = NAMESPACE.lock();
+        let Some(ns) = ns.as_ref() else {
+            return EBADF;
+        };
+        match ns.resolve(&pb) {
+            Ok(r) => r,
+            Err(e) => return e.errno(),
+        }
+    };
+    let meta = match resolved.fs.metadata(resolved.vnode) {
+        Ok(m) => m,
+        Err(e) => return e.errno(),
+    };
+    match resolved
+        .fs
+        .set_attr(resolved.vnode, uid as u16, gid as u16, meta.mode)
+    {
+        Ok(()) => {
+            if perm_lookup(path.as_str()).is_some() {
+                let _ = perm_install(path.as_str(), uid, meta.mode);
+            }
+            0
+        }
+        Err(e) => e.errno(),
+    }
+}
+
+/// 节点属主三元读取（chown/chmod 门禁消费面）：路径解析 → metadata
+/// 属主域（uid/gid/mode）；未登记 PERMS 的路径直接盘上真面——登记
+/// 路径 PERMS 优先（M39-MU 语义）。
+fn node_owner(path: &str) -> Option<(u32, u32, u16)> {
+    if let Some((owner, pmode)) = perm_lookup(path) {
+        return Some((owner, 0, pmode));
+    }
+    disk_perm_lookup(path)
+}
+
+/// 节点属主真面字节面（M40-CRYSTAL stat 车道透出）：路径 → metadata
+/// 属主三元。打包形态 = `(1<<32) | (mode<<16) | uid | gid<<48`——
+/// mode 九位域（0..0o777）置 <<16、uid 16 位、gid 高 16 位；失败域
+/// 返回 errno（< 2^32 与既有车道打包判定同构）。
+pub fn sys_stat_owner_bytes(path_bytes: &[u8]) -> u64 {
+    let Ok(s) = core::str::from_utf8(path_bytes) else {
+        return FsError::InvalidPath.errno();
+    };
+    let Ok(pb) = PathBuf::normalize(s) else {
+        return FsError::InvalidPath.errno();
+    };
+    let resolved = {
+        let ns = NAMESPACE.lock();
+        let Some(ns) = ns.as_ref() else {
+            return EBADF;
+        };
+        match ns.resolve(&pb) {
+            Ok(r) => r,
+            Err(e) => return e.errno(),
+        }
+    };
+    let Ok(meta) = resolved.fs.metadata(resolved.vnode) else {
+        return FsError::NotFound.errno();
+    };
+    (1u64 << 32)
+        | ((u64::from(meta.mode) & 0xFFFF) << 16)
+        | (u64::from(meta.uid) & 0xFFFF)
+        | ((u64::from(meta.gid) & 0xFFFF) << 48)
 }
 
 /// SYS_READDIR 主体（M15-①）：**分页化**目录枚举（替代 M13-① 一次性

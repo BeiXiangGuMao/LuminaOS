@@ -50,7 +50,10 @@ use bedrock::block::{BlockDevice, BlockError, BLOCK_SIZE};
 /// 盘上格式识别码（超级块首 4 字节）。
 const MAGIC: &[u8; 4] = b"LFS1";
 /// 盘上格式版本（结构性变更递增；读取面拒收更高版本）。
-const FORMAT_VERSION: u32 = 1;
+/// 盘上格式版本（M40-CRYSTAL bump 2：InodeRec 属主域 uid/gid/mode
+/// 三字段落盘——格式只增不改铁律；v1 盘 probe 拒收 fail-visible，
+/// 数据盘无存量〔全零盘挂载即格式化〕——挂载即接管语义不变）。
+const FORMAT_VERSION: u32 = 2;
 /// 根目录 inode 号（格式化时铸造；0 保留为「无效」）。
 const ROOT_INO: u32 = 1;
 /// inode 总数（v0 定容：位图 1 块 = 4096 bit，取 64 实用定容）。
@@ -268,6 +271,9 @@ impl Lfs {
         let mut itab = [0u8; BLOCK_SIZE];
         let root = InodeRec {
             kind: KIND_DIR,
+            mode: 0o755,
+            uid: 0,
+            gid: 0,
             size: 0,
             direct: [0u32; DIRECT_BLOCKS],
             indirect: 0,
@@ -838,10 +844,19 @@ impl Lfs {
     }
 }
 
-/// inode 记录的内存形态（盘上 64 B 定长镜像）。
+/// inode 记录的内存形态（盘上 64 B 定长镜像；M40-CRYSTAL v2 重排——
+/// 属主域 uid/gid/mode 三字段落盘，原 v1 空闲域 1..8 内原位装载）。
 #[derive(Debug, Clone, Copy, Default)]
 struct InodeRec {
     kind: u8,
+    /// 权限九位域（@1..3；>0o777 扩展位域 v0 不装——chown/chmod 车道
+    /// 域掩拒绝，偏差如实登记）。
+    mode: u16,
+    /// 属主用户 ID（@3..5；v0 u16 装载面——>0xFFFF 域 chown 车道
+    /// fail-visible 拦截，偏差如实登记）。
+    uid: u16,
+    /// 属主组 ID（@5..7；组属主位域判定随盘上 gid 域落域）。
+    gid: u16,
     size: u64,
     direct: [u32; DIRECT_BLOCKS],
     indirect: u32,
@@ -860,6 +875,9 @@ impl InodeRec {
         }
         Self {
             kind: b[0],
+            mode: le_u16(b, 1),
+            uid: le_u16(b, 3),
+            gid: le_u16(b, 5),
             size: le_u64(b, 8),
             direct,
             indirect: le_u32(b, 56),
@@ -869,6 +887,9 @@ impl InodeRec {
 
     fn encode(&self, b: &mut [u8]) {
         b[0] = self.kind;
+        put_u16(b, 1, self.mode);
+        put_u16(b, 3, self.uid);
+        put_u16(b, 5, self.gid);
         put_u64(b, 8, self.size);
         for (i, d) in self.direct.iter().enumerate() {
             put_u32(b, 16 + i * 4, *d);
@@ -920,6 +941,30 @@ impl FileSystem for Lfs {
             vnode,
             kind: rec.node_kind(),
             size: rec.size,
+            uid: rec.uid,
+            gid: rec.gid,
+            mode: rec.mode,
+        })
+    }
+
+    /// M40-CRYSTAL：属主域写面（chown/chmod 车道承接位）——InodeRec
+    /// 属主三域改写 + 整记录落盘（with_dirty 脏旗包装同款纪律；mode
+    /// 九位域掩——>0o777 扩展位域拒绝）。
+    fn set_attr(&self, vnode: VnodeId, uid: u16, gid: u16, mode: u16) -> Result<(), FsError> {
+        if mode & !0o777 != 0 {
+            return Err(FsError::NotSupported);
+        }
+        let ino = Self::ino_of(vnode)?;
+        let _g = self.io.lock();
+        self.with_dirty(|| {
+            let mut rec = self.read_inode(&self.dev, ino)?;
+            if rec.kind == KIND_FREE {
+                return Err(FsError::NotFound);
+            }
+            rec.uid = uid;
+            rec.gid = gid;
+            rec.mode = mode;
+            self.write_inode(&self.dev, ino, &rec)
         })
     }
 
@@ -1005,8 +1050,14 @@ impl FileSystem for Lfs {
                 return Err(FsError::AlreadyExists);
             }
             let ino = self.alloc_inode(&self.dev)?;
+            // M40-CRYSTAL：创建默认属主 root(0,0) + mode 按 kind 定
+            // （目录 0o755 / 文件 0o644——与内核 synth_mode_size 合成
+            // 口径对齐；属主随 chown/chmod 车道落盘变更）。
             let rec = InodeRec {
                 kind: if kind.is_dir() { KIND_DIR } else { KIND_FILE },
+                mode: if kind.is_dir() { 0o755 } else { 0o644 },
+                uid: 0,
+                gid: 0,
                 size: 0,
                 direct: [0u32; DIRECT_BLOCKS],
                 indirect: 0,
@@ -1115,7 +1166,7 @@ impl FileSystem for Lfs {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::{FileSystem, Lfs, ROOT_INO};
+    use super::{FileSystem, InodeRec, Lfs, KIND_FILE, ROOT_INO};
     use crate::vfs::node::NodeKind;
     use crate::vfs::{FsError, VnodeId};
     use alloc::sync::Arc;
@@ -1465,6 +1516,57 @@ mod tests {
             "flag cleared by fsck"
         );
         assert_eq!(fs2.lookup(fs2.root_vnode(), "a").expect("a"), VnodeId(2));
+    }
+
+    /// M40-CRYSTAL：InodeRec v2 属主域编解码对账（uid/gid/mode 偏移
+    /// 1..7 域 + v1 既有域原位不踩——size/direct/cookie 逐位对账）。
+    #[test]
+    fn inode_rec_v2_owner_fields_roundtrip() {
+        let mut buf = [0u8; 64];
+        let rec = InodeRec {
+            kind: KIND_FILE,
+            mode: 0o640,
+            uid: 1000,
+            gid: 2000,
+            size: 0x1234,
+            direct: [7, 8, 9, 0, 0, 0, 0, 0, 0, 0],
+            indirect: 11,
+            next_cookie: 5,
+        };
+        rec.encode(&mut buf);
+        assert_eq!(buf[0], KIND_FILE);
+        assert_eq!(u16::from_le_bytes([buf[1], buf[2]]), 0o640);
+        assert_eq!(u16::from_le_bytes([buf[3], buf[4]]), 1000);
+        assert_eq!(u16::from_le_bytes([buf[5], buf[6]]), 2000);
+        assert_eq!(
+            u64::from_le_bytes(buf[8..16].try_into().expect("size")),
+            0x1234
+        );
+        let back = InodeRec::decode(&buf);
+        assert_eq!(back.mode, 0o640);
+        assert_eq!(back.uid, 1000);
+        assert_eq!(back.gid, 2000);
+        assert_eq!(back.size, 0x1234);
+        assert_eq!(back.direct[0], 7);
+        assert_eq!(back.indirect, 11);
+        assert_eq!(back.next_cookie, 5);
+    }
+
+    /// M40-CRYSTAL：set_attr 属主域落盘往返（宿主 MemBlock——chmod
+    /// 车道内核链路的 fs 层等价域）。
+    #[test]
+    fn set_attr_owner_roundtrip() {
+        let dev: Arc<dyn BlockDevice> = MemBlock::arced(64);
+        let fs = Lfs::format_or_open(dev.clone()).expect("mount");
+        let f = fs
+            .create(fs.root_vnode(), "f", NodeKind::File)
+            .expect("create");
+        fs.set_attr(f, 1000, 2000, 0o060).expect("set_attr");
+        let m = fs.metadata(f).expect("meta");
+        assert_eq!((m.uid, m.gid, m.mode), (1000, 2000, 0o060));
+        fs.set_attr(f, 0, 0, 0o640).expect("set_attr2");
+        let m2 = fs.metadata(f).expect("meta2");
+        assert_eq!((m2.uid, m2.gid, m2.mode), (0, 0, 0o640));
     }
 
     #[test]

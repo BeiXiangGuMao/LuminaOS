@@ -44,6 +44,14 @@ struct RamNode {
     data: Vec<u8>,
     /// 仅 `NodeKind::Dir` 使用：名字 → 子项槽（字典序）。
     children: BTreeMap<String, DirSlot>,
+    /// 属主用户 ID（M40-CRYSTAL；创建默认 0 = root——chmod/chown 车道
+    /// 承接位；与 synth_mode_size 合成口径对齐防行为漂移）。
+    uid: u16,
+    /// 属主组 ID（M40-CRYSTAL；组属主位域判定消费）。
+    gid: u16,
+    /// 权限九位域（M40-CRYSTAL；创建默认按 kind 定——目录 0o755 /
+    /// 文件 0o644，与内核 stat 合成口径对齐）。
+    mode: u16,
 }
 
 #[derive(Debug)]
@@ -72,6 +80,9 @@ impl RamFs {
                 kind: NodeKind::Dir,
                 data: Vec::new(),
                 children: BTreeMap::new(),
+                uid: 0,
+                gid: 0,
+                mode: 0o755,
             },
         );
         Self {
@@ -125,7 +136,24 @@ impl FileSystem for RamFs {
             vnode,
             kind: node.kind,
             size,
+            uid: node.uid,
+            gid: node.gid,
+            mode: node.mode,
         })
+    }
+
+    /// M40-CRYSTAL：属主域写面（chown/chmod 车道承接位）。mode 仅
+    /// 九位域有效（>0o777 域掩拒绝 EINVAL）。
+    fn set_attr(&self, vnode: VnodeId, uid: u16, gid: u16, mode: u16) -> Result<(), FsError> {
+        if mode & !0o777 != 0 {
+            return Err(FsError::NotSupported);
+        }
+        let mut inner = self.inner.lock();
+        let node = inner.nodes.get_mut(&vnode).ok_or(FsError::NotFound)?;
+        node.uid = uid;
+        node.gid = gid;
+        node.mode = mode;
+        Ok(())
     }
 
     fn read_at(&self, vnode: VnodeId, offset: u64, buf: &mut [u8]) -> Result<usize, FsError> {
@@ -180,10 +208,16 @@ impl FileSystem for RamFs {
             // M17-②：稳定 cookie 铸造（per-fs 单调，0 哨兵不产出）。
             let cookie = inner.next_cookie;
             inner.next_cookie += 1;
+            // M40-CRYSTAL：创建默认属主 root(0,0) + mode 按 kind 定
+            // （目录 0o755 / 文件 0o644——与内核 synth_mode_size 合成
+            // 口径对齐，行为面零漂移；属主随 chown/chmod 车道变更）。
             let fresh = RamNode {
                 kind,
                 data: Vec::new(),
                 children: BTreeMap::new(),
+                uid: 0,
+                gid: 0,
+                mode: if kind.is_dir() { 0o755 } else { 0o644 },
             };
             inner.nodes.insert(id, fresh);
             let name_key = String::from(name);

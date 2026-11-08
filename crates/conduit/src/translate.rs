@@ -170,6 +170,11 @@ pub enum LinAction {
     /// getppid(110)：真面——父任务 pid（M40-ASH2 号域勘误转正；无父链
     /// → 1 init 语义，Linux 孤儿同款）
     GetPPid,
+    /// chmod(90)：路径 mode 九位域写面（M40-CRYSTAL 收录——盘上属主域
+    /// 承接；号域勘误既录：readlink=89，90=chmod）
+    Chmod,
+    /// chown(92)：路径属主写面（M40-CRYSTAL 收录——root 域收口）
+    Chown,
     /// set_tid_address(218)：合成返回 pid（TLS 清理桩语义）
     StubTid,
     // ---- 显形拒绝 ----
@@ -197,6 +202,8 @@ pub fn translate(num: u64) -> LinAction {
         33 => LinAction::Dup2,
         40 => LinAction::SendFile, // M36-BB3b 收录（cat 消费驱动）
         89 => LinAction::ReadLink, // M39-BBLS 收录（ls 深链批次——x86_64 号域勘误：readlink=89，90=chmod）
+        90 => LinAction::Chmod,    // M40-CRYSTAL 收录（盘上属主域——chmod 车道）
+        92 => LinAction::Chown,    // M40-CRYSTAL 收录（盘上属主域——chown 车道 root 域收口）
         332 => LinAction::Statx,   // M36-BB3b 收录（ls 条目域 musl lstat 落点）
         39 => LinAction::GetPid,
         57 => LinAction::Fork,
@@ -261,9 +268,11 @@ pub const W_OK: u64 = 2;
 pub const R_OK: u64 = 4;
 
 /// 映射面覆盖度成像（数与 [`translate`] 收录一致；测试对账断言）。
-/// 口径 = LinAction 变体数 + ioctl 显形 1（M40-ASH2 getppid 真面转正
-/// + getpgrp 桩收录；号域覆盖另见 BINDINGS 名表快照）。
-pub const COVERED: usize = 37;
+///
+/// 口径 = LinAction 变体数 + ioctl 显形 1；随批演进：M40-ASH2 getppid
+/// 真面转正、getpgrp 桩收录；M40-CRYSTAL chmod/chown 双号收录。号域
+/// 覆盖另见 BINDINGS 名表快照表。
+pub const COVERED: usize = 39;
 
 /// 相对路径 cwd join（M34-B1 单一事实源）：绝对路径原样；相对路径
 /// `cwd + path`（cwd 尾随分隔符去重——根哨兵 `"/"` 自然吞并）。词法
@@ -355,7 +364,10 @@ mod tests {
         assert_eq!(translate(109), LinAction::StubOk); // setpgid 合成桩
         assert_eq!(translate(110), LinAction::GetPPid); // getppid 真面
         assert_eq!(translate(111), LinAction::StubOk); // getpgrp 合成桩（新收录）
-                                                       // M35-BBa 收录（fork fd 继承面同批摘牌）
+                                                       // M40-CRYSTAL 收录（盘上属主域双号——号域勘误既录：90=chmod）
+        assert_eq!(translate(90), LinAction::Chmod);
+        assert_eq!(translate(92), LinAction::Chown);
+        // M35-BBa 收录（fork fd 继承面同批摘牌）
         assert_eq!(translate(293), LinAction::Pipe2);
         // M36-BB3b 收录（cat/ls applet 消费驱动——M34-B1 先例）
         assert_eq!(translate(4), LinAction::Stat);
@@ -365,8 +377,8 @@ mod tests {
         // M39-BBLS 收录（ls 深链批次——readlink 语义落点；号域勘误
         // 随行揭雷：x86_64 readlink=89 非 90，busybox 实证取证）
         assert_eq!(translate(89), LinAction::ReadLink);
-        assert_eq!(translate(90), LinAction::Err(ENOSYS)); // chmod 未收录（v0）
-                                                           // 显形拒绝（未收录）
+        // 90 已随 M40-CRYSTAL 收录（Chmod——上方钉值）
+        // 显形拒绝（未收录）
         assert_eq!(translate(56), LinAction::Err(ENOSYS)); // clone（M33-P1 后仍挂账——vfork/clone 旗标面随后续批次）
         assert_eq!(translate(59), LinAction::Execve); // M33-P1 收录
         assert_eq!(translate(57), LinAction::Fork); // M33-P1 收录
