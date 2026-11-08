@@ -752,7 +752,9 @@ pub fn sys_fb_stage(va: u64) -> u64 {
 /// 未登记时静默清账返回 0（直写双轨共存——直写像素已在屏，无操作即
 /// 正确语义）。返回本次上屏像素数（活体断言域）。
 pub fn fb_compose_tick() -> u64 {
-    // M34-P4 电源协同显示侧（PR-P04）：blank 态合成器完全无操作——
+    // M34-P4 电源协同显示侧（旧「PR-P04」引用为编号误引——手册无对应
+    // 编号项，勘误随 M39-DPMS/PDF-RECON §二 2.11；PR-P04 正名 = Vulkan
+    // 计算着色器，prism::compute 语义面 v0 随 M40-PRP04）：blank 态合成器完全无操作——
     // 拦截在 drain 之前，损伤账保留（unblank 后下一拍自然重放，不做
     // 全量重放语义；blank 期内容冻结）。blank 默认 false，t77/t79-f/
     // longrun B 断言域零扰动。

@@ -151,7 +151,7 @@
 | PR-P01 | 模式设置完成 ≤ 100 ms（P1） | 结构面 | stdvga dispi 1080p@32 切换（M28-R1/t66）；数值留环境 B |
 | PR-P02 | 页翻转提交 ≤ 0.5 ms（P0） | 结构面 | fb_compose_tick 交盒局部上屏（t77/t88）；数值留环境 B |
 | PR-P03 | VRR 48—144 Hz（P2） | 挂账 | VRR 域未落 |
-| PR-P04 | Vulkan 1.3 计算着色器可用（P0） | **偏差** | **细则/手册口径 = Vulkan 计算队列**——M34-P4 误引为「电源协同显示侧」（power/display.rs 头注 + METRICS PR-P04 行 + kernel fb.rs M34-P4 段）——引用编号随本表勘误登记，电源协同语义面在库不变（M34-P4 实体保留，编号口径改记「手册无对应编号项」）；Vulkan 计算队列挂账（GPU 域未落） |
+| PR-P04 | Vulkan 1.3 计算着色器可用（P0） | **偏差** | **细则/手册口径 = Vulkan 计算队列**——M34-P4 误引为「电源协同显示侧」（power/display.rs 头注 + METRICS PR-P04 行 + kernel fb.rs M34-P4 段）——引用编号随本表勘误登记，电源协同语义面在库不变（M34-P4 实体保留，编号口径改记「手册无对应编号项」）；**M40-PRP04 随行**：Vulkan 语义面 v0 落域（prism::compute——SPIR-V 解析壳 + 管线登记面 + 标量求算核，宿主测试谱在环），硬件计算队列挂账（GPU 域未落——QEMU TCG 无 Vulkan ICD，真机窗口） |
 | PR-P05 | 同步事件到 Mirror ≤ 1.0 ms（P1） | 挂账 | 垂直同步事件域未落 |
 | PR-P06 | 多显示器 4 屏稳定（P2） | 挂账 | 单屏 v0 口径 |
 

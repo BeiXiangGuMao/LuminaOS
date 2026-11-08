@@ -406,16 +406,22 @@ pub struct ComposeStats {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
+pub mod compute;
+
+#[cfg(test)]
+#[allow(clippy::expect_used)] // M36-A1 既有测试域——S2 all-targets 闸随批标注
 mod tests {
     extern crate std;
     use super::*;
 
     /// r(x, y, w, h) 速构。
+    #[allow(dead_code)] // M40-PRP04 随行：S2 lib 扫描域 helper 标注
     fn r(x: i32, y: i32, w: u32, h: u32) -> Rect {
         Rect { x, y, w, h }
     }
 
     /// l(id, z, visible, bounds) 速构。
+    #[allow(dead_code)] // M40-PRP04 随行：S2 lib 扫描域 helper 标注
     fn l(id: u32, z: i32, visible: bool, bounds: Rect) -> Layer {
         Layer {
             id,
