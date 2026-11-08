@@ -82,8 +82,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95）。
-const SELFTEST_TOTAL: usize = 95;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96）。
+const SELFTEST_TOTAL: usize = 96;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -6951,6 +6951,13 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t96 = t96_run(&mut log);
     report(&mut log, t96, "disk-owner");
 
+    // t97) cat applet 实证活体（M40-CAT）：制备文件域（内容断言载荷）
+    //      → `busybox cat` 派生消费 → 内容级断言（串口标记——纠正 t83
+    //      wc 式内容级断言缺席教训）+ sendfile 车道实测 + 负例 + 清扫。
+    //      LUMINA-T97-CAT/OK。
+    let t97 = t97_run(&mut log);
+    report(&mut log, t97, "busybox-cat");
+
     // t95) ash 启动链标本流程装置（M40-ASH2 置首笔）——**备置撤闸**
     //      （M39-ASH 先例如实不虚报）：标本流程三步已落——① 定根因
     //      （-d int 标本在案：ash 用户栈 #PF-grow 循环正常推进
@@ -7696,6 +7703,125 @@ fn t96_run(log: &mut DualLog) -> bool {
     );
     if ok {
         let _ = writeln!(log, "LUMINA-T96-OK");
+    }
+    ok
+}
+
+/// t97 cat applet 实证活体执行体（M40-CAT）：独立函数承载（帧形态守
+/// 恒纪律）。相位：(a) 制备文件域（/t97d + 双文件——载荷即内容级断
+/// 言标记 LUMINA-T97-CAT〔纠正 t83 wc 式内容级断言缺席而缺陷三代隐
+/// 匿的教训——M39-BBLS 回溯在案〕）；(b) `busybox cat` 派生消费（t92
+/// 同款装载链 + waitpid 收割——exit 码对账；cat 读路径 = openat+fstat
+/// +read 循环+writev(1) 串口直通〔stdio 保留域语义〕；sendfile(40)
+/// 直拷车道实测〔M36-BB3b 收录——cat 消费驱动〕+ 负例域 cat 缺席文件
+/// 败码 1）；(c) 制备域清扫。
+fn t97_run(log: &mut DualLog) -> bool {
+    let mut ok = true;
+    const DIR: &[u8] = b"/t97d";
+    const F1: &[u8] = b"/t97d/f_cat";
+    const F2: &[u8] = b"/t97d/f_send";
+    // (a) 制备文件域（载荷 = 内容级断言标记——xtask S8/longrun required）
+    ok &= vfs::sys_mkdir(DIR.as_ptr() as u64, DIR.len() as u64) == 0;
+    let mut prep = 0usize;
+    for (path, payload) in [
+        (F1, &b"LUMINA-T97-CAT cat-read-loop\n"[..]),
+        (F2, &b"LUMINA-T97-SENDFILE\n"[..]),
+    ] {
+        let h = vfs::sys_open_bytes(path, bedrock::abi::O_CREAT | 0b10);
+        if h >> 32 == 1 {
+            let w = vfs::sys_write(
+                h & 0xFFFF_FFFF,
+                payload.as_ptr() as u64,
+                payload.len() as u64,
+            );
+            ok &= w >> 32 == 1;
+            prep += 1;
+            let _ = vfs::sys_close(h & 0xFFFF_FFFF);
+        } else {
+            ok = false;
+        }
+    }
+    ok &= prep == 2;
+    // (b) busybox cat 派生消费（t92 同款四 applet 表形态）
+    let applets: [(&[&str], u64); 3] = [
+        // cat 读循环车道（openat+read+writev——内容级断言标记上串口）
+        (&["/bin/busybox", "cat", "/t97d/f_cat"], 0),
+        // sendfile 直拷车道（cat 大文件域选路——M36-BB3b 收录消费）
+        (&["/bin/busybox", "cat", "/t97d/f_send"], 0),
+        // 负例域：缺席文件 → openat ENOENT → applet 败码 1
+        (&["/bin/busybox", "cat", "/t97d/f_absent"], 1),
+    ];
+    let mut reaped: [u64; 3] = [u64::MAX; 3];
+    if let Some(blob) = vfs::read_image("/bin/busybox") {
+        for (i, (argv, expect)) in applets.iter().enumerate() {
+            let Some(frames) = vmm::global_frames() else {
+                let _ = writeln!(log, "t97[{}]: frame service unreachable", i);
+                ok = false;
+                break;
+            };
+            let t = ostd::time::tsc_now();
+            let mut random = [0u8; 16];
+            for (j, b) in random.iter_mut().enumerate() {
+                *b = (t >> ((j % 8) * 8)) as u8 ^ (j as u8).rotate_left(3);
+            }
+            match user::build_user_space_elf(
+                &blob,
+                argv,
+                &["PATH=/bin"],
+                random,
+                "busybox",
+                &mut || frames.alloc(),
+            ) {
+                Ok(es) => {
+                    let mut slots = [0u64; 15];
+                    slots[0] = 0x202;
+                    slots[1] = es.entry;
+                    slots[7] = es.rsp;
+                    let id = task::spawn_fork_child(
+                        "busybox-cat",
+                        es.root,
+                        task::current_task_id(),
+                        slots,
+                        true,
+                    );
+                    if id == usize::MAX {
+                        let _ = writeln!(log, "t97[{}]: task slot exhausted", i);
+                        ok = false;
+                        break;
+                    }
+                    let r = procs::sys_wait_pid(id as u64);
+                    let code = r & 0xFFFF;
+                    reaped[i] = code;
+                    let _ = writeln!(log, "t97[{}] {} exit={code} (expect {expect})", i, argv[1]);
+                    ok &= r >> 32 == 1 && code == *expect && !task::task_alive(id);
+                }
+                Err(e) => {
+                    let _ = writeln!(log, "t97[{}]: build failed ({e:?})", i);
+                    ok = false;
+                    break;
+                }
+            }
+        }
+    } else {
+        let _ = writeln!(log, "t97: /bin/busybox media MISS");
+        ok = false;
+    }
+    // (c) 制备域清扫
+    let mut cleaned = 0usize;
+    for path in [F1, F2] {
+        if vfs::sys_remove_bytes(path) == 0 {
+            cleaned += 1;
+        }
+    }
+    ok &= cleaned == 2;
+    ok &= vfs::sys_remove_bytes(DIR) == 0;
+    let _ = writeln!(
+        log,
+        "LUMINA-T97-CAT prepared={prep} cleaned={cleaned} cat={} send={} neg={}",
+        reaped[0], reaped[1], reaped[2]
+    );
+    if ok {
+        let _ = writeln!(log, "LUMINA-T97-OK");
     }
     ok
 }
