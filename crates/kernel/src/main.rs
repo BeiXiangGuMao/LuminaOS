@@ -82,8 +82,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99）。
-const SELFTEST_TOTAL: usize = 99;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100）。
+const SELFTEST_TOTAL: usize = 100;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7022,6 +7022,13 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t99 = t99_run(&mut log);
     report(&mut log, t99, "mu-deep2");
 
+    // t100) ash 交互面活体（M41-笔④）：busybox sh 交互模式（无 -c）
+    //       spawn + kbd 字节直注入两行（echo/exit）→ 阻塞式 tty read
+    //       端到端（lin_read fd 0 阻塞化转正）→ exit=0 收割 + echo
+    //       直通串口标记。LUMINA-T100-ASH/OK。
+    let t100 = t100_run(&mut log);
+    report(&mut log, t100, "ash-interactive");
+
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
     //      pf_hook 入口扩判「U 位 或 CR2 落增长栈窗口域」——CPL0 用户
@@ -8135,6 +8142,105 @@ fn t99_run(log: &mut DualLog) -> bool {
     );
     if ok {
         let _ = writeln!(log, "LUMINA-T99-OK");
+    }
+    ok
+}
+
+/// t100 ash 交互面活体（M41-笔④）：独立函数承载（帧形态守恒纪律）。
+/// **阻塞式 tty read 转正**——lin_read fd 0 tty 车道阻塞化（原 v0 非阻
+/// 塞「0 = 暂无数据」域退役：ash 交互 shell 读侧读到 0 = EOF 即退出的
+/// 滞点根治）——本活体端到端实证：
+/// (a) kbd 环 drain（防残留）+ 零锁判据面清零（t95 同款）；
+/// (b) spawn `busybox sh`（**无 -c——交互模式**）；
+/// (c) kbd::inject_raw 字节直注入两行（"echo LUMINA-T100-ASH\n" +
+///     "exit\n"——注入即 wake TtyRead 等待者；先注入后读者时序由登记
+///     窗探针免疫兜底）；
+/// (d) 有界收割（PIT 刻度 deadline 60 拍——交互域 musl 初始化 + 两行
+///     消费上界，t95 装置形态同款零锁轮询 per-CPU exit 槽）；
+/// (e) 断言 exit=0 + Zombie 收割（sys_wait_pid）；
+/// (f) 输出断言：echo 内建 fd1 直通串口 → LUMINA-T100-ASH 标记
+///     （S8 required 面消费）。LUMINA-T100-ASH/OK。
+fn t100_run(log: &mut DualLog) -> bool {
+    let mut ok = true;
+    task::reset_user_evidence();
+    let me = task::current_task_id();
+    // (a) kbd 环 drain（防前序活体残留）
+    while crate::kbd::pop().is_some() {}
+    // (b) busybox sh 交互模式 spawn（t95 同款装载链）
+    const ASH_ARGV: [&str; 2] = ["/bin/busybox", "sh"];
+    let Some(blob) = vfs::read_image("/bin/busybox") else {
+        let _ = writeln!(log, "t100: /bin/busybox media MISS");
+        return false;
+    };
+    let Some(frames) = vmm::global_frames() else {
+        let _ = writeln!(log, "t100: frame service unreachable");
+        return false;
+    };
+    let t = ostd::time::tsc_now();
+    let mut random = [0u8; 16];
+    for (j, b) in random.iter_mut().enumerate() {
+        *b = (t >> ((j % 8) * 8)) as u8 ^ (j as u8).rotate_left(3);
+    }
+    let es = match user::build_user_space_elf(
+        &blob,
+        &ASH_ARGV,
+        &["PATH=/bin"],
+        random,
+        "busybox",
+        &mut || frames.alloc(),
+    ) {
+        Ok(es) => es,
+        Err(e) => {
+            let _ = writeln!(log, "t100: user space build failed ({e:?})");
+            return false;
+        }
+    };
+    let mut slots = [0u64; 15];
+    slots[0] = 0x202;
+    slots[1] = es.entry;
+    slots[7] = es.rsp;
+    let ash_id = task::spawn_fork_child("busybox-ash-i", es.root, me, slots, true);
+    if ash_id == usize::MAX {
+        let _ = writeln!(log, "t100: task slot exhausted");
+        return false;
+    }
+    let _ = writeln!(log, "t100: spawned id={ash_id} (interactive)");
+    // (c) 字节直注入两行（先注入——登记窗探针免疫兜底读者迟到时序）
+    for b in b"echo LUMINA-T100-ASH\nexit\n" {
+        crate::kbd::inject_raw(*b);
+    }
+    let _ = writeln!(log, "t100: injected 2 lines (echo + exit)");
+    // (d) 有界收割（零锁轮询 per-CPU exit 槽——t95 装置形态）
+    let now0 = ostd::time::now();
+    let deadline = now0 + 60; // 60 拍 = 0.6 s（交互域上界：musl 初始化 +
+                              // 两行消费 + echo 输出）
+    let mut iters: u64 = 0;
+    while task::user_exit_codes().1 == u64::MAX
+        && ostd::time::now() < deadline
+        && iters < 2_000_000_000
+    {
+        iters += 1;
+        core::hint::spin_loop();
+    }
+    let st = task::task_debug_state(ash_id);
+    let code = task::task_debug_exit_code(ash_id);
+    let dhit = ostd::time::now() >= deadline;
+    let _ = writeln!(
+        log,
+        "t100: spec i={iters} s1={st} exit={code:#x} deadline-hit={dhit}"
+    );
+    // (e) 断言 exit=0 + 收割
+    if st == 4 {
+        let r = procs::sys_wait_pid(ash_id as u64);
+        let rcode = r & 0xFFFF;
+        ok &= r >> 32 == 1 && rcode == 0 && !task::task_alive(ash_id);
+        let _ = writeln!(log, "t100: reaped exit={rcode} (expect 0)");
+    } else {
+        ok = false; // 滞域 fail-visible（装置不静默）
+    }
+    let _ = writeln!(log, "LUMINA-T100-ASH st={st} exit={code:#x} ok={ok}");
+    if ok {
+        let _ = writeln!(log, "LUMINA-T100-OK");
     }
     ok
 }

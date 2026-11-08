@@ -204,3 +204,17 @@ pub fn pager_disarm() {
 pub fn pager_take_key() -> Option<u8> {
     PAGER_KEYS.recv()
 }
+
+/// tty 数据就绪探针（M41-笔④ 阻塞读消费面）：kbd 环有残余字节、
+/// 就绪行待接管、或活动行消费位有效——任一成立即 getch 下一次
+/// 非零（行规程三态域全谱覆盖；零锁原子读——等待者探针/SCHED 锁窗
+/// 内运行安全，与 [`getch`] 的接管面同源口径）。
+pub fn has_data() -> bool {
+    if GETCH_CURSOR.load(Ordering::Acquire) != usize::MAX {
+        return true; // 活动行消费位有效
+    }
+    if READY.load(Ordering::Acquire) {
+        return true; // 就绪行待接管
+    }
+    !crate::kbd::avail() // kbd 环残余（pump 前置数据面）
+}

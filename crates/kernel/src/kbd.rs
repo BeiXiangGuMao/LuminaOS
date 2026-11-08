@@ -74,3 +74,20 @@ fn feed(sc: u8) {
 pub fn pop() -> Option<u8> {
     KBD_RING.recv()
 }
+
+/// 键环非空判定（M41-笔④ tty 阻塞读探针消费面）。
+pub fn avail() -> bool {
+    !KBD_RING.is_empty()
+}
+
+/// 字节直注入（M41-笔④ t100 装置面）：绕过 scancode 翻译直入键环
+/// （ASCII 控制面字节——与 feed 出口同域；SPSC 生产者侧 = 注入方
+/// 任务语境，批跑无真实键入 = 事实单生产者，契约保持如实登记）。
+/// 入环后唤醒 tty 阻塞读等待者（任务语境 wake——先注入后读者时序
+/// 由登记窗探针免疫兜底，先读者后注入时序由本唤醒承载）。
+pub fn inject_raw(b: u8) {
+    if KBD_RING.send(b).is_err() {
+        KBD_DROP.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
+    crate::task::wake_tasks(|w| matches!(w, crate::task::WaitWhat::TtyRead));
+}

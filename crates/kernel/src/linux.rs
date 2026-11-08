@@ -281,16 +281,26 @@ fn lin_read(frame: &mut SyscallFrame) -> u64 {
             }
             return lumina_to_linux(r);
         }
-        // tty 游标域：0 = 暂无数据（非阻塞 v0 口径如实记档）
-        let ch = crate::tty::getch();
-        if ch == 0 {
-            return 0;
+        // tty 游标域（**M41-笔④ 阻塞化**——原 v0 非阻塞「0 = 暂无数据」
+        // 口径退役）：kbd 行就绪面无数据时登记 `WaitWhat::TtyRead` 阻
+        //塞等待（kbd 注入/键入双侧唤醒 + 登记窗探针丢失唤醒免疫——
+        // M36 管道阻塞同构三链）；read 返回 0 = EOF 域不再产生（tty
+        // 无 EOF 域 v0——ash 交互 shell 读侧滞点根治）。
+        loop {
+            let ch = crate::tty::getch();
+            if ch != 0 {
+                let Some(dst) = validate_user_slice_mut(buf, 1) else {
+                    return err(14); // EFAULT
+                };
+                dst[0] = (ch & 0xFF) as u8;
+                return 1;
+            }
+            // 阻塞等待：探针 = tty 数据面非空即就绪（false → 锁窗回滚
+            // 重试消费）；返回 true = 已真实阻塞且被唤醒（重试 getch）。
+            crate::task::block_current_unless(crate::task::WaitWhat::TtyRead, true, || {
+                !crate::tty::has_data()
+            });
         }
-        let Some(dst) = validate_user_slice_mut(buf, 1) else {
-            return err(14); // EFAULT
-        };
-        dst[0] = (ch & 0xFF) as u8;
-        return 1;
     }
     let r = crate::vfs::sys_read(fd, buf, count);
     if r >> 32 != 1 {

@@ -176,6 +176,10 @@ pub enum WaitWhat {
         /// 管道写端对象 id。
         object: u64,
     },
+    /// tty 阻塞读（M41-笔④）：等待键盘行就绪（kbd 入环与注入双侧唤
+    /// 醒，登记窗探针丢失唤醒免疫——v0 单等待者契约：init shell / ash
+    /// 唯一 tty 消费方，多任务并发读挂账）。
+    TtyRead,
 }
 
 /// 任务入口函数指针。
@@ -2266,8 +2270,8 @@ pub fn task_ppid(id: usize) -> usize {
 
 /// 任务阻塞等待对象类别诊断戳（M40-ASH2 滞点标本取证面；task_debug_
 /// state 同款诊断域）：0 无 1 Swap 2 Child 3 IpcRecv 4 Timer 5 PipeRead
-/// 6 PipeWrite——滞域 H2（内核无声 Blocked）判别面（Timer = t52 后
-/// 唤醒链退役域死锁标本）。
+/// 6 PipeWrite 7 TtyRead——滞域 H2（内核无声 Blocked）判别面（Timer =
+/// t52 后唤醒链退役域死锁标本）。
 pub fn task_debug_wait(id: usize) -> u8 {
     let _w = IntWindow::new();
     let s = sched_lock!();
@@ -2281,6 +2285,7 @@ pub fn task_debug_wait(id: usize) -> u8 {
             Some(WaitWhat::Timer { .. }) => 4,
             Some(WaitWhat::PipeRead { .. }) => 5,
             Some(WaitWhat::PipeWrite { .. }) => 6,
+            Some(WaitWhat::TtyRead) => 7,
         },
     }
 }
