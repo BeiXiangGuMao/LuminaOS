@@ -925,6 +925,15 @@ pub fn percpu_ticks() -> (u64, u64) {
 /// 并发 RESCHED IPI；RESCHED 抢占钩子消费（test-and-clear）。
 static PREEMPT_REQ: [AtomicBool; MAX_CPUS] = [AtomicBool::new(false), AtomicBool::new(false)];
 
+/// per-CPU ring3 驻留零锁旗（M40-ASH2 互斥面）：`true` = 本核当前任务为
+/// Kind::User（ring3 驻留）。维护点 = prepare_dispatch（Kind 分派唯一
+/// 咽喉点）+ 切回 idle 点；消费点 = wall_hook 量子循环 + RESCHED 抢占
+/// 钩子入口（均零锁快路径，S31 极短 ISR 纪律保持）。
+/// 语义 = ring3 驻留任务的 ISR-plan 量子抢占交换触发面移除（t95 标本
+/// 流程定根因——M22-③ 同族 cont 槽竞态窗的高能击发域，见
+/// try_preempt_switch 头注定性注）；事件驱动调度点不受影响。
+static PERCPU_IS_USER: [AtomicBool; MAX_CPUS] = [AtomicBool::new(false), AtomicBool::new(false)];
+
 /// 调度切换握手旗（M11-D）：`SWITCHING[id] = 1` = 该槽位现场保存尚未
 /// 完成（重排队/唤醒重排队已生效但物理切换未落定），拾取面（[`eligible`]）拒绝；
 /// 清除点唯一性：
@@ -1663,6 +1672,10 @@ fn prepare_dispatch(t: &Task, boot_cr3: u64, cpu: usize) {
     // 锁内无分配、无锁获取——中断语境可达）。旧任务的下一次派发即
     // 校验其运行期/驻留期栈底完整性。
     canary_check(t);
+    // M40-ASH2 ring3 驻留零锁旗维护（Kind 分派唯一咽喉点——与 LVT
+    // mask/unmask 同构不变式；消费面 = wall_hook 量子循环 + RESCHED
+    // 钩子入口，S31 零锁快路径）。
+    PERCPU_IS_USER[cpu].store(matches!(t.kind, Kind::User), Ordering::Release);
     match t.kind {
         Kind::User => {
             // TCG 双异常交付规避（S31 记档）：tick 交付进 ring3 为缺陷族
@@ -2184,6 +2197,40 @@ pub fn task_creds(id: usize) -> Option<Creds> {
         .map(|t| t.creds)
 }
 
+/// 任务父链 pid 读取（M40-ASH2 getppid(110) 真面）：父任务槽位号——
+/// Linux 语义 v0 口径 = 内核槽位号同域（GetPid 臂同源）；无父链
+/// （kernel spawn / 主任务）返回 1 init 哨兵（Linux 孤儿同款）。
+pub fn task_ppid(id: usize) -> usize {
+    let _w = IntWindow::new();
+    let s = sched_lock!();
+    s.tasks
+        .get(id)
+        .and_then(|t| t.as_ref())
+        .and_then(|t| t.parent)
+        .unwrap_or(1)
+}
+
+/// 任务阻塞等待对象类别诊断戳（M40-ASH2 滞点标本取证面；task_debug_
+/// state 同款诊断域）：0 无 1 Swap 2 Child 3 IpcRecv 4 Timer 5 PipeRead
+/// 6 PipeWrite——滞域 H2（内核无声 Blocked）判别面（Timer = t52 后
+/// 唤醒链退役域死锁标本）。
+pub fn task_debug_wait(id: usize) -> u8 {
+    let _w = IntWindow::new();
+    let s = sched_lock!();
+    match s.tasks.get(id).and_then(|t| t.as_ref()) {
+        None => 0,
+        Some(t) => match t.wait {
+            None => 0,
+            Some(WaitWhat::Swap { .. }) => 1,
+            Some(WaitWhat::Child { .. }) => 2,
+            Some(WaitWhat::IpcRecv { .. }) => 3,
+            Some(WaitWhat::Timer { .. }) => 4,
+            Some(WaitWhat::PipeRead { .. }) => 5,
+            Some(WaitWhat::PipeWrite { .. }) => 6,
+        },
+    }
+}
+
 /// 任务凭据在锁窗内改写（M39-MU）：setuid/setgid 执行面 + t93 领域
 /// 换装消费面；任务不存在返回 None。
 pub fn with_task_creds_mut<R>(id: usize, f: impl FnOnce(&mut Creds) -> R) -> Option<R> {
@@ -2463,6 +2510,9 @@ fn finish_and_switch_away(code: u64) -> ! {
                         let mut s = sched_lock!();
                         let cur = CURRENT[cpu].load(Ordering::Relaxed);
                         CURRENT[cpu].store(IDLE, Ordering::Relaxed);
+                        // M40-ASH2：切回 idle 同拍清 ring3 驻留旗（与
+                        // prepare_dispatch Kind 分派构成旗不变式全谱）。
+                        PERCPU_IS_USER[cpu].store(false, Ordering::Release);
                         if let Some(t) = s.tasks[cur].as_mut() {
                             // M21-①：护槽旗随切换机器清除（同 Some 分支）。
                             let pair = SwitchPair::from(&mut t.ctx, idle)
@@ -2631,6 +2681,19 @@ fn execute_switch(
 /// 终结路径 idle 分支不更新 CURRENT，窗口期内 LAPIC 钩子可对已终结
 /// 任务误判 eligible 并重入队）。
 /// 返回 true = 已填写 plan（桩执行抢占交换）。
+///
+/// **M40-ASH2 ring3 量子抢占互斥注**：本函数本体保持 M8-C 原语义（不
+/// 加 Kind 闸——闸在调用面上游的零锁旗 PERCPU_IS_USER：wall_hook 量子
+/// 循环 + RESCHED 抢占钩子入口对 ring3 驻留核零锁放行）。t95 标本流
+/// 程定根因（10791-10793 现场 + DR0 哨兵 1140 次合法保存计数）：ring3
+/// 长驻任务的高频量子抢占交换（ISR 栈 PreemptPlan 路径 × 双核自由迁
+/// 移）= M22-③ 同族 cont 槽竞态窗的高能击发域（M38-SP1 修复面覆盖
+/// block/halt 双臂，ISR 抢占臂的 ring3 场景从未被 t90 级风暴覆盖——
+/// kmain 被切出 1140 次/轮即窗族必发；#PF@用户栈 + #DF 核瘫痪现场在
+/// 案）。互斥 = 移除触发面：ring3 任务回归事件驱动调度（syscall 陷阱/
+/// block/exit/yield 调度点，M10-A 前语义——applet 短命域零感知）；
+/// kernel 任务（ring0 驻留）量子抢占保留（t90 风暴先例不动）。ISR 交
+/// 换路径本体的深水区加固登记远线（M40-收尾 挂账复核）。
 fn try_preempt_switch(sc: &mut Scheduler, cpu: usize, plan: &mut PreemptPlan) -> bool {
     let cur = CURRENT[cpu].load(Ordering::Relaxed);
     if cur == IDLE || !eligible(&sc.tasks, cur, cpu) {
@@ -2645,14 +2708,25 @@ fn try_preempt_switch(sc: &mut Scheduler, cpu: usize, plan: &mut PreemptPlan) ->
     let cur_prio = t.prio;
     let quantum_hit = PERCPU_RUN_TICKS[cpu].load(Ordering::Relaxed) >= QUANTUM_TICKS as u32;
     // ① 高优先抢前（自 0 级扫至 cur_prio-1，严格更高）
-    if let Some(next) = pick_best(&mut sc.ready, &sc.tasks, cpu, cur, Some(cur_prio)) {
-        return execute_switch(sc, cpu, cur, next, plan);
-    }
     // ② 量子到期轮转（不移除；找不到则放行——保持队列完整，计账不清
-    // 以便下拍重试，M9 原语义的「先清后败」窗口在此收敛）
+    // 以便下拍重试，M9 原语义的「先清后败」窗口在此收敛）。
+    // **M40-ASH2 互斥面·换入向**：两臂的 next 候选为 Kind::User 时放弃
+    // 本拍 ISR 交换（返回 false）——ISR-plan 交换永不切入 ring3 任务
+    // （t95 二拍实录：量子轮转臂把 ash 换上 kmain 的核 → PERCPU_IS_USER
+    // 旗令其不可再被抢走 → kmain 饿死滞域。换入向封死后 ring3 任务只
+    // 经 idle_pick/block 臂/协作让渡三类事件驱动路径上核——见函数头
+    // 注定性注）。kernel 候选（ring0 驻留）不受此闸影响。
+    if let Some(next) = pick_best(&mut sc.ready, &sc.tasks, cpu, cur, Some(cur_prio)) {
+        if sc.tasks[next].as_ref().is_none_or(|n| n.kind != Kind::User) {
+            return execute_switch(sc, cpu, cur, next, plan);
+        }
+        return false;
+    }
     if quantum_hit {
         if let Some(next) = pick_best(&mut sc.ready, &sc.tasks, cpu, cur, None) {
-            return execute_switch(sc, cpu, cur, next, plan);
+            if sc.tasks[next].as_ref().is_none_or(|n| n.kind != Kind::User) {
+                return execute_switch(sc, cpu, cur, next, plan);
+            }
         }
     }
     false
@@ -2773,6 +2847,12 @@ pub fn wall_hook(plan: &mut PreemptPlan) -> bool {
         if cur == IDLE {
             continue;
         }
+        // M40-ASH2 互斥闸：ring3 驻留核零锁跳过（量子慢路径 + 对侧 IPI
+        // 双面禁——PERCPU_IS_USER 零锁旗，S31 纪律；ring3 任务回归事件
+        // 驱动调度，ISR 交换触发面移除——见 try_preempt_switch 头注）。
+        if PERCPU_IS_USER[c].load(Ordering::Relaxed) {
+            continue;
+        }
         if PERCPU_RUN_TICKS[c].load(Ordering::Relaxed) < QUANTUM_TICKS as u32 {
             continue;
         }
@@ -2820,6 +2900,12 @@ pub fn resched_preempt_hook(plan: &mut PreemptPlan) -> bool {
         return false;
     }
     if !PREEMPT_ENABLED.load(Ordering::Acquire) {
+        return false;
+    }
+    // M40-ASH2 互斥闸：ring3 驻留核零锁放行（PERCPU_IS_USER 快路径——
+    // 零锁零任务表触碰，S31 极短 ISR 纪律；语义见 try_preempt_switch
+    // 头注定性注）。旗已消费（swap 清零）——后续门铃零残留。
+    if PERCPU_IS_USER[cpu].load(Ordering::Acquire) {
         return false;
     }
     resched_preempt_body(cpu, plan)

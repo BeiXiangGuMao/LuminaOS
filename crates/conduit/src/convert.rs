@@ -467,7 +467,7 @@ pub const BINDINGS: &[SyscallBinding] = &[
         err_domain: "errno",
     },
     // ---- M34-B2（t83 实证导航：open(2) 执行面接线〔首批绑定已在表〕
-    //      + uid/gid 族合成桩） ----
+    //      + uid/gid 族） ----
     SyscallBinding {
         num: 102,
         name: "getuid",
@@ -480,15 +480,38 @@ pub const BINDINGS: &[SyscallBinding] = &[
         nargs: 0,
         err_domain: "status",
     },
+    // M40-ASH2 快照勘误随行：105/106 旧名「geteuid/getegid」为号域误记
+    // ——x86_64 实义 105=setuid/106=setgid（M39-MU 号域勘误既录，本表
+    // 快照随批对齐；107/108 才是 geteuid/getegid，尚未入库续挂）。
     SyscallBinding {
         num: 105,
-        name: "geteuid",
-        nargs: 0,
+        name: "setuid",
+        nargs: 1,
         err_domain: "status",
     },
     SyscallBinding {
         num: 106,
-        name: "getegid",
+        name: "setgid",
+        nargs: 1,
+        err_domain: "status",
+    },
+    // M40-ASH2 进程族三号快照（号域勘误随行：109=setpgid/110=getppid/
+    // 111=getpgrp——M39-ASH 台账「getppid(109)/getpgrp(110)」勘误）。
+    SyscallBinding {
+        num: 109,
+        name: "setpgid",
+        nargs: 2,
+        err_domain: "status",
+    },
+    SyscallBinding {
+        num: 110,
+        name: "getppid",
+        nargs: 0,
+        err_domain: "status",
+    },
+    SyscallBinding {
+        num: 111,
+        name: "getpgrp",
         nargs: 0,
         err_domain: "status",
     },

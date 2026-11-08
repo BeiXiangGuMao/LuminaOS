@@ -167,6 +167,9 @@ pub enum LinAction {
     /// munmap(11)：v0 匿名区不回收口径合成 0（musl free/realloc 大块
     /// 释放路径——M34-B2 t83 实证收录；真回收随页帧回收批次）
     StubOk,
+    /// getppid(110)：真面——父任务 pid（M40-ASH2 号域勘误转正；无父链
+    /// → 1 init 语义，Linux 孤儿同款）
+    GetPPid,
     /// set_tid_address(218)：合成返回 pid（TLS 清理桩语义）
     StubTid,
     // ---- 显形拒绝 ----
@@ -208,7 +211,17 @@ pub fn translate(num: u64) -> LinAction {
         106 => LinAction::SetGid,  // M39-MU 收录（根域收口——号域勘误随行）
         107 => LinAction::GetEUId, // M39-MU 收录（号域勘误：107 = geteuid）
         108 => LinAction::GetEGid, // M39-MU 收录（号域勘误：108 = getegid）
-        109 | 110 => LinAction::StubOk, // M39-ASH 收录（getppid/getpgrp 合成桩——v0 无父链/进程组域：ash 启动链 job-control 检查消费，110 ENOSYS 滞死实录在案；真面随进程族批次）
+        // M40-ASH2 号域勘误随行揭雷：M39-ASH 登记「getppid(109)/getpgrp(110)」
+        // 与 x86_64 号域实义不符（宿主内核头 asm/unistd_64.h 实证）——
+        // 109=setpgid / 110=getppid / 111=getpgrp；getpgrp 实为 111 且
+        // M39-ASH 后仍 ENOSYS（本库 readlink 90→89 / 105-106 号域揭雷
+        // 家族第三例）。M39-ASH 首拍 num=110 = getppid 非 getpgrp。
+        109 => LinAction::StubOk, // M39-ASH 收录（setpgid 合成桩——v0 无进程组域：
+        // ash jobctl 成功语义；号域勘误随 M40-ASH2）
+        110 => LinAction::GetPPid, // M39-ASH 收录（getppid——M40-ASH2 桩域转真
+        // 面：父任务 pid，无父链 → 1 init 语义）
+        111 => LinAction::StubOk, // M40-ASH2 收录（getpgrp 合成桩——号域勘误：
+        // getpgrp=111 非 110，v0 无进程组域恒 0）
         115 => LinAction::StubOk, // M39-MU 收录（getgroups 合成桩——v0 无补充组域恒 0：busybox id groups 域消费，首拍 ENOSYS 败码 1 实录在案；真面随进程组批次）
         158 => LinAction::ArchPrctl, // M33-T1 收录（musl TLS 初始化链）
         72 => LinAction::Fcntl,
@@ -248,9 +261,9 @@ pub const W_OK: u64 = 2;
 pub const R_OK: u64 = 4;
 
 /// 映射面覆盖度成像（数与 [`translate`] 收录一致；测试对账断言）。
-/// 口径 = LinAction 变体数 + ioctl 显形 1（M39-MU 身份六号真面转正，
-/// 合成桩域收缩；号域覆盖另见 BINDINGS 名表快照）。
-pub const COVERED: usize = 36;
+/// 口径 = LinAction 变体数 + ioctl 显形 1（M40-ASH2 getppid 真面转正
+/// + getpgrp 桩收录；号域覆盖另见 BINDINGS 名表快照）。
+pub const COVERED: usize = 37;
 
 /// 相对路径 cwd join（M34-B1 单一事实源）：绝对路径原样；相对路径
 /// `cwd + path`（cwd 尾随分隔符去重——根哨兵 `"/"` 自然吞并）。词法
@@ -337,6 +350,11 @@ mod tests {
         assert_eq!(translate(107), LinAction::GetEUId);
         assert_eq!(translate(108), LinAction::GetEGid);
         assert_eq!(translate(115), LinAction::StubOk); // M39-MU getgroups 合成桩
+                                                       // M40-ASH2 收录（号域勘误随行：109=setpgid/110=getppid/111=getpgrp
+                                                       // ——M39-ASH 台账「getppid(109)/getpgrp(110)」勘误，getpgrp 实为 111）
+        assert_eq!(translate(109), LinAction::StubOk); // setpgid 合成桩
+        assert_eq!(translate(110), LinAction::GetPPid); // getppid 真面
+        assert_eq!(translate(111), LinAction::StubOk); // getpgrp 合成桩（新收录）
                                                        // M35-BBa 收录（fork fd 继承面同批摘牌）
         assert_eq!(translate(293), LinAction::Pipe2);
         // M36-BB3b 收录（cat/ls applet 消费驱动——M34-B1 先例）

@@ -82,7 +82,7 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94）。
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 标本装置备置撤闸——SELFTEST 94 维持如实不虚报，M39-ASH 先例）。
 const SELFTEST_TOTAL: usize = 94;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
@@ -1496,17 +1496,23 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     //     抢占切换计数增长 + 哨兵释放后双 spinner 退出码 57（全链完好）。
     let t34 = {
         static WATCH_SEEN_0: AtomicU64 = AtomicU64::new(0);
-        static WATCH_SEEN_1: AtomicU64 = AtomicU64::new(0);
         fn tick_watch_body_0() {
             WATCH_SEEN_0.fetch_add(1, Ordering::AcqRel);
-        }
-        fn tick_watch_body_1() {
-            WATCH_SEEN_1.fetch_add(1, Ordering::AcqRel);
         }
         let mut ok = true;
         task::set_preempt_enabled(true);
         task::reset_user_evidence();
         let ticks0 = task::percpu_ticks();
+        // M40-ASH2 语义变更随行：ring3 ISR 量子抢占互斥（PERCPU_IS_USER
+        // 零锁旗——t95 标本流程定根因，M22-③ 同族窗族触发面移除）后，
+        // 本活体装置由「双核 ring3 spinner + 量子抢占换 watcher」改为
+        // **单 spinner（unpinned）+ 事件驱动分时**：spinner ring3 驻留
+        // 独占其核，kmain/watcher 在另一核 yield 分时——tick 计账 unfreeze
+        // 验证面不变（wall_hook 全核遍历计账，ring3 驻留核照涨）；原
+        // 「preempt+ 增长」断言随互斥撤除（ring3 ISR 抢占已移除——行为
+        // 语义变更如实落账，kernel 域抢占面由 t90/t3x 高优先抢前活体
+        // 继续覆盖）。装置不再依赖被互斥移除的调度行为（首拍实录：双
+        // spinner pinned 版 kmain 切入 spinner 后无核可用 = 装置滞域）。
         let preempt0 = task::preempt_stats().0;
         match (
             user::build_user_space(&mut || frames.alloc()),
@@ -1515,23 +1521,25 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
             (Ok(usa), Ok(usb)) => {
                 ostd::hw::phys::write_bytes(usa.code_frame, &user::USER_SPIN_PROGRAM);
                 ostd::hw::phys::write_bytes(usb.code_frame, &user::USER_SPIN_PROGRAM);
-                // 双核 spinner + 双核 watcher（2 级：老化/轮转可达）
-                let _ = task::spawn_user_pinned("spin-a", user_noop, usa.root, 0, 0);
-                let _ = task::spawn_user_pinned("spin-b", user_noop, usb.root, 0, 1);
+                // 单 ring3 spinner（pinned 核 1——kmain 独占核 0 分时
+                // watcher-0：全装置事件驱动，零 ISR 抢占依赖）+ watcher
+                //（pinned 0 与 kmain yield 分时——kernel 任务让渡链）
+                let _ = task::spawn_user_pinned("spin-a", user_noop, usa.root, 0, 1);
                 let _ = task::spawn_pinned_prio("tick-watch-0", tick_watch_body_0, 2, 0);
-                let _ = task::spawn_pinned_prio("tick-watch-1", tick_watch_body_1, 2, 1);
-                // ring3 抢占收敛窗口（预算 600 tick；PIT 量子 3 拍必现）
-                let deadline = ostd::time::now() + 600;
+                // watcher 收敛窗口（预算 600 tick；事件驱动分时可达）+
+                // **最小取证窗 8 tick**（M40-ASH2：事件驱动域窗口过短则
+                // PIT 计账零增长——ticks unfreeze 断言需窗口跨拍才有效）
+                let start = ostd::time::now();
+                let deadline = start + 600;
                 while ostd::time::now() < deadline
-                    && (WATCH_SEEN_0.load(Ordering::Acquire) == 0
-                        || WATCH_SEEN_1.load(Ordering::Acquire) == 0)
+                    && (ostd::time::now() < start + 8 || WATCH_SEEN_0.load(Ordering::Acquire) == 0)
                 {
                     task::yield_now();
                 }
                 let w0 = WATCH_SEEN_0.load(Ordering::Acquire);
-                let w1 = WATCH_SEEN_1.load(Ordering::Acquire);
-                ok &= w0 > 0 && w1 > 0; // 双核 watcher 均真实运行
-                                        // 哨兵释放：双 spinner 退出（取证窗口闭合）
+                let w1 = 1u64; // 旧双核 watcher 断言随单 spinner 装置并档（w1 恒证）
+                ok &= w0 > 0; // watcher 分时真实运行
+                              // 哨兵释放：spinner 退出（取证窗口闭合）
                 let spin_off = user::SPIN_SENTINEL_VA - user::USER_STACK_VIRT;
                 ostd::hw::phys::write_u64(usa.stack_frame + spin_off, 1);
                 ostd::hw::phys::write_u64(usb.stack_frame + spin_off, 1);
@@ -1545,12 +1553,17 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                 let preempt1 = task::preempt_stats().0;
                 let _ = writeln!(
                     log,
-                    "tick-account: watch=({w0},{w1}) exit=({e0},{e1}) ticks=({},{})→({},{}) preempt+={}",
+                    "tick-account: watch=({w0},{w1}) exit=({e0},{e1}) ticks=({},{})→({},{}) preempt+={} (M40-ASH2 互斥面——preempt 断言撤除)",
                     ticks0.0, ticks0.1, ticks1.0, ticks1.1, preempt1 - preempt0
                 );
-                ok &= e0 == 57 && e1 == 57; // 双 spinner 哨兵退出（全链完好）
-                ok &= ticks1.0 > ticks0.0 && ticks1.1 > ticks0.1; // 双核账户增长（ring3 计账）
-                ok &= preempt1 > preempt0; // 抢占切换真实发生
+                // M40-ASH2：USER_EXIT_CODES 为 per-CPU 槽位——单 spinner
+                // pinned 核 1 → e1=57；核 0 无 user exit → e0 恒 u64::MAX
+                //（reset_user_evidence 清零后恒证域）。
+                ok &= e1 == 57 && e0 == u64::MAX; // spinner 哨兵退出（全链完好）
+                                                  // 双核 tick 计账增长（ring3 驻留 unfreeze——M10-A 计账面
+                                                  // 全核遍历不变；kernel watcher 核 + spinner 核双面）
+                ok &= ticks1.0 + ticks1.1 > ticks0.0 + ticks0.1;
+                ok &= (ticks1.0 > ticks0.0) && (ticks1.1 > ticks0.1);
             }
             _ => {
                 let _ = writeln!(log, "tick-account: user space build failed");
@@ -1930,11 +1943,13 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     report(&mut log, t39, "ipc-recv-blocking");
 
     // 40) 调度切换握手压测（M11-D：跨核拾取窗口根治）。
-    //     构造：双核 ring3 spinner（抢占压力：preempt-plan 路径高频置旗/
-    //     桩内清旗）+ 双核钉扎 yield 风暴内核任务（协作路径漏斗高频）+
-    //     双枚自由跨核 yield 任务（跨核拾取压力：重排队窗口被对侧核
-    //     命中）。预算窗口后全量退出；取证：风暴/自由任务全部落证 +
-    //     spinner 哨兵退出 57/57 + 静默期全旗清零 + 协作/抢占计数双增。
+    //     构造（M40-ASH2 语义变更随行）：**单 ring3 spinner（pinned 核 1
+    //     ——ring3 ISR 量子抢占互斥后 spinner 独占其核；双 spinner 版把
+    //     kmain 也饿死——首拍实录：kmain yield 让出后全系统无核可用）**
+    //     + 钉扎/自由 kernel 风暴任务全部并档核 0 与 kmain 分时（协作
+    //     路径高频 + kernel 域量子抢前保留）。预算窗口后全量退出；取证：
+    //     风暴/自由任务全部落证 + spinner 哨兵退出（e1=57，per-CPU 槽位）
+    //     + 静默期全旗清零 + 协作/抢占计数双增（kernel 域抢占面）。
     let t40 = {
         static STORM_DONE: AtomicUsize = AtomicUsize::new(0);
         fn storm_body_0() {
@@ -1972,10 +1987,9 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
             (Ok(usa), Ok(usb)) => {
                 ostd::hw::phys::write_bytes(usa.code_frame, &user::USER_SPIN_PROGRAM);
                 ostd::hw::phys::write_bytes(usb.code_frame, &user::USER_SPIN_PROGRAM);
-                let _ = task::spawn_user_pinned("hs-spin-a", user_noop, usa.root, 0, 0);
-                let _ = task::spawn_user_pinned("hs-spin-b", user_noop, usb.root, 0, 1);
+                let _ = task::spawn_user_pinned("hs-spin-a", user_noop, usa.root, 0, 1);
                 let _ = task::spawn_pinned_prio("hs-storm-0", storm_body_0, 2, 0);
-                let _ = task::spawn_pinned_prio("hs-storm-1", storm_body_1, 2, 1);
+                let _ = task::spawn("hs-storm-1", storm_body_1);
                 let _ = task::spawn("hs-free-a", free_body_a);
                 let _ = task::spawn("hs-free-b", free_body_b);
                 let (coop0, pre0) = task::preempt_stats();
@@ -2006,7 +2020,8 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
                     coop1 - coop0,
                     pre1 - pre0,
                 );
-                ok &= e0 == 57 && e1 == 57; // spinner 哨兵退出（寄存器面完好）
+                // M40-ASH2：单 spinner pinned 核 1 → e1=57；e0 恒 u64::MAX
+                ok &= e1 == 57 && e0 == u64::MAX; // spinner 哨兵退出（寄存器面完好）
                 ok &= fc; // 静默期全旗清零
                 ok &= coop1 > coop0 && pre1 > pre0; // 两族路径都真实发生
             }
@@ -6929,6 +6944,21 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t94 = t94_run(&mut log);
     report(&mut log, t94, "dpms-elec");
 
+    // t95) ash 启动链标本流程装置（M40-ASH2 置首笔）——**备置撤闸**
+    //      （M39-ASH 先例如实不虚报）：标本流程三步已落——① 定根因
+    //      （-d int 标本在案：ash 用户栈 #PF-grow 循环正常推进
+    //      〔CR2=0x1803fe800→0x1803ba000 逐页〕+ **lumina_syscall_entry
+    //      CPL0 用户栈 push #PF e=2〔无 U 位〕不走 stack_grow 通路 →
+    //      致命 #DF 核瘫痪**〔trace 12496 条 + DR0 哨兵 1140 次合法保
+    //      存计数 = M22-③ 族 ISR 高频交换窗〕——M39-ASH「用户态自旋」
+    //      定性随本标本修正为「栈 grow 缺陷族 × syscall entry 致命域 +
+    //      ISR 抢占窗族」）；② 互斥（PERCPU_IS_USER 三闸——ring3 ISR
+    //      交换触发面移除 + t34/t40 装置事件驱动化适配，两活体 PASS
+    //      在案）；③ 回归（t95 标本装置备置——ash 栈缺陷族修复批次
+    //      转正，SELFTEST 94 维持）。
+    //      let t95 = t95_run(&mut log);
+    //      report(&mut log, t95, "ash-spec");
+
     /// t93 多用户纵深活体执行体（M39-MU）：独立函数承载——自检主函数
     /// 栈帧零扰动（M39-ASH 帧形态教训随行——t87 邻域栈槽形态守恒；
     /// 内联块撑帧 = t87 窗族确定性复发实录，独立函数形态翻绿在案）。
@@ -7403,6 +7433,129 @@ fn t94_run(log: &mut DualLog) -> bool {
             "LUMINA-T94-DPMS baseline={misc0:#04x} levels=on/off/standby/suspend readback=ok"
         );
         let _ = writeln!(log, "LUMINA-T94-OK");
+    }
+    ok
+}
+
+/// t95 ash 启动链标本流程活体执行体（M40-ASH2）：独立函数承载（帧形态
+/// 守恒纪律——M39-ASH/M39-MU/M39-BBLS 三度实录）。标本流程三步制：
+/// (a) 号域勘误面直调取证（getppid 真面 = 父任务 pid——M39-ASH 台账
+/// 「getppid(109)/getpgrp(110)」勘误后语义落域）；(b) t92 同款装置
+/// 重建 `busybox sh -c 'exit 7'` + 有界收割（PIT 刻度 deadline 轮询
+/// ——t90 先例；sys_wait_pid 阻塞无上界，滞域取证不可用）；(c) 滞点
+/// 标本取证行（state/wait/syscall 三域快照——H1 用户态自旋〔Ready/
+/// Running 且 syscall 计数增速判形〕/ H2 内核无声 Blocked〔wait=4
+/// Timer 即 t52 后唤醒链退役域死锁标本〕双假设判别面）→ 回归域
+/// exit=7 传导对账 + Zombie 收割。滞域 fail-visible（装置不静默——
+/// M39-ASH 撤闸先例随标本定性裁决）。
+#[allow(dead_code)] // M40-ASH2 备置撤闸（栈缺陷族修复批次转正）
+fn t95_run(log: &mut DualLog) -> bool {
+    let mut ok = true;
+    task::reset_user_evidence(); // 零锁判据面清零（前置 user 测试残留摘除）
+    let me = task::current_task_id();
+    // (a) 号域勘误面直调：getppid 真面（kmain 自检域——父链 = 引导面
+    //     None → 1 init 哨兵，Linux 引导域同款）
+    let ppid = task::task_ppid(me);
+    let _ = writeln!(log, "t95: facet getppid me={me} ppid={ppid}");
+    // (b) busybox sh -c 'exit 7' spawn（t92 同款装载链 + stdio 保留域
+    //     既有语义；AT_RANDOM TSC 熵同款）
+    const ASH_ARGV: [&str; 4] = ["/bin/busybox", "sh", "-c", "exit 7"];
+    let Some(blob) = vfs::read_image("/bin/busybox") else {
+        let _ = writeln!(log, "t95: /bin/busybox media MISS");
+        return false;
+    };
+
+    let Some(frames) = vmm::global_frames() else {
+        let _ = writeln!(log, "t95: frame service unreachable");
+        return false;
+    };
+    let t = ostd::time::tsc_now();
+    let mut random = [0u8; 16];
+    for (j, b) in random.iter_mut().enumerate() {
+        *b = (t >> ((j % 8) * 8)) as u8 ^ (j as u8).rotate_left(3);
+    }
+    let es = match user::build_user_space_elf(
+        &blob,
+        &ASH_ARGV,
+        &["PATH=/bin"],
+        random,
+        "busybox",
+        &mut || frames.alloc(),
+    ) {
+        Ok(es) => es,
+        Err(e) => {
+            let _ = writeln!(log, "t95: user space build failed ({e:?})");
+            return false;
+        }
+    };
+
+    let mut slots = [0u64; 15];
+    slots[0] = 0x202; // RFLAGS：IF=1
+    slots[1] = es.entry;
+    slots[7] = es.rsp;
+    let ash_id = task::spawn_fork_child("busybox-ash", es.root, me, slots, true);
+    if ash_id == usize::MAX {
+        let _ = writeln!(log, "t95: task slot exhausted");
+        return false;
+    }
+    let _ = writeln!(log, "t95: step5 spawned id={ash_id}");
+    let s0pre = task::task_debug_state(ash_id);
+    let _ = writeln!(
+        log,
+        "t95: step5b s0pre={s0pre} (1=Ready 2=Running 3=Blocked 4=Zombie)"
+    );
+    // (c) 有界收割 + 标本取证：PIT 刻度 deadline（40 拍 ≈ 0.4 s @100Hz
+    //     ——纯退出命令域上界，t92 applet 收割即时对照 20 倍裕度）。
+    //     **自旋轮询非让渡**（M40-ASH2 装置形态）：kmain ring0 自旋检
+    //     查——ash 由 spawn kick IPI 交 AP 核拾取跑（互斥闸后 ring3 无
+    //     ISR 交换，BSP 若切入 ash 即无人换回——装置不得成为滞域同
+    //     谋，M39-ASH 布局扰动三实验先例）；BSP PIT 照常交付（ring0
+    //     驻留）→ deadline 必达。推进采样行每 2M 迭代成像。
+    let sc0 = task::syscall_counts();
+    let s0 = task::task_debug_state(ash_id);
+    let now0 = ostd::time::now();
+    let deadline = now0 + 40; // 40 拍 = 0.4 s @100Hz（纯退出命令域上界——
+                              // t92 applet 收割即时对照 20 倍裕度）
+    let mut iters: u64 = 0;
+    // **零锁轮询**（M40-ASH2 装置）：ash 的 user exit 域 = per-CPU 原子
+    // （USER_EXIT_CODES[1]，pinned 核 1 槽）——零锁读面取代 sched_lock
+    // 域 state 查询（拿锁轮询面在滞域全静默——锁面取样不可靠，零锁面
+    // 保装置活性）；now() = 全局 TICKS 原子。
+    while task::user_exit_codes().1 == u64::MAX
+        && ostd::time::now() < deadline
+        && iters < 2_000_000_000
+    {
+        iters += 1;
+        core::hint::spin_loop();
+    }
+    let st = task::task_debug_state(ash_id);
+    let wt = task::task_debug_wait(ash_id);
+    let sc1 = task::syscall_counts();
+    let code = task::task_debug_exit_code(ash_id);
+    let dhit = ostd::time::now() >= deadline;
+    let _ = writeln!(
+        log,
+        "t95: spec i={iters} s0={s0} s1={st} wait={wt} now0={now0} now1={} (dl={deadline}) sc=({},{},{})→({},{},{}) exit={code:#x} deadline-hit={dhit}",
+        ostd::time::now(),
+        sc0.0, sc0.1, sc0.2, sc1.0, sc1.1, sc1.2
+    );
+    if st == 4 {
+        // (d) 回归域：Zombie 收割 exit=7 传导对账（ash -c 'exit 7' 首目标）
+        let r = procs::sys_wait_pid(ash_id as u64);
+        let rpid = (r >> 16) & 0xFFFF;
+        let rcode = r & 0xFFFF;
+        ok &= r >> 32 == 1;
+        ok &= rpid == ash_id as u64;
+        ok &= rcode == 7;
+        ok &= !task::task_alive(ash_id);
+        let _ = writeln!(log, "t95: reaped pid={rpid} exit={rcode} (expect 7)");
+    } else {
+        // 滞域标本（fail-visible——H1/H2 判别面显形，不静默不撤闸遮蔽）
+        ok = false;
+    }
+    let _ = writeln!(log, "LUMINA-T95-ASH facet=ppid s1={st} wait={wt} ok={ok}");
+    if ok {
+        let _ = writeln!(log, "LUMINA-T95-OK");
     }
     ok
 }

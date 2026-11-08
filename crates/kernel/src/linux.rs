@@ -196,6 +196,9 @@ pub fn lin_dispatch(frame: &mut SyscallFrame) -> u64 {
         LinAction::SetGid => lin_set_cred(frame.rdi, false),
         LinAction::GetEUId => lin_get_cred(2),
         LinAction::GetEGid => lin_get_cred(3),
+        // M40-ASH2 getppid(110) 真面（号域勘误转正——M39-ASH 桩域收缩）：
+        // 父任务 pid（内核槽位号同域 GetPid 臂）；无父链 → 1 init 哨兵。
+        LinAction::GetPPid => crate::task::task_ppid(crate::task::current_task_id()) as u64,
         LinAction::StubTid => crate::procs::current_pid(),
         LinAction::ArchPrctl => lin_arch_prctl(frame.rdi, frame.rsi),
         LinAction::ChDir => lin_chdir(frame.rdi),

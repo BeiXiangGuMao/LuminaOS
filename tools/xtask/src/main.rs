@@ -250,7 +250,7 @@ const KERNEL_ELF: &str =
 const KERNEL_BIN: &str =
     "/home/z/my-project/lumina-build/target/x86_64-unknown-none/release/lumina-kernel.bin";
 
-/// 自检标记总数（与内核 SELFTEST_TOTAL 同步；M12 完成态 = 43，M13-② 起 46，M15 起 52，M16 起 55，M17 起 58，M18 起 62，M21-③ 起 63，M23 起 65，M23-B 起 67，M23-C1 起 68，M23-C2 起 69，M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M25-T1 起 75，M26-T1 起 76，M28-T1 起 77，M27-N2 起 78，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94）。
+/// 自检标记总数（与内核 SELFTEST_TOTAL 同步；M12 完成态 = 43，M13-② 起 46，M15 起 52，M16 起 55，M17 起 58，M18 起 62，M21-③ 起 63，M23 起 65，M23-B 起 67，M23-C1 起 68，M23-C2 起 69，M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M25-T1 起 75，M26-T1 起 76，M28-T1 起 77，M27-N2 起 78，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸 94 维持）。
 const SELFTEST_EXPECTED: &str = "94/94";
 
 /// TLV 请求帧：tag 0x0007，value = b"lumina-m5"。

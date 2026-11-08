@@ -114,8 +114,14 @@ pub fn linux_syscall_name(num: u64) -> Option<&'static str> {
         101 => "ptrace",
         102 => "getuid",
         104 => "getgid",
-        105 => "geteuid",
-        106 => "getegid",
+        // M40-ASH2 号域勘误随行：105/106 旧名「geteuid/getegid」为号域
+        // 误记——x86_64 实义 105=setuid/106=setgid（M39-MU 勘误既录，
+        // 本快照随批对齐）。
+        105 => "setuid",
+        106 => "setgid",
+        109 => "setpgid",
+        110 => "getppid",
+        111 => "getpgrp",
         179 => "sysinfo",
         202 => "futex",
         218 => "set_tid_address",
