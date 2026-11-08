@@ -1012,7 +1012,9 @@ fn perm_check(owner: u32, gid: u32, mode: u16, want: u16) -> bool {
     }
     let bits: u16 = if creds.uid == owner {
         (mode >> 6) & 0o7
-    } else if creds.gid == gid {
+    } else if creds.gid == gid || creds.has_group(gid) {
+        // M41-笔③：组位域判定扩补充组命中（creds.gid 主组或补充组
+        // 任一命中 → group 位域——POSIX in_group_p 同款语义）
         (mode >> 3) & 0o7
     } else {
         mode & 0o7

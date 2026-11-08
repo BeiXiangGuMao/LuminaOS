@@ -122,6 +122,12 @@ pub fn linux_syscall_name(num: u64) -> Option<&'static str> {
         109 => "setpgid",
         110 => "getppid",
         111 => "getpgrp",
+        // M41-笔③ 纵深二批四目（宿主 asm/unistd_64.h 对账实证——与
+        // convert.rs BINDINGS 快照同源对账）
+        113 => "setreuid",
+        114 => "setregid",
+        115 => "getgroups",
+        116 => "setgroups",
         179 => "sysinfo",
         202 => "futex",
         218 => "set_tid_address",

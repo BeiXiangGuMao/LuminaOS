@@ -515,6 +515,33 @@ pub const BINDINGS: &[SyscallBinding] = &[
         nargs: 0,
         err_domain: "status",
     },
+    // M41-笔③ 纵深二批四目（宿主 asm/unistd_64.h 对账实证：
+    // 113=setreuid / 114=setregid / 115=getgroups / 116=setgroups——
+    // M39-MU getgroups 合成桩随真面转正退役）。
+    SyscallBinding {
+        num: 113,
+        name: "setreuid",
+        nargs: 2,
+        err_domain: "status",
+    },
+    SyscallBinding {
+        num: 114,
+        name: "setregid",
+        nargs: 2,
+        err_domain: "status",
+    },
+    SyscallBinding {
+        num: 115,
+        name: "getgroups",
+        nargs: 2,
+        err_domain: "status",
+    },
+    SyscallBinding {
+        num: 116,
+        name: "setgroups",
+        nargs: 2,
+        err_domain: "status",
+    },
 ];
 
 #[cfg(test)]

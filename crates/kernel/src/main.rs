@@ -82,8 +82,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98）。
-const SELFTEST_TOTAL: usize = 98;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99）。
+const SELFTEST_TOTAL: usize = 99;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7014,6 +7014,14 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t98 = t98_run(&mut log);
     report(&mut log, t98, "blk-domain");
 
+    // t99) 多用户纵深二批活体（M41-笔③）：saved-set 三态交换链
+    //      （root setreuid(1000,0) → suid=0 → setreuid(-1,1000)〔suid 保
+    //      0〕→ 非 root setreuid(-1,0) 交换 + 越域拒）+ setgroups/
+    //      getgroups 双面 + 补充组盘上门禁矩阵（组内命中放行/清空拒）。
+    //      LUMINA-T99-MU2/OK。
+    let t99 = t99_run(&mut log);
+    report(&mut log, t99, "mu-deep2");
+
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
     //      pf_hook 入口扩判「U 位 或 CR2 落增长栈窗口域」——CPL0 用户
@@ -7055,12 +7063,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         //     端到端：musl getuid/geteuid/getgid/getegid 真读取 → id
         //     输出 uid=1000 gid=1000 串口取证）
         task::with_task_creds_mut(me, |c| {
-            *c = task::Creds {
-                uid: 1000,
-                gid: 1000,
-                euid: 1000,
-                egid: 1000,
-            };
+            *c = task::Creds::new4(1000, 1000, 1000, 1000);
         });
         if let Some(blob) = vfs::read_image("/bin/busybox") {
             if let Some(frames) = vmm::global_frames() {
@@ -7116,24 +7119,14 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok &= vfs::sys_close(hg & 0xFFFF_FFFF) == 0;
         // uid 1000 owner RW（换装域）
         task::with_task_creds_mut(me, |c| {
-            *c = task::Creds {
-                uid: 1000,
-                gid: 1000,
-                euid: 1000,
-                egid: 1000,
-            };
+            *c = task::Creds::new4(1000, 1000, 1000, 1000);
         });
         let ho = vfs::sys_open_bytes(GUARD, 0b10);
         ok &= ho >> 32 == 1; // owner 写放行
         ok &= vfs::sys_close(ho & 0xFFFF_FFFF) == 0;
         // uid 1001 他者域（换装域）
         task::with_task_creds_mut(me, |c| {
-            *c = task::Creds {
-                uid: 1001,
-                gid: 1001,
-                euid: 1001,
-                egid: 1001,
-            };
+            *c = task::Creds::new4(1001, 1001, 1001, 1001);
         });
         ok &= vfs::sys_open_bytes(GUARD, 0b01) == 13; // EACCES
         ok &= vfs::sys_remove_bytes(GUARD) == 13; // 摘除域 EACCES
@@ -7698,12 +7691,7 @@ fn t96_run(log: &mut DualLog) -> bool {
     ok &= ok_c;
     // (d) 门禁回源域（换装消费——PERMS 未登记路径 = 盘上回源车道）
     task::with_task_creds_mut(me, |c| {
-        *c = task::Creds {
-            uid: 1001,
-            gid: 1001,
-            euid: 1001,
-            egid: 1001,
-        };
+        *c = task::Creds::new4(1001, 1001, 1001, 1001);
     });
     // uid 1001（other 位 0）→ f_own open/chmod/chown 三拒
     ok_d &= vfs::sys_open_bytes(F_OWN, 0b01) == 13; // EACCES
@@ -7714,23 +7702,13 @@ fn t96_run(log: &mut DualLog) -> bool {
                                                           // 交替 + 持久化对账全绿，<<4 错位存量消解），组属主位域判定恢复
                                                           // 全谱断言：组内 group 位放行/拒绝双面 + 组外 other 位域拒绝）。
     task::with_task_creds_mut(me, |c| {
-        *c = task::Creds {
-            uid: 999,
-            gid: 2000, // 与 f_grp gid 同组
-            euid: 999,
-            egid: 2000,
-        };
+        *c = task::Creds::new4(999, 2000, 999, 2000); // 与 f_grp gid 同组
     });
     // 组内 group 位域判定（f_grp mode 0o400：group 位 0 → 读仍拒——
     // group 位判定走盘上真面；owner 位域不可达〔uid 999 ≠ 0〕）
     ok_d &= vfs::sys_open_bytes(F_GRP, 0b01) == 13; // group 位 0 → EACCES
     task::with_task_creds_mut(me, |c| {
-        *c = task::Creds {
-            uid: 999,
-            gid: 2001,
-            euid: 999,
-            egid: 2001,
-        };
+        *c = task::Creds::new4(999, 2001, 999, 2001);
     });
     // 组外域（other 位 0）→ EACCES（门禁回源车道在环）
     ok_d &= vfs::sys_open_bytes(F_GRP, 0b01) == 13;
@@ -7740,12 +7718,7 @@ fn t96_run(log: &mut DualLog) -> bool {
     task::with_task_creds_mut(me, |c| *c = task::Creds::ROOT);
     let r_chmod = vfs::sys_chmod_bytes(F_GRP, 0o040);
     task::with_task_creds_mut(me, |c| {
-        *c = task::Creds {
-            uid: 999,
-            gid: 2000,
-            euid: 999,
-            egid: 2000,
-        };
+        *c = task::Creds::new4(999, 2000, 999, 2000);
     });
     let r_open = vfs::sys_open_bytes(F_GRP, 0b01);
     let _ = writeln!(
@@ -8049,6 +8022,119 @@ fn t98_run(log: &mut DualLog) -> bool {
     );
     if ok {
         let _ = writeln!(log, "LUMINA-T98-OK");
+    }
+    ok
+}
+
+/// t99 多用户纵深二批活体（M41-笔③）：独立函数承载（帧形态守恒纪律）。
+/// saved-set 三态 + 补充组全谱矩阵（直调探针域——M93 先例；用户拷贝面
+/// 随 LinExec 派发路径消费）：
+/// (a) root setreuid(1000, 0) → real=1000/euid=0/**suid=0**（saved 落账
+///     Linux 精确规则：rid 非 -1 → suid = 新 euid）；
+/// (b) setreuid(-1, 1000)（root euid=0 特权域）→ euid=1000、suid 保 0
+///     （eid==old_real 规则——不重落）；
+/// (c) **saved-set 交换**（非 root euid=1000）：setreuid(-1, 0) →
+///     euid=0（0 ∈ {real=1000, euid=1000, suid=0} 命中）；
+/// (d) 非 root 越域拒：setreuid(-1, 1234) → EPERM（1234 ∉ 三元域）；
+/// (e) root setuid(1000) 全量落 suid（uid=euid=suid=1000）+ 非 root
+///     setuid(0) 拒（0 ∉ {real=1000, suid=1000}）；
+/// (f) setgroups：非 root EPERM + root setgroups([2000,2001]) 落账；
+/// (g) getgroups 读回对账（n=2 + 双值）；
+/// (h) 补充组判定盘上域：/mnt99/f_g chown(1000,2001)+chmod(0o040) →
+///     uid 999/gid 999 + 补充组 [2001] → open 放行（group 位命中）；
+///     清空补充组 → EACCES（other 位 0）；
+/// (i) 恢复 ROOT + 清扫回装。LUMINA-T99-MU2/OK。
+fn t99_run(log: &mut DualLog) -> bool {
+    let mut ok = true;
+    let (mut ok_a, mut ok_b, mut ok_c, mut ok_d, mut ok_e, mut ok_f) =
+        (true, true, true, true, true, true);
+    const KEEP: u64 = u32::MAX as u64;
+    let me = task::current_task_id();
+    let creds_of = || -> (u32, u32, u32, u32, u32) {
+        let c = task::task_creds(me).unwrap_or(task::Creds::ROOT);
+        (c.uid, c.euid, c.suid, c.gid, c.sgid)
+    };
+    // (a) root setreuid(1000, 0)：saved 落账
+    ok_a &= linux::setreuid_probe(1000, 0) == 0;
+    let (r, e, s, _, _) = creds_of();
+    ok_a &= (r, e, s) == (1000, 0, 0);
+    // (b) setreuid(-1, 1000)（root euid=0 特权域）：suid 保 0
+    ok_a &= linux::setreuid_probe(KEEP, 1000) == 0;
+    let (r, e, s, _, _) = creds_of();
+    ok_a &= (r, e, s) == (1000, 1000, 0);
+    ok &= ok_a;
+    // (c) saved-set 交换（非 root）：setreuid(-1, 0)
+    ok_b &= linux::setreuid_probe(KEEP, 0) == 0;
+    let (r, e, s, _, _) = creds_of();
+    ok_b &= (r, e, s) == (1000, 0, 0);
+    // (d) 非 root 越域拒：1234 ∉ {1000, 0, 0}
+    ok_b &= linux::setreuid_probe(KEEP, 1234) == 1;
+    let _ = writeln!(log, "t99: (a-d) saved-set chain ok_b={ok_b}");
+    ok &= ok_b;
+    // (e) root 全量 setuid 落 suid + 非 root setuid(0) 拒
+    task::with_task_creds_mut(me, |c| *c = task::Creds::ROOT);
+    ok_c &= linux::setuid_probe(1000) == 0;
+    let (r, e, s, _, _) = creds_of();
+    ok_c &= (r, e, s) == (1000, 1000, 1000); // 全量三域同步
+    ok_c &= linux::setuid_probe(0) == 1; // 0 ∉ {real=1000, suid=1000}
+    let _ = writeln!(log, "t99: (e) setuid full-domain ok_c={ok_c}");
+    ok &= ok_c;
+    // (f) setgroups：非 root 拒 + root 落账
+    ok_d &= linux::setgroups_probe(&[2000, 2001]) == 1; // uid=1000 非 root
+    task::with_task_creds_mut(me, |c| *c = task::Creds::ROOT);
+    ok_d &= linux::setgroups_probe(&[2000, 2001]) == 0;
+    // (g) getgroups 读回对账
+    let (n, g) = linux::getgroups_probe();
+    ok_d &= n == 2 && g[0] == 2000 && g[1] == 2001;
+    let _ = writeln!(
+        log,
+        "t99: (f-g) groups n={n} g=[{},{}] ok_d={ok_d}",
+        g[0], g[1]
+    );
+    ok &= ok_d;
+    // (h) 补充组判定盘上域：f_g chown(1000,2001) + chmod(0o040)
+    const MNT: &[u8] = b"/mnt99";
+    const DIR: &[u8] = b"/mnt99/t99d";
+    const FG: &[u8] = b"/mnt99/t99d/f_g";
+    ok_e &= vfs::sys_mkdir(MNT.as_ptr() as u64, MNT.len() as u64) == 0;
+    ok_e &= vfs::sys_mount(MNT.as_ptr() as u64, MNT.len() as u64, 1) == 0;
+    ok_e &= vfs::sys_mkdir(DIR.as_ptr() as u64, DIR.len() as u64) == 0;
+    let h = vfs::sys_open_bytes(FG, bedrock::abi::O_CREAT | 0b10);
+    ok_e &= h >> 32 == 1;
+    ok_e &= vfs::sys_close(h & 0xFFFF_FFFF) == 0;
+    ok_e &= vfs::sys_chown_bytes(FG, 1000, 2001) == 0;
+    ok_e &= vfs::sys_chmod_bytes(FG, 0o040) == 0; // group r 位
+                                                  // uid 999/gid 999 + 补充组 [2001] → group 位命中放行
+    task::with_task_creds_mut(me, |c| *c = task::Creds::new4(999, 999, 999, 999));
+    ok_e &= linux::setgroups_probe(&[2001]) == 1; // 非 root 拒（组落账需 root）
+    task::with_task_creds_mut(me, |c| {
+        *c = task::Creds {
+            groups: [2001, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            ngroups: 1,
+            ..task::Creds::new4(999, 999, 999, 999)
+        };
+    });
+    let r_open = vfs::sys_open_bytes(FG, 0b01);
+    ok_e &= r_open >> 32 == 1; // 补充组 2001 命中 → group 位 4 → 放行
+                               // 清空补充组 → other 位 0 → EACCES
+    task::with_task_creds_mut(me, |c| {
+        *c = task::Creds::new4(999, 999, 999, 999);
+    });
+    ok_e &= vfs::sys_open_bytes(FG, 0b01) == 13;
+    let _ = writeln!(log, "t99: (h) supplementary-group gate ok_e={ok_e}");
+    ok &= ok_e;
+    // (i) 恢复 ROOT + 清扫回装
+    task::with_task_creds_mut(me, |c| *c = task::Creds::ROOT);
+    ok_f &= vfs::sys_remove_bytes(FG) == 0;
+    ok_f &= vfs::sys_remove_bytes(DIR) == 0;
+    ok_f &= vfs::sys_remove_bytes(MNT) == 0;
+    let _ = writeln!(
+        log,
+        "LUMINA-T99-MU2 a={} b={} c={} d={} e={} f={}",
+        ok_a, ok_b, ok_c, ok_d, ok_e, ok_f
+    );
+    if ok {
+        let _ = writeln!(log, "LUMINA-T99-OK");
     }
     ok
 }

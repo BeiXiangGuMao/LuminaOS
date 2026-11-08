@@ -194,6 +194,12 @@ pub fn lin_dispatch(frame: &mut SyscallFrame) -> u64 {
         LinAction::GetGid => lin_get_cred(1),
         LinAction::SetUid => lin_set_cred(frame.rdi, true),
         LinAction::SetGid => lin_set_cred(frame.rdi, false),
+        // M41-笔③ 纵深二批四号：setreuid(113)/setregid(114)/
+        // getgroups(115)/setgroups(116)——号域宿主内核头对账实证。
+        LinAction::SetReUid => lin_setreuid(frame.rdi, frame.rsi),
+        LinAction::SetReGid => lin_setregid(frame.rdi, frame.rsi),
+        LinAction::GetGroups => lin_getgroups(frame.rdi, frame.rsi),
+        LinAction::SetGroups => lin_setgroups(frame.rdi, frame.rsi),
         LinAction::GetEUId => lin_get_cred(2),
         LinAction::GetEGid => lin_get_cred(3),
         // M40-ASH2 getppid(110) 真面（号域勘误转正——M39-ASH 桩域收缩）：
@@ -991,10 +997,12 @@ fn lin_get_cred(which: usize) -> u64 {
     }
 }
 
-/// setuid/setgid 语义核（M39-MU 根域收口）：root → 全量改写（uid=euid
-/// 同步写）；非 root → 仅自改写（uid==入参，Linux 同款 noop-合法）；
-/// 其余 EPERM。v0 扁平域（无 saved-set uid）偏差随行登记。真面消费 =
-/// busybox id 族 + ash job-control 检查域。
+/// setuid/setgid 语义核（M39-MU 根域收口；**M41-笔③ saved-set 三态转正**）：
+/// root → 全量改写（uid=euid=suid 同步落账）；非 root → **saved-set
+/// 判定**（new ∈ {real, suid} → 仅 euid=new——POSIX setuid 非特权语义，
+/// saved 保存域供后续特权交换）；其余 EPERM。特权判定口径 = real uid
+/// == 0（M39-MU v0 既有口径，POSIX euid 口径偏差随行登记）。
+/// 真面消费 = busybox id 族 + ash job-control 检查域。
 /// t93 取证探针（M39-MU）：语义核直调壳——返回明文 errno（0 = 成功 /
 /// 1 = EPERM），内核自检直调消费（err 编码解域）。
 pub fn setuid_probe(uid: u64) -> u64 {
@@ -1014,19 +1022,70 @@ pub fn setgid_probe(gid: u64) -> u64 {
     }
 }
 
+/// t99 取证探针（M41-笔③）：setreuid 直调壳（返回明文 errno；u32::MAX
+/// = -1 保持域——saved-set 交换链矩阵消费）。
+pub fn setreuid_probe(rid: u64, eid: u64) -> u64 {
+    if lin_setreuid(rid, eid) == 0 {
+        0
+    } else {
+        1
+    }
+}
+
+/// t99 取证探针（M41-笔③）：setgroups 直调壳（内核侧落账——用户拷贝
+/// 面随 LinExec 派发路径消费，自检直调域如实登记）。
+pub fn setgroups_probe(gids: &[u32]) -> u64 {
+    let caller = crate::task::current_task_id();
+    let Some(creds) = crate::task::task_creds(caller) else {
+        return 1;
+    };
+    if creds.uid != 0 {
+        return 1; // root 域收口（语义核同口径）
+    }
+    match crate::task::with_task_creds_mut(caller, |c| c.set_groups(gids)) {
+        Some(Ok(())) => 0,
+        _ => 1,
+    }
+}
+
+/// t99 取证探针（M41-笔③）：getgroups 直调壳（返回 (n, [gids])）。
+pub fn getgroups_probe() -> (usize, [u32; crate::task::NGROUPS_MAX]) {
+    let caller = crate::task::current_task_id();
+    match crate::task::task_creds(caller) {
+        Some(c) => {
+            let mut out = [0u32; crate::task::NGROUPS_MAX];
+            out[..c.ngroups as usize].copy_from_slice(&c.groups[..c.ngroups as usize]);
+            (c.ngroups as usize, out)
+        }
+        None => (0, [0u32; crate::task::NGROUPS_MAX]),
+    }
+}
+
 fn lin_set_cred(id: u64, is_uid: bool) -> u64 {
     let new = (id & 0xFFFF_FFFF) as u32;
     let caller = crate::task::current_task_id();
     match crate::task::with_task_creds_mut(caller, |c| {
-        let self_now = if is_uid { c.uid } else { c.gid };
-        if (is_uid && c.uid == 0) || (!is_uid && c.gid == 0) || new == self_now {
-            if is_uid {
+        if is_uid {
+            if c.uid == 0 {
+                // root 全量：real/effective/saved 三域同步（M41-笔③）
                 c.uid = new;
                 c.euid = new;
+                c.suid = new;
+                0
+            } else if new == c.uid || new == c.suid {
+                // 非 root saved-set 语义：real/saved 可落 effective
+                c.euid = new;
+                0
             } else {
-                c.gid = new;
-                c.egid = new;
+                EPERM
             }
+        } else if c.gid == 0 {
+            c.gid = new;
+            c.egid = new;
+            c.sgid = new;
+            0
+        } else if new == c.gid || new == c.sgid {
+            c.egid = new;
             0
         } else {
             EPERM
@@ -1035,6 +1094,123 @@ fn lin_set_cred(id: u64, is_uid: bool) -> u64 {
         Some(0) => 0,
         Some(e) => err(e),
         None => err(EPERM),
+    }
+}
+
+/// setreuid(113) 真面（M41-笔③ 收录；宿主 asm/unistd_64.h 号域对账
+/// 实证 113=setreuid）：real/effective 分离语义 + **saved 落账 Linux
+/// 精确规则**——rid 非 -1，或 eid 非 -1 且 ≠ 旧 real → suid = 新 euid
+/// （Linux man setreuid 同款；典型特权交换链：setreuid(1000,0) →
+/// setreuid(-1,1000)〔suid 保 0〕→ setreuid(-1,0)〔saved-set 交换〕）。
+/// 非特权域（uid ≠ 0）：rid/eid ∈ {real, euid, suid} 任一（Linux 宽松
+/// 口径；POSIX 严口径 {real, euid} 偏差如实登记）。u32::MAX = -1（保
+/// 持域）。
+fn lin_setreuid(rid: u64, eid: u64) -> u64 {
+    lin_set_re(rid, eid, true)
+}
+
+/// setregid(114) 真面（M41-笔③ 收录）：与 setreuid 同构（组域）。
+fn lin_setregid(rid: u64, eid: u64) -> u64 {
+    lin_set_re(rid, eid, false)
+}
+
+fn lin_set_re(rid: u64, eid: u64, is_uid: bool) -> u64 {
+    let rid_v = (rid & 0xFFFF_FFFF) as u32;
+    let eid_v = (eid & 0xFFFF_FFFF) as u32;
+    const KEEP: u32 = u32::MAX; // -1 保持域
+    let caller = crate::task::current_task_id();
+    match crate::task::with_task_creds_mut(caller, |c| {
+        let (real, eff, saved) = if is_uid {
+            (c.uid, c.euid, c.suid)
+        } else {
+            (c.gid, c.egid, c.sgid)
+        };
+        let privileged = real == 0;
+        if !privileged {
+            let ok_r = rid_v == KEEP || [real, eff, saved].contains(&rid_v);
+            let ok_e = eid_v == KEEP || [real, eff, saved].contains(&eid_v);
+            if !ok_r || !ok_e {
+                return EPERM;
+            }
+        }
+        let new_real = if rid_v == KEEP { real } else { rid_v };
+        let new_eff = if eid_v == KEEP { eff } else { eid_v };
+        if is_uid {
+            c.uid = new_real;
+            c.euid = new_eff;
+        } else {
+            c.gid = new_real;
+            c.egid = new_eff;
+        }
+        // saved 落账 Linux 精确规则：rid 非 -1 或 eid 非 -1 且 ≠ 旧 real
+        if rid_v != KEEP || (eid_v != KEEP && eid_v != real) {
+            if is_uid {
+                c.suid = new_eff;
+            } else {
+                c.sgid = new_eff;
+            }
+        }
+        0
+    }) {
+        Some(0) => 0,
+        Some(e) => err(e),
+        None => err(EPERM),
+    }
+}
+
+/// getgroups(115) 真面（M41-笔③：M39-MU 合成桩转真面）：补充组拷出
+/// （gid_t u32 LE）；gsize < ngroups → EINVAL；返回有效组数。
+fn lin_getgroups(gsize: u64, glist: u64) -> u64 {
+    let caller = crate::task::current_task_id();
+    let Some(creds) = crate::task::task_creds(caller) else {
+        return err(EPERM);
+    };
+    let n = creds.ngroups as usize;
+    if (gsize as usize) < n {
+        return err(EINVAL);
+    }
+    if n == 0 {
+        return 0;
+    }
+    let Some(dst) = validate_user_slice_mut(glist, (n * 4) as u64) else {
+        return err(EFAULT);
+    };
+    for (i, g) in creds.groups[..n].iter().enumerate() {
+        dst[i * 4..i * 4 + 4].copy_from_slice(&g.to_le_bytes());
+    }
+    n as u64
+}
+
+/// setgroups(116) 真面（M41-笔③ 收录；root 域收口）：补充组落账
+/// （gid_t u32 LE 拷入）；超容 EINVAL；非 root EPERM。
+fn lin_setgroups(gsize: u64, glist: u64) -> u64 {
+    let caller = crate::task::current_task_id();
+    let Some(creds) = crate::task::task_creds(caller) else {
+        return err(EPERM);
+    };
+    if creds.uid != 0 {
+        return err(EPERM);
+    }
+    if gsize as usize > crate::task::NGROUPS_MAX {
+        return err(EINVAL);
+    }
+    if gsize == 0 {
+        return crate::task::with_task_creds_mut(caller, |c| {
+            c.ngroups = 0;
+            0
+        })
+        .unwrap_or(err(EPERM));
+    }
+    let Some(src) = validate_user_slice(glist, gsize * 4) else {
+        return err(EFAULT);
+    };
+    let mut gids = [0u32; crate::task::NGROUPS_MAX];
+    for i in 0..gsize as usize {
+        gids[i] = u32::from_le_bytes([src[i * 4], src[i * 4 + 1], src[i * 4 + 2], src[i * 4 + 3]]);
+    }
+    match crate::task::with_task_creds_mut(caller, |c| c.set_groups(&gids[..gsize as usize])) {
+        Some(Ok(())) => 0,
+        _ => err(EPERM),
     }
 }
 

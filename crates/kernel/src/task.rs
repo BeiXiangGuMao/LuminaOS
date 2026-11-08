@@ -403,7 +403,13 @@ impl Task {
 
 /// 任务凭据四元（M39-MU）：uid/gid/euid/egid（LP64 u32 域——Linux uid_t
 /// 同宽）。kmain = ROOT(0,0,0,0) 口径；fork/spawn 全量继承（Linux 同款）。
-/// v0 扁平域：setuid/setgid 同步写 uid/euid（无 saved-set，偏差随行登记）。
+/// **M41-笔③ 纵深二批**：saved-set（suid/sgid——setuid 语义核 root 全量
+/// 落账 + 非 root saved-set 判定）及补充组（groups 定容 16 + ngroups——
+/// Linux NGROUPS_MAX 65536 的 v0 裁量域，如实登记；setgroups root 收口、
+/// getgroups 真读、perm_check 组位域补充组匹配）。saved 域随四元
+/// 语义核同窗落账：root 全量改写时 suid/sgid 取新值；[`Creds::new4`]
+/// 构造态 suid 取 euid（继承默认）。fork 全量拷贝语义随 Copy 直接继承
+/// 补充组与 saved——Linux fork 同款。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Creds {
     /// 真实用户 ID。
@@ -414,16 +420,64 @@ pub struct Creds {
     pub euid: u32,
     /// 有效组 ID（v0 与 gid 同步写）。
     pub egid: u32,
+    /// saved set-user-ID（M41-笔③；setuid root 全量落账面）。
+    pub suid: u32,
+    /// saved set-group-ID（M41-笔③）。
+    pub sgid: u32,
+    /// 补充组数组（M41-笔③；定容 [`Creds::NGROUPS_MAX`]）。
+    pub groups: [u32; NGROUPS_MAX],
+    /// 补充组有效数（0..=NGROUPS_MAX）。
+    pub ngroups: u8,
 }
 
+/// 补充组容量上界（M41-笔③ v0 裁量：Linux NGROUPS_MAX = 65536，
+/// 本域定容 16——t99 消费矩阵 2 组，余量充裕；扩容随 setgroups 真面
+/// 消费方压力批次，偏差如实登记）。
+pub const NGROUPS_MAX: usize = 16;
+
 impl Creds {
+    /// 四元构造（M41-笔③ 批量迁移 helper）：saved = effective、
+    /// 补充组空——M39-MU 四元构造语义零扰动（继承默认态）。
+    pub const fn new4(uid: u32, gid: u32, euid: u32, egid: u32) -> Self {
+        Self {
+            uid,
+            gid,
+            euid,
+            egid,
+            suid: euid,
+            sgid: egid,
+            groups: [0; NGROUPS_MAX],
+            ngroups: 0,
+        }
+    }
+
     /// root 凭据（kmain 口径）。
     pub const ROOT: Creds = Creds {
         uid: 0,
         gid: 0,
         euid: 0,
         egid: 0,
+        suid: 0,
+        sgid: 0,
+        groups: [0; NGROUPS_MAX],
+        ngroups: 0,
     };
+
+    /// 补充组命中判定（M41-笔③ perm_check 消费面）。
+    pub fn has_group(&self, gid: u32) -> bool {
+        self.groups[..self.ngroups as usize].contains(&gid)
+    }
+
+    /// 补充组落账（M41-笔③ setgroups 承接面）：超容拒绝（EINVAL 域
+    /// 由调用方语义核映射）。
+    pub fn set_groups(&mut self, gids: &[u32]) -> Result<(), ()> {
+        if gids.len() > NGROUPS_MAX {
+            return Err(());
+        }
+        self.groups[..gids.len()].copy_from_slice(gids);
+        self.ngroups = gids.len() as u8;
+        Ok(())
+    }
 }
 
 /// 主任务入口占位（主任务从不经 trampoline 进入；永不调用）。

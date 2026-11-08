@@ -162,6 +162,16 @@ pub enum LinAction {
     GetEUId,
     /// getegid(108) 真读取（号域勘误随行）。
     GetEGid,
+    /// setreuid(113) 真面（M41-笔③ 收录；宿主内核头号域对账实证）：
+    /// real/effective 分离 + saved 落账 Linux 精确规则。
+    SetReUid,
+    /// setregid(114) 真面（M41-笔③ 收录）：与 setreuid 同构（组域）。
+    SetReGid,
+    /// getgroups(115) 真面（M41-笔③：M39-MU 合成桩转真面——补充组
+    /// 拷出，gsize < ngroups → EINVAL）。
+    GetGroups,
+    /// setgroups(116) 真面（M41-笔③ 收录；root 域收口）：补充组落账。
+    SetGroups,
     // ---- 合成桩档（返回合成成功值；语义实体挂账） ----
     /// rt_sigaction(13) / rt_sigprocmask(14)：信号面挂账，合成 0；
     /// munmap(11)：v0 匿名区不回收口径合成 0（musl free/realloc 大块
@@ -229,7 +239,13 @@ pub fn translate(num: u64) -> LinAction {
         // 面：父任务 pid，无父链 → 1 init 语义）
         111 => LinAction::StubOk, // M40-ASH2 收录（getpgrp 合成桩——号域勘误：
         // getpgrp=111 非 110，v0 无进程组域恒 0）
-        115 => LinAction::StubOk, // M39-MU 收录（getgroups 合成桩——v0 无补充组域恒 0：busybox id groups 域消费，首拍 ENOSYS 败码 1 实录在案；真面随进程组批次）
+        // M41-笔③ 纵深二批四号（宿主 asm/unistd_64.h 对账实证：
+        // 113=setreuid / 114=setregid / 115=getgroups / 116=setgroups）：
+        113 => LinAction::SetReUid, // setreuid 真面（saved-set 交换链承载）
+        114 => LinAction::SetReGid, // setregid 真面
+        115 => LinAction::GetGroups, // getgroups 真面（M39-MU 桩域转正——
+        // 补充组拷出：v0 桩恒 0 域随纵深二批退役）
+        116 => LinAction::SetGroups, // setgroups 真面（root 收口）
         158 => LinAction::ArchPrctl, // M33-T1 收录（musl TLS 初始化链）
         72 => LinAction::Fcntl,
         79 => LinAction::GetCwd,
@@ -270,9 +286,10 @@ pub const R_OK: u64 = 4;
 /// 映射面覆盖度成像（数与 [`translate`] 收录一致；测试对账断言）。
 ///
 /// 口径 = LinAction 变体数 + ioctl 显形 1；随批演进：M40-ASH2 getppid
-/// 真面转正、getpgrp 桩收录；M40-CRYSTAL chmod/chown 双号收录。号域
-/// 覆盖另见 BINDINGS 名表快照表。
-pub const COVERED: usize = 39;
+/// 真面转正、getpgrp 桩收录；M40-CRYSTAL chmod/chown 双号收录；
+/// M41-笔③ setreuid/setregid/getgroups〔桩转真面〕/setgroups 四号
+/// 收录（39→43）。号域覆盖另见 BINDINGS 名表快照表。
+pub const COVERED: usize = 43;
 
 /// 相对路径 cwd join（M34-B1 单一事实源）：绝对路径原样；相对路径
 /// `cwd + path`（cwd 尾随分隔符去重——根哨兵 `"/"` 自然吞并）。词法
@@ -358,13 +375,18 @@ mod tests {
         assert_eq!(translate(106), LinAction::SetGid);
         assert_eq!(translate(107), LinAction::GetEUId);
         assert_eq!(translate(108), LinAction::GetEGid);
-        assert_eq!(translate(115), LinAction::StubOk); // M39-MU getgroups 合成桩
-                                                       // M40-ASH2 收录（号域勘误随行：109=setpgid/110=getppid/111=getpgrp
-                                                       // ——M39-ASH 台账「getppid(109)/getpgrp(110)」勘误，getpgrp 实为 111）
+        // M40-ASH2 收录（号域勘误随行：109=setpgid/110=getppid/111=getpgrp
+        // ——M39-ASH 台账「getppid(109)/getpgrp(110)」勘误，getpgrp 实为 111）
         assert_eq!(translate(109), LinAction::StubOk); // setpgid 合成桩
         assert_eq!(translate(110), LinAction::GetPPid); // getppid 真面
         assert_eq!(translate(111), LinAction::StubOk); // getpgrp 合成桩（新收录）
-                                                       // M40-CRYSTAL 收录（盘上属主域双号——号域勘误既录：90=chmod）
+                                                       // M41-笔③ 纵深二批四号（宿主内核头对账实证：113=setreuid /
+                                                       // 114=setregid / 115=getgroups〔桩域转真面〕/ 116=setgroups）
+        assert_eq!(translate(113), LinAction::SetReUid);
+        assert_eq!(translate(114), LinAction::SetReGid);
+        assert_eq!(translate(115), LinAction::GetGroups); // M39-MU 桩域转正
+        assert_eq!(translate(116), LinAction::SetGroups);
+        // M40-CRYSTAL 收录（盘上属主域双号——号域勘误既录：90=chmod）
         assert_eq!(translate(90), LinAction::Chmod);
         assert_eq!(translate(92), LinAction::Chown);
         // M35-BBa 收录（fork fd 继承面同批摘牌）
