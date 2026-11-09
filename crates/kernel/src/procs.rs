@@ -345,6 +345,59 @@ pub fn sys_spawn(reserved: u64) -> u64 {
 /// SYS_EXEC 错误码：映像号越界（M12-B）。
 pub const ERR_IMAGE: u64 = bedrock::abi::ERR_IMAGE;
 
+/// 用户态 ELF 播种 lane 取证（t105 断言面）：成功播种数。
+static ELF_SEEDS: AtomicU64 = AtomicU64::new(0);
+
+/// ELF 播种数快照（t105 断言面）。
+pub fn elf_seeds() -> u64 {
+    ELF_SEEDS.load(Ordering::Acquire)
+}
+
+/// **用户态 ELF 播种 lane**（M42-ELF5 次笔——「ring3 编译进程承接」
+/// 域核心）：真 ELF64 静态映像（编译产物——`bedrock::elf` 逐字段
+/// 解析）→ 环内装载（[`crate::user::build_user_space_elf`]——段映射与
+/// Linux 初始栈构造）→ **原生 ABI** ring3 进程播种
+/// （[`crate::task::spawn_stage_wired`]，`lin_abi = false`——Lumina 号域派发，
+///   与 Linux 兼容链〔busybox〕分立双轨）。
+///
+/// **与既有链的分工**（如实记档）：`exec_load_switch` ELF 臂 =
+/// Linux ABI 链（lin_abi = true——musl/busybox 消费面）；本 lane =
+/// **原生 ABI 链**（lin_abi = false——桌面链编译进程承接面：ELF
+/// 容器 + Lumina 号域 syscall 的静态编译映像，t105/t106 客户端即
+/// 首批消费者）。初始栈随 ELF 链构造（argc/argv/envp/auxv 域——
+/// native v0 口径不消费，如实记档；argv 记账随 harbor 动态链接族
+/// 远线既录）。
+///
+/// 返回任务槽号；槽位耗尽返回 `usize::MAX`（调用方 fail-visible）；
+/// 映像结构面失败返回 [`crate::user::UserSpaceError`]。
+pub fn spawn_elf_seed(
+    name: &'static str,
+    blob: &[u8],
+    argv: &[&str],
+) -> Result<usize, crate::user::UserSpaceError> {
+    let Some(frames) = crate::vmm::global_frames() else {
+        return Err(crate::user::UserSpaceError::FramesExhausted);
+    };
+    // AT_RANDOM 熵 = TSC 纪元拆字节（exec_load_switch 同款）
+    let t = ostd::time::tsc_now();
+    let mut random = [0u8; 16];
+    for (i, b) in random.iter_mut().enumerate() {
+        *b = (t >> ((i % 8) * 8)) as u8 ^ (i as u8).rotate_left(3);
+    }
+    let es =
+        crate::user::build_user_space_elf(blob, argv, &[], random, name, &mut || frames.alloc())?;
+    let me = task::current_task_id();
+    let mut slots = [0u64; 15];
+    slots[0] = 0x202; // RFLAGS = IF=1（用户入口契约——fork 快照槽序同源）
+    slots[1] = es.entry;
+    slots[7] = if es.rsp != 0 { es.rsp } else { es.stack_top };
+    let id = task::spawn_stage_wired(name, es.root, me, slots, false, &[]);
+    if id != usize::MAX {
+        ELF_SEEDS.fetch_add(1, Ordering::AcqRel);
+    }
+    Ok(id)
+}
+
 /// EXEC 成功标记位：返回值 `(1 << 32) | image`（成功位与映像号域隔离）。
 const EXEC_OK_BIT: u64 = 1 << 32;
 

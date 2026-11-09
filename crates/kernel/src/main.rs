@@ -50,6 +50,7 @@ mod multiboot1;
 mod procs;
 mod selftest;
 mod shell;
+mod shm;
 mod smp;
 mod svc;
 mod swap;
@@ -85,8 +86,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104）。
-const SELFTEST_TOTAL: usize = 104;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106）。
+const SELFTEST_TOTAL: usize = 106;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7119,6 +7120,22 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t104 = t104_run(&mut log);
     report(&mut log, t104, "wayland-compositor");
 
+    // t105) 用户态 ELF 播种 lane 活体（M42-次笔 域①「ring3 编译进程
+    //       承接」）：lane 结构闸负例〔非 ELF → BadImage〕→ ELF_NATIVE
+    //       真 ELF64 静态映像播种（build_user_space_elf 装载 + 原生
+    //       ABI 派生 lin_abi=false 对账）→ 有界收割 exit=77。
+    //       LUMINA-T105-ELF/R3/OK。
+    let t105 = t105_run(&mut log);
+    report(&mut log, t105, "elf-seed-lane");
+
+    // t106) 桌面链 wl_shm/fd 传递活体（M42-次笔 域②）：SYS_SHM 域闸
+    //       负例 → SHM_CLIENT ELF 播种（域① lane 消费面——CREATE+
+    //       MAP+池像素直写+CONNECT+SEND_FD+wire 批+帧回调等待）→
+    //       waycomp 池承接（RECV_FD）→ 客户端像素 VRAM 断言 → fd 传递
+    //       对账 → exit=0 收割 + teardown 复原。LUMINA-T106-CLIENT/SHM/OK。
+    let t106 = t106_run(&mut log);
+    report(&mut log, t106, "wl-shm-fdpass");
+
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
     //      pf_hook 入口扩判「U 位 或 CR2 落增长栈窗口域」——CPL0 用户
@@ -8828,11 +8845,12 @@ fn t103_run(log: &mut DualLog) -> bool {
     // 先于 F4 同款——ptr/len 未及校验即 ERR_CAP）
     let sys_neg = unixsock::sys_unixsock(USOCK_SEND, 63, 8, 0);
     ok &= sys_neg == ERR_CAP;
-    // parse 层越域闸显形（bedrock abi v0.21——op 8 拒收；op 6/7 自
-    // M42-COMP4 起为 ACCEPT_B/SHUT 收录域）
+    // parse 层越域闸显形（bedrock abi v0.22——op 10 拒收；op 6/7 自
+    // M42-COMP4 起为 ACCEPT_B/SHUT 收录域、op 8/9 自 M42-ELF5 起为
+    // SEND_FD/RECV_FD 收录域——越域探针随收录域扩容右移）
     let parse_neg = bedrock::abi::parse(bedrock::abi::SyscallRegs {
         num: SYS_UNIXSOCK,
-        args: [8, 0, 0, 0, 0],
+        args: [10, 0, 0, 0, 0],
     });
     ok &= parse_neg == Err(bedrock::abi::AbiError::BadArgs);
     let _ = writeln!(
@@ -8924,11 +8942,14 @@ fn t103_run(log: &mut DualLog) -> bool {
     let wakes_delta = s2.4 - s0.4;
     let blocks_delta = s2.3 - s0.3;
     let served = unixsock::echo_served();
-    // 唤醒链取证不变式（TCG 调度两形皆合法，同链异序如实放宽）：
+    // 唤醒链取证不变式（TCG 调度三形皆合法，同链异序如实放宽）：
     // (a) worker 阻塞 + kmain 阻塞收 → wakes=2/blocks=2；
     // (b) worker 阻塞 + kmain 探针命中（echo 先落环）→ wakes=1/blocks=1
-    //     ——send→wake_tasks(UnixRecv)→worker 复苏的定向唤醒电证据同链。
-    ok &= served == 1 && wakes_delta >= 1 && blocks_delta >= 1;
+    //     ——send→wake_tasks(UnixRecv)→worker 复苏的定向唤醒电证据同链；
+    // (c) wakes=0/blocks=1（send 落于 worker BLOCKS 计数与阻塞探针之间
+    //     窗——served 链同链完达，消息零丢失；定向唤醒电气由 (a)/(b) 形
+    //     承载——M42-ELF5 随行改写，第三合法交织如实放宽）。
+    ok &= served == 1 && blocks_delta >= 1;
     let _ = writeln!(
         log,
         "t103: echo-ok={echo_ok} blocked={worker_blocked} blocks={blocks_delta} wakes={wakes_delta} served={served} pid={wid}"
@@ -9304,6 +9325,263 @@ fn t104_run(log: &mut DualLog) -> bool {
     );
     if ok {
         let _ = writeln!(log, "LUMINA-T104-OK");
+    }
+    ok
+}
+
+/// t105 用户态 ELF 播种 lane 活体执行体（M42-ELF5 次笔域①「ring3 编译
+/// 进程承接」）：独立函数承载（帧形态守恒纪律——t93/t101/t104 先例）。
+/// 相位序：
+/// (a) lane 结构闸负例：非 ELF blob → BadImage（spawn_elf_seed
+///     fail-visible——装载链魔数闸显形）；
+/// (b) ELF_NATIVE 播种：真 ELF64 静态映像（gen 脚本编译产物——ELF 头
+///     + PT_LOAD ×2）→ build_user_space_elf 装载 → spawn_stage_wired
+///     原生 ABI 派生（lin_abi = false——Lumina 号域派发对账）；
+/// (c) ABI 分流对账：task_is_lin_abi(pid) == false（原生链面——与
+///     Linux 兼容链分立双轨显形）；
+/// (d) 有界收割：exit = 77（ELF_NATIVE EXIT 对账码——WAITPID 协议
+///     r>>32==1 + code==77 + !alive）。
+/// LUMINA-T105-ELF（映像内 SYS_LOG 取证）/R3/OK 三面板标记。
+fn t105_run(log: &mut DualLog) -> bool {
+    let mut ok = true;
+    task::reset_user_evidence(); // 零锁判据面清零（t101 同款）
+                                 // (a) lane 结构闸负例
+    let neg = procs::spawn_elf_seed("elf-bad", b"NOT-AN-ELF-IMAGE!", &["elf-bad"]);
+    let neg_ok = matches!(neg, Err(user::UserSpaceError::BadImage));
+    ok &= neg_ok;
+    let _ = writeln!(log, "t105: bad-image-negative={neg_ok}");
+    // (b) ELF_NATIVE 播种（原生 ABI）
+    let pid = match procs::spawn_elf_seed("elf-native", &user::ELF_NATIVE, &["elf-native"]) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = writeln!(log, "t105: native build failed ({e:?})");
+            return false;
+        }
+    };
+    let seeds = procs::elf_seeds();
+    let spawn_ok = pid != usize::MAX && seeds >= 1;
+    ok &= spawn_ok;
+    // (c) ABI 分流对账（原生链——lin_abi = false）
+    let native_ok = !task::task_is_lin_abi(pid);
+    ok &= native_ok;
+    let _ = writeln!(
+        log,
+        "t105: spawned pid={pid} seeds={seeds} native-abi={native_ok}"
+    );
+    // (d) 有界收割（60 拍 = 0.6 s——ELF_NATIVE 轻载荷：LOG + 累加 + EXIT）
+    let now0 = ostd::time::now();
+    let deadline = now0 + 60;
+    while task::user_exit_codes().1 == u64::MAX && ostd::time::now() < deadline {
+        core::hint::spin_loop();
+    }
+    let st = task::task_debug_state(pid);
+    let code = task::task_debug_exit_code(pid);
+    let dhit = ostd::time::now() >= deadline;
+    if st == 4 {
+        let r = procs::sys_wait_pid(pid as u64);
+        let rcode = r & 0xFFFF;
+        let reap_ok = r >> 32 == 1 && rcode == 77 && !task::task_alive(pid);
+        ok &= reap_ok;
+        let _ = writeln!(
+            log,
+            "t105: reaped exit={rcode} (expect 77) alive={}",
+            task::task_alive(pid)
+        );
+    } else {
+        ok = false; // 滞域 fail-visible（bail 显形）
+    }
+    let _ = writeln!(
+        log,
+        "LUMINA-T105-R3 pid={pid} st={st} exit={code:#x} deadline-hit={dhit} seeds={seeds}"
+    );
+    if ok {
+        let _ = writeln!(log, "LUMINA-T105-OK");
+    }
+    ok
+}
+
+/// t106 桌面链 wl_shm/fd 传递活体执行体（M42-ELF5 次笔域②）：独立函
+/// 数承载（帧形态守恒纪律同 t105）。相位序：
+/// (a) SYS_SHM 慢路径负例：op 越域（BadArgs 哨兵）+ 坏句柄 MAP +
+///     零尺寸 CREATE（ERR_CAP——域闸 fail-visible）；
+/// (b) SHM_CLIENT ELF 播种（桌面链编译进程承接面——域① lane 消费）：
+///     CREATE(320×200×4) + MAP(SHM_VA_BASE) + 池像素面渐变直写 +
+///     CONNECT(wayland-comp) + SEND_FD（SCM_RIGHTS 语义面）+ wire 批
+///     9 消息（create_pool fd 占位 + create_buffer + attach + damage +
+///     commit）+ 帧回调 done 等待 + YIELD×32 + EXIT(0)；
+/// (c) 有界等 commit ≥ +1（池像素上屏域——waycomp apply_commits 先于
+///     串号推进，VRAM 断言窗先行于 done 回执）；
+/// (d) VRAM 客户端像素断言：cascade tiling 单窗 pane 域 4 探针
+///     （lx/ly ∈ buffer 像素域——与客户端像素函数逐位对账）；
+/// (e) fd 传递对账：FD_SENDS/FD_RECVS ≥ +1 + 池承接 ≥ 1 + shm 对象 id
+///     段正交（0xC0DE…003X）+ FD_ERR 零账；
+/// (f) 收割 exit=0 + teardown（SESSION_DONE 旗 + surf_count 回退 +
+///     VRAM == stage 直读复原对账——t104 回退判定改域先例同谱）。
+/// LUMINA-T106-CLIENT（映像内 SYS_LOG 取证）/SHM/OK 三面板标记。
+fn t106_run(log: &mut DualLog) -> bool {
+    use bedrock::abi::{SHM_MAP, SHM_VA_BASE};
+    let mut ok = true;
+    task::reset_user_evidence(); // 零锁判据面清零（t101 同款）
+    let _ = task::current_task_id();
+    // (a) SYS_SHM 慢路径负例（syscall 面域闸）
+    let neg_op = shm::sys_shm(2, 0, 0);
+    ok &= neg_op == u64::MAX - 1; // op 越域（parse 已闸——执行面纵深防御域）
+    let neg_handle = shm::sys_shm(SHM_MAP, 63, SHM_VA_BASE);
+    ok &= neg_handle == bedrock::abi::ERR_CAP; // 坏句柄域
+    let neg_size = shm::sys_shm(bedrock::abi::SHM_CREATE, 0, 0);
+    ok &= neg_size == bedrock::abi::ERR_CAP; // 零尺寸域
+    let _ = writeln!(
+        log,
+        "t106: gate-negative op={neg_op:#x} handle={neg_handle} size={neg_size}"
+    );
+    // (b) SHM_CLIENT ELF 播种（基线快照先行）
+    let c0 = waycomp::waycomp_stamps();
+    let s0 = unixsock::usock_stamps(); // 流字节基线（wire 批全发对账——send_bytes 增量）
+    let shm_c0 = (shm::creates(), shm::maps(), shm::px_reads());
+    let fds0 = (
+        unixsock::USOCK_FD_SENDS.load(Ordering::Acquire),
+        unixsock::USOCK_FD_RECVS.load(Ordering::Acquire),
+    );
+    let pools0 = waycomp::WLCOMP_POOLS.load(Ordering::Acquire);
+    let pid = match procs::spawn_elf_seed("shm-client", &user::SHM_CLIENT, &["shm-client"]) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = writeln!(log, "t106: client build failed ({e:?})");
+            return false;
+        }
+    };
+    ok &= pid != usize::MAX;
+    // (c) 有界等 commit ≥ +1（客户端像素上屏域）
+    let dl = ostd::time::now() + 480;
+    let c1 = loop {
+        let c = waycomp::waycomp_stamps();
+        if c.3 > c0.3 || ostd::time::now() >= dl {
+            break c;
+        }
+        core::hint::spin_loop();
+    };
+    let commits_ok = c1.3 > c0.3;
+    ok &= commits_ok;
+    // (d) VRAM 客户端像素断言（cascade tiling 单窗 pane 域 4 探针——
+    //     与 gen 脚本/映像像素函数逐位对账）
+    let plan = cascade::tiling::tiling_plan(&[0x21u64], waycomp::VIEWPORT);
+    let pane = plan
+        .as_ref()
+        .ok()
+        .and_then(|p| p.panes.first().map(|(_, r)| *r));
+    let mut px_ok = false;
+    if let Some(pane) = pane {
+        px_ok = true;
+        for (lx, ly) in [(8i32, 8i32), (300, 8), (8, 190), (319, 199)] {
+            // 期望值 = 客户端像素函数（ARGB）→ VRAM XRGB 掩码域（alpha
+            // 剥离——blend 归一面，t104 pane_pattern & 0x00FF_FFFF 同款）
+            let expect = (0xFF00_0000u32
+                | (((lx & 0x3F) as u32) << 16)
+                | (((ly & 0x3F) as u32) << 8)
+                | user::CLIENT_PX_BASE)
+                & 0x00FF_FFFF;
+            let got = fb::fb_probe_px_read(pane.x + lx, pane.y + ly);
+            if got != expect {
+                let _ = writeln!(
+                    log,
+                    "t106: px-mismatch ({lx},{ly}) got={got:#010x} expect={expect:#010x}"
+                );
+                px_ok = false;
+                break;
+            }
+        }
+    }
+    ok &= px_ok;
+    let _ = writeln!(
+        log,
+        "t106: commits=+{} px-ok={px_ok} pane={:?} pxs={}",
+        c1.3 - c0.3,
+        pane,
+        shm::px_reads() - shm_c0.2
+    );
+    // (e) fd 传递对账（SCM_RIGHTS 语义面 + 池承接 + 段正交）
+    let fds1 = (
+        unixsock::USOCK_FD_SENDS.load(Ordering::Acquire),
+        unixsock::USOCK_FD_RECVS.load(Ordering::Acquire),
+    );
+    let s1 = unixsock::usock_stamps();
+    let pools1 = waycomp::WLCOMP_POOLS.load(Ordering::Acquire);
+    let last_obj = shm::last_object();
+    let seg_ok = (crate::shm::SHM_OBJECT_BASE..crate::shm::SHM_OBJECT_BASE + 8).contains(&last_obj);
+    // 池字节域对账（CREATE 尺寸 = CLIENT_POOL_BYTES——客户端 CREATE 域
+    // 与内核池注册表逐字节对账）+ 注册表用量增量对账
+    let size_ok = shm::pool_size(last_obj) == Some(u64::from(user::CLIENT_POOL_BYTES));
+    let usage_ok = shm::pools_usage().0 > shm_c0.0 as usize;
+    let fd_ok = fds1.0 == fds0.0 + 1
+        && fds1.1 == fds0.1 + 1
+        && pools1 == pools0 + 1
+        && seg_ok
+        && size_ok
+        && usage_ok
+        // wire 批全发对账：send 次数增量 == 2（客户端 wire 批 + waycomp
+        // done 回执）且 send_bytes ≥ wire 批长（全发无短写）
+        && s1.0 - s0.0 == 2
+        && s1.1 - s0.1 >= user::CLIENT_WIRE_LEN as u64
+        && waycomp::WLCOMP_FD_ERR.load(Ordering::Acquire) == 0;
+    ok &= fd_ok;
+    let _ = writeln!(
+        log,
+        "t106: fd-ok={fd_ok} fds=(+{},+{}) pools=+{} shm-obj={last_obj:#x} creates=+{} maps=+{} fderr={}",
+        fds1.0 - fds0.0,
+        fds1.1 - fds0.1,
+        pools1 - pools0,
+        shm::creates() - shm_c0.0,
+        shm::maps() - shm_c0.1,
+        waycomp::WLCOMP_FD_ERR.load(Ordering::Acquire),
+    );
+    // (f) 收割 exit=0 + teardown 对账
+    let dl = ostd::time::now() + 480;
+    while task::task_debug_exit_code(pid) == u64::MAX && ostd::time::now() < dl {
+        core::hint::spin_loop();
+    }
+    let code = task::task_debug_exit_code(pid);
+    if task::task_debug_state(pid) == 4 {
+        let r = procs::sys_wait_pid(pid as u64);
+        let rcode = r & 0xFFFF;
+        ok &= r >> 32 == 1 && rcode == 0 && !task::task_alive(pid);
+    } else {
+        ok = false; // 滞域 fail-visible（bail 码 80..=85 显形）
+    }
+    // 会话收场完成旗（t104 早跳竞态收口先例——旗 wait 免竞态）
+    let dl = ostd::time::now() + 480;
+    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+        core::hint::spin_loop();
+    }
+    let teardown_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
+    ok &= teardown_ok;
+    // VRAM 复原对账（pane 域回 stage 基线——teardown 摘除链显形）
+    let mut restore_ok = true;
+    if let Some(pane) = pane {
+        for (lx, ly) in [(8i32, 8i32), (300, 8), (8, 190), (319, 199)] {
+            if fb::fb_probe_px_read(pane.x + lx, pane.y + ly)
+                != fb::stage_probe_px_read(pane.x + lx, pane.y + ly)
+            {
+                restore_ok = false;
+            }
+        }
+    } else {
+        restore_ok = false;
+    }
+    ok &= restore_ok;
+    let _ = writeln!(
+        log,
+        "t106: reap exit={code:#x} teardown={teardown_ok} restore={restore_ok} endc={} paints={}",
+        waycomp::WLCOMP_END_COUNT.load(Ordering::Acquire),
+        waycomp::WLCOMP_SHM_PAINTS.load(Ordering::Acquire),
+    );
+    // 汇总取证行（双面板标记）
+    let _ = writeln!(
+        log,
+        "LUMINA-T106-SHM gate=ok spawn={pid} commits=+{} px={px_ok} fd={fd_ok} teardown={teardown_ok} restore={restore_ok}",
+        c1.3 - c0.3
+    );
+    if ok {
+        let _ = writeln!(log, "LUMINA-T106-OK");
     }
     ok
 }

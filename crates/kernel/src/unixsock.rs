@@ -51,8 +51,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use bedrock::abi::{
-    USOCK_ACCEPT, USOCK_ACCEPT_B, USOCK_BIND, USOCK_CONNECT, USOCK_PAIR, USOCK_RECV, USOCK_SEND,
-    USOCK_SHUT,
+    USOCK_ACCEPT, USOCK_ACCEPT_B, USOCK_BIND, USOCK_CONNECT, USOCK_PAIR, USOCK_RECV, USOCK_RECV_FD,
+    USOCK_SEND, USOCK_SEND_FD, USOCK_SHUT,
 };
 use ostd::sync::spsc::SpscRing;
 use ostd::sync::SpinLock;
@@ -166,6 +166,10 @@ static LISTENERS: SpinLock<Vec<Listener>> = SpinLock::new(Vec::new());
 /// 域内对象 id 铸造器（fetch_add 单调——端点/监听者同段连续）。
 static NEXT_OBJECT: AtomicU64 = AtomicU64::new(USOCK_OBJECT_BASE);
 
+/// fd 附带队列注册表（M42-ELF5 SCM_RIGHTS 语义面——端点对象 id →
+/// 已铸全局槽队列；v0 存续纪律 = 注册表存续期，SYS_CLOSE 不回收）。
+static FD_QUEUES: SpinLock<Vec<(u64, Vec<usize>)>> = SpinLock::new(Vec::new());
+
 // ---- 取证戳（t103 断言面）----
 /// 流 send 调用总数。
 pub static USOCK_SENDS: AtomicU64 = AtomicU64::new(0);
@@ -190,6 +194,12 @@ pub static USOCK_ACCEPT_BLOCKS: AtomicU64 = AtomicU64::new(0);
 pub static USOCK_ACCEPT_WAKES: AtomicU64 = AtomicU64::new(0);
 /// EOF 读回显形次数（recv 排空后 0 = EOF——M42-COMP4 对端终结面）。
 pub static USOCK_EOFS: AtomicU64 = AtomicU64::new(0);
+/// fd 附带数据传递发送数（M42-ELF5 SCM_RIGHTS 语义面——铸造 dup 槽
+/// 入队计数）。
+pub static USOCK_FD_SENDS: AtomicU64 = AtomicU64::new(0);
+/// fd 附带数据传递接收数（M42-ELF5——弹队装表计数；内核侧双生面同
+/// 口径计入）。
+pub static USOCK_FD_RECVS: AtomicU64 = AtomicU64::new(0);
 
 // ---- t103 (e) 相位 echo worker 契约 ----
 /// echo worker 服务端点对象（spawn 前由 t103 武装；0 = 未武装即退）。
@@ -862,6 +872,95 @@ pub fn echo_worker_body() {
     }
 }
 
+// ---- fd 附带数据传递面（M42-ELF5 桌面链批次——SCM_RIGHTS 语义域）----
+
+/// fd 附带队列入队（FD_QUEUES 锁内；端点行惰性建档——存续纪律同
+/// SOCKETS 注册表）。
+fn fdq_push(object: u64, gslot: usize) {
+    let mut q = FD_QUEUES.lock();
+    if let Some(row) = q.iter_mut().find(|(o, _)| *o == object) {
+        row.1.push(gslot);
+    } else {
+        q.push((object, alloc::vec![gslot]));
+    }
+}
+
+/// fd 附带队列弹出（FD_QUEUES 锁内；**先进先出**——SCM_RIGHTS 语义
+/// 契约：fd 交付序 = 发送序；空队/无档 → None）。
+fn fdq_pop(object: u64) -> Option<usize> {
+    let mut q = FD_QUEUES.lock();
+    let row = q.iter_mut().find(|(o, _)| *o == object)?;
+    if row.1.is_empty() {
+        return None;
+    }
+    Some(row.1.remove(0))
+}
+
+/// SYS_UNIXSOCK SEND_FD 臂（M42-ELF5）：**fd 附带数据传递·发送**——
+/// SCM_RIGHTS 语义面：把调用方 `fd_handle` 所指能力铸成同对象同权限
+/// **新全局槽**，入**对端**附带队列（POSIX sendmsg+SCM_RIGHTS 同款
+/// 语义：fd 随消息交付对端 recvmsg；dup 铸槽纪律——收发双表互不互
+/// 踩，接收方退出 revoke 自身槽不影响发送方原柄；M35-BBa fork 继承
+/// 铸槽纪律同款）。`fd_handle` 为值域（非指针——SCM_RIGHTS 语义域）。
+pub fn sock_send_fd(caller: usize, sock_handle: u64, fd_handle: u64) -> Result<(), UsockError> {
+    let object = resolve_object(caller, sock_handle, Right::IPC_SEND)?;
+    let h = fd_handle as usize;
+    if h == 0 || h >= task::HANDLE_MAX {
+        return Err(UsockError::Cap);
+    }
+    let gslot = task::with_task_handles(caller, |t| t[h])
+        .and_then(|s| s)
+        .ok_or(UsockError::Cap)?;
+    let cap = crate::caps::table()
+        .lock()
+        .get(gslot)
+        .map_err(|_| UsockError::Cap)?;
+    let new_gslot = crate::caps::alloc_slot(cap).ok_or(UsockError::Nomem)?;
+    // 对端定向（SCM_RIGHTS 交付语义——fd 入对端队列，对端 RECV_FD 弹出）
+    let peer = {
+        let socks = SOCKETS.lock();
+        socks
+            .iter()
+            .find(|e| e.object == object)
+            .map(|e| e.peer_object)
+            .ok_or(UsockError::Cap)?
+    };
+    fdq_push(peer, new_gslot);
+    USOCK_FD_SENDS.fetch_add(1, Ordering::AcqRel);
+    Ok(())
+}
+
+/// SYS_UNIXSOCK RECV_FD 臂（M42-ELF5）：**fd 附带数据传递·接收**——
+/// 弹出己端附带队列首全局槽装入调用方句柄表，返回新句柄。队列空 →
+/// [`UsockError::Empty`]（重试类）。失败路径：弹出槽 revoke 回滚
+/// （半装不留痕）。
+pub fn sock_recv_fd(caller: usize, sock_handle: u64) -> Result<usize, UsockError> {
+    let object = resolve_object(caller, sock_handle, Right::IPC_RECV)?;
+    let gslot = fdq_pop(object).ok_or(UsockError::Empty)?;
+    let handle = free_one(caller)?;
+    let ok = task::with_task_handles(caller, |t| t[handle] = Some(gslot)).is_some();
+    if !ok {
+        let _ = crate::caps::table().lock().revoke(gslot);
+        return Err(UsockError::Table);
+    }
+    USOCK_FD_RECVS.fetch_add(1, Ordering::AcqRel);
+    Ok(handle)
+}
+
+/// 对象寻址 fd 接收（内核侧服务消费域——waycomp 合成器 wl_shm 池
+/// 承接面；句柄面 [`sock_recv_fd`] 同心出口）：弹出附带队列首全局槽，
+/// 直接回读能力对象 id（内核任务无句柄表需求——send_by_object 先例
+/// 同心域）。空队 → [`UsockError::Empty`]。
+pub fn recvfd_object_by_object(object: u64) -> Result<u64, UsockError> {
+    let gslot = fdq_pop(object).ok_or(UsockError::Empty)?;
+    let cap = crate::caps::table()
+        .lock()
+        .get(gslot)
+        .map_err(|_| UsockError::Cap)?;
+    USOCK_FD_RECVS.fetch_add(1, Ordering::AcqRel);
+    Ok(cap.object())
+}
+
 /// SYS_UNIXSOCK 多路复用派发（syscall.rs 慢路径承接）：op 面 → 域内
 /// 执行体；指针类参数经用户切片校验（ipc::sys_send 门禁先序同款——
 /// 句柄/权限域先于载荷域）。返回码契约见 [`bedrock::abi::SYS_UNIXSOCK`]。
@@ -891,6 +990,16 @@ pub fn sys_unixsock(op: u64, handle: u64, len: u64, ptr: u64) -> u64 {
             .unwrap_or_else(|e| e.code()),
         USOCK_SHUT => sock_shutdown(caller, handle)
             .map(|_| 0)
+            .unwrap_or_else(|e| e.code()),
+        USOCK_SEND_FD => {
+            // fd 附带数据传递发送臂（M42-ELF5）：ptr 域 = 待传递句柄值
+            // （非指针——SCM_RIGHTS 语义域，len 无语义）
+            sock_send_fd(caller, handle, ptr)
+                .map(|_| 0)
+                .unwrap_or_else(|e| e.code())
+        }
+        USOCK_RECV_FD => sock_recv_fd(caller, handle)
+            .map(|h| h as u64)
             .unwrap_or_else(|e| e.code()),
         USOCK_SEND => {
             // 门禁先于载荷校验（ipc::sys_send F1/F2 先于 F4 顺序同款）

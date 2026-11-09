@@ -517,9 +517,16 @@ extern "C" fn lumina_syscall_dispatch(frame: &mut SyscallFrame) -> u64 {
         Syscall::UnixSock { op, handle, len } => {
             task::count_syscall(2);
             // M42-UNIX3 unix socket 域：多路复用 op 面（PAIR/BIND/
-            // CONNECT/ACCEPT/SEND/RECV）——名字/载荷/缓冲指针 = rdx
+            // CONNECT/ACCEPT/SEND/RECV + M42-COMP4 ACCEPT_B/SHUT +
+            // M42-ELF5 SEND_FD/RECV_FD）——名字/载荷/缓冲指针 = rdx
             // 慢路径语义（kernel::unixsock 承接面）
             crate::unixsock::sys_unixsock(op, handle, len, frame.rdx)
+        }
+        Syscall::Shm { op, a, b } => {
+            task::count_syscall(2);
+            // M42-ELF5 wl_shm 共享内存池域：多路复用 op 面（CREATE/
+            // MAP）——池对象 + 任务根映射（kernel::shm 承接面）
+            crate::shm::sys_shm(op, a, b)
         }
         Syscall::Pipe { op } => {
             task::count_syscall(2);

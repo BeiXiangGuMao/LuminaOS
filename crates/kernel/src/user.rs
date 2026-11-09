@@ -28,6 +28,8 @@ include!("exec_images_m16_gen.rs");
 include!("exec_images_gen_m23.rs");
 // M42-FBDEV1 用户态 fb 驱动进程映像（勿手改：scripts/gen_m42_fbdev_image.py 再生成）。
 include!("exec_images_gen_m42.rs");
+// M42-ELF5 用户态 ELF 播种 lane 映像（勿手改：scripts/gen_m42_elf_lane.py 再生成）。
+include!("exec_images_gen_m42_elf.rs");
 
 /// 用户代码段虚拟基址（PT[0]）。
 pub const USER_CODE_VIRT: u64 = 0x40_0000;

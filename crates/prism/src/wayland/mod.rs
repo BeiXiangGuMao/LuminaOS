@@ -670,6 +670,19 @@ pub const SIG_BUFFER_RELEASE: &[WlType] = &[];
 pub const SIG_SEAT_CAPABILITIES: &[WlType] = &[WlType::Uint];
 /// wl_shm.create_pool：`(new_id, fd, int)`。
 pub const SIG_SHM_CREATE_POOL: &[WlType] = &[WlType::NewId, WlType::Fd, WlType::Int];
+/// wl_shm_pool.create_buffer：`(new_id, int offset, int width, int
+/// height, int stride, uint format)`（M42-ELF5 桌面链批次——客户端
+/// 像素缓冲承载面）。
+pub const SIG_SHM_POOL_CREATE_BUFFER: &[WlType] = &[
+    WlType::NewId,
+    WlType::Int,
+    WlType::Int,
+    WlType::Int,
+    WlType::Int,
+    WlType::Uint,
+];
+/// wl_shm_pool.destroy：`()`。
+pub const SIG_SHM_POOL_DESTROY: &[WlType] = &[];
 
 // ---------------------------------------------------------------------------
 // 语义便利编组器（阶段三合成器/客户端车道预置——宿主测试 + t103 消费面）

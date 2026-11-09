@@ -28,11 +28,17 @@
 //! set_geometry 注入 + SYS_FB_SURFACE 登记（t104 经
 //! [`crate::fb::surf_layer_of`] 读回对账——策略面产出 = 表内登记）。
 //!
-//! **内容面 v0**（如实记档）：客户端像素缓冲域未在环（wl_shm 池/fd
-//! 附带数据电气挂账）——commit 损伤域由常驻服务**代 Paint**（
-//! [`pane_pattern`] 确定性模式 = 客户端内容替代域）；ring3 客户端直
-//! 写窗 face = SYS_FB_SURFACE op0 单客户 CAS 既有在环（t88 同源），
-//! ring3 编译进程承接随用户态 ELF 播种批次挂账。
+//! **内容面**（M42-ELF5 次笔——客户端像素缓冲域落域）：commit 损伤
+//! 域优先自 **wl_shm 池**读客户端像素（`prism::wayland::comp`
+//! BufferRec 几何 + [`crate::shm::pool_px_read`] 物理帧直读——fd 附
+//! 带数据 SEND_FD/RECV_FD 传递面承接）；无附 buffer / 池缺席回退代
+//! Paint（[`pane_pattern`] 确定性模式——t104 语义面保持）；ring3 客
+//! 户端直写窗 face = SYS_FB_SURFACE op0 单客户 CAS 既有在环（t88
+//! 同源）。
+//!
+//! **ring3 编译进程承接**（M42-ELF5 同笔落域）：桌面链客户端 = 用户
+//! 态 ELF 播种 lane 环内进程（[`crate::procs::spawn_elf_seed`]——真
+//! ELF64 静态映像原生 ABI 播种，t106 SHM_CLIENT 消费面）。
 //!
 //! **常驻生命周期**（M42-FBSVC2 挂账域首割）：boot-spawn（kmain 单
 //! 调用点）+ 会话环常驻（accept ↔ session 循环不退出）；bind 失败/
@@ -47,9 +53,11 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 use mirror::Rect;
-use prism::wayland::comp::{CommitRecord, CompSession, FeedReport, GlobalDef, GLOBALS_MAX};
+use prism::wayland::comp::{
+    BufferRec, CommitRecord, CompSession, FeedReport, GlobalDef, GLOBALS_MAX,
+};
 
-use crate::{fb, task, unixsock};
+use crate::{fb, shm, task, unixsock};
 
 /// 合成器套接字名（平名命名域——`wayland-0` 名字域被 t103 回环面终身
 /// 占用〔对象存续纪律〕，常驻合成器名域正交登记如实记档）。
@@ -106,6 +114,12 @@ pub static WLCOMP_END_COUNT: AtomicU64 = AtomicU64::new(0);
 /// 会话收场完成旗（teardown 全域终了——t104 客户端等待域；accept 时
 /// 复位，收场 store(true) 于 shutdown_by_object 前）。
 pub static WLCOMP_SESSION_DONE: AtomicBool = AtomicBool::new(false);
+/// wl_shm 池承接成功数（fd 附带数据 RECV_FD 落账——t106 断言面）。
+pub static WLCOMP_POOLS: AtomicU64 = AtomicU64::new(0);
+/// wl_shm 池承接失败数（RECV_FD 空队/能力缺——fail-visible 取证）。
+pub static WLCOMP_FD_ERR: AtomicU64 = AtomicU64::new(0);
+/// 客户端像素上屏数（池像素写——pane 代 Paint 替代域对账）。
+pub static WLCOMP_SHM_PAINTS: AtomicU64 = AtomicU64::new(0);
 
 /// 取证戳快照：(listener, bound, sessions, commits, composes, last_z)。
 pub fn waycomp_stamps() -> (u64, bool, u64, u64, u64, i32) {
@@ -167,14 +181,16 @@ pub fn service_body() {
 }
 
 /// 会话环：recv 流积累 → feed 合流解析 → 策略同步〔创建期入窗 + 几何
-/// 注入〕→ commit 发布应用 → 事件回执 send；EOF/会话错误即收场
-/// （surface 摘除 + 损伤量化回退 + 回 accept）。
+/// 注入〕→ **池承接**（fd 附带数据 RECV_FD → 池对象映射）→ commit
+/// 发布应用 → 事件回执 send；EOF/会话错误即收场（surface 摘除 +
+/// 损伤量化回退 + 回 accept）。
 fn session_loop(conn: u64) {
     let seq = SESSION_SEQ.fetch_add(1, Ordering::AcqRel) + 1;
     let base = ((seq - 1) as u32) * FB_ID_SESSION_STRIDE;
     let mut session = CompSession::new(GLOBALS);
     let mut windows: Vec<u64> = Vec::new(); // 创建序 = 焦点序（策略面输入）
     let mut slots: Vec<Window> = Vec::new();
+    let mut pools: Vec<(u32, u64)> = Vec::new(); // pool_wl → shm 对象 id（池承接域）
     let mut stream: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 512];
     loop {
@@ -187,7 +203,8 @@ fn session_loop(conn: u64) {
         match session.feed(&stream, &mut out) {
             Ok(rep) => {
                 policy_sync(&mut session, &mut windows);
-                apply_commits(&rep, &windows, &mut slots, base);
+                pool_admit(conn, &rep, &mut pools);
+                apply_commits(&rep, &windows, &mut slots, base, &pools);
                 if rep.out_len > 0 {
                     send_all(conn, &out[..rep.out_len]);
                 }
@@ -235,10 +252,36 @@ fn policy_sync(session: &mut CompSession, windows: &mut Vec<u64>) {
     }
 }
 
+/// 池承接（feed 后每轮——**fd 附带数据传递消费域**）：feed 回执池记
+/// 录逐条 RECV_FD（内核侧双生面 [`unixsock::recvfd_object_by_object`]
+/// ——SCM_RIGHTS 语义面同心出口），pool_wl → shm 对象 id 映射入会话
+/// 域。空队/能力缺 = [`WLCOMP_FD_ERR`] 取证（fail-visible——后续
+/// commit 回退代 Paint 面）。
+fn pool_admit(conn: u64, rep: &FeedReport, pools: &mut Vec<(u32, u64)>) {
+    for p in rep.pools.items[..rep.pools.n].iter().flatten() {
+        match unixsock::recvfd_object_by_object(conn) {
+            Ok(obj) => {
+                pools.retain(|(w, _)| *w != p.pool_wl);
+                pools.push((p.pool_wl, obj));
+                WLCOMP_POOLS.fetch_add(1, Ordering::AcqRel);
+            }
+            Err(_) => {
+                WLCOMP_FD_ERR.fetch_add(1, Ordering::AcqRel);
+            }
+        }
+    }
+}
+
 /// commit 发布应用（仲裁策略面承接域——cascade tiling 几何/z 注入
-/// 〔policy_sync 已在环〕+ fb 机械面 REGISTER/UPDATE + 损伤域代 Paint
-/// + SYNC/COMPOSE 合流）。
-fn apply_commits(rep: &FeedReport, windows: &[u64], slots: &mut Vec<Window>, base: u32) {
+/// 〔policy_sync 已在环〕+ fb 机械面 REGISTER/UPDATE + 损伤域像素源
+/// 分流〔wl_shm 池直读 / 代 Paint 回退〕+ SYNC/COMPOSE 合流）。
+fn apply_commits(
+    rep: &FeedReport,
+    windows: &[u64],
+    slots: &mut Vec<Window>,
+    base: u32,
+    pools: &[(u32, u64)],
+) {
     for rec in rep.commits.items[..rep.commits.n].iter().flatten() {
         let rec: CommitRecord = *rec;
         let wl = rec.wl_id;
@@ -295,7 +338,21 @@ fn apply_commits(rep: &FeedReport, windows: &[u64], slots: &mut Vec<Window>, bas
         } else {
             rec.damage
         };
-        paint_damage(fb_id, slot, rect, paint_dmg);
+        // 像素源分流（M42-ELF5）：attach buffer 且池已承接 → 客户端像
+        // 素直读（pool_px_read 物理帧域）；否则代 Paint 替代域（t104
+        // 语义面保持——无 buffer commit 回退路径不变）。
+        let pool_obj = rec
+            .buffer
+            .as_ref()
+            .and_then(|b| pools.iter().find(|(w, _)| *w == b.pool_wl))
+            .map(|(_, o)| *o)
+            .unwrap_or(0);
+        match rec.buffer.as_ref() {
+            Some(b) if pool_obj != 0 => {
+                paint_pool_damage(fb_id, slot, rect, paint_dmg, b, pool_obj)
+            }
+            _ => paint_damage(fb_id, slot, rect, paint_dmg),
+        }
         // 合流电气面：损伤量化 + 合成执行（SYS_FB_SYNC → fb_compose_tick）
         let _ = fb::sys_fb_sync(
             paint_dmg.x.max(0) as u64,
@@ -321,6 +378,31 @@ fn paint_damage(fb_id: u32, slot: usize, pane: Rect, dmg: Rect) {
             let lx = sx - pane.x;
             let ly = sy - pane.y;
             fb::surf_px_write(slot, pages, pane.w, lx, ly, pane_pattern(fb_id, lx, ly));
+        }
+    }
+}
+
+/// 损伤域客户端像素 Paint（M42-ELF5——wl_shm 池直读域）：buffer 局
+/// 部坐标域裁剪（lx/ly ∈ buffer 像素域）+ 池内偏移换算（offset +
+/// ly×stride + lx×4）+ [`shm::pool_px_read`] 物理帧直读（越池域 None
+/// = 跳过该像素 fail-soft）；命中域 [`WLCOMP_SHM_PAINTS`] 取证。
+fn paint_pool_damage(_fb_id: u32, slot: usize, pane: Rect, dmg: Rect, b: &BufferRec, obj: u64) {
+    if dmg.w == 0 || dmg.h == 0 || b.w <= 0 || b.h <= 0 || b.stride <= 0 || b.offset < 0 {
+        return;
+    }
+    let pages = fb::surf_slot_pages(slot);
+    for sy in dmg.y..dmg.y + dmg.h as i32 {
+        for sx in dmg.x..dmg.x + dmg.w as i32 {
+            let lx = sx - pane.x;
+            let ly = sy - pane.y;
+            if lx < 0 || ly < 0 || lx >= b.w || ly >= b.h {
+                continue; // buffer 像素域外（pane > buffer 缘口——余域透明态）
+            }
+            let off = b.offset as u64 + (ly as u64) * b.stride as u64 + (lx as u64) * 4;
+            if let Some(px) = shm::pool_px_read(obj, off) {
+                fb::surf_px_write(slot, pages, pane.w, lx, ly, px);
+                WLCOMP_SHM_PAINTS.fetch_add(1, Ordering::AcqRel);
+            }
         }
     }
 }

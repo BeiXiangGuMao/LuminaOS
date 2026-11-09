@@ -1452,7 +1452,7 @@ fn put_i64(buf: &mut [u8; 96], at: usize, v: i64) -> usize {
 /// 的 PML4/PDPT/PD 中间层逐槽 OR `Entry::USER`（幂等；叶子由映射方
 /// 自带）。经 `ostd::hw::phys` 恒等直读直写——页表帧均在低 1 GiB
 /// 恒等区（帧分配器域），与 [`IdentityAccess`] 同一物理语义。
-fn or_user_chain(root: u64, va_start: u64, va_end: u64) {
+pub(crate) fn or_user_chain(root: u64, va_start: u64, va_end: u64) {
     use ostd::hw::phys;
     use ostd::mm::page::Entry;
     // PML4 层（窗口 < 1 GiB → 单槽）

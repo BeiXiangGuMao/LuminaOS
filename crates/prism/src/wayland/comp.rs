@@ -35,10 +35,14 @@
 //! 合成机械面（Stack::blend）零触碰**（ADR-0004 双轨共存）。
 //!
 //! **v0 子集域**（如实记档）：请求承接域 = display/registry/
-//! compositor/surface 核心四接口（attach/damage/frame/commit/destroy）；
-//! region 绑定域登记、请求域外 fail-visible；buffer 记账域（attach 记
-//! id——wl_shm 池/fd 附带数据电气挂账）；callback 对象 commit 后不回
-//! 收（delete_id 复用面挂账）；fixed 原字透传（语义换算挂账）。
+//! compositor/surface 核心四接口（attach/damage/frame/commit/destroy）
+//! + **shm 域（M42-ELF5 桌面链批次首割）**：wl_shm.create_pool（fd
+//! 占位字记账 → 电气面 SEND_FD/RECV_FD 承接）+ wl_shm_pool.
+//! create_buffer（buffer 几何/池偏移记账）+ wl_surface.attach buffer
+//! 实录 → commit 记录携带 buffer 几何（电气面自池读像素上屏——
+//! pane 代 Paint 替代域随行落域）；region 绑定域登记、其余请求域外
+//! fail-visible；callback 对象 commit 后不回收（delete_id 复用面挂
+//! 账）；fixed 原字透传（语义换算挂账）。
 //!
 //! 错误域 fail-visible 全谱显形（[`CompError`]）——不吞畸形不静默降
 //! 级；feed 单消息失败即 Err（会话域由消费方裁决：回 error 事件或断
@@ -50,9 +54,10 @@ use mirror::Rect;
 
 use super::{
     compositor, display, encode_callback_done_event, encode_registry_global_event, iface_name,
-    parse_args, parse_header, registry, surface, WlArg, WlError, WlHeader, WlIface, WlObjectTable,
-    HEADER, SIG_COMPOSITOR_CREATE_REGION, SIG_COMPOSITOR_CREATE_SURFACE, SIG_DISPLAY_GET_REGISTRY,
-    SIG_DISPLAY_SYNC, SIG_REGISTRY_BIND, SIG_SURFACE_ATTACH, SIG_SURFACE_COMMIT,
+    parse_args, parse_header, registry, shm, shm_pool, surface, WlArg, WlError, WlHeader, WlIface,
+    WlObjectTable, HEADER, SIG_COMPOSITOR_CREATE_REGION, SIG_COMPOSITOR_CREATE_SURFACE,
+    SIG_DISPLAY_GET_REGISTRY, SIG_DISPLAY_SYNC, SIG_REGISTRY_BIND, SIG_SHM_CREATE_POOL,
+    SIG_SHM_POOL_CREATE_BUFFER, SIG_SHM_POOL_DESTROY, SIG_SURFACE_ATTACH, SIG_SURFACE_COMMIT,
     SIG_SURFACE_DAMAGE, SIG_SURFACE_FRAME, WIRE_MAX,
 };
 
@@ -64,6 +69,10 @@ pub const MAX_COMMITS_PER_FEED: usize = 8;
 pub const MAX_FRAME_CBS: usize = 4;
 /// registry globals 名单上限（核心子集：compositor/seat/shm/output）。
 pub const GLOBALS_MAX: usize = 4;
+/// 单次 feed 的 create_pool 记录上限（定容零堆）。
+pub const MAX_POOLS_PER_FEED: usize = 4;
+/// 单会话 buffer 槽容量（定容零堆——SESSION_SURFACES 同量级先例）。
+pub const SESSION_BUFFERS: usize = 8;
 
 /// registry global 名单项（合成器策略面输入——公告名单与版本域）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +92,9 @@ pub struct CompSurface {
     pub wl_id: u32,
     /// attach 记账位（v0 buffer 域——记 id 不承载像素，wl_shm 挂账）。
     pub attached: bool,
+    /// attach 的 buffer 对象 id（M42-ELF5——0 = 无；create_buffer
+    /// 登记域实-id，commit 时解析为 [`BufferRec`] 几何）。
+    pub attach_buf: u32,
     /// 合成器侧窗口几何（屏域——策略面 [`CompSession::set_geometry`]
     /// 注入；未注入 = 零面积矩形，commit 产物零面积损伤域）。
     pub geom: Rect,
@@ -95,6 +107,62 @@ pub struct CompSurface {
     pub frame_n: usize,
     /// 首映射位（commit 一次后置位——电气面 REGISTER/UPDATE 分流键）。
     pub mapped: bool,
+}
+
+/// wl_shm 池创建记录（feed 回执——电气面 fd 传递对账域：每记录恰
+/// 对一 fd 占位字，消费方据 [`FeedReport::fd_need`] 承接 RECV_FD）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolRecord {
+    /// 新池对象 id（客户端域——create_pool new_id）。
+    pub pool_wl: u32,
+    /// 池字节域（create_pool size 参——客户端 CREATE 域对账键）。
+    pub size: i32,
+}
+
+/// 单次 feed 的池创建记录批（定容零堆）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolLog {
+    /// 记录槽（`items[..n]` 有效）。
+    pub items: [Option<PoolRecord>; MAX_POOLS_PER_FEED],
+    /// 记录数。
+    pub n: usize,
+}
+
+impl PoolLog {
+    /// 空批。
+    pub const EMPTY: PoolLog = PoolLog {
+        items: [None; MAX_POOLS_PER_FEED],
+        n: 0,
+    };
+
+    /// 记录入批（满容静默拒收——feed 上界定容域，如实记档）。
+    fn push(&mut self, rec: PoolRecord) {
+        if self.n < MAX_POOLS_PER_FEED {
+            self.items[self.n] = Some(rec);
+            self.n += 1;
+        }
+    }
+}
+
+/// 会话内 buffer 几何（M42-ELF5——客户端像素承载域）：池引用 +
+/// 池内偏移 + 像素域 + 行距 + 像素格式（wl_shm 标准格式值：
+/// ARGB8888 = 0 / XRGB8888 = 1——v0 双格式同承载，像素域原字透传）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BufferRec {
+    /// buffer 对象 id（客户端域——create_buffer new_id）。
+    pub wl: u32,
+    /// 所属池对象 id（客户端域——create_buffer 发起方）。
+    pub pool_wl: u32,
+    /// 池内字节偏移（create_buffer offset 参）。
+    pub offset: i32,
+    /// 像素域宽。
+    pub w: i32,
+    /// 像素域高。
+    pub h: i32,
+    /// 行距（字节——row stride）。
+    pub stride: i32,
+    /// 像素格式（wl_shm 格式枚举原值）。
+    pub format: u32,
 }
 
 /// commit 发布记录（feed 回执——电气面消费域：REGISTER/UPDATE 分流 +
@@ -112,6 +180,9 @@ pub struct CommitRecord {
     pub frames_fired: usize,
     /// 首映射位（true = 电气面 REGISTER 域；false = UPDATE 域）。
     pub first_map: bool,
+    /// commit 时 surface 所附 buffer 几何（M42-ELF5——None = 无附
+    /// buffer，电气面代 Paint 替代域；Some = 自池读像素上屏）。
+    pub buffer: Option<BufferRec>,
 }
 
 /// 单次 feed 的 commit 记录批（定容零堆——feed 回执域）。
@@ -161,6 +232,12 @@ pub struct FeedReport {
     pub out_len: usize,
     /// commit 批记录（`commits.items[..commits.n]` 有效）。
     pub commits: CommitLog,
+    /// 池创建记录批（M42-ELF5——`pools.items[..pools.n]` 有效；每记
+    /// 录对一 fd 占位字）。
+    pub pools: PoolLog,
+    /// 本 feed 消费的 fd 占位字数（电气面 RECV_FD 承接计数——与
+    /// pools 批对账：每 create_pool 恰一 fd）。
+    pub fd_need: usize,
 }
 
 impl FeedReport {
@@ -184,6 +261,8 @@ pub enum CompError {
     SurfaceFull,
     /// bind 名不在公告名单 / 版本域越上界（策略面名单域——fail-visible）。
     UnknownGlobal,
+    /// 会话 buffer 槽满（[`SESSION_BUFFERS`]——M42-ELF5）。
+    BufferFull,
     /// 对象表域错误（v0 表纪律透传——满容/id 冲突）。
     Table(WlError),
 }
@@ -199,6 +278,10 @@ pub struct CompSession {
     surfaces: [Option<CompSurface>; SESSION_SURFACES],
     /// surface 在账数。
     surf_n: usize,
+    /// 会话 buffer 槽（M42-ELF5——create_buffer 登记域）。
+    buffers: [Option<BufferRec>; SESSION_BUFFERS],
+    /// buffer 在账数。
+    buf_n: usize,
     /// commit 串号（帧回调 done 事件 callback_data 事实源）。
     commit_serial: u32,
 }
@@ -215,8 +298,24 @@ impl CompSession {
             globals,
             surfaces: [None; SESSION_SURFACES],
             surf_n: 0,
+            buffers: [None; SESSION_BUFFERS],
+            buf_n: 0,
             commit_serial: 0,
         }
+    }
+
+    /// 会话 buffer 在账数（M42-ELF5 取证面）。
+    pub fn buffers_count(&self) -> usize {
+        self.buf_n
+    }
+
+    /// 会话内 buffer 只读快照（取证面——t106 对账消费）。
+    pub fn buffer(&self, wl_id: u32) -> Option<BufferRec> {
+        self.buffers
+            .iter()
+            .flatten()
+            .find(|b| b.wl == wl_id)
+            .copied()
     }
 
     /// 对象表只读视图（取证面——t104 对账消费）。
@@ -291,6 +390,8 @@ impl CompSession {
     /// 传）；部分消息（尺寸域完整但残段不足）干净断流。
     pub fn feed(&mut self, stream: &[u8], out: &mut [u8]) -> Result<FeedReport, CompError> {
         let mut log = CommitLog::EMPTY;
+        let mut pools = PoolLog::EMPTY;
+        let mut fd_need = 0usize;
         let mut out_len = 0usize;
         let mut consumed = 0usize;
         while consumed + HEADER <= stream.len() {
@@ -300,24 +401,36 @@ impl CompSession {
             if (HEADER..=WIRE_MAX).contains(&size) && consumed + size > stream.len() {
                 break; // 部分消息——留缓冲（流推进干净域）
             }
-            let step = self.dispatch(&stream[consumed..], &mut out_len, out, &mut log)?;
+            let step = self.dispatch(
+                &stream[consumed..],
+                &mut out_len,
+                out,
+                &mut log,
+                &mut pools,
+                &mut fd_need,
+            )?;
             consumed += step;
         }
         Ok(FeedReport {
             consumed,
             out_len,
             commits: log,
+            pools,
+            fd_need,
         })
     }
 
     /// 单消息派发（头 + 签名驱动解析 + 对象路由 + 事件回执写入 +
-    /// commit 记录批）。返回消息 wire 尺寸（流步长）。
+    /// commit/池记录批）。返回消息 wire 尺寸（流步长）。
+    #[allow(clippy::too_many_arguments)]
     fn dispatch(
         &mut self,
         msg: &[u8],
         out_len: &mut usize,
         out: &mut [u8],
         log: &mut CommitLog,
+        pools: &mut PoolLog,
+        fd_need: &mut usize,
     ) -> Result<usize, CompError> {
         let header = parse_header(msg).map_err(CompError::Wire)?;
         let body = &msg[HEADER..header.size as usize];
@@ -329,7 +442,9 @@ impl CompSession {
             WlIface::Registry => self.dispatch_registry(&header, body)?,
             WlIface::Compositor => self.dispatch_compositor(&header, body)?,
             WlIface::Surface => self.dispatch_surface(&header, body, out_len, out, log)?,
-            // callback/seat/output/region/shm/shm_pool/buffer：服务端
+            WlIface::Shm => self.dispatch_shm(&header, body, pools, fd_need)?,
+            WlIface::ShmPool => self.dispatch_shm_pool(&header, body)?,
+            // callback/seat/output/region/buffer：服务端
             // 请求域外（v0 子集——fail-visible）。
             _ => return Err(CompError::UnknownRequest),
         }
@@ -446,6 +561,93 @@ impl CompSession {
         }
     }
 
+    /// wl_shm 请求域（M42-ELF5 桌面链批次——create_pool：池对象登记 +
+    /// fd 占位字记账 + 池记录入批；resize 域外 fail-visible）。
+    fn dispatch_shm(
+        &mut self,
+        header: &WlHeader,
+        body: &[u8],
+        pools: &mut PoolLog,
+        fd_need: &mut usize,
+    ) -> Result<(), CompError> {
+        match header.opcode {
+            shm::REQ_CREATE_POOL => {
+                let (args, _) = parse_args(body, SIG_SHM_CREATE_POOL).map_err(CompError::Wire)?;
+                let Some(WlArg::NewId(pool_id)) = args[0] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                let Some(WlArg::Fd(_)) = args[1] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                let Some(WlArg::Int(size)) = args[2] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                self.table
+                    .install(pool_id, WlIface::ShmPool)
+                    .map_err(CompError::Table)?;
+                pools.push(PoolRecord {
+                    pool_wl: pool_id,
+                    size,
+                });
+                *fd_need += 1; // 每 create_pool 恰一 fd（电气面 RECV_FD 承接计数）
+                Ok(())
+            }
+            _ => Err(CompError::UnknownRequest),
+        }
+    }
+
+    /// wl_shm_pool 请求域（M42-ELF5——create_buffer：buffer 几何记账
+    /// + 对象登记；destroy：双清；resize 域外 fail-visible）。
+    fn dispatch_shm_pool(&mut self, header: &WlHeader, body: &[u8]) -> Result<(), CompError> {
+        match header.opcode {
+            shm_pool::REQ_CREATE_BUFFER => {
+                let (args, _) =
+                    parse_args(body, SIG_SHM_POOL_CREATE_BUFFER).map_err(CompError::Wire)?;
+                let Some(WlArg::NewId(buf_id)) = args[0] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                let mut vals = [0i32; 4];
+                for (k, a) in args.iter().take(5).skip(1).enumerate() {
+                    match a {
+                        Some(WlArg::Int(v)) => vals[k] = *v,
+                        _ => return Err(CompError::Wire(WlError::BadLength)),
+                    }
+                }
+                let Some(WlArg::Uint(format)) = args[5] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                if self.buf_n >= SESSION_BUFFERS {
+                    return Err(CompError::BufferFull);
+                }
+                let Some(slot) = self.buffers.iter_mut().find(|b| b.is_none()) else {
+                    return Err(CompError::BufferFull);
+                };
+                self.table
+                    .install(buf_id, WlIface::Buffer)
+                    .map_err(CompError::Table)?;
+                *slot = Some(BufferRec {
+                    wl: buf_id,
+                    pool_wl: header.object_id,
+                    offset: vals[0],
+                    w: vals[1],
+                    h: vals[2],
+                    stride: vals[3],
+                    format,
+                });
+                self.buf_n += 1;
+                Ok(())
+            }
+            shm_pool::REQ_DESTROY => {
+                let _ = parse_args(body, SIG_SHM_POOL_DESTROY).map_err(CompError::Wire)?;
+                // 池对象摘除（表清；会话 buffer 域不连带——buffer 生命
+                // 周期独立，池亡后像素域失效由池电气面承载，如实记档）
+                let _ = self.table.remove(header.object_id);
+                Ok(())
+            }
+            _ => Err(CompError::UnknownRequest),
+        }
+    }
+
     /// wl_surface 请求域（destroy/attach/damage/frame/commit——v0 子
     /// 集；其余 opcode fail-visible）。
     fn dispatch_surface(
@@ -466,7 +668,7 @@ impl CompSession {
             }
             surface::REQ_ATTACH => {
                 let (args, _) = parse_args(body, SIG_SURFACE_ATTACH).map_err(CompError::Wire)?;
-                let Some(WlArg::Object(_buf)) = args[0] else {
+                let Some(WlArg::Object(buf_id)) = args[0] else {
                     return Err(CompError::Wire(WlError::BadLength));
                 };
                 let Some(WlArg::Int(_)) = args[1] else {
@@ -475,10 +677,24 @@ impl CompSession {
                 let Some(WlArg::Int(_)) = args[2] else {
                     return Err(CompError::Wire(WlError::BadLength));
                 };
+                // buffer 域校验（未登记 buffer id → BadObject fail-visible
+                // ——M42-ELF5 像素承载域前置闸；借用域分离——先只读查
+                // 槽后可变写位，同 session_commit 分离窗先例）
+                let buf_ok = self.buffers.iter().flatten().any(|b| b.wl == buf_id);
                 let Some(sf) = self.surface_slot_mut(header.object_id) else {
                     return Err(CompError::BadObject);
                 };
-                sf.attached = true; // buffer id 记账域（像素承载挂账）
+                if buf_id == 0 {
+                    // 官方语义：attach(null) = 解附（下轮 commit 无内容域）
+                    sf.attached = false;
+                    sf.attach_buf = 0;
+                    return Ok(());
+                }
+                if !buf_ok {
+                    return Err(CompError::BadObject);
+                }
+                sf.attached = true; // buffer id 记账域（M42-ELF5 像素承载实-id）
+                sf.attach_buf = buf_id;
                 Ok(())
             }
             surface::REQ_DAMAGE => {
@@ -553,6 +769,7 @@ impl CompSession {
         *slot = Some(CompSurface {
             wl_id: surf_id,
             attached: false,
+            attach_buf: 0,
             geom: Rect {
                 x: 0,
                 y: 0,
@@ -607,7 +824,7 @@ impl CompSession {
         log: &mut CommitLog,
     ) -> Result<(), CompError> {
         // 帧回调冲刷先行取值（借用域分离——状态读 + 事件写分离窗）
-        let (geom, screen_damage, frames_fired, frame_ids, first_map) = {
+        let (geom, screen_damage, frames_fired, frame_ids, first_map, attach_buf) = {
             let Some(sf) = self.surface_slot_mut(wl_id) else {
                 return Err(CompError::BadObject);
             };
@@ -638,10 +855,23 @@ impl CompSession {
             let fired = sf.frame_n;
             let ids = sf.frames;
             let first = !sf.mapped;
+            let abuf = sf.attach_buf;
             sf.mapped = true;
             sf.damage = None;
             sf.frame_n = 0;
-            (sf.geom, screen_damage, fired, ids, first)
+            (sf.geom, screen_damage, fired, ids, first, abuf)
+        };
+        // attach buffer 几何解析（M42-ELF5——commit 快照：buffer 对象
+        // 在会话槽内即携几何出域；未附/已解附 = None。借用域分离：可
+        // 变槽借用终结后缓冲槽只读域）
+        let buffer = if attach_buf != 0 {
+            self.buffers
+                .iter()
+                .flatten()
+                .find(|b| b.wl == attach_buf)
+                .copied()
+        } else {
+            None
         };
         self.commit_serial = self.commit_serial.wrapping_add(1);
         // 帧回调 done 事件冲刷（官方语义——callback_data = commit 串
@@ -657,6 +887,7 @@ impl CompSession {
             damage: screen_damage,
             frames_fired,
             first_map,
+            buffer,
         });
         Ok(())
     }
@@ -1164,67 +1395,220 @@ mod tests {
     }
 
     /// attach 记账域 + 双 surface 几何注入（策略面钩子）。
+    /// wl_shm 池域回环（M42-ELF5 桌面链批次）：create_pool（fd 占位字
+    /// 记账）→ create_buffer → attach → commit —— 池记录批 + fd_need
+    /// 计数 + buffer 几何随 commit 记录出域（客户端像素承载语义面）。
     #[test]
-    fn attach_and_geometry_hooks() {
+    fn shm_pool_buffer_commit_chain() {
+        use crate::wayland::{shm, shm_pool};
         let mut s = new_session();
-        setup_registry(&mut s);
-        let bind = {
-            let mut b = [0u8; 64];
-            let n = encode_registry_bind(&mut b, 2, 1, "wl_compositor", 4, 3).unwrap();
-            b[..n].to_vec()
-        };
-        let cs1 = {
-            let mut b = [0u8; 64];
-            let n = encode_message(
-                &mut b,
-                3,
-                compositor::REQ_CREATE_SURFACE,
-                &[WlArg::NewId(0x21)],
-            )
-            .unwrap();
-            b[..n].to_vec()
-        };
-        let cs2 = {
-            let mut b = [0u8; 64];
-            let n = encode_message(
-                &mut b,
-                3,
-                compositor::REQ_CREATE_SURFACE,
-                &[WlArg::NewId(0x25)],
-            )
-            .unwrap();
-            b[..n].to_vec()
-        };
-        let attach = {
-            let mut b = [0u8; 64];
-            let n = encode_message(
-                &mut b,
-                0x21,
-                surf_ops::REQ_ATTACH,
-                &[WlArg::Object(0x30), WlArg::Int(0), WlArg::Int(0)],
-            )
-            .unwrap();
-            b[..n].to_vec()
-        };
-        s.feed(&stream_of(&[&bind, &cs1, &cs2, &attach]), &mut [0u8; 16])
-            .unwrap();
-        assert!(s.surface(0x21).unwrap().attached);
-        assert!(!s.surface(0x25).unwrap().attached);
-        // 策略面几何注入（cascade tiling 承接域——双窗同源对账样本）
-        s.set_geometry(0x21, PANE).unwrap();
-        s.set_geometry(
-            0x25,
-            Rect {
-                x: 964,
-                y: 56,
-                w: 948,
-                h: 944,
-            },
+        let mut req = [0u8; 64];
+        let n = encode_display_get_registry(&mut req, 1, 2).unwrap();
+        s.feed(&req[..n], &mut [0u8; 512]).unwrap();
+        // bind compositor（名 1 → new_id 3）+ bind wl_shm（名 3 → new_id 4）
+        // + create_surface
+        let mut batch = [0u8; 160];
+        let mut bl = 0usize;
+        bl += encode_registry_bind(&mut batch[bl..], 2, 1, "wl_compositor", 4, 3).unwrap();
+        bl += encode_registry_bind(&mut batch[bl..], 2, 3, "wl_shm", 1, 4).unwrap();
+        bl += encode_message(
+            &mut batch[bl..],
+            3,
+            compositor::REQ_CREATE_SURFACE,
+            &[WlArg::NewId(0x21)],
         )
         .unwrap();
-        assert_eq!(s.surface(0x21).unwrap().geom, PANE);
-        assert_eq!(s.surface(0x25).unwrap().geom.x, 964);
-        // 未登记几何注入拒收
-        assert_eq!(s.set_geometry(0x99, PANE), Err(CompError::BadObject));
+        // create_pool(pool=5, fd 占位, size=256000) + create_buffer(buf=6)
+        bl += encode_message(
+            &mut batch[bl..],
+            4,
+            shm::REQ_CREATE_POOL,
+            &[WlArg::NewId(5), WlArg::Fd(0), WlArg::Int(256000)],
+        )
+        .unwrap();
+        bl += encode_message(
+            &mut batch[bl..],
+            5,
+            shm_pool::REQ_CREATE_BUFFER,
+            &[
+                WlArg::NewId(6),
+                WlArg::Int(0),
+                WlArg::Int(320),
+                WlArg::Int(200),
+                WlArg::Int(1280),
+                WlArg::Uint(1),
+            ],
+        )
+        .unwrap();
+        let mut out = [0u8; 512];
+        let rep = s.feed(&batch[..bl], &mut out).unwrap();
+        // 池记录批 + fd_need 对账（每 create_pool 恰一 fd）
+        assert_eq!(rep.pools.n, 1);
+        assert_eq!(rep.fd_need, 1);
+        let pool = rep.pools.items[0].unwrap();
+        assert_eq!(pool.pool_wl, 5);
+        assert_eq!(pool.size, 256000);
+        // 对象登记域：pool=5 ShmPool / buffer=6 Buffer
+        assert_eq!(s.table().lookup(5), Some(WlIface::ShmPool));
+        assert_eq!(s.table().lookup(6), Some(WlIface::Buffer));
+        assert_eq!(s.buffers_count(), 1);
+        // buffer 几何快照（取证面）
+        let buf = s.buffer(6).unwrap();
+        assert_eq!(buf.pool_wl, 5);
+        assert_eq!(buf.offset, 0);
+        assert_eq!(buf.w, 320);
+        assert_eq!(buf.h, 200);
+        assert_eq!(buf.stride, 1280);
+        assert_eq!(buf.format, 1);
+        // attach + commit → CommitRecord.buffer 携几何出域
+        let mut batch2 = [0u8; 128];
+        let mut bl2 = 0usize;
+        bl2 += encode_message(
+            &mut batch2[bl2..],
+            0x21,
+            surf_ops::REQ_ATTACH,
+            &[WlArg::Object(6), WlArg::Int(0), WlArg::Int(0)],
+        )
+        .unwrap();
+        bl2 += encode_message(
+            &mut batch2[bl2..],
+            0x21,
+            surf_ops::REQ_DAMAGE,
+            &[
+                WlArg::Int(0),
+                WlArg::Int(0),
+                WlArg::Int(320),
+                WlArg::Int(200),
+            ],
+        )
+        .unwrap();
+        bl2 += encode_surface_commit(&mut batch2[bl2..], 0x21).unwrap();
+        s.set_geometry(0x21, PANE).unwrap();
+        let rep2 = s.feed(&batch2[..bl2], &mut out).unwrap();
+        let rec = rep2.commits.last_of(0x21).unwrap();
+        let b = rec.buffer.expect("commit 须携 attach buffer 几何");
+        assert_eq!(b.wl, 6);
+        assert_eq!(b.w, 320);
+        assert_eq!(b.stride, 1280);
+        assert_eq!(
+            rec.damage,
+            Rect {
+                x: 8,
+                y: 56,
+                w: 320,
+                h: 200
+            },
+            "buffer 域损伤平移屏域 ∩ pane"
+        );
+    }
+
+    /// wl_shm 负例域（M42-ELF5）：attach 未登记 buffer → BadObject；
+    /// attach(null) 解附；buffer 槽满 → BufferFull；create_buffer 域外
+    /// opcode 拒收。
+    #[test]
+    fn shm_negative_matrix() {
+        use crate::wayland::{encode_surface_commit, shm, shm_pool};
+        let mut s = new_session();
+        let mut req = [0u8; 64];
+        let n = encode_display_get_registry(&mut req, 1, 2).unwrap();
+        s.feed(&req[..n], &mut [0u8; 512]).unwrap();
+        let mut batch = [0u8; 128];
+        let mut bl = 0usize;
+        bl += encode_registry_bind(&mut batch[bl..], 2, 1, "wl_compositor", 4, 3).unwrap();
+        bl += encode_message(
+            &mut batch[bl..],
+            3,
+            compositor::REQ_CREATE_SURFACE,
+            &[WlArg::NewId(0x21)],
+        )
+        .unwrap();
+        bl += encode_registry_bind(&mut batch[bl..], 2, 3, "wl_shm", 1, 4).unwrap();
+        bl += encode_message(
+            &mut batch[bl..],
+            4,
+            shm::REQ_CREATE_POOL,
+            &[WlArg::NewId(5), WlArg::Fd(0), WlArg::Int(4096)],
+        )
+        .unwrap();
+        s.feed(&batch[..bl], &mut [0u8; 512]).unwrap();
+        // attach 未登记 buffer（id 0x99）→ BadObject
+        let mut bad = [0u8; 32];
+        let n = encode_message(
+            &mut bad,
+            0x21,
+            surf_ops::REQ_ATTACH,
+            &[WlArg::Object(0x99), WlArg::Int(0), WlArg::Int(0)],
+        )
+        .unwrap();
+        assert_eq!(
+            s.feed(&bad[..n], &mut [0u8; 16]).map(|_| ()).unwrap_err(),
+            CompError::BadObject
+        );
+        // buffer 槽满谱：8 buffer 入账后第 9 → BufferFull
+        for k in 0..SESSION_BUFFERS {
+            let mut one = [0u8; 48];
+            let n = encode_message(
+                &mut one,
+                5,
+                shm_pool::REQ_CREATE_BUFFER,
+                &[
+                    WlArg::NewId(0x40 + k as u32),
+                    WlArg::Int(0),
+                    WlArg::Int(8),
+                    WlArg::Int(8),
+                    WlArg::Int(32),
+                    WlArg::Uint(1),
+                ],
+            )
+            .unwrap();
+            s.feed(&one[..n], &mut [0u8; 16]).unwrap();
+        }
+        let mut one = [0u8; 48];
+        let n = encode_message(
+            &mut one,
+            5,
+            shm_pool::REQ_CREATE_BUFFER,
+            &[
+                WlArg::NewId(0x50),
+                WlArg::Int(0),
+                WlArg::Int(8),
+                WlArg::Int(8),
+                WlArg::Int(32),
+                WlArg::Uint(1),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            s.feed(&one[..n], &mut [0u8; 16]).map(|_| ()).unwrap_err(),
+            CompError::BufferFull
+        );
+        // attach(null) 解附：attach 已登记 buffer → attach 0 → commit 无 buffer
+        let mut pair = [0u8; 64];
+        let mut pl = 0usize;
+        pl += encode_message(
+            &mut pair[pl..],
+            0x21,
+            surf_ops::REQ_ATTACH,
+            &[WlArg::Object(0x40), WlArg::Int(0), WlArg::Int(0)],
+        )
+        .unwrap();
+        pl += encode_message(
+            &mut pair[pl..],
+            0x21,
+            surf_ops::REQ_ATTACH,
+            &[WlArg::Object(0), WlArg::Int(0), WlArg::Int(0)],
+        )
+        .unwrap();
+        pl += encode_surface_commit(&mut pair[pl..], 0x21).unwrap();
+        s.set_geometry(0x21, PANE).unwrap();
+        let rep = s.feed(&pair[..pl], &mut [0u8; 64]).unwrap();
+        assert!(rep.commits.last_of(0x21).unwrap().buffer.is_none());
+        // 域外 opcode：wl_shm resize 域外（wl_shm 无 resize——opcode 1 拒收）
+        let mut bad = [0u8; 16];
+        let n = encode_message(&mut bad, 4, 1, &[]).unwrap();
+        assert_eq!(
+            s.feed(&bad[..n], &mut [0u8; 16]).map(|_| ()).unwrap_err(),
+            CompError::UnknownRequest
+        );
     }
 }

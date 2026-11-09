@@ -451,12 +451,59 @@ pub const USOCK_ACCEPT_B: u64 = 6;
 /// EOF、对己端/对端再 send = [`ERR_PIPE`]；对象存续纪律不变——
 /// 仅旗标改写，注册表行不回收）。
 pub const USOCK_SHUT: u64 = 7;
+/// [`SYS_UNIXSOCK`] op：**fd 附带数据传递·发送臂**（M42-ELF5 桌面链
+/// 批次——SCM_RIGHTS 语义面）：rsi = 套接字句柄，rdx = **待传递句柄
+/// 值**（非指针——SCM_RIGHTS 语义域；内核铸同对象同权限新全局槽
+/// 入对端附带队列）。成功 = 0。
+pub const USOCK_SEND_FD: u64 = 8;
+/// [`SYS_UNIXSOCK`] op：**fd 附带数据传递·接收臂**（M42-ELF5）：rsi
+/// = 套接字句柄；弹出对端附带队列首全局槽装入调用方句柄表，返回新
+/// 句柄。队列空 → [`ERR_EMPTY`]（重试类）。
+pub const USOCK_RECV_FD: u64 = 9;
 
 /// [`SYS_UNIXSOCK`] 名字词法上界（字节域；对齐 POSIX sun_path 108）。
 pub const USOCK_NAME_MAX: u64 = 108;
 /// [`SYS_UNIXSOCK`] 流载荷/缓冲上界（validate_user_slice 防拷贝预算域
 /// 同源——SEND/RECV 单调用 64 KiB 封顶）。
 pub const USOCK_LEN_MAX: u64 = 0x1_0000;
+
+/// **定位（M42-ELF5 次笔——桌面链 wl_shm 池域）**：客户端像素缓冲
+/// 域电气面——共享内存池对象（内核帧阵列）+ 调用方任务根映射面。
+/// Wayland wl_shm.create_pool → wl_shm_pool.create_buffer →
+/// wl_surface.attach 语义的承载域：客户端 CREATE 铸池 + MAP 映入
+/// 自身任务根直写像素，池能力经 [`SYS_UNIXSOCK`] SEND_FD/RECV_FD
+/// 传递至合成器（SCM_RIGHTS 语义面），合成器自池读像素上屏。
+/// 对象 id 段 `0xC0DE_0000_0000_003X`（与预设 0x…000X / fb 服务
+/// 0x…001X / socket 0x…002X / 运行时 0x…0001_0000 正交）。
+///
+/// **多路复用 op 面**（[`SYS_UNIXSOCK`] 同款手法）：rdi(a0) = op；
+/// rsi(a1) = CREATE 尺寸 / MAP 句柄；rdx(a2) = MAP 虚地址（页对齐，
+/// [`SHM_VA_BASE`] 域内——PDPT[1] 上半窗，与 LFB/stage/Surface 写窗
+/// 同支互斥域正交）。
+///
+/// 返回：CREATE = `(1<<32)|handle`（高位装载形——错误码域无交叠）；
+/// MAP = 映射窗基址（回显契约）。错误域：[`ERR_CAP`]（句柄/权限/无
+/// 用户根）、[`ERR_NOMEM`]（帧耗尽/池满）、[`ERR_TABLE`]（句柄表满）、
+/// 域外 = `u64::MAX-1`（BadArgs 哨兵同面）。
+pub const SYS_SHM: u64 = 43;
+
+/// [`SYS_SHM`] op：铸共享内存池（rsi = 尺寸字节 1..=[`SHM_SIZE_MAX`]；
+/// 内核帧阵列 + 池对象铸造 + 句柄装入调用方表）。
+pub const SHM_CREATE: u64 = 0;
+/// [`SYS_SHM`] op：池映射入调用方任务根（rsi = 句柄，rdx = 页对齐
+/// 虚地址，域 [`SHM_VA_BASE`]..[`SHM_VA_LIMIT`]——P|W|U 映射 + 中间
+/// 层补 U）。成功回显基址。
+pub const SHM_MAP: u64 = 1;
+
+/// [`SYS_SHM`] 池尺寸上界（2 MiB = 单 PT 窗预算——[`SHM_VA_LIMIT`] −
+/// [`SHM_VA_BASE`] = 128 MiB 域内多池并存预算面对账域）。
+pub const SHM_SIZE_MAX: u64 = 0x20_0000;
+/// [`SYS_SHM`] 映射窗基址（用户态；PDPT[1] 上半窗——LFB
+/// [`FB_VA_BASE`]/stage [`STAGE_VA_BASE`]/Surface [`SURF_VA_BASE`]
+/// 同支下半域正交）。
+pub const SHM_VA_BASE: u64 = 0x7000_0000;
+/// [`SYS_SHM`] 映射窗上限（128 MiB 窗——多池并存域）。
+pub const SHM_VA_LIMIT: u64 = 0x7800_0000;
 
 /// 套接字名词法校验（fail-visible 注册面）：1..=[`USOCK_NAME_MAX`]
 /// 字节，ASCII 可打印域（0x21..=0x7E——空格/控制域拒收；平名命名域
@@ -539,7 +586,11 @@ pub const OPEN_MODE_MASK: u64 = 0b1_1111;
 /// 无独立用户空间 → `ERR_CAP`；帧耗尽 → `ERR_NOMEM(9)`。
 pub const SYS_EXEC: u64 = 17;
 
-/// 系统调用 ABI 版本（v0.21 = M42-COMP4：SYS_UNIXSOCK op 面扩容
+/// 系统调用 ABI 版本（v0.22 = M42-ELF5：新增 SYS_SHM(43) wl_shm
+/// 共享内存池域（CREATE/MAP 双 op——对象 id 段 0xC0DE…003X +
+/// SHM_VA_BASE 0x7000_0000 映射窗）+ SYS_UNIXSOCK op 面扩容
+/// SEND_FD(8)/RECV_FD(9)〔fd 附带数据传递——SCM_RIGHTS 语义面〕；
+/// v0.21 = M42-COMP4：SYS_UNIXSOCK op 面扩容
 /// ACCEPT_B(6)/SHUT(7)〔阻塞 accept + EOF 对端终结面——WaitWhat::
 /// UnixAccept 新阻塞源 + ERR_PIPE(13) 追加〕+ svc 预设面第 6 项
 /// SVC_COMPOSITOR；v0.20 = M42-UNIX3：新增 SYS_UNIXSOCK(42) unix
@@ -565,7 +616,7 @@ pub const SYS_EXEC: u64 = 17;
 /// v0.16 = M15：目录面五落点 MKDIR/REMOVE/READDIR/MOUNT/UMOUNT +
 /// 句柄面深化 DUP/FCNTL（CLOEXEC）+ NANOSLEEP 参数语义升级为 TSC 纳秒。
 /// v0.8 = SYS_QUOTA；v0.7 = 文件面六落点 + NANOSLEEP + 统一句柄面）。
-pub const ABI_VERSION: (u16, u16) = (0, 21);
+pub const ABI_VERSION: (u16, u16) = (0, 22);
 
 /// ---------------------------------------------------------------------------
 /// LXE1 v0 错误码表（具名化事实源，M25-C1）：
@@ -900,13 +951,25 @@ pub enum Syscall {
     /// [`SYS_UNIXSOCK`]）。指针类参数（名字/载荷/缓冲指针）属慢路径
     /// 语义（rdx），不在结构校验域内。
     UnixSock {
-        /// 操作码（0..=5——PAIR/BIND/CONNECT/ACCEPT/SEND/RECV）。
+        /// 操作码（0..=9——PAIR/BIND/CONNECT/ACCEPT/SEND/RECV/
+        /// ACCEPT_B/SHUT/SEND_FD/RECV_FD）。
         op: u64,
         /// 调用方句柄（ACCEPT/SEND/RECV 域；PAIR/BIND/CONNECT 忽略）。
         handle: u64,
         /// 名字长/载荷长/缓冲长（parse 域闸：BIND/CONNECT 1..=108、
         /// SEND/RECV 1..=64 KiB）。
         len: u64,
+    },
+    /// wl_shm 共享内存池域（v0.22，M42-ELF5 桌面链批次；见
+    /// [`SYS_SHM`]）。
+    Shm {
+        /// 操作码（0..=1——CREATE/MAP）。
+        op: u64,
+        /// CREATE：池尺寸字节（1..=[`SHM_SIZE_MAX`]）；MAP：池句柄。
+        a: u64,
+        /// MAP：映射窗虚地址（页对齐，[`SHM_VA_BASE`] 域内）；CREATE
+        /// 忽略。
+        b: u64,
     },
 }
 
@@ -1055,12 +1118,18 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
             value: a2,
         }),
         SYS_DEV_PIO => Err(AbiError::BadArgs),
-        SYS_UNIXSOCK if a0 <= USOCK_SHUT && unixsock_len_ok(a0, a3) => Ok(Syscall::UnixSock {
+        SYS_UNIXSOCK if a0 <= USOCK_RECV_FD && unixsock_len_ok(a0, a3) => Ok(Syscall::UnixSock {
             op: a0,
             handle: a1,
             len: a3,
         }),
         SYS_UNIXSOCK => Err(AbiError::BadArgs),
+        SYS_SHM if a0 <= SHM_MAP && shm_args_ok(a0, a1, a2) => Ok(Syscall::Shm {
+            op: a0,
+            a: a1,
+            b: a2,
+        }),
+        SYS_SHM => Err(AbiError::BadArgs),
         _ => Err(AbiError::UnknownSyscall),
     }
 }
@@ -1072,9 +1141,28 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
 /// PAIR/ACCEPT = 不校验（长度参数无语义）。
 fn unixsock_len_ok(op: u64, len: u64) -> bool {
     match op {
-        USOCK_PAIR | USOCK_ACCEPT | USOCK_ACCEPT_B | USOCK_SHUT => true,
+        USOCK_PAIR | USOCK_ACCEPT | USOCK_ACCEPT_B | USOCK_SHUT | USOCK_SEND_FD | USOCK_RECV_FD => {
+            true
+        }
         USOCK_BIND | USOCK_CONNECT => (1..=USOCK_NAME_MAX).contains(&len),
         USOCK_SEND | USOCK_RECV => (1..=USOCK_LEN_MAX).contains(&len),
+        _ => false,
+    }
+}
+
+/// [`SYS_SHM`] 参数域闸（parse 层结构校验）：CREATE = 尺寸
+/// 1..=[`SHM_SIZE_MAX`]；MAP = 句柄非零 + 虚地址页对齐且落
+/// [`SHM_VA_BASE`]..[`SHM_VA_LIMIT`] 窗（尺寸域内核侧复审——池实际
+/// 尺寸为映射预算源）。
+fn shm_args_ok(op: u64, a: u64, b: u64) -> bool {
+    match op {
+        SHM_CREATE => (1..=SHM_SIZE_MAX).contains(&a),
+        SHM_MAP => {
+            a != 0
+                && a <= 0xFFFF
+                && (SHM_VA_BASE..SHM_VA_LIMIT).contains(&b)
+                && b.is_multiple_of(0x1000)
+        }
         _ => false,
     }
 }
@@ -1445,7 +1533,7 @@ mod tests {
         assert_eq!(super::SYS_DUP, 31);
         assert_eq!(super::SYS_FCNTL, 32);
         assert_eq!(super::SYS_IMAGE_ENUM, 33);
-        assert_eq!(super::ABI_VERSION, (0, 21));
+        assert_eq!(super::ABI_VERSION, (0, 22));
         assert_eq!(super::SYS_TTY_GETCH, 34);
         assert_eq!(
             super::parse(super::SyscallRegs {
@@ -1928,12 +2016,25 @@ mod svc_abi_tests {
                 "op={op}：载荷长 > 64 KiB 拒收"
             );
         }
-        // op 越域拒收（8 起——6/7 自 M42-COMP4 起为 ACCEPT_B/SHUT 收录域）
+        // op 越域拒收（10 起——8/9 自 M42-ELF5 起为 SEND_FD/RECV_FD 收录域）
         assert_eq!(
-            super::parse(r(super::SYS_UNIXSOCK, [8, 0, 0, 0, 0])),
+            super::parse(r(super::SYS_UNIXSOCK, [10, 0, 0, 0, 0])),
             Err(super::AbiError::BadArgs),
-            "op 8 越域拒收"
+            "op 10 越域拒收"
         );
+        // SEND_FD(8)/RECV_FD(9)：M42-ELF5 fd 附带数据传递域——句柄透传
+        // + 长度无语义（ptr 域承载待传递句柄值，慢路径语义）
+        for op in [super::USOCK_SEND_FD, super::USOCK_RECV_FD] {
+            assert_eq!(
+                super::parse(r(super::SYS_UNIXSOCK, [op, 5, 7, 0, 0])),
+                Ok(super::Syscall::UnixSock {
+                    op,
+                    handle: 5,
+                    len: 0,
+                }),
+                "op={op}：M42-ELF5 fd 传递臂收录（len 无语义域）"
+            );
+        }
         assert_eq!(
             super::parse(r(super::SYS_UNIXSOCK, [u64::MAX, 0, 0, 0, 0])),
             Err(super::AbiError::BadArgs),
@@ -1948,6 +2049,92 @@ mod svc_abi_tests {
         assert!(
             super::usock_name_ok(b"/run/wayland-0"),
             "斜杠词法域放行（平名命名域 v0 无路径解析）"
+        );
+    }
+
+    /// SYS_SHM(43) parse 域（v0.22，M42-ELF5）：CREATE 尺寸域闸 +
+    /// MAP 句柄/虚地址域闸 + op 越域拒收（wl_shm 池域结构面）。
+    #[test]
+    fn parse_shm_ops() {
+        let r = |num: u64, args: [u64; 5]| super::SyscallRegs { num, args };
+        // CREATE：尺寸域闸（1..=2 MiB）
+        assert_eq!(
+            super::parse(r(super::SYS_SHM, [super::SHM_CREATE, 0x3E800, 0, 0, 0])),
+            Ok(super::Syscall::Shm {
+                op: super::SHM_CREATE,
+                a: 0x3E800,
+                b: 0,
+            }),
+            "CREATE：尺寸域内收录（320×200×4）"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_SHM, [super::SHM_CREATE, 0, 0, 0, 0])),
+            Err(super::AbiError::BadArgs),
+            "CREATE：尺寸 0 拒收"
+        );
+        assert_eq!(
+            super::parse(r(
+                super::SYS_SHM,
+                [super::SHM_CREATE, super::SHM_SIZE_MAX + 1, 0, 0, 0]
+            )),
+            Err(super::AbiError::BadArgs),
+            "CREATE：尺寸 > 2 MiB 拒收"
+        );
+        // MAP：句柄 + 虚地址域闸（页对齐 + SHM 窗内）
+        assert_eq!(
+            super::parse(r(
+                super::SYS_SHM,
+                [super::SHM_MAP, 3, super::SHM_VA_BASE, 0, 0]
+            )),
+            Ok(super::Syscall::Shm {
+                op: super::SHM_MAP,
+                a: 3,
+                b: super::SHM_VA_BASE,
+            }),
+            "MAP：窗基址收录"
+        );
+        assert_eq!(
+            super::parse(r(
+                super::SYS_SHM,
+                [super::SHM_MAP, 0, super::SHM_VA_BASE, 0, 0]
+            )),
+            Err(super::AbiError::BadArgs),
+            "MAP：句柄 0 拒收"
+        );
+        assert_eq!(
+            super::parse(r(
+                super::SYS_SHM,
+                [super::SHM_MAP, 3, super::SHM_VA_BASE + 0x800, 0, 0]
+            )),
+            Err(super::AbiError::BadArgs),
+            "MAP：非页对齐拒收"
+        );
+        assert_eq!(
+            super::parse(r(
+                super::SYS_SHM,
+                [super::SHM_MAP, 3, super::FB_VA_BASE, 0, 0]
+            )),
+            Err(super::AbiError::BadArgs),
+            "MAP：域外（LFB 窗）拒收"
+        );
+        assert_eq!(
+            super::parse(r(
+                super::SYS_SHM,
+                [super::SHM_MAP, 3, super::SHM_VA_LIMIT, 0, 0]
+            )),
+            Err(super::AbiError::BadArgs),
+            "MAP：窗上界拒收（半开区间）"
+        );
+        // op 越域拒收（2 起——0/1 为 CREATE/MAP 收录域）
+        assert_eq!(
+            super::parse(r(super::SYS_SHM, [2, 0, 0, 0, 0])),
+            Err(super::AbiError::BadArgs),
+            "op 2 越域拒收"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_SHM + 1, [0; 5])),
+            Err(super::AbiError::UnknownSyscall),
+            "号域 44 未注册拒收（编号冻结只增不改域探针）"
         );
     }
 }
