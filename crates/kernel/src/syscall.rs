@@ -514,6 +514,13 @@ extern "C" fn lumina_syscall_dispatch(frame: &mut SyscallFrame) -> u64 {
             // （IOPB/IOPL 硬件面挂账——kernel::dev 承接面）
             crate::dev::sys_dev_pio(op, port, value)
         }
+        Syscall::UnixSock { op, handle, len } => {
+            task::count_syscall(2);
+            // M42-UNIX3 unix socket 域：多路复用 op 面（PAIR/BIND/
+            // CONNECT/ACCEPT/SEND/RECV）——名字/载荷/缓冲指针 = rdx
+            // 慢路径语义（kernel::unixsock 承接面）
+            crate::unixsock::sys_unixsock(op, handle, len, frame.rdx)
+        }
         Syscall::Pipe { op } => {
             task::count_syscall(2);
             // M24-A1 shell 管道/分页面：捕获武装/排水/分页重放/弃置

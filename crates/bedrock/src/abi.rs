@@ -403,6 +403,58 @@ pub fn pio_op_decode(op: u64) -> Option<(u8, bool)> {
     }
 }
 
+/// **定位（M42-阶段二首笔——ADR-0004 混合态渐进：unix socket 域 +
+/// Wayland 协议语义面）**：AF_UNIX 流套接字域首割——socketpair 铸造
+/// 面 + 命名监听/连接面（bind/connect/accept）+ 流 I/O 面（send/recv
+/// 短写语义 + 阻塞接收）。对象模型复用通道纪律：套接字端点 = 能力
+/// 对象（句柄寻址 + IPC_SEND/IPC_RECV 权限位门禁——对象 id 段
+/// 0xC0DE_0000_0000_002X 与预设 0x…000X / fb 服务 0x…001X / 运行时
+/// 0x…0001_0000 正交），内核环缓冲承载字节流（对齐 ADR-0005「环归
+/// ostd::sync 白名单」——pulse 环归档先例同款手法）。
+///
+/// **多路复用 op 面**（[`SYS_DEV_PIO`] 同款手法——单号承载六操作）。
+/// 参数（寄存器直传）：rdi(a0) = op；rsi(a1) = 句柄（ACCEPT/SEND/RECV
+/// 域；PAIR 忽略）；rdx(a2) = 指针（慢路径语义——BIND/CONNECT 名字
+/// 指针 / SEND 载荷指针 / RECV 缓冲指针；PAIR/ACCEPT 忽略）；
+/// r10(a3) = 长度（BIND/CONNECT 名字长 1..=[`USOCK_NAME_MAX`] /
+/// SEND 载荷长 / RECV 缓冲长 1..=[`USOCK_LEN_MAX`]）。
+///
+/// 返回：PAIR = `(a<<32)|b` 双句柄封装；BIND/CONNECT/ACCEPT = 新句柄
+/// （低位装载形）；SEND/RECV = 流字节数（短写语义——满环回 0 = 重试
+/// 类，POSIX write/read 语义对齐）。错误域：[`ERR_CAP`]（句柄/权限）、
+/// [`ERR_EMPTY`]（accept 无 pending）、[`ERR_FULL`]（backlog 满）、
+/// [`ERR_TABLE`]、[`ERR_NOMEM`] + 新增 [`ERR_INUSE`]/[`ERR_NOENT`]；
+/// 名字词法越域 = `u64::MAX-1`（BadArgs 哨兵同面——parse 层域闸对齐）。
+pub const SYS_UNIXSOCK: u64 = 42;
+
+/// [`SYS_UNIXSOCK`] op：socketpair（铸连接对，双句柄装入调用方表）。
+pub const USOCK_PAIR: u64 = 0;
+/// [`SYS_UNIXSOCK`] op：bind/listen（命名监听登记——v0 bind 即 listen）。
+pub const USOCK_BIND: u64 = 1;
+/// [`SYS_UNIXSOCK`] op：connect（按名连接——pending 对端入监听者 backlog）。
+pub const USOCK_CONNECT: u64 = 2;
+/// [`SYS_UNIXSOCK`] op：accept（弹出 pending 连接装服务端句柄；v0 非阻塞）。
+pub const USOCK_ACCEPT: u64 = 3;
+/// [`SYS_UNIXSOCK`] op：send（流写入——短写语义，返回写入字节数）。
+pub const USOCK_SEND: u64 = 4;
+/// [`SYS_UNIXSOCK`] op：recv（流读取——空则阻塞，WaitWhat::UnixRecv）。
+pub const USOCK_RECV: u64 = 5;
+
+/// [`SYS_UNIXSOCK`] 名字词法上界（字节域；对齐 POSIX sun_path 108）。
+pub const USOCK_NAME_MAX: u64 = 108;
+/// [`SYS_UNIXSOCK`] 流载荷/缓冲上界（validate_user_slice 防拷贝预算域
+/// 同源——SEND/RECV 单调用 64 KiB 封顶）。
+pub const USOCK_LEN_MAX: u64 = 0x1_0000;
+
+/// 套接字名词法校验（fail-visible 注册面）：1..=[`USOCK_NAME_MAX`]
+/// 字节，ASCII 可打印域（0x21..=0x7E——空格/控制域拒收；平名命名域
+/// v0 无路径解析，斜杠词法域放行如实记档）。宿主可测纯函数
+/// （svc_name_ok 先例同款——词法域与语义域分立）。
+pub fn usock_name_ok(name: &[u8]) -> bool {
+    !(name.is_empty() || name.len() as u64 > USOCK_NAME_MAX)
+        && name.iter().all(|c| (0x21..=0x7E).contains(c))
+}
+
 /// [`SYS_FCNTL`] 命令：复制句柄（rdx = 新句柄号下界）。
 pub const F_DUPFD: u64 = 0;
 /// [`SYS_FCNTL`] 命令：读描述符旗标。
@@ -470,7 +522,9 @@ pub const OPEN_MODE_MASK: u64 = 0b1_1111;
 /// 无独立用户空间 → `ERR_CAP`；帧耗尽 → `ERR_NOMEM(9)`。
 pub const SYS_EXEC: u64 = 17;
 
-/// 系统调用 ABI 版本（v0.19 = M42-FBDEV1：新增 SYS_DEV_PIO(41) 用户态
+/// 系统调用 ABI 版本（v0.20 = M42-UNIX3：新增 SYS_UNIXSOCK(42) unix
+/// socket 域多路复用 op 面（socketpair/连接面/流 I/O 六 op——对象 id 段
+/// 0xC0DE_0000_0000_002X + 错误码 11/12 追加）；v0.19 = M42-FBDEV1：新增 SYS_DEV_PIO(41) 用户态
 /// 设备端口访问面（内核裁量注册表 v0——IOPB/IOPL 硬件面挂账）；
 /// v0.18 = M37-A1b：新增 SYS_FB_SURFACE(40) Surface
 /// 注册面（prism SurfaceTable→Stack 合成电气化承接——登记/更新/注销
@@ -491,7 +545,7 @@ pub const SYS_EXEC: u64 = 17;
 /// v0.16 = M15：目录面五落点 MKDIR/REMOVE/READDIR/MOUNT/UMOUNT +
 /// 句柄面深化 DUP/FCNTL（CLOEXEC）+ NANOSLEEP 参数语义升级为 TSC 纳秒。
 /// v0.8 = SYS_QUOTA；v0.7 = 文件面六落点 + NANOSLEEP + 统一句柄面）。
-pub const ABI_VERSION: (u16, u16) = (0, 19);
+pub const ABI_VERSION: (u16, u16) = (0, 20);
 
 /// ---------------------------------------------------------------------------
 /// LXE1 v0 错误码表（具名化事实源，M25-C1）：
@@ -526,6 +580,12 @@ pub const ERR_CHILD: u64 = 8;
 pub const ERR_NOMEM: u64 = 9;
 /// 错误码 10：映像号越界或映像装载失败（EXEC/IMAGE_ENUM 面）。
 pub const ERR_IMAGE: u64 = 10;
+/// 错误码 11：地址占用（SYS_UNIXSOCK BIND 同名监听已登记——
+/// `EADDRINUSE` 语义面；conduit 映射 `EADDRINUSE(98)`）。
+pub const ERR_INUSE: u64 = 11;
+/// 错误码 12：连接目标不存在（SYS_UNIXSOCK CONNECT 未登记名——
+/// `ECONNREFUSED` 语义同面；conduit 映射 `ECONNREFUSED(111)`）。
+pub const ERR_NOENT: u64 = 12;
 
 /// 寄存器快照形式的系统调用请求。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -812,6 +872,18 @@ pub enum Syscall {
         /// OUT 域写入值（宽度掩码；IN 域忽略）。
         value: u64,
     },
+    /// unix socket 域多路复用 op 面（v0.20，M42-UNIX3；见
+    /// [`SYS_UNIXSOCK`]）。指针类参数（名字/载荷/缓冲指针）属慢路径
+    /// 语义（rdx），不在结构校验域内。
+    UnixSock {
+        /// 操作码（0..=5——PAIR/BIND/CONNECT/ACCEPT/SEND/RECV）。
+        op: u64,
+        /// 调用方句柄（ACCEPT/SEND/RECV 域；PAIR/BIND/CONNECT 忽略）。
+        handle: u64,
+        /// 名字长/载荷长/缓冲长（parse 域闸：BIND/CONNECT 1..=108、
+        /// SEND/RECV 1..=64 KiB）。
+        len: u64,
+    },
 }
 
 /// 从寄存器快照解析调用意图。只做结构校验，不做内存访问（由慢路径完成）。
@@ -959,7 +1031,27 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
             value: a2,
         }),
         SYS_DEV_PIO => Err(AbiError::BadArgs),
+        SYS_UNIXSOCK if a0 <= USOCK_RECV && unixsock_len_ok(a0, a3) => Ok(Syscall::UnixSock {
+            op: a0,
+            handle: a1,
+            len: a3,
+        }),
+        SYS_UNIXSOCK => Err(AbiError::BadArgs),
         _ => Err(AbiError::UnknownSyscall),
+    }
+}
+
+/// [`SYS_UNIXSOCK`] 长度域闸（parse 层结构校验）：BIND/CONNECT = 名字
+/// 长 1..=[`USOCK_NAME_MAX`]（词法域由 [`usock_name_ok`] 在内核注册面
+/// 复审——parse 只看长度不看内容）；SEND/RECV = 载荷/缓冲长
+/// 1..=[`USOCK_LEN_MAX`]（validate_user_slice 预算域同源）；
+/// PAIR/ACCEPT = 不校验（长度参数无语义）。
+fn unixsock_len_ok(op: u64, len: u64) -> bool {
+    match op {
+        USOCK_PAIR | USOCK_ACCEPT => true,
+        USOCK_BIND | USOCK_CONNECT => (1..=USOCK_NAME_MAX).contains(&len),
+        USOCK_SEND | USOCK_RECV => (1..=USOCK_LEN_MAX).contains(&len),
+        _ => false,
     }
 }
 
@@ -1329,7 +1421,7 @@ mod tests {
         assert_eq!(super::SYS_DUP, 31);
         assert_eq!(super::SYS_FCNTL, 32);
         assert_eq!(super::SYS_IMAGE_ENUM, 33);
-        assert_eq!(super::ABI_VERSION, (0, 19));
+        assert_eq!(super::ABI_VERSION, (0, 20));
         assert_eq!(super::SYS_TTY_GETCH, 34);
         assert_eq!(
             super::parse(super::SyscallRegs {
@@ -1704,5 +1796,107 @@ mod svc_abi_tests {
         assert_eq!(super::pio_op_decode(super::PIO_OUT32), Some((4, true)));
         assert_eq!(super::pio_op_decode(6), None);
         assert_eq!(super::pio_op_decode(u64::MAX), None);
+    }
+
+    /// SYS_UNIXSOCK(42) parse 域（v0.20，M42-UNIX3）：六 op 收录 +
+    /// 名字/载荷长度域闸 + op 越域拒收 + 词法闸对账（usock_name_ok
+    /// 可打印域 + sun_path 上界）。
+    #[test]
+    fn parse_unixsock_ops() {
+        let r = |num: u64, args: [u64; 5]| super::SyscallRegs { num, args };
+        // PAIR：长度参数无语义（零值透传）
+        assert_eq!(
+            super::parse(r(super::SYS_UNIXSOCK, [super::USOCK_PAIR, 0, 0, 0, 0])),
+            Ok(super::Syscall::UnixSock {
+                op: super::USOCK_PAIR,
+                handle: 0,
+                len: 0,
+            }),
+            "PAIR：长度参数无语义域收录"
+        );
+        // BIND/CONNECT：名字长域闸（1..=108）
+        for op in [super::USOCK_BIND, super::USOCK_CONNECT] {
+            assert_eq!(
+                super::parse(r(super::SYS_UNIXSOCK, [op, 0, 0x3000, 9, 0])),
+                Ok(super::Syscall::UnixSock {
+                    op,
+                    handle: 0,
+                    len: 9,
+                }),
+                "op={op}：名字长域内收录（wayland-0 = 9 字节）"
+            );
+            assert_eq!(
+                super::parse(r(super::SYS_UNIXSOCK, [op, 0, 0x3000, 0, 0])),
+                Err(super::AbiError::BadArgs),
+                "op={op}：名字长 0 拒收"
+            );
+            assert_eq!(
+                super::parse(r(super::SYS_UNIXSOCK, [op, 0, 0x3000, 109, 0])),
+                Err(super::AbiError::BadArgs),
+                "op={op}：名字长 > sun_path(108) 拒收"
+            );
+            assert_eq!(
+                super::parse(r(super::SYS_UNIXSOCK, [op, 0, 0x3000, 108, 0])),
+                Ok(super::Syscall::UnixSock {
+                    op,
+                    handle: 0,
+                    len: 108,
+                }),
+                "op={op}：名字长 = sun_path 上界收录"
+            );
+        }
+        // ACCEPT：句柄透传 + 长度无语义
+        assert_eq!(
+            super::parse(r(super::SYS_UNIXSOCK, [super::USOCK_ACCEPT, 5, 0, 0, 0])),
+            Ok(super::Syscall::UnixSock {
+                op: super::USOCK_ACCEPT,
+                handle: 5,
+                len: 0,
+            }),
+            "ACCEPT：句柄透传"
+        );
+        // SEND/RECV：载荷/缓冲长域闸（1..=64 KiB）
+        for op in [super::USOCK_SEND, super::USOCK_RECV] {
+            assert_eq!(
+                super::parse(r(super::SYS_UNIXSOCK, [op, 3, 0x2000, 64, 0])),
+                Ok(super::Syscall::UnixSock {
+                    op,
+                    handle: 3,
+                    len: 64,
+                }),
+                "op={op}：载荷长域内收录"
+            );
+            assert_eq!(
+                super::parse(r(super::SYS_UNIXSOCK, [op, 3, 0x2000, 0, 0])),
+                Err(super::AbiError::BadArgs),
+                "op={op}：载荷长 0 拒收"
+            );
+            assert_eq!(
+                super::parse(r(super::SYS_UNIXSOCK, [op, 3, 0x2000, 0x1_0001, 0])),
+                Err(super::AbiError::BadArgs),
+                "op={op}：载荷长 > 64 KiB 拒收"
+            );
+        }
+        // op 越域拒收（6 起）
+        assert_eq!(
+            super::parse(r(super::SYS_UNIXSOCK, [6, 0, 0, 0, 0])),
+            Err(super::AbiError::BadArgs),
+            "op 6 越域拒收"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_UNIXSOCK, [u64::MAX, 0, 0, 0, 0])),
+            Err(super::AbiError::BadArgs),
+            "op u64::MAX 越域拒收"
+        );
+        // 词法闸对账：可打印域 + 上界 + 空域
+        assert!(super::usock_name_ok(b"wayland-0"), "标准套接字名放行");
+        assert!(super::usock_name_ok(&[b'a'; 108]), "sun_path 上界放行");
+        assert!(!super::usock_name_ok(&[b'a'; 109]), "越上界拒收");
+        assert!(!super::usock_name_ok(b""), "空名拒收");
+        assert!(!super::usock_name_ok(b"has space"), "空格域拒收");
+        assert!(
+            super::usock_name_ok(b"/run/wayland-0"),
+            "斜杠词法域放行（平名命名域 v0 无路径解析）"
+        );
     }
 }

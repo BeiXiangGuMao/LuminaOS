@@ -118,6 +118,8 @@ pub mod errno {
 /// | ERR_CHILD(8) | 无匹配子任务 | ECHILD(10) | 无此子进程 |
 /// | ERR_NOMEM(9) | 内存耗尽 | ENOMEM(12) | 内存不足 |
 /// | ERR_IMAGE(10) | 映像装载失败 | ENOEXEC(8) | 格式错误 |
+/// | ERR_INUSE(11) | 地址占用 | EADDRINUSE(98) | 套接字名占用（M42-UNIX3） |
+/// | ERR_NOENT(12) | 连接目标不存在 | ECONNREFUSED(111) | 连接拒同面（M42-UNIX3） |
 ///
 /// 哨兵域（`u64::MAX`/`u64::MAX-1`）与成功(0)返回 `None`（不可翻译——
 /// 调用方自行按域处理，兼容层不越权断言）。
@@ -133,6 +135,11 @@ pub fn err_to_errno(code: u64) -> Option<i32> {
         abi::ERR_CHILD => errno::ECHILD,
         abi::ERR_NOMEM => errno::ENOMEM,
         abi::ERR_IMAGE => errno::ENOEXEC,
+        // M42-UNIX3（v0.20）：unix socket 域新增码——语义面映射
+        // （ERR_INUSE = EADDRINUSE 同名监听占用 / ERR_NOENT =
+        // ECONNREFUSED 连接目标不存在语义同面）。
+        abi::ERR_INUSE => errno::EADDRINUSE,
+        abi::ERR_NOENT => errno::ECONNREFUSED,
         _ => return None,
     };
     Some(errno)
@@ -558,7 +565,7 @@ mod tests {
     /// 未登记 errno → None（透传域）+ 哨兵/成功 → None。
     #[test]
     fn errno_mapping_full_coverage() {
-        // 正向：LXE1 v0 全表 1..=10（10 项）
+        // 正向：LXE1 v0 全表 1..=12（12 项——M42-UNIX3 追加 11/12）
         assert_eq!(err_to_errno(abi::ERR_CAP), Some(1)); // EPERM
         assert_eq!(err_to_errno(abi::ERR_EMPTY), Some(11)); // EAGAIN
         assert_eq!(err_to_errno(abi::ERR_DERIVE), Some(1)); // EPERM（收敛）
@@ -569,12 +576,14 @@ mod tests {
         assert_eq!(err_to_errno(abi::ERR_CHILD), Some(10)); // ECHILD
         assert_eq!(err_to_errno(abi::ERR_NOMEM), Some(12)); // ENOMEM
         assert_eq!(err_to_errno(abi::ERR_IMAGE), Some(8)); // ENOEXEC
-                                                           // 域外：成功(0)/哨兵/越界 → None
+        assert_eq!(err_to_errno(abi::ERR_INUSE), Some(98)); // EADDRINUSE
+        assert_eq!(err_to_errno(abi::ERR_NOENT), Some(111)); // ECONNREFUSED
+                                                             // 域外：成功(0)/哨兵/越界 → None
         assert_eq!(err_to_errno(0), None);
         assert_eq!(err_to_errno(u64::MAX), None);
         assert_eq!(err_to_errno(u64::MAX - 1), None);
-        assert_eq!(err_to_errno(11), None);
-        // 反向：登记 8 项 + 未登记透传域
+        assert_eq!(err_to_errno(13), None); // 12 后首未登记号
+                                            // 反向：登记 8 项 + 未登记透传域
         assert_eq!(errno_to_err(1), Some(abi::ERR_CAP));
         assert_eq!(errno_to_err(11), Some(abi::ERR_EMPTY));
         assert_eq!(errno_to_err(3), Some(abi::ERR_TARGET));

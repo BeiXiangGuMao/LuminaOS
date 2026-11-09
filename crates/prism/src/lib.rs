@@ -408,6 +408,13 @@ pub struct ComposeStats {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 pub mod compute;
 
+/// M42-UNIX3：Wayland wire 协议解析壳 v0——**非 test 门控域**（与
+/// [`compute`] 的纯宿主域口径区分如实记档：compute 无硬件电气可挂；
+/// wayland 的电气面 = bedrock abi v0.20 SYS_UNIXSOCK(42) 套接字域已
+/// 随阶段二在环，语义面对内核可消费——t103 (g) 相位编组/解析回环
+/// 活体 + 阶段三合成器车道预置）。
+pub mod wayland;
+
 #[cfg(test)]
 #[allow(clippy::expect_used)] // M36-A1 既有测试域——S2 all-targets 闸随批标注
 mod tests {

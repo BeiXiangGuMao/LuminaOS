@@ -801,18 +801,21 @@ pub fn sys_write(handle: u64, buf_ptr: u64, len: u64) -> u64 {
     code
 }
 
-/// SYS_CLOSE 主体（M13-②；**M15-② 深化；M35-BBa 管道分支**）：句柄回收
-/// （任务表 + 全局槽 + 对象面收敛）。四分支：
+/// SYS_CLOSE 主体（M13-②；**M15-② 深化；M35-BBa 管道分支；M42-UNIX3
+/// socket 分支**）：句柄回收（任务表 + 全局槽 + 对象面收敛）。五分支：
 /// 1. 文件对象：撤销全局槽后按 [`caps_refcount`] 判定——仍有存活引用
 ///    （dup 副本/跨任务授予/fork 继承）则对象保留（关闭一副本不影响
 ///    其余副本，POSIX dup 语义），归零才释放注册表槽；
 /// 2. 通道对象（[`crate::ipc::is_channel_object`]）：**通道句柄关闭
 ///    落点**（v0 bind 存续语义补全）——句柄 + 全局槽回收，通道对象
 ///    （环对 + 注册表槽）存续不回收（bind 存续纪律不变）；
-/// 3. 管道端对象（M35-BBa）：撤销全局槽后按 [`caps_refcount`] 判定——
+/// 3. socket 对象（[`crate::unixsock::is_socket_object`]，M42-UNIX3）：
+///    端点/监听者句柄关闭落点——句柄 + 全局槽回收，对象存续不回收
+///    （v0 注册表存续纪律；EOF/回收面随阶段三挂账）；
+/// 4. 管道端对象（M35-BBa）：撤销全局槽后按 [`caps_refcount`] 判定——
 ///    端引用归零才释放 PIPES 注册表槽（EOF/EPIPE 判定键随引用计数
 ///    动态收敛，无需显式端闭标记）；
-/// 4. 其余对象（主身份句柄等）：原样保留回插，EBADF（绝不消费他面
+/// 5. 其余对象（主身份句柄等）：原样保留回插，EBADF（绝不消费他面
 ///    ——段位/注册表双重守门）。
 ///
 /// 成功路径同时清除该句柄 CLOEXEC 旗标（同号复用不继承陈值）。
@@ -843,6 +846,14 @@ pub fn sys_close(handle: u64) -> u64 {
                     }
                     Ok(o) if crate::ipc::is_channel_object(o) => {
                         // M15-② 通道句柄关闭落点：句柄/能力回收，对象存续
+                        let _ = crate::caps::table().lock().revoke(g);
+                        task::clear_hflag(caller, h);
+                        0
+                    }
+                    Ok(o) if crate::unixsock::is_socket_object(o) => {
+                        // M42-UNIX3 socket 句柄关闭落点（端点/监听者同一
+                        // 守门面）：句柄/能力回收，对象存续（v0 注册表
+                        // 存续纪律——通道分支同款；EOF/回收面随阶段三挂账）
                         let _ = crate::caps::table().lock().revoke(g);
                         task::clear_hflag(caller, h);
                         0

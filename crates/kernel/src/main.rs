@@ -57,6 +57,7 @@ mod syscall;
 mod task;
 mod timer;
 mod tty;
+mod unixsock;
 mod user;
 mod vfs;
 mod vmm;
@@ -83,8 +84,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102）。
-const SELFTEST_TOTAL: usize = 102;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103）。
+const SELFTEST_TOTAL: usize = 103;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7067,6 +7068,21 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t102 = t102_run(&mut log);
     report(&mut log, t102, "fbdev-service");
 
+    // t103) unix socket 域 + Wayland wire 语义面活体（M42-阶段二 笔③
+    //       「AF_UNIX socketpair/连接面 + Wayland wire 协议解析壳」）：
+    //       socketpair 铸造对账〔对象 id 段正交〕→ 负例面〔坏句柄
+    //       ERR_CAP / 未登记名 ERR_NOENT / 词法域 Name / dup bind
+    //       ERR_INUSE / parse 越域 BadArgs〕→ 连接面 bind/connect/
+    //       accept 三柄在环 + 回环 I/O → 阻塞唤醒链（echo 内核任务
+    //       WaitWhat::UnixRecv 双向唤醒 + 取证戳增量）→ 流短写语义
+    //       〔满环 0 短写 + 计账精确〕→ Wayland wire 编组/解析回环
+    //       〔prism::wayland bind 特例签名 + global 事件——语义面对
+    //       内核可消费显形〕→ close 分支〔句柄回收 + 对象存续纪律〕。
+    //       LUMINA-T103-UNIX/OK。阶段二两域落域——阶段三进程面随用户
+    //       裁决开工。
+    let t103 = t103_run(&mut log);
+    report(&mut log, t103, "unix-socket");
+
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
     //      pf_hook 入口扩判「U 位 或 CR2 落增长栈窗口域」——CPL0 用户
@@ -8716,6 +8732,249 @@ fn t102_run(log: &mut DualLog) -> bool {
     );
     if ok {
         let _ = writeln!(log, "LUMINA-T102-OK");
+    }
+    ok
+}
+
+/// t103 unix socket 域 + Wayland wire 语义面活体执行体（M42-UNIX3 阶段
+/// 二 笔③）：独立函数承载（t93/t101/t102 帧形态纪律——自检主函数栈帧
+/// 零扰动）。kernel::unixsock 域内函数直驱 + syscall 慢路径负例探针 +
+/// prism::wayland 语义面回环——三域同一活体取证。
+fn t103_run(log: &mut DualLog) -> bool {
+    use bedrock::abi::{ERR_CAP, SYS_UNIXSOCK, USOCK_SEND};
+    use prism::wayland as wl;
+    let mut ok = true;
+    let me = task::current_task_id();
+    let s0 = unixsock::usock_stamps();
+    let su0 = unixsock::sockets_usage();
+    // 句柄 → 能力对象 id 解析（对账面——段正交性断言数据源）
+    let obj_of = |h: usize| -> Option<u64> {
+        task::with_task_handles(me, |t| t[h])
+            .and_then(|s| s)
+            .and_then(|g| crate::caps::table().lock().get(g).ok())
+            .map(|c| c.object())
+    };
+    // (a) socketpair 铸造对账：双句柄 + 对象 id 段正交（0xC0DE…002X）
+    let (ha, hb) = match unixsock::sock_pair(me) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = writeln!(log, "t103: sock_pair failed ({:?})", e);
+            return false;
+        }
+    };
+    let (obj_a, obj_b) = (obj_of(ha), obj_of(hb));
+    let seg_ok = obj_a.is_some_and(|o| {
+        (unixsock::USOCK_OBJECT_BASE..unixsock::USOCK_OBJECT_BASE + 64).contains(&o)
+    }) && obj_b.is_some_and(|o| {
+        (unixsock::USOCK_OBJECT_BASE..unixsock::USOCK_OBJECT_BASE + 64).contains(&o)
+    }) && obj_a != obj_b
+        && unixsock::is_socket_object(obj_a.unwrap_or(0))
+        && unixsock::is_socket_object(obj_b.unwrap_or(0));
+    ok &= seg_ok;
+    let su1 = unixsock::sockets_usage();
+    ok &= su1.0 == su0.0 + 2;
+    let _ = writeln!(
+        log,
+        "t103: pair-ok={seg_ok} h=({ha},{hb}) obj=({obj_a:?},{obj_b:?}) usage={}/{}",
+        su1.0, su1.1
+    );
+    // (b) 负例面：坏句柄 Cap / 未登记名 NoEnt / 词法域 Name / parse 域
+    let neg_cap = unixsock::sock_send(me, 63, b"x");
+    ok &= neg_cap == Err(unixsock::UsockError::Cap);
+    let neg_connect = unixsock::sock_connect(me, b"no-such-sock");
+    ok &= neg_connect == Err(unixsock::UsockError::NoEnt);
+    let neg_name = unixsock::sock_bind(me, b"has space");
+    ok &= neg_name == Err(unixsock::UsockError::Name);
+    // syscall 慢路径门禁先序探针：句柄域先于载荷域（ipc::sys_send F1/F2
+    // 先于 F4 同款——ptr/len 未及校验即 ERR_CAP）
+    let sys_neg = unixsock::sys_unixsock(USOCK_SEND, 63, 8, 0);
+    ok &= sys_neg == ERR_CAP;
+    // parse 层越域闸显形（bedrock abi v0.20——op 6 拒收）
+    let parse_neg = bedrock::abi::parse(bedrock::abi::SyscallRegs {
+        num: SYS_UNIXSOCK,
+        args: [6, 0, 0, 0, 0],
+    });
+    ok &= parse_neg == Err(bedrock::abi::AbiError::BadArgs);
+    let _ = writeln!(
+        log,
+        "t103: neg cap={cap} connect={conn} name={name} sys-face={sys_neg:#x} parse-gate={pgate}",
+        cap = neg_cap == Err(unixsock::UsockError::Cap),
+        conn = neg_connect == Err(unixsock::UsockError::NoEnt),
+        name = neg_name == Err(unixsock::UsockError::Name),
+        pgate = parse_neg == Err(bedrock::abi::AbiError::BadArgs),
+    );
+    // (c) 连接面：bind 即 listen → dup bind InUse → connect NoEnt/在环
+    //     → accept 三柄成形（listener/client/server）
+    let hl = match unixsock::sock_bind(me, b"wayland-0") {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = writeln!(log, "t103: bind failed ({:?})", e);
+            return false;
+        }
+    };
+    let lu = unixsock::listeners_usage();
+    ok &= lu.0 == 1;
+    ok &= unixsock::sock_bind(me, b"wayland-0") == Err(unixsock::UsockError::InUse);
+    ok &= unixsock::sock_accept(me, ha as u64) == Err(unixsock::UsockError::Cap); // 端点非监听者
+    ok &= unixsock::sock_accept(me, hl as u64) == Err(unixsock::UsockError::Empty); // backlog 空
+    let hc = match unixsock::sock_connect(me, b"wayland-0") {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = writeln!(log, "t103: connect failed ({:?})", e);
+            return false;
+        }
+    };
+    let hs = match unixsock::sock_accept(me, hl as u64) {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = writeln!(log, "t103: accept failed ({:?})", e);
+            return false;
+        }
+    };
+    let conn_ok = obj_of(hc).is_some() && obj_of(hs).is_some();
+    ok &= conn_ok;
+    let _ = writeln!(
+        log,
+        "t103: connect-ok={conn_ok} hl={hl} hc={hc} hs={hs} accept-empty/cap 负例在环"
+    );
+    // (d) 连接面回环 I/O：client → server → client 字节对账
+    let mut rbuf = [0u8; 64];
+    let n1 = unixsock::sock_send(me, hc as u64, b"wl-display!").unwrap_or(0);
+    let n2 = unixsock::sock_recv(me, hs as u64, &mut rbuf).unwrap_or(0);
+    let io_ok = n1 == 11 && n2 == 11 && &rbuf[..11] == b"wl-display!";
+    ok &= io_ok;
+    let n3 = unixsock::sock_send(me, hs as u64, b"compositor").unwrap_or(0);
+    let n4 = unixsock::sock_recv(me, hc as u64, &mut rbuf).unwrap_or(0);
+    let io_ok2 = n3 == 10 && n4 == 10 && &rbuf[..10] == b"compositor";
+    ok &= io_ok2;
+    let _ = writeln!(log, "t103: io-ok={io_ok} io-ok2={io_ok2} (连接面双向往返)");
+    // (e) 阻塞唤醒链：echo 内核任务 UnixRecv 双向唤醒（编舞：spawn →
+    //     yield 让 worker 先阻塞 → send 唤醒 → kmain 阻塞收 → echo 唤醒）
+    let (h2a, h2b) = match unixsock::sock_pair(me) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = writeln!(log, "t103: pair2 failed ({:?})", e);
+            return false;
+        }
+    };
+    let Some(obj_b2) = obj_of(h2b) else {
+        let _ = writeln!(log, "t103: pair2 resolve failed");
+        return false;
+    };
+    unixsock::arm_echo_worker(obj_b2);
+    let wid = task::spawn("usock-echo", unixsock::echo_worker_body);
+    // 编舞锚：有界等 worker 先行阻塞（计时器抢占域——yield_now 对等
+    // 优先级无让渡语义〔pick_best 择优〕实测揭雷随行；t102 240 拍先例
+    // 同款域吸收）
+    let dlw = ostd::time::now() + 240;
+    let s1 = loop {
+        let s = unixsock::usock_stamps();
+        if s.3 > s0.3 || ostd::time::now() >= dlw {
+            break s;
+        }
+        core::hint::spin_loop();
+    };
+    let worker_blocked = s1.3 > s0.3;
+    let n5 = unixsock::sock_send(me, h2a as u64, b"ping-wayland").unwrap_or(0);
+    // kmain 阻塞收（worker echo 唤醒链终点——USOCK_WAKES 取证）
+    let n6 = unixsock::sock_recv(me, h2a as u64, &mut rbuf).unwrap_or(0);
+    let echo_ok = n5 == 12 && n6 == 12 && &rbuf[..12] == b"ping-wayland";
+    ok &= worker_blocked && echo_ok;
+    let s2 = unixsock::usock_stamps();
+    let wakes_delta = s2.4 - s0.4;
+    let blocks_delta = s2.3 - s0.3;
+    let served = unixsock::echo_served();
+    // 唤醒链取证不变式（TCG 调度两形皆合法，同链异序如实放宽）：
+    // (a) worker 阻塞 + kmain 阻塞收 → wakes=2/blocks=2；
+    // (b) worker 阻塞 + kmain 探针命中（echo 先落环）→ wakes=1/blocks=1
+    //     ——send→wake_tasks(UnixRecv)→worker 复苏的定向唤醒电证据同链。
+    ok &= served == 1 && wakes_delta >= 1 && blocks_delta >= 1;
+    let _ = writeln!(
+        log,
+        "t103: echo-ok={echo_ok} blocked={worker_blocked} blocks={blocks_delta} wakes={wakes_delta} served={served} pid={wid}"
+    );
+    // (f) 流短写语义：满环 0 短写 + 计账精确（4096 = 环容量）
+    let fill = [0xA5u8; unixsock::USOCK_BUF];
+    let full_n = unixsock::sock_send(me, h2a as u64, &fill).unwrap_or(0);
+    let over_n = unixsock::sock_send(me, h2a as u64, b"overflow").unwrap_or(0);
+    let short_ok = full_n == unixsock::USOCK_BUF && over_n == 0;
+    let mut drain = [0u8; unixsock::USOCK_BUF];
+    let mut drained = 0usize;
+    while drained < unixsock::USOCK_BUF {
+        let n = unixsock::sock_recv(me, h2b as u64, &mut drain[drained..]).unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+        drained += n;
+    }
+    let after_n = unixsock::sock_send(me, h2a as u64, b"resumed").unwrap_or(0);
+    let resumed_ok = after_n == 7;
+    ok &= short_ok && drained == unixsock::USOCK_BUF && resumed_ok;
+    let send_bytes_delta = s2.1 - s0.1;
+    let _ = writeln!(
+        log,
+        "t103: short-write-ok={short_ok} full={full_n} over={over_n} drained={drained} resumed={resumed_ok} send-bytes={send_bytes_delta}"
+    );
+    // (g) Wayland wire 语义面回环（prism::wayland 对内核可消费显形——
+    //     bind 特例签名 + global 事件 + done 事件三编组）
+    let mut wb = [0u8; 128];
+    let mut wire_ok = true;
+    match wl::encode_registry_bind(&mut wb, 2, 17, "wl_compositor", 4, 5) {
+        Ok(_) => match wl::parse_message(&wb, wl::SIG_REGISTRY_BIND) {
+            Ok(m) => {
+                wire_ok &= m.header.object_id == 2
+                    && m.header.opcode == wl::registry::REQ_BIND
+                    && m.args[0] == Some(wl::WlArg::Uint(17))
+                    && m.args[1] == Some(wl::WlArg::Str(b"wl_compositor"))
+                    && m.args[2] == Some(wl::WlArg::Uint(4))
+                    && m.args[3] == Some(wl::WlArg::NewId(5));
+            }
+            Err(_) => wire_ok = false,
+        },
+        Err(_) => wire_ok = false,
+    }
+    match wl::encode_registry_global_event(&mut wb, 2, 9, wl::WlIface::Compositor, 4) {
+        Ok(_) => match wl::parse_message(&wb, wl::SIG_REGISTRY_GLOBAL) {
+            Ok(m) => {
+                wire_ok &= m.header.opcode == wl::registry::EV_GLOBAL
+                    && m.args[1] == Some(wl::WlArg::Str(b"wl_compositor"));
+            }
+            Err(_) => wire_ok = false,
+        },
+        Err(_) => wire_ok = false,
+    }
+    match wl::encode_callback_done_event(&mut wb, 7, 0x51) {
+        Ok(_) => match wl::parse_message(&wb, wl::SIG_CALLBACK_DONE) {
+            Ok(m) => {
+                wire_ok &= m.header.opcode == wl::callback::EV_DONE
+                    && m.args[0] == Some(wl::WlArg::Uint(0x51));
+            }
+            Err(_) => wire_ok = false,
+        },
+        Err(_) => wire_ok = false,
+    }
+    ok &= wire_ok;
+    let _ = writeln!(log, "t103: wire-ok={wire_ok} (bind/global/done 三编组回环)");
+    // (h) close 分支：句柄回收 + 对象存续纪律（通道分支同款显形）
+    let close_ok = vfs::sys_close(hb as u64) == 0;
+    let gone_cap = unixsock::sock_recv(me, hb as u64, &mut rbuf) == Err(unixsock::UsockError::Cap);
+    let obj_survives = unixsock::is_socket_object(obj_b.unwrap_or(0));
+    ok &= close_ok && gone_cap && obj_survives;
+    ok &= vfs::sys_close(hl as u64) == 0;
+    // 监听者对象存续 → dup bind 仍 InUse（名字域存续纪律二显形）
+    ok &= unixsock::sock_bind(me, b"wayland-0") == Err(unixsock::UsockError::InUse);
+    let _ = writeln!(
+        log,
+        "t103: close-ok={close_ok} cap-gone={gone_cap} obj-survives={obj_survives} name-survives={ns}",
+        ns = unixsock::sock_bind(me, b"wayland-0") == Err(unixsock::UsockError::InUse),
+    );
+    // 汇总取证行（双面板标记）
+    let _ = writeln!(
+        log,
+        "LUMINA-T103-UNIX pair={seg_ok} conn={conn_ok} echo={echo_ok} wire={wire_ok} close={close_ok}"
+    );
+    if ok {
+        let _ = writeln!(log, "LUMINA-T103-OK");
     }
     ok
 }

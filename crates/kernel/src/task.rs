@@ -180,6 +180,14 @@ pub enum WaitWhat {
     /// 醒，登记窗探针丢失唤醒免疫——v0 单等待者契约：init shell / ash
     /// 唯一 tty 消费方，多任务并发读挂账）。
     TtyRead,
+    /// unix socket 阻塞读（M42-UNIX3 阶段二）：等待目标端点接收环出
+    /// 数据（对端 send 成功落环即定向唤醒；object = 端点对象 id
+    /// 〔0xC0DE…002X 段〕——探针 = `len()` 非消费读数，丢失唤醒
+    /// 免疫同款）。
+    UnixRecv {
+        /// 等待端点对象 id。
+        object: u64,
+    },
 }
 
 /// 任务入口函数指针。
@@ -2270,8 +2278,8 @@ pub fn task_ppid(id: usize) -> usize {
 
 /// 任务阻塞等待对象类别诊断戳（M40-ASH2 滞点标本取证面；task_debug_
 /// state 同款诊断域）：0 无 1 Swap 2 Child 3 IpcRecv 4 Timer 5 PipeRead
-/// 6 PipeWrite 7 TtyRead——滞域 H2（内核无声 Blocked）判别面（Timer =
-/// t52 后唤醒链退役域死锁标本）。
+/// 6 PipeWrite 7 TtyRead 8 UnixRecv（M42-UNIX3）——滞域 H2（内核无声
+/// Blocked）判别面（Timer = t52 后唤醒链退役域死锁标本）。
 pub fn task_debug_wait(id: usize) -> u8 {
     let _w = IntWindow::new();
     let s = sched_lock!();
@@ -2286,6 +2294,7 @@ pub fn task_debug_wait(id: usize) -> u8 {
             Some(WaitWhat::PipeRead { .. }) => 5,
             Some(WaitWhat::PipeWrite { .. }) => 6,
             Some(WaitWhat::TtyRead) => 7,
+            Some(WaitWhat::UnixRecv { .. }) => 8,
         },
     }
 }
