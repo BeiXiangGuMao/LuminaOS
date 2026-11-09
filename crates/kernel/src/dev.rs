@@ -60,23 +60,37 @@ static PIO_LAST_PORT: AtomicU64 = AtomicU64::new(0);
 static PIO_LAST_VALUE: AtomicU64 = AtomicU64::new(0);
 static PIO_LAST_OP: AtomicU64 = AtomicU64::new(0);
 
-/// 授权铸造（fail-visible 全数显形）：区间闸 → 重复闸 → 满容闸。
-/// 调用域 = boot/spawn 路径（内核裁量面）——ring3 自授通道不存在。
+/// 授权铸造（fail-visible 显形）：区间闸 → **幂等闸**（同 pid 同区间 →
+/// 幂等放行返回既有槽位——任务槽位复用再授予面：t101 fbdev 与 t102
+/// 常驻服务序贯同槽〔spawn 槽位回收复用〕，adopt_user 幂等同 pid 先例
+/// 同款；异 pid 同区间 / 同 pid 异区间维持 AlreadyGranted 拒——
+/// fail-visible）→ 满容闸。调用域 = boot/spawn 路径（内核裁量面）——
+/// ring3 自授通道不存在。
 pub fn pio_grant(pid: u64, lo: u16, hi: u16) -> Result<usize, PioGrantError> {
     // 1) 区间闸
     if lo > hi {
         return Err(PioGrantError::BadRange);
     }
     let mut grants = PIO_GRANTS.lock();
-    // 2) 重复闸（同 pid 同区间——幂等改写拒绝，fail-visible）
+    // 2) 幂等闸（同 pid 同区间 → 既有槽位幂等放行——M42-FBSVC2：t101
+    //    fbdev 退出后任务槽位被 t102 常驻服务复用，原「重复授予即拒」
+    //    语义把槽位复用误判为改写；幂等放行 = 授予面收敛于最终态）
+    if let Some(i) = grants.iter().enumerate().find_map(|(i, g)| {
+        g.as_ref()
+            .filter(|g| g.pid == pid && g.lo == lo && g.hi == hi)
+            .map(|_| i)
+    }) {
+        return Ok(i);
+    }
+    // 3) 冲突闸（异 pid 同区间 / 同 pid 异区间改写——拒绝）
     if grants
         .iter()
         .flatten()
-        .any(|g| g.pid == pid && g.lo == lo && g.hi == hi)
+        .any(|g| g.pid == pid || (g.lo == lo && g.hi == hi))
     {
         return Err(PioGrantError::AlreadyGranted);
     }
-    // 3) 满容闸 + 槽位复用
+    // 4) 满容闸 + 槽位复用
     let slot = match grants
         .iter()
         .enumerate()

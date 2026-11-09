@@ -83,8 +83,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101）。
-const SELFTEST_TOTAL: usize = 101;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102）。
+const SELFTEST_TOTAL: usize = 102;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -879,6 +879,21 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t24, "ipc-syscall-caps");
+
+    // M42-FBSVC2（笔②）fb 服务环铸造 + SVC_FB 通道挂接（阶段一常驻面
+    // 「服务环/IPC 通道」——M34-D1「请求/应答通道对随服务化批次铸造」
+    // 挂账域兑现）：泄漏 req/resp 单向环对 + svc 注册项 (0,0) 占位改写。
+    // fail-visible：铸造/挂接任一失手即证据行缺位（t102 (a) 相位对账
+    // 必炸——boot 铸造面无静默降级）。
+    let fb_rings = ipc::init_fb_service_rings();
+    let fb_attach =
+        fb_rings.and_then(|(req, resp)| svc::attach_channels(bedrock::abi::SVC_FB, req, resp).ok());
+    if let (Some((req, resp)), Some(slot)) = (fb_rings, fb_attach) {
+        let _ = writeln!(
+            log,
+            "LUMINA-SVC-FBRINGS req={req:#x} resp={resp:#x} attach=slot{slot} (SVC_FB 服务环在环)"
+        );
+    }
 
     // 25) swap 预留位：唯一性 / LIFO 复用 / 统计自洽
     let t25 = {
@@ -7040,6 +7055,18 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t101 = t101_run(&mut log);
     report(&mut log, t101, "fbdev-driver");
 
+    // t102) 常驻 fbdev 服务活体（M42-阶段一 笔②「驱动进程常驻面：服务
+    //       环/IPC 通道 + 常驻 fbdev 服务化」）：boot 铸造面服务环对账
+    //       → Owner 移交链（release_user 归还 + 双负例）→ 常驻服务映像
+    //       spawn_stage_wired 接线域（子 h1/h2 = FB 请求/应答通道）→
+    //       grant + re-adopt → kmain 客户端请求环（PAINT_RECT 成像 /
+    //       越域拒绝 fail-visible / QUIT 有界终结）→ 内核侧 VRAM 双漆
+    //       读回（boot 身份漆存续 + 服务域成像）→ exit=0 收割。
+    //       LUMINA-T102-FBSVC/OK。阶段一常驻面落域——unix socket 域
+    //       （阶段二）门控随用户裁决。
+    let t102 = t102_run(&mut log);
+    report(&mut log, t102, "fbdev-service");
+
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
     //      pf_hook 入口扩判「U 位 或 CR2 落增长栈窗口域」——CPL0 用户
@@ -8377,6 +8404,318 @@ fn t101_run(log: &mut DualLog) -> bool {
     );
     if ok {
         let _ = writeln!(log, "LUMINA-T101-OK");
+    }
+    ok
+}
+
+/// t102 常驻 fbdev 服务活体执行体（M42-阶段一 笔②「驱动进程常驻面——
+/// 服务环/IPC 通道 + 常驻 fbdev 服务化」）：独立函数承载（帧形态守恒
+/// 纪律——t93/t95/t101 先例）。相位序：
+/// (a) 服务环对账（boot 铸造面）：svc lookup(SVC_FB) 通道对 == 铸造
+///     对象 + 双 is_channel_object——M34「(0,0) 占位未铸」挂账域兑现
+///     显形；
+/// (b) Owner 移交链：上笔 t101 fbdev 亡 pid 存续态对账 → 异 pid 释放
+///     AlreadyAdopted 拒（负例一）→ 精确 release_user 归还
+///     KernelResident → Kernel 态再释 NotAdopted 拒（负例二）——
+///     KernelResident ⇄ UserTask 双向闭环；
+/// (c) 客户端句柄负例：kmain 越域句柄 SEND → ERR_CAP（能力门禁显形）；
+/// (d) fbsvc 映像装载 + spawn_stage_wired 接线域（子 h1 ← kmain req
+///     柄 / 子 h2 ← kmain resp 柄——M35-BBb 接线派生）+ pio_grant +
+///     re-adopt（登记窗由映像侧 64 拍重试免疫）；
+/// (e) 请求 1 PAINT_RECT(8,1,64,FB_SVC_PAINT)：kmain SEND（req 环）→
+///     有界等内核侧 VRAM 行 1 读回全 FB_SVC_PAINT（服务域直写真面）→
+///     DIAG_SENDS 增量确认应答落环 → RECV（resp 环）弹回 tag 0xD1 +
+///     status=0 + seq=1 对账——服务环全链（请求/应答双通道 + 阻塞
+///     收帧 + 能力门禁）端到端成像；
+/// (f) 请求 2 越域 PAINT_RECT(1900,1,64)：y 域内 / x+w=1964>1920 →
+///     服务域闸拒绝 status=EDOM 拒不写 + VRAM 快照不变（fail-visible
+///     显形——越域请求零副作用）+ seq=2；
+/// (g) 请求 3 QUIT：SEND → RECV tag 0xD2 status=0 → 有界收割 exit=0
+///     （常驻面有界终结——QUIT 应答后 EXIT 契约）+ Zombie 收割；
+/// (h) 终态对账：boot 身份漆存续（行 0 ×64 == FBDEV_PAINT——(e) 直写
+///     不踩 boot 漆）+ Owner UserTask(fbsvc) 存续（服务退出后归属
+///     v0 存续如实登记，re-adopt 随下一次 release 链）+ DIAG_RECVS
+///     增量 ≥ 3（服务消费三帧——阻塞收帧车道真面）。
+fn t102_run(log: &mut DualLog) -> bool {
+    use bedrock::abi::{ERR_CAP, SVC_FB};
+    let mut ok = true;
+    task::reset_user_evidence(); // 零锁判据面清零（t101 同款）
+                                 // (a) 服务环对账（boot 铸造面——LUMINA-SVC-FBRINGS 证据行的对账域）
+    let rings_ok = crate::svc::lookup(SVC_FB).is_some_and(|(n, req, resp, _)| {
+        n == "fb"
+            && req == ipc::FB_REQ_OBJECT
+            && resp == ipc::FB_RESP_OBJECT
+            && ipc::is_channel_object(req)
+            && ipc::is_channel_object(resp)
+    });
+    ok &= rings_ok;
+    let _ = writeln!(log, "t102: rings-ok={rings_ok} (req/resp 双通道对象在环)");
+    // (b) Owner 移交链（t101 亡 pid 存续态 → release → KernelResident）
+    let mut rel_ok = matches!(crate::svc::lookup(SVC_FB), Some((_, _, _, _)));
+    if let Some(crate::svc::Owner::UserTask(old)) = crate::svc::lookup(SVC_FB).map(|(_, _, _, o)| o)
+    {
+        let neg1 = crate::svc::release_user(SVC_FB, (old + 1) as u64);
+        ok &= neg1 == Err(crate::svc::SvcError::AlreadyAdopted); // 异 pid 拒
+        let rel = crate::svc::release_user(SVC_FB, old as u64);
+        rel_ok &= rel.is_ok(); // 精确释放 → KernelResident 归还
+        let neg2 = crate::svc::release_user(SVC_FB, old as u64);
+        ok &= neg2 == Err(crate::svc::SvcError::NotAdopted); // Kernel 态再释拒
+    } else {
+        rel_ok = false; // t101 必先于 t102——亡 pid Owner 缺席即序错（fail-visible）
+    }
+    ok &= rel_ok;
+    let _ = writeln!(
+        log,
+        "t102: owner-release-ok={rel_ok} (移交链双向闭环 + 双负例)"
+    );
+    // (c) 客户端句柄负例：越域句柄 → ERR_CAP（不泄露拓扑同面语义）
+    let neg_cap = ipc::sys_send(63, 0, 0, 0);
+    ok &= neg_cap == ERR_CAP;
+    // (d) kmain 客户端双柄安装（动态首空闲位——测试面句柄域零踩踏）
+    let me = task::current_task_id();
+    let (kh_req, kh_resp) = task::with_task_handles(me, |t| {
+        let free: alloc::vec::Vec<usize> = t
+            .iter()
+            .enumerate()
+            .skip(1)
+            .filter_map(|(h, s)| s.is_none().then_some(h))
+            .take(2)
+            .collect();
+        (free.first().copied(), free.get(1).copied())
+    })
+    .unwrap_or((None, None));
+    let (Some(kh_req), Some(kh_resp)) = (kh_req, kh_resp) else {
+        let _ = writeln!(log, "t102: kmain handle table exhausted");
+        return false;
+    };
+    let rights = vanguard::Right::IPC_SEND.bits() | vanguard::Right::IPC_RECV.bits();
+    let g1 = crate::caps::alloc_slot(vanguard::Capability::new(ipc::FB_REQ_OBJECT, rights));
+    let g2 = crate::caps::alloc_slot(vanguard::Capability::new(ipc::FB_RESP_OBJECT, rights));
+    let (Some(g1), Some(g2)) = (g1, g2) else {
+        let _ = writeln!(log, "t102: capability table exhausted");
+        return false;
+    };
+    let inst = task::with_task_handles(me, |t| {
+        t[kh_req] = Some(g1);
+        t[kh_resp] = Some(g2);
+    })
+    .is_some();
+    ok &= inst;
+    // fbsvc 映像装载 + 接线派生（LXE1 双段——gen 脚本产物直装）
+    let Some(frames) = vmm::global_frames() else {
+        let _ = writeln!(log, "t102: frame service unreachable");
+        return false;
+    };
+    let es = match user::build_user_space_lxe(&user::FBDEV_SVC_LXE, &mut || frames.alloc()) {
+        Ok(es) => es,
+        Err(e) => {
+            let _ = writeln!(log, "t102: fbdev svc image build failed ({e:?})");
+            return false;
+        }
+    };
+    let mut slots = [0u64; 15];
+    slots[0] = 0x202;
+    slots[1] = es.entry;
+    slots[7] = es.stack_top;
+    let fbsvc_id = task::spawn_stage_wired(
+        "fbsvc",
+        es.root,
+        me,
+        slots,
+        false,
+        &[(1, kh_req), (2, kh_resp)], // 子 h1 = FB 请求通道 / h2 = FB 应答通道
+    );
+    if fbsvc_id == usize::MAX {
+        let _ = writeln!(log, "t102: task slot exhausted");
+        return false;
+    }
+    let g = crate::dev::pio_grant(fbsvc_id as u64, 0x1CE, 0x1CF);
+    ok &= g.is_ok();
+    let adopt = crate::svc::adopt_user(SVC_FB, fbsvc_id as u64);
+    ok &= adopt.is_ok();
+    let _ = writeln!(
+        log,
+        "t102: spawn pid={fbsvc_id} grant-ok={} adopt-ok={} wired=[h1←{kh_req} h2←{kh_resp}]",
+        g.is_ok(),
+        adopt.is_ok(),
+    );
+    // 客户端证据基线（kmain 请求/服务应答对账域——DIAG 增量面）
+    let ds0 = ipc::DIAG_SENDS.load(Ordering::Acquire);
+    let rv0 = ipc::DIAG_RECVS.load(Ordering::Acquire);
+    let base = crate::fb::fb_base();
+    // (e) 请求 1：PAINT_RECT(8, 1, 64, FB_SVC_PAINT)——服务域成像
+    let mut req = [0u8; 20];
+    req[0..4].copy_from_slice(&user::FB_SVC_OP_PAINT.to_le_bytes());
+    req[4..8].copy_from_slice(&8u32.to_le_bytes());
+    req[8..12].copy_from_slice(&1u32.to_le_bytes());
+    req[12..16].copy_from_slice(&64u32.to_le_bytes());
+    req[16..20].copy_from_slice(&user::FB_SVC_PAINT.to_le_bytes());
+    let mut reply = [0u8; 32];
+    let r1 = ipc::sys_send(kh_req as u64, req.as_ptr() as u64, req.len() as u64, 0x51);
+    ok &= r1 == 0;
+    // 应答落环等待（DIAG_SENDS 增量 +2 = 客户端 1 + 服务 1；240 拍——
+    // 首请求吸收 fbsvc boot 时延〔FB_MAP 2026 页走查 + PIO 探测，TCG
+    // 域〕；映像侧 paint 先于 reply——应答落环即 VRAM 稳态）
+    let dl2 = ostd::time::now() + 240;
+    while ipc::DIAG_SENDS.load(Ordering::Acquire) < ds0 + 2 && ostd::time::now() < dl2 {
+        core::hint::spin_loop();
+    }
+    let replied1 = ipc::DIAG_SENDS.load(Ordering::Acquire) >= ds0 + 2;
+    // 内核侧 VRAM 行 1 x=8..71 单遍读回全 FB_SVC_PAINT（服务域直写真面
+    // ——paint 先于 reply 契约下应答落环即终态，零竞态）
+    let mut paint_ok = base != 0 && r1 == 0 && replied1;
+    if paint_ok {
+        let row1 = base + crate::fb::WIDTH as u64 * 4;
+        for i in 0..64u64 {
+            if ostd::hw::phys::read_u32(row1 + (8 + i) * 4) != user::FB_SVC_PAINT {
+                paint_ok = false;
+                break;
+            }
+        }
+    }
+    ok &= paint_ok;
+    let mut tag1 = 0u64;
+    let mut seq1 = 0u32;
+    let mut resp1_ok = false;
+    if replied1 {
+        let r = ipc::sys_recv(
+            kh_resp as u64,
+            reply.as_mut_ptr() as u64,
+            reply.len() as u64,
+        );
+        tag1 = r >> 32;
+        if tag1 == (0x51u32 | user::FB_SVC_REPLY_TAG) as u64 && (r & 0xFFFF_FFFF) == 8 {
+            let status = u32::from_le_bytes(reply[0..4].try_into().unwrap_or_default());
+            seq1 = u32::from_le_bytes(reply[4..8].try_into().unwrap_or_default());
+            resp1_ok = status == user::FB_SVC_STATUS_OK && seq1 == 1;
+        }
+    }
+    ok &= resp1_ok;
+    let _ = writeln!(
+        log,
+        "t102: paint1-ok={paint_ok} tag1={tag1:#x} (expect 0xd1) seq1={seq1} resp1-ok={resp1_ok}"
+    );
+    // (f) 请求 2：越域 PAINT_RECT(1900,1,64)——x+w=1964 > 1920 域闸拒绝
+    let mut req2 = [0u8; 20];
+    req2[0..4].copy_from_slice(&user::FB_SVC_OP_PAINT.to_le_bytes());
+    req2[4..8].copy_from_slice(&1900u32.to_le_bytes());
+    req2[8..12].copy_from_slice(&1u32.to_le_bytes());
+    req2[12..16].copy_from_slice(&64u32.to_le_bytes());
+    req2[16..20].copy_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+    // VRAM 快照（拒绝前域基线——组合态无关取证）
+    let mut snap = [0u32; 64];
+    if base != 0 {
+        let row1 = base + crate::fb::WIDTH as u64 * 4;
+        for (i, s) in snap.iter_mut().enumerate() {
+            *s = ostd::hw::phys::read_u32(row1 + (1900 + i as u64) * 4);
+        }
+    }
+    let r2 = ipc::sys_send(kh_req as u64, req2.as_ptr() as u64, req2.len() as u64, 0x52);
+    ok &= r2 == 0;
+    let dl3 = ostd::time::now() + 120;
+    while ipc::DIAG_SENDS.load(Ordering::Acquire) < ds0 + 4 && ostd::time::now() < dl3 {
+        core::hint::spin_loop();
+    }
+    let mut resp2_ok = false;
+    let mut status2 = u32::MAX;
+    if ipc::DIAG_SENDS.load(Ordering::Acquire) >= ds0 + 4 {
+        let r = ipc::sys_recv(
+            kh_resp as u64,
+            reply.as_mut_ptr() as u64,
+            reply.len() as u64,
+        );
+        if r >> 32 == (0x52u32 | user::FB_SVC_REPLY_TAG) as u64 && (r & 0xFFFF_FFFF) == 8 {
+            status2 = u32::from_le_bytes(reply[0..4].try_into().unwrap_or_default());
+            let seq2 = u32::from_le_bytes(reply[4..8].try_into().unwrap_or_default());
+            resp2_ok = status2 == user::FB_SVC_STATUS_EDOM && seq2 == 2;
+        }
+    }
+    // 拒绝不写显形：域基线快照零变（fail-visible 零副作用取证）
+    let mut no_write = base != 0;
+    if no_write {
+        let row1 = base + crate::fb::WIDTH as u64 * 4;
+        for (i, s) in snap.iter().enumerate() {
+            if ostd::hw::phys::read_u32(row1 + (1900 + i as u64) * 4) != *s {
+                no_write = false;
+                break;
+            }
+        }
+    }
+    ok &= resp2_ok && no_write;
+    let _ = writeln!(
+        log,
+        "t102: reject-ok={resp2_ok} status2={status2} (expect EDOM=2) no-write={no_write}"
+    );
+    // (g) 请求 3：QUIT——应答后有界终结
+    let mut req3 = [0u8; 4];
+    req3[0..4].copy_from_slice(&user::FB_SVC_OP_QUIT.to_le_bytes());
+    let r3 = ipc::sys_send(kh_req as u64, req3.as_ptr() as u64, 4, 0x53);
+    ok &= r3 == 0;
+    let dl4 = ostd::time::now() + 120;
+    while ipc::DIAG_SENDS.load(Ordering::Acquire) < ds0 + 6 && ostd::time::now() < dl4 {
+        core::hint::spin_loop();
+    }
+    let mut resp3_ok = false;
+    if ipc::DIAG_SENDS.load(Ordering::Acquire) >= ds0 + 6 {
+        let r = ipc::sys_recv(
+            kh_resp as u64,
+            reply.as_mut_ptr() as u64,
+            reply.len() as u64,
+        );
+        if r >> 32 == (0x53u32 | user::FB_SVC_REPLY_TAG) as u64 && (r & 0xFFFF_FFFF) == 8 {
+            let status = u32::from_le_bytes(reply[0..4].try_into().unwrap_or_default());
+            let seq3 = u32::from_le_bytes(reply[4..8].try_into().unwrap_or_default());
+            resp3_ok = status == user::FB_SVC_STATUS_OK && seq3 == 3;
+        }
+    }
+    ok &= resp3_ok;
+    // 有界收割（60 拍——QUIT 应答后 EXIT 契约；t95/t100/t101 零锁轮询形态）
+    let dl_reap = ostd::time::now() + 60;
+    let mut iters: u64 = 0;
+    while task::user_exit_codes().1 == u64::MAX
+        && ostd::time::now() < dl_reap
+        && iters < 2_000_000_000
+    {
+        iters += 1;
+        core::hint::spin_loop();
+    }
+    let st = task::task_debug_state(fbsvc_id);
+    let code = task::task_debug_exit_code(fbsvc_id);
+    let dhit = ostd::time::now() >= dl_reap;
+    let _ = writeln!(
+        log,
+        "t102: spec i={iters} s1={st} exit={code:#x} deadline-hit={dhit} quit-ok={resp3_ok}"
+    );
+    if st == 4 {
+        let r = procs::sys_wait_pid(fbsvc_id as u64);
+        let rcode = r & 0xFFFF;
+        ok &= r >> 32 == 1 && rcode == 0 && !task::task_alive(fbsvc_id);
+        let _ = writeln!(log, "t102: reaped exit={rcode} (expect 0)");
+    } else {
+        ok = false; // 滞域 fail-visible（bail 码 70/71/72 显形）
+    }
+    // (h) 终态对账：boot 身份漆存续 + Owner 存续 + 服务消费三帧
+    let mut boot_paint_ok = base != 0;
+    if boot_paint_ok {
+        for i in 0..64u64 {
+            if ostd::hw::phys::read_u32(base + i * 4) != user::FBDEV_PAINT {
+                boot_paint_ok = false;
+                break;
+            }
+        }
+    }
+    ok &= boot_paint_ok;
+    let owner_ok = crate::svc::lookup(SVC_FB)
+        .is_some_and(|(_, _, _, o)| matches!(o, crate::svc::Owner::UserTask(t) if t == fbsvc_id));
+    ok &= owner_ok;
+    let rv_delta = ipc::DIAG_RECVS.load(Ordering::Acquire) - rv0;
+    ok &= rv_delta >= 3;
+    let _ = writeln!(
+        log,
+        "LUMINA-T102-FBSVC pid={fbsvc_id} paint1={paint_ok} reject={resp2_ok} boot-paint={boot_paint_ok} served={rv_delta} owner=user"
+    );
+    if ok {
+        let _ = writeln!(log, "LUMINA-T102-OK");
     }
     ok
 }

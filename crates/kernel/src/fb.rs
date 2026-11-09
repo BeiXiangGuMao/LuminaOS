@@ -332,6 +332,21 @@ static SURFACE_OWNER: AtomicU64 = AtomicU64::new(u64::MAX);
 /// Surface 表占用哨兵（空闲域）。
 const SURFACE_FREE: u64 = u64::MAX;
 
+/// Surface 生命周期释放面（M42-FBSVC2 常驻服务化前置修复）：任务终结
+/// 路径消费——退出任务若为当前持有者（SURFACE_OWNER == pid）则单面
+/// 登记回收到空闲域；非持有者零触碰（CAS 失败即返回 false，无副作用）。
+///
+/// **揭雷背景（如实登记）**：t101 一次性 fbdev 认领 Surface 后退出，
+/// 无释放路径——SURFACE_OWNER 恒驻亡 pid，继任常驻服务 FB_MAP 必撞
+/// EEXIST（单面 CAS 契约的终态卡死域）。释放职责挂任务终结清算窗
+/// （[`crate::task::finish_and_switch_away`] revoke_all_handles 同窗
+/// ——句柄/管道/Surface 三域同一清算点），持有者存续期语义不变。
+pub fn surface_release_if_owner(pid: u64) -> bool {
+    SURFACE_OWNER
+        .compare_exchange(pid, SURFACE_FREE, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+}
+
 // ---- M24-S1 损伤策略对账面：SYS_FB 帧损伤累计器 ----
 
 /// SYS_FB 帧损伤累计器（M24-S1）：ring3 每笔 SYS_FB_SYNC 的交盒经

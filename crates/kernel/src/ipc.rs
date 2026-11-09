@@ -44,6 +44,12 @@ const MAX_CHANNELS: usize = 32;
 pub const ECHO_OBJECT: u64 = 0xC0DE_0000_0000_0001;
 /// 阻塞接收测试对象 id（通道 1；t39 对端）。
 pub const BLOCK_OBJECT: u64 = 0xC0DE_0000_0000_0003;
+/// fb 服务请求通道对象 id（M42-FBSVC2 服务环铸造——svc `SVC_FB` 请求
+/// 面；与预设 0xC0DE_0000_0000_000X 段及运行时 0xC0DE_0000_0001_0000
+/// 基段正交）。
+pub const FB_REQ_OBJECT: u64 = 0xC0DE_0000_0000_0010;
+/// fb 服务应答通道对象 id（svc `SVC_FB` 应答面；与 req 成对铸造）。
+pub const FB_RESP_OBJECT: u64 = 0xC0DE_0000_0000_0011;
 /// 回声服务标签（应答 = 请求 tag | 0x80）。
 pub const ECHO_TAG: u32 = 0x21;
 /// 运行时对象 id 铸造基（与预设 0xC0DE_0000_0000_000X 段隔离）。
@@ -78,6 +84,9 @@ static BIND_HANDLE: AtomicU64 = AtomicU64::new(u64::MAX);
 /// 运行时通道创建总数（取证面）。
 static BIND_CREATED: AtomicU64 = AtomicU64::new(0);
 
+/// fb 服务环已铸造旗（init_fb_service_rings 幂等闸——boot 单调用点，
+/// 重复铸造 fail-visible 拒绝）。
+static FB_RINGS_CAST: AtomicBool = AtomicBool::new(false);
 /// 回声服务已应答帧数（自检 24 断言）。
 static ECHO_SERVED: AtomicU64 = AtomicU64::new(0);
 /// 回声 worker 退出旗标（服务配额满足后置位；防御泄漏任务）。
@@ -109,6 +118,43 @@ pub fn init() {
         resp: None,
         object: BLOCK_OBJECT,
     });
+}
+
+/// fb 服务环铸造（M42-FBSVC2 阶段一常驻面——M34-D1「请求/应答通道对
+/// 随服务化批次铸造」挂账域的首笔兑现）：泄漏 req/resp **单向**环对
+/// （M22-③ 双向 = 两实例纪律）+ 通道注册表登记，返回对象 id 对供
+/// [`crate::svc::attach_channels`] 挂接 `SVC_FB`。
+///
+/// **方向语义（如实登记）**：`sys_send` 恒推请求向环、`sys_recv` 单向
+/// 通道弹同环——方向由「哪一方持哪一对象」承载：客户端 SEND(req 对象)
+/// → 服务 RECV(req 对象)；服务 SEND(resp 对象) → 客户端 RECV(resp 对
+/// 象)。请求/应答物理上各占一条单向通道，与 svc 注册表 (req_ch,
+/// resp_ch) 双通道契约同构。
+///
+/// 幂等闸：已铸造 → None（fail-visible——boot 单调用点）；槽位不足
+/// （两槽须同时可得，不产半对）→ None。占用注册表槽 2..（预设面 0/1
+/// 之后；运行时 BIND 自首空闲槽分配，与本铸造互不踩踏）。
+pub fn init_fb_service_rings() -> Option<(u64, u64)> {
+    if FB_RINGS_CAST.load(Ordering::Acquire) {
+        return None;
+    }
+    let req: &'static FastPath = Box::leak(Box::new(FastPath::new()));
+    let resp: &'static FastPath = Box::leak(Box::new(FastPath::new()));
+    let mut chans = CHANNELS.lock();
+    let slot_req = (2..MAX_CHANNELS).find(|i| chans[*i].is_none())?;
+    let slot_resp = (slot_req + 1..MAX_CHANNELS).find(|i| chans[*i].is_none())?;
+    chans[slot_req] = Some(Channel {
+        fast: req,
+        resp: None,
+        object: FB_REQ_OBJECT,
+    });
+    chans[slot_resp] = Some(Channel {
+        fast: resp,
+        resp: None,
+        object: FB_RESP_OBJECT,
+    });
+    FB_RINGS_CAST.store(true, Ordering::Release);
+    Some((FB_REQ_OBJECT, FB_RESP_OBJECT))
 }
 
 /// 通道注册表用量快照（M14-② SYS_QUOTA kind 2 断言面）：(used, MAX_CHANNELS)。

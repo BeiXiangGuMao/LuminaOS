@@ -46,6 +46,12 @@ pub enum SvcError {
     /// 用户态承接冲突：服务已由其它任务承接（幂等同 pid 放行——
     /// M42-FBDEV1 Owner 承接面重复改写拒绝）。
     AlreadyAdopted,
+    /// 通道挂接冲突：服务项已铸通道对（(0,0) 占位一次性铸造纪律——
+    /// M42-FBSVC2 attach_channels 重复挂接拒绝）。
+    ChannelsAttached,
+    /// Owner 释放冲突：服务项并非该 pid 的用户态承接（KernelResident
+    /// 态无可释放——M42-FBSVC2 release_user 域外拒绝）。
+    NotAdopted,
 }
 
 /// 驱动进程形态（M31-N1 三分分级承载）。
@@ -180,6 +186,63 @@ pub fn adopt_user(id: u64, pid: u64) -> Result<usize, SvcError> {
             entry.owner = Owner::UserTask(pid as usize);
             Ok(slot)
         }
+    }
+}
+
+/// 服务通道挂接面（M42-FBSVC2 服务环铸造承接——M34-D1「通道域 (0, 0)
+/// = 占位未铸」挂账域的首笔兑现）：把注册项的占位通道 (0, 0) 改写为
+/// 真实请求/应答通道对（[`crate::ipc::init_fb_service_rings`] 铸造产
+/// 物——单向环对双通道，方向由「哪一方持哪一对象」承载）。
+///
+/// 闸序：双通道对象（单边半对拒绝，register 同款）→ id 存在 → 占位
+/// 态（已铸 = [`SvcError::ChannelsAttached`] 拒——一次性铸造纪律，
+/// 不允许改写既有通道对）。返回挂接槽位号。
+pub fn attach_channels(id: u64, req_ch: u64, resp_ch: u64) -> Result<usize, SvcError> {
+    if !(crate::ipc::is_channel_object(req_ch) && crate::ipc::is_channel_object(resp_ch)) {
+        return Err(SvcError::InvalidChannel);
+    }
+    let mut svcs = SVCS.lock();
+    let Some((slot, entry)) = svcs
+        .iter_mut()
+        .enumerate()
+        .find_map(|(i, s)| s.as_mut().filter(|e| e.id == id).map(|e| (i, e)))
+    else {
+        return Err(SvcError::BadId);
+    };
+    if entry.req_ch != 0 || entry.resp_ch != 0 {
+        return Err(SvcError::ChannelsAttached);
+    }
+    entry.req_ch = req_ch;
+    entry.resp_ch = resp_ch;
+    Ok(slot)
+}
+
+/// 服务 Owner 释放面（M42-FBSVC2 服务生命周期——驱动进程终结后归属
+/// 归还内核态占位，移交链 KernelResident ⇄ UserTask 双向闭环；t102
+/// 移交链消费面：上笔 fbdev 退出后遗留 UserTask(亡 pid) → release →
+/// 常驻服务 re-adopt）。
+///
+/// 语义：UserTask(pid) 精确匹配 → KernelResident（归还成功，返回槽
+/// 位号）；UserTask(异 pid) → [`SvcError::AlreadyAdopted`]（fail-
+/// visible）；KernelResident → [`SvcError::NotAdopted`]（无可释放）；
+/// id 未注册 → [`SvcError::BadId`]。电气面零触碰（本面纯记账域——
+/// fb 驱动代码路径 / prism 合成仲裁不动，M42-计划 阶段一口径）。
+pub fn release_user(id: u64, pid: u64) -> Result<usize, SvcError> {
+    let mut svcs = SVCS.lock();
+    let Some((slot, entry)) = svcs
+        .iter_mut()
+        .enumerate()
+        .find_map(|(i, s)| s.as_mut().filter(|e| e.id == id).map(|e| (i, e)))
+    else {
+        return Err(SvcError::BadId);
+    };
+    match entry.owner {
+        Owner::UserTask(t) if t == pid as usize => {
+            entry.owner = Owner::KernelResident;
+            Ok(slot)
+        }
+        Owner::UserTask(_) => Err(SvcError::AlreadyAdopted),
+        Owner::KernelResident => Err(SvcError::NotAdopted),
     }
 }
 

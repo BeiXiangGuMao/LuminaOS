@@ -2463,6 +2463,11 @@ fn finish_and_switch_away(code: u64) -> ! {
                 let mut dead_pipes: Vec<(u64, u64)> = Vec::new();
                 if let Some(t) = sc.tasks[cur].as_mut() {
                     dead_pipes = t.revoke_all_handles();
+                    // M42-FBSVC2：Surface 单面生命周期收口（持有者终结即
+                    // 释放——t101 一次性 fbdev 退出后 SURFACE_OWNER 恒驻
+                    // 亡 pid、继任常驻服务 FB_MAP EEXIST 揭雷修复；句柄/
+                    // 管道/Surface 三域同一清算点，原子域无锁序耦合）。
+                    let _ = crate::fb::surface_release_if_owner(cur as u64);
                     t.exit_code = code;
                     // M23-② init 点名登记（interactive 守候读回面；锁窗口
                     // 内 Release 落账，kmain 见 finished 后 Acquire 读回）。
