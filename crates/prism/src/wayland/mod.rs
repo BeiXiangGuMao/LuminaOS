@@ -29,6 +29,13 @@
 
 #![forbid(unsafe_code)]
 
+/// M42-COMP4：合成器会话面 v1——**非 test 门控域**（阶段三「合成器
+/// 进程面」仲裁策略面：registry 公告/bind/surface 生命周期/damage-
+/// commit 发布语义/帧回调——电气面消费方 = 常驻合成器服务
+/// kernel-resident lane〔t104〕+ ring3 编译进程承接随用户态 ELF 播
+/// 种批次挂账）。
+pub mod comp;
+
 /// wire 消息头字节数（2 字）。
 pub const HEADER: usize = 8;
 /// 单消息尺寸预算（v0 解析壳口径——libwayland 连接缓冲同量级；

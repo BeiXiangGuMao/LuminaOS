@@ -664,6 +664,16 @@ pub fn fb_probe_px_read(x: i32, y: i32) -> u32 {
     fb_handle().map_or(0, |fb| fb.px_read(x, y))
 }
 
+/// stage 像素直读（M42-COMP4 t104 取证面——pane 回退基线对账：teardown
+/// 后 VRAM == stage 直读 = 合成回退链显形；屏外读返 0）。
+pub fn stage_probe_px_read(x: i32, y: i32) -> u32 {
+    let pages = STAGE_PAGES.load(Ordering::Acquire);
+    if pages == 0 || x < 0 || y < 0 {
+        return 0;
+    }
+    stage_px_read(pages, WIDTH * 4, x, y)
+}
+
 /// stage 像素写（t77 裸机活体组帧面——ring3 写后备缓冲语义的内核侧
 /// 等价写入；(x,y) 屏内由调用方保证，越界静默丢弃）。
 pub fn stage_px_write(x: i32, y: i32, color: u32) {
@@ -993,6 +1003,23 @@ pub fn surf_px_write(slot: usize, pages: u64, w: u32, lx: i32, ly: i32, color: u
 /// 注册表计数读面（t88 结构断言域——stage 底层锚 + 覆盖层在账数）。
 pub fn surf_count() -> usize {
     SURFACES.lock().len()
+}
+
+/// Surface 层视图读面（M42-COMP4 t104 取证域——合成器侧仲裁策略承接
+/// 对账：cascade tiling 平面矩形/z 序注入 → prism Layer 落账读回——
+/// 「策略面产出 = 表内登记」同源对账锚）。返回 (z, visible, bounds)；
+/// 未登记 id → None。
+pub fn surf_layer_of(id: u32) -> Option<(i32, bool, Rect)> {
+    SURFACES.lock().get(id).map(|l| (l.z, l.visible, l.bounds))
+}
+
+/// Surface 槽页数读面（M42-COMP4 waycomp 代 Paint 域——[`surf_px_write`]
+/// pages 参数寻源；越槽域 0 = 静默跳过同 fail-soft 口径）。
+pub fn surf_slot_pages(slot: usize) -> u64 {
+    if slot >= SURF_SLOTS {
+        return 0;
+    }
+    SURF_STORES[slot].pages.load(Ordering::Acquire)
 }
 
 /// Surface 登记核心（内核侧；[`sys_fb_surface`] 与 t88 裸机活体同源）：

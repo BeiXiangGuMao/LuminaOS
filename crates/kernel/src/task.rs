@@ -188,6 +188,14 @@ pub enum WaitWhat {
         /// 等待端点对象 id。
         object: u64,
     },
+    /// unix socket 阻塞 accept（M42-COMP4 阶段三——USOCK_ACCEPT_B
+    /// 阻塞臂 + 内核侧服务消费面双轨）：等待目标监听者 backlog 出
+    /// pending（connect 落队定向唤醒；object = 监听者对象 id——探针
+    /// = `has_pending` 非消费旗标读数，丢失唤醒免疫同款）。
+    UnixAccept {
+        /// 等待监听者对象 id。
+        object: u64,
+    },
 }
 
 /// 任务入口函数指针。
@@ -283,6 +291,11 @@ struct Task {
     /// （exec 不改 cwd——Linux 同款）；消费面 = lin_openat/fstatat/
     /// unlinkat/faccessat 相对路径 join + lin_getcwd 真值化。
     cwd: Option<alloc::string::String>,
+    /// 常驻服务旗标（M42-COMP4）：boot 常驻服务（waycomp 合成器）=
+    /// true——批跑收敛谓词 [`all_workers_finished`] 豁免域（M23-②
+    /// timer-sleeper 同族裁决体系化：长活任务批模式由 kernel_exit 带
+    /// 过、从不终结——常驻任务不计入收敛面，否则自检等待环永眠）。
+    resident: bool,
 }
 
 impl Task {
@@ -321,6 +334,7 @@ impl Task {
             fork_frame: [0; 15],
             cwd: None,
             creds: Creds::ROOT,
+            resident: false,
         }
     }
 
@@ -409,6 +423,7 @@ impl Task {
             fork_frame: [0; 15],
             cwd: None,
             creds: Creds::ROOT,
+            resident: false,
         }
     }
 }
@@ -1318,6 +1333,23 @@ pub fn spawn(name: &'static str, entry: Entry) -> usize {
     id
 }
 
+/// 派生常驻内核任务（M42-COMP4）：[`spawn`] 同谱 + resident 旗标
+/// 置位——批跑收敛谓词豁免域（boot 常驻服务面；服务生命周期 = 内核
+/// 生命周期，批模式 kernel_exit 直接带过）。
+pub fn spawn_resident(name: &'static str, entry: Entry) -> usize {
+    let _w = IntWindow::new();
+    let mut s = sched_lock!();
+    let mut t = Task::new(name, entry, trampoline);
+    t.resident = true;
+    let Some(id) = alloc_slot(&mut s, t) else {
+        return IDLE;
+    };
+    let prio = s.tasks[id].as_ref().map_or(PRIO_NORMAL, |t| t.prio);
+    enqueue(&mut s.ready, id, prio);
+    kick_other();
+    id
+}
+
 /// 派生指定优先级的内核任务（M8-C 调度面；0=最高 … 3=最低）。
 pub fn spawn_prio(name: &'static str, entry: Entry, prio: u8) -> usize {
     let _w = IntWindow::new();
@@ -2053,13 +2085,19 @@ pub fn stuck_workers() -> alloc::vec::Vec<(usize, &'static str, &'static str)> {
 
 /// 除主任务外是否全部终结（主循环的等待谓词；Blocked = 存活继续等待，
 /// Zombie = 终结留证——waitpid 收割与否不影响本谓词，M10-C）。
+/// **常驻豁免域（M42-COMP4）**：`resident` 旗标任务不计入收敛面——
+/// boot 常驻服务（waycomp 合成器）批模式由 kernel_exit 带过、从不终
+/// 结（M23-② timer-sleeper 同族裁决体系化——长活任务计入本谓词则
+/// 自检等待环永眠，HANG-DUMP 揭雷随行实录）。
 pub fn all_workers_finished() -> bool {
     let _w = IntWindow::new();
     let s = sched_lock!();
-    s.tasks
-        .iter()
-        .enumerate()
-        .all(|(id, slot)| id == 0 || slot.as_ref().is_none_or(|t| t.state == State::Zombie))
+    s.tasks.iter().enumerate().all(|(id, slot)| {
+        id == 0
+            || slot
+                .as_ref()
+                .is_none_or(|t| t.state == State::Zombie || t.resident)
+    })
 }
 
 /// 用户任务退出码（EXIT 系统调用写入；自检 14 断言）。
@@ -2278,8 +2316,9 @@ pub fn task_ppid(id: usize) -> usize {
 
 /// 任务阻塞等待对象类别诊断戳（M40-ASH2 滞点标本取证面；task_debug_
 /// state 同款诊断域）：0 无 1 Swap 2 Child 3 IpcRecv 4 Timer 5 PipeRead
-/// 6 PipeWrite 7 TtyRead 8 UnixRecv（M42-UNIX3）——滞域 H2（内核无声
-/// Blocked）判别面（Timer = t52 后唤醒链退役域死锁标本）。
+/// 6 PipeWrite 7 TtyRead 8 UnixRecv（M42-UNIX3）9 UnixAccept（M42-COMP4）
+/// ——滞域 H2（内核无声 Blocked）判别面（Timer = t52 后唤醒链退役域
+/// 死锁标本）。
 pub fn task_debug_wait(id: usize) -> u8 {
     let _w = IntWindow::new();
     let s = sched_lock!();
@@ -2295,6 +2334,7 @@ pub fn task_debug_wait(id: usize) -> u8 {
             Some(WaitWhat::PipeWrite { .. }) => 6,
             Some(WaitWhat::TtyRead) => 7,
             Some(WaitWhat::UnixRecv { .. }) => 8,
+            Some(WaitWhat::UnixAccept { .. }) => 9,
         },
     }
 }

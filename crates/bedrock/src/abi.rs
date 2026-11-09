@@ -419,12 +419,15 @@ pub fn pio_op_decode(op: u64) -> Option<(u8, bool)> {
 /// r10(a3) = 长度（BIND/CONNECT 名字长 1..=[`USOCK_NAME_MAX`] /
 /// SEND 载荷长 / RECV 缓冲长 1..=[`USOCK_LEN_MAX`]）。
 ///
-/// 返回：PAIR = `(a<<32)|b` 双句柄封装；BIND/CONNECT/ACCEPT = 新句柄
-/// （低位装载形）；SEND/RECV = 流字节数（短写语义——满环回 0 = 重试
-/// 类，POSIX write/read 语义对齐）。错误域：[`ERR_CAP`]（句柄/权限）、
+/// 返回：PAIR = `(a<<32)|b` 双句柄封装；BIND/CONNECT/ACCEPT/ACCEPT_B
+/// = 新句柄（低位装载形）；SEND/RECV = 流字节数（短写语义——满环回
+/// 0 = 重试类，POSIX write/read 语义对齐；对端 shutdown 后 recv 排
+/// 空回 0 = EOF 域）；SHUT = 0。错误域：[`ERR_CAP`]（句柄/权限）、
 /// [`ERR_EMPTY`]（accept 无 pending）、[`ERR_FULL`]（backlog 满）、
-/// [`ERR_TABLE`]、[`ERR_NOMEM`] + 新增 [`ERR_INUSE`]/[`ERR_NOENT`]；
-/// 名字词法越域 = `u64::MAX-1`（BadArgs 哨兵同面——parse 层域闸对齐）。
+/// [`ERR_TABLE`]、[`ERR_NOMEM`] + [`ERR_INUSE`]/[`ERR_NOENT`] +
+/// [`ERR_PIPE`]（对端 shutdown 后 send——M42-COMP4）/ [`ERR_HANDLE`]
+/// （已 shutdown 监听者 accept——EBADF 语义面）；名字词法越域 =
+/// `u64::MAX-1`（BadArgs 哨兵同面——parse 层域闸对齐）。
 pub const SYS_UNIXSOCK: u64 = 42;
 
 /// [`SYS_UNIXSOCK`] op：socketpair（铸连接对，双句柄装入调用方表）。
@@ -439,6 +442,15 @@ pub const USOCK_ACCEPT: u64 = 3;
 pub const USOCK_SEND: u64 = 4;
 /// [`SYS_UNIXSOCK`] op：recv（流读取——空则阻塞，WaitWhat::UnixRecv）。
 pub const USOCK_RECV: u64 = 5;
+/// [`SYS_UNIXSOCK`] op：阻塞 accept（M42-COMP4 阶段三——backlog 空
+/// 以 `WaitWhat::UnixAccept` 条件阻塞，connect 落队定向唤醒；v0
+/// 非阻塞 accept〔op 3〕保持不动，双轨共存）。
+pub const USOCK_ACCEPT_B: u64 = 6;
+/// [`SYS_UNIXSOCK`] op：shutdown（M42-COMP4 阶段三——EOF 对端终结
+/// 面：终结己端流域〔读写双向 v0 口径〕，对端 recv 排空后回 0 =
+/// EOF、对己端/对端再 send = [`ERR_PIPE`]；对象存续纪律不变——
+/// 仅旗标改写，注册表行不回收）。
+pub const USOCK_SHUT: u64 = 7;
 
 /// [`SYS_UNIXSOCK`] 名字词法上界（字节域；对齐 POSIX sun_path 108）。
 pub const USOCK_NAME_MAX: u64 = 108;
@@ -476,7 +488,8 @@ pub const SVC_MAX: usize = 8;
 /// 服务名词法上界（字节域；注册面词法校验 [`svc_name_ok`]）。
 pub const SVC_NAME_MAX: usize = 16;
 /// 预设服务 id 计数（boot 注册对账闸——init 返回值必须命中本值）。
-pub const SVC_PRESET_COUNT: usize = 5;
+/// M42-COMP4 起 5→6（第 6 项 = 合成器进程面 [`SVC_COMPOSITOR`]）。
+pub const SVC_PRESET_COUNT: usize = 6;
 /// 服务 id 段基（0x5E00 段——与文件 0xF11E / 通道 0xC0DE 段正交）。
 pub const SVC_ID_BASE: u64 = 0x5E00_0000_0000_0000;
 /// 预设服务 id：virtio-net 电气面（M31-N1 五清点 1,743 行域）。
@@ -489,6 +502,10 @@ pub const SVC_KBD: u64 = SVC_ID_BASE + 3;
 pub const SVC_CONSOLE: u64 = SVC_ID_BASE + 4;
 /// 预设服务 id：ATA PIO 块面（134 行域）。
 pub const SVC_BLOCK: u64 = SVC_ID_BASE + 5;
+/// 预设服务 id：Wayland 合成器进程面（M42-COMP4 阶段三首笔——常驻
+/// 合成器服务〔waycomp〕svc 登记域；通道域 (0,0) 占位——合成器对外
+/// 电气 = unix socket 名域非 FastPath 环对，如实记档）。
+pub const SVC_COMPOSITOR: u64 = SVC_ID_BASE + 6;
 
 /// 服务名词法校验（fail-visible 注册面）：1..=[`SVC_NAME_MAX`] 字节，
 /// ASCII 小写字母/数字/连字符。宿主可测纯函数（kernel::svc 注册闸
@@ -522,7 +539,10 @@ pub const OPEN_MODE_MASK: u64 = 0b1_1111;
 /// 无独立用户空间 → `ERR_CAP`；帧耗尽 → `ERR_NOMEM(9)`。
 pub const SYS_EXEC: u64 = 17;
 
-/// 系统调用 ABI 版本（v0.20 = M42-UNIX3：新增 SYS_UNIXSOCK(42) unix
+/// 系统调用 ABI 版本（v0.21 = M42-COMP4：SYS_UNIXSOCK op 面扩容
+/// ACCEPT_B(6)/SHUT(7)〔阻塞 accept + EOF 对端终结面——WaitWhat::
+/// UnixAccept 新阻塞源 + ERR_PIPE(13) 追加〕+ svc 预设面第 6 项
+/// SVC_COMPOSITOR；v0.20 = M42-UNIX3：新增 SYS_UNIXSOCK(42) unix
 /// socket 域多路复用 op 面（socketpair/连接面/流 I/O 六 op——对象 id 段
 /// 0xC0DE_0000_0000_002X + 错误码 11/12 追加）；v0.19 = M42-FBDEV1：新增 SYS_DEV_PIO(41) 用户态
 /// 设备端口访问面（内核裁量注册表 v0——IOPB/IOPL 硬件面挂账）；
@@ -545,7 +565,7 @@ pub const SYS_EXEC: u64 = 17;
 /// v0.16 = M15：目录面五落点 MKDIR/REMOVE/READDIR/MOUNT/UMOUNT +
 /// 句柄面深化 DUP/FCNTL（CLOEXEC）+ NANOSLEEP 参数语义升级为 TSC 纳秒。
 /// v0.8 = SYS_QUOTA；v0.7 = 文件面六落点 + NANOSLEEP + 统一句柄面）。
-pub const ABI_VERSION: (u16, u16) = (0, 20);
+pub const ABI_VERSION: (u16, u16) = (0, 21);
 
 /// ---------------------------------------------------------------------------
 /// LXE1 v0 错误码表（具名化事实源，M25-C1）：
@@ -586,6 +606,10 @@ pub const ERR_INUSE: u64 = 11;
 /// 错误码 12：连接目标不存在（SYS_UNIXSOCK CONNECT 未登记名——
 /// `ECONNREFUSED` 语义同面；conduit 映射 `ECONNREFUSED(111)`）。
 pub const ERR_NOENT: u64 = 12;
+/// 错误码 13：管道断裂（SYS_UNIXSOCK SEND 对端已 shutdown——`EPIPE`
+/// 语义面；EOF 对端终结域的写侧显形；conduit 映射 `EPIPE(32)`）。
+/// （M42-COMP4 阶段三首笔追加——“编号冻结只增不改”域）。
+pub const ERR_PIPE: u64 = 13;
 
 /// 寄存器快照形式的系统调用请求。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1031,7 +1055,7 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
             value: a2,
         }),
         SYS_DEV_PIO => Err(AbiError::BadArgs),
-        SYS_UNIXSOCK if a0 <= USOCK_RECV && unixsock_len_ok(a0, a3) => Ok(Syscall::UnixSock {
+        SYS_UNIXSOCK if a0 <= USOCK_SHUT && unixsock_len_ok(a0, a3) => Ok(Syscall::UnixSock {
             op: a0,
             handle: a1,
             len: a3,
@@ -1048,7 +1072,7 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
 /// PAIR/ACCEPT = 不校验（长度参数无语义）。
 fn unixsock_len_ok(op: u64, len: u64) -> bool {
     match op {
-        USOCK_PAIR | USOCK_ACCEPT => true,
+        USOCK_PAIR | USOCK_ACCEPT | USOCK_ACCEPT_B | USOCK_SHUT => true,
         USOCK_BIND | USOCK_CONNECT => (1..=USOCK_NAME_MAX).contains(&len),
         USOCK_SEND | USOCK_RECV => (1..=USOCK_LEN_MAX).contains(&len),
         _ => false,
@@ -1421,7 +1445,7 @@ mod tests {
         assert_eq!(super::SYS_DUP, 31);
         assert_eq!(super::SYS_FCNTL, 32);
         assert_eq!(super::SYS_IMAGE_ENUM, 33);
-        assert_eq!(super::ABI_VERSION, (0, 20));
+        assert_eq!(super::ABI_VERSION, (0, 21));
         assert_eq!(super::SYS_TTY_GETCH, 34);
         assert_eq!(
             super::parse(super::SyscallRegs {
@@ -1439,6 +1463,11 @@ mod tests {
         assert_eq!(super::SYS_FB_SURFACE, 40);
         // M42-FBDEV1：SYS_DEV_PIO(41) 号域续接（ABI v0.19）
         assert_eq!(super::SYS_DEV_PIO, 41);
+        // M42-COMP4：op 面扩容 6/7（阻塞 accept + shutdown）+ ERR_PIPE(13)
+        assert_eq!(super::USOCK_ACCEPT_B, 6);
+        assert_eq!(super::USOCK_SHUT, 7);
+        assert_eq!(super::ERR_PIPE, 13);
+        assert_eq!(super::SVC_COMPOSITOR, super::SVC_ID_BASE + 6);
         assert_eq!(
             super::parse(super::SyscallRegs {
                 num: super::SYS_PIPE,
@@ -1561,8 +1590,8 @@ mod tests {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod svc_abi_tests {
     use super::{
-        svc_name_ok, SVC_BLOCK, SVC_CONSOLE, SVC_FB, SVC_ID_BASE, SVC_KBD, SVC_NAME_MAX,
-        SVC_PRESET_COUNT, SVC_VNET,
+        svc_name_ok, SVC_BLOCK, SVC_COMPOSITOR, SVC_CONSOLE, SVC_FB, SVC_ID_BASE, SVC_KBD,
+        SVC_NAME_MAX, SVC_PRESET_COUNT, SVC_VNET,
     };
 
     #[test]
@@ -1573,6 +1602,7 @@ mod svc_abi_tests {
         assert!(svc_name_ok("kbd"));
         assert!(svc_name_ok("console"));
         assert!(svc_name_ok("block"));
+        assert!(svc_name_ok("compositor")); // M42-COMP4 第 6 预设
         assert!(svc_name_ok("a23-b"));
         assert!(!svc_name_ok("")); // 空
         assert!(!svc_name_ok(&"x".repeat(SVC_NAME_MAX + 1))); // 越界
@@ -1583,13 +1613,22 @@ mod svc_abi_tests {
 
     #[test]
     fn svc_ids_segment_orthogonal() {
-        // 0x5E00 段与文件 0xF11E / 通道 0xC0DE 段正交；五预设连续
+        // 0x5E00 段与文件 0xF11E / 通道 0xC0DE 段正交；六预设连续
+        // （M42-COMP4：第 6 项 SVC_COMPOSITOR 合成器进程面）
         assert_eq!(SVC_VNET, SVC_ID_BASE + 1);
         assert_eq!(SVC_FB, SVC_ID_BASE + 2);
         assert_eq!(SVC_KBD, SVC_ID_BASE + 3);
         assert_eq!(SVC_CONSOLE, SVC_ID_BASE + 4);
         assert_eq!(SVC_BLOCK, SVC_ID_BASE + 5);
-        let ids = [SVC_VNET, SVC_FB, SVC_KBD, SVC_CONSOLE, SVC_BLOCK];
+        assert_eq!(SVC_COMPOSITOR, SVC_ID_BASE + 6);
+        let ids = [
+            SVC_VNET,
+            SVC_FB,
+            SVC_KBD,
+            SVC_CONSOLE,
+            SVC_BLOCK,
+            SVC_COMPOSITOR,
+        ];
         assert_eq!(ids.len(), SVC_PRESET_COUNT);
         for a in 0..ids.len() {
             for b in a + 1..ids.len() {
@@ -1855,6 +1894,18 @@ mod svc_abi_tests {
             }),
             "ACCEPT：句柄透传"
         );
+        // ACCEPT_B(6)/SHUT(7)：M42-COMP4 扩容面——句柄透传 + 长度无语义
+        for op in [super::USOCK_ACCEPT_B, super::USOCK_SHUT] {
+            assert_eq!(
+                super::parse(r(super::SYS_UNIXSOCK, [op, 5, 0, 0, 0])),
+                Ok(super::Syscall::UnixSock {
+                    op,
+                    handle: 5,
+                    len: 0,
+                }),
+                "op={op}：M42-COMP4 扩容臂收录"
+            );
+        }
         // SEND/RECV：载荷/缓冲长域闸（1..=64 KiB）
         for op in [super::USOCK_SEND, super::USOCK_RECV] {
             assert_eq!(
@@ -1877,11 +1928,11 @@ mod svc_abi_tests {
                 "op={op}：载荷长 > 64 KiB 拒收"
             );
         }
-        // op 越域拒收（6 起）
+        // op 越域拒收（8 起——6/7 自 M42-COMP4 起为 ACCEPT_B/SHUT 收录域）
         assert_eq!(
-            super::parse(r(super::SYS_UNIXSOCK, [6, 0, 0, 0, 0])),
+            super::parse(r(super::SYS_UNIXSOCK, [8, 0, 0, 0, 0])),
             Err(super::AbiError::BadArgs),
-            "op 6 越域拒收"
+            "op 8 越域拒收"
         );
         assert_eq!(
             super::parse(r(super::SYS_UNIXSOCK, [u64::MAX, 0, 0, 0, 0])),

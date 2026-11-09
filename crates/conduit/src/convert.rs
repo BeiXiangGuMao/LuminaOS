@@ -120,6 +120,7 @@ pub mod errno {
 /// | ERR_IMAGE(10) | 映像装载失败 | ENOEXEC(8) | 格式错误 |
 /// | ERR_INUSE(11) | 地址占用 | EADDRINUSE(98) | 套接字名占用（M42-UNIX3） |
 /// | ERR_NOENT(12) | 连接目标不存在 | ECONNREFUSED(111) | 连接拒同面（M42-UNIX3） |
+/// | ERR_PIPE(13) | 对端已终结 | EPIPE(32) | 套接字写侧断裂（M42-COMP4） |
 ///
 /// 哨兵域（`u64::MAX`/`u64::MAX-1`）与成功(0)返回 `None`（不可翻译——
 /// 调用方自行按域处理，兼容层不越权断言）。
@@ -140,6 +141,9 @@ pub fn err_to_errno(code: u64) -> Option<i32> {
         // ECONNREFUSED 连接目标不存在语义同面）。
         abi::ERR_INUSE => errno::EADDRINUSE,
         abi::ERR_NOENT => errno::ECONNREFUSED,
+        // M42-COMP4（v0.21）：EOF 对端终结域写侧显形——ERR_PIPE =
+        // EPIPE（对端 shutdown 后 send 断裂语义同面）。
+        abi::ERR_PIPE => errno::EPIPE,
         _ => return None,
     };
     Some(errno)
@@ -162,6 +166,9 @@ pub fn errno_to_err(errno: i32) -> Option<u64> {
         errno::ENOMEM => abi::ERR_NOMEM,
         errno::EMFILE => abi::ERR_TABLE,
         errno::ENOEXEC => abi::ERR_IMAGE,
+        // M42-COMP4（v0.21）：EOF 对端终结域写侧显形——EPIPE 反向
+        // 登记（ERR_PIPE 一对一，无歧义收敛域）。
+        errno::EPIPE => abi::ERR_PIPE,
         _ => return None,
     };
     Some(code)
@@ -561,11 +568,11 @@ mod tests {
     use crate::{errno_name, linux_syscall_name};
     use bedrock::abi;
 
-    /// errno 双向映射全覆盖：正向表 10 项全断言；反向表 8 项全断言 +
+    /// errno 双向映射全覆盖：正向表 13 项全断言；反向表 9 项全断言 +
     /// 未登记 errno → None（透传域）+ 哨兵/成功 → None。
     #[test]
     fn errno_mapping_full_coverage() {
-        // 正向：LXE1 v0 全表 1..=12（12 项——M42-UNIX3 追加 11/12）
+        // 正向：LXE1 v0 全表 1..=13（13 项——M42-COMP4 追加 13=EPIPE）
         assert_eq!(err_to_errno(abi::ERR_CAP), Some(1)); // EPERM
         assert_eq!(err_to_errno(abi::ERR_EMPTY), Some(11)); // EAGAIN
         assert_eq!(err_to_errno(abi::ERR_DERIVE), Some(1)); // EPERM（收敛）
@@ -578,12 +585,13 @@ mod tests {
         assert_eq!(err_to_errno(abi::ERR_IMAGE), Some(8)); // ENOEXEC
         assert_eq!(err_to_errno(abi::ERR_INUSE), Some(98)); // EADDRINUSE
         assert_eq!(err_to_errno(abi::ERR_NOENT), Some(111)); // ECONNREFUSED
-                                                             // 域外：成功(0)/哨兵/越界 → None
+        assert_eq!(err_to_errno(abi::ERR_PIPE), Some(32)); // EPIPE
+                                                           // 域外：成功(0)/哨兵/越界 → None
         assert_eq!(err_to_errno(0), None);
         assert_eq!(err_to_errno(u64::MAX), None);
         assert_eq!(err_to_errno(u64::MAX - 1), None);
-        assert_eq!(err_to_errno(13), None); // 12 后首未登记号
-                                            // 反向：登记 8 项 + 未登记透传域
+        assert_eq!(err_to_errno(14), None); // 13 后首未登记号
+                                            // 反向：登记 9 项 + 未登记透传域
         assert_eq!(errno_to_err(1), Some(abi::ERR_CAP));
         assert_eq!(errno_to_err(11), Some(abi::ERR_EMPTY));
         assert_eq!(errno_to_err(3), Some(abi::ERR_TARGET));
@@ -592,7 +600,8 @@ mod tests {
         assert_eq!(errno_to_err(12), Some(abi::ERR_NOMEM));
         assert_eq!(errno_to_err(24), Some(abi::ERR_TABLE));
         assert_eq!(errno_to_err(8), Some(abi::ERR_IMAGE));
-        // 未登记 errno：文件面透传值（ENOENT/EINVAL/EFAULT/EEXIST…）
+        assert_eq!(errno_to_err(32), Some(abi::ERR_PIPE)); // M42-COMP4
+                                                           // 未登记 errno：文件面透传值（ENOENT/EINVAL/EFAULT/EEXIST…）
         assert_eq!(errno_to_err(2), None);
         assert_eq!(errno_to_err(22), None);
         assert_eq!(errno_to_err(14), None);

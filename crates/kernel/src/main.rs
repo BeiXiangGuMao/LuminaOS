@@ -62,6 +62,7 @@ mod user;
 mod vfs;
 mod vmm;
 mod vnet;
+mod waycomp;
 
 use core::fmt::Write as _;
 use core::panic::PanicInfo;
@@ -84,8 +85,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103）。
-const SELFTEST_TOTAL: usize = 103;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104）。
+const SELFTEST_TOTAL: usize = 104;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -893,6 +894,25 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         let _ = writeln!(
             log,
             "LUMINA-SVC-FBRINGS req={req:#x} resp={resp:#x} attach=slot{slot} (SVC_FB 服务环在环)"
+        );
+    }
+
+    // M42-COMP4（笔④）阶段三「合成器进程面」boot-spawn 常驻面
+    // （M42-FBSVC2「常驻服务 boot-spawn 生命周期面」挂账域首割）：
+    // waycomp 常驻合成器服务（bind wayland-comp 名域 → SVC_COMPOSITOR
+    // 第 6 预设在环 → 阻塞 accept 会话环——unix socket 域 ⇄ wire 壳
+    // ⇄ SYS_FB_SURFACE 合流电气面）。fail-visible：bind 失手即
+    // LUMINA-WAYCOMP-BOOT 证据行缺位（t104 (a) 相位对账必炸）。
+    let waycomp_pid = task::spawn_resident("waycomp", waycomp::service_body);
+    let dlw = ostd::time::now() + 240; // 编舞窗：计时器抢占域有界等待（t102 240 拍先例同款）
+    while !waycomp::WLCOMP_BOUND.load(Ordering::Acquire) && ostd::time::now() < dlw {
+        core::hint::spin_loop();
+    }
+    if waycomp::WLCOMP_BOUND.load(Ordering::Acquire) {
+        let _ = writeln!(
+            log,
+            "LUMINA-WAYCOMP-BOOT pid={waycomp_pid} listener={:#x} name=wayland-comp (常驻合成器服务化 boot 面)",
+            waycomp::WLCOMP_LISTENER.load(Ordering::Acquire)
         );
     }
 
@@ -7083,6 +7103,22 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t103 = t103_run(&mut log);
     report(&mut log, t103, "unix-socket");
 
+    // t104) 合成器进程面活体（M42-阶段三 笔④「prism 仲裁 ring3 化 +
+    //       loom/cascade 用户态承接 + wayland 合成器进程消费
+    //       SYS_FB_SURFACE——unix socket 域与 wire 壳合流电气面」）：
+    //       boot 常驻面三域对账〔waycomp bind 名域 + SVC_COMPOSITOR
+    //       第 6 预设 + 监听对象段正交〕→ 阻塞 accept 唤醒链
+    //       〔WaitWhat::UnixAccept——connect 落队定向唤醒 + 取证戳〕
+    //       → 合流电气面〔get_registry → globals 公告解析——wire 壳
+    //       ⇄ unix socket 回环〕→ 仲裁策略承接〔bind + create_surface
+    //       ×2 + damage + frame + commit——cascade tiling 平面 z 序
+    //       注入 + SYS_FB_SURFACE 登记 + 代 Paint + SYNC/COMPOSE +
+    //       VRAM 模式读回 + surf_layer_of 策略/登记同源对账〕→
+    //       EOF 对端终结面〔shutdown → 排空 EOF + ERR_PIPE + teardown
+    //       回退〕。LUMINA-T104-COMP/OK。阶段三首笔落域。
+    let t104 = t104_run(&mut log);
+    report(&mut log, t104, "wayland-compositor");
+
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
     //      pf_hook 入口扩判「U 位 或 CR2 落增长栈窗口域」——CPL0 用户
@@ -8747,6 +8783,9 @@ fn t103_run(log: &mut DualLog) -> bool {
     let me = task::current_task_id();
     let s0 = unixsock::usock_stamps();
     let su0 = unixsock::sockets_usage();
+    // 监听者计数基（M42-COMP4 随行改写：常驻合成器 waycomp boot 监听
+    // 名域 wayland-comp 入表——绝对计数改相对对账，其余相位语义不变）
+    let lu0 = unixsock::listeners_usage();
     // 句柄 → 能力对象 id 解析（对账面——段正交性断言数据源）
     let obj_of = |h: usize| -> Option<u64> {
         task::with_task_handles(me, |t| t[h])
@@ -8789,10 +8828,11 @@ fn t103_run(log: &mut DualLog) -> bool {
     // 先于 F4 同款——ptr/len 未及校验即 ERR_CAP）
     let sys_neg = unixsock::sys_unixsock(USOCK_SEND, 63, 8, 0);
     ok &= sys_neg == ERR_CAP;
-    // parse 层越域闸显形（bedrock abi v0.20——op 6 拒收）
+    // parse 层越域闸显形（bedrock abi v0.21——op 8 拒收；op 6/7 自
+    // M42-COMP4 起为 ACCEPT_B/SHUT 收录域）
     let parse_neg = bedrock::abi::parse(bedrock::abi::SyscallRegs {
         num: SYS_UNIXSOCK,
-        args: [6, 0, 0, 0, 0],
+        args: [8, 0, 0, 0, 0],
     });
     ok &= parse_neg == Err(bedrock::abi::AbiError::BadArgs);
     let _ = writeln!(
@@ -8813,7 +8853,7 @@ fn t103_run(log: &mut DualLog) -> bool {
         }
     };
     let lu = unixsock::listeners_usage();
-    ok &= lu.0 == 1;
+    ok &= lu.0 == lu0.0 + 1;
     ok &= unixsock::sock_bind(me, b"wayland-0") == Err(unixsock::UsockError::InUse);
     ok &= unixsock::sock_accept(me, ha as u64) == Err(unixsock::UsockError::Cap); // 端点非监听者
     ok &= unixsock::sock_accept(me, hl as u64) == Err(unixsock::UsockError::Empty); // backlog 空
@@ -8975,6 +9015,295 @@ fn t103_run(log: &mut DualLog) -> bool {
     );
     if ok {
         let _ = writeln!(log, "LUMINA-T103-OK");
+    }
+    ok
+}
+
+/// t104 合成器进程面活体（M42-COMP4 阶段三首笔）。五相位：〔boot 常
+/// 驻面三域对账〕→〔阻塞 accept 唤醒链〕→〔合流电气面 wire 回环〕→
+/// 〔仲裁策略承接 + SYS_FB_SURFACE 消费成像〕→〔EOF 对端终结面〕——
+/// prism::wayland::comp 语义面 / unix socket 电气面 / fb 机械面三域
+/// 同一活体取证（LUMINA-T104-COMP/OK 双面板标记）。
+fn t104_run(log: &mut DualLog) -> bool {
+    use bedrock::abi::{ERR_CAP, SVC_COMPOSITOR, USOCK_ACCEPT_B, USOCK_SHUT};
+    use prism::wayland as wl;
+    let mut ok = true;
+    let me = task::current_task_id();
+
+    // (a) boot 常驻面三域对账：bind 名域在环 + SVC 第 6 预设
+    //     KernelResident + 监听对象 id 段正交（0xC0DE…002X）
+    let bound = waycomp::WLCOMP_BOUND.load(Ordering::Acquire);
+    let lobj = waycomp::WLCOMP_LISTENER.load(Ordering::Acquire);
+    let seg_ok = (unixsock::USOCK_OBJECT_BASE..unixsock::USOCK_OBJECT_BASE + 64).contains(&lobj);
+    let svc_ok = matches!(
+        svc::lookup(SVC_COMPOSITOR),
+        Some(("compositor", 0, 0, svc::Owner::KernelResident))
+    );
+    let boot_ok = bound && seg_ok && svc_ok;
+    ok &= boot_ok;
+    let _ = writeln!(
+        log,
+        "t104: boot-ok={boot_ok} bound={bound} seg={seg_ok} svc={svc_ok} listener={lobj:#x} stage0={}",
+        fb::surf_count()
+    );
+
+    // (b) 阻塞 accept 唤醒链：connect → waycomp UnixAccept 定向唤醒
+    //     （accept_wakes 取证戳增量 + 会话戳增量）——M42-COMP4 阻塞
+    //     accept 电气域活体（waycomp boot 即阻塞于 accept_wait）
+    let s0 = unixsock::usock_stamps();
+    let c0 = waycomp::waycomp_stamps();
+    let hc = match unixsock::sock_connect(me, waycomp::WAYCOMP_SOCK_NAME) {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = writeln!(log, "t104: connect failed ({:?})", e);
+            return false;
+        }
+    };
+    let dl = ostd::time::now() + 240; // 编舞窗（t102 240 拍先例同款域吸收）
+    let c1 = loop {
+        let c = waycomp::waycomp_stamps();
+        if c.2 > c0.2 || ostd::time::now() >= dl {
+            break c;
+        }
+        core::hint::spin_loop();
+    };
+    let s1 = unixsock::usock_stamps();
+    let accept_wakes = s1.6 - s0.6;
+    let accept_ok = c1.2 == c0.2 + 1 && accept_wakes >= 1;
+    ok &= accept_ok;
+    let _ = writeln!(
+        log,
+        "t104: accept-ok={accept_ok} sessions=+{} wakes=+{accept_wakes}",
+        c1.2 - c0.2
+    );
+
+    // (c) 合流电气面 round 1：get_registry → globals 公告回执（wire
+    //     壳 ⇄ unix socket 回环——四 global 逐条解析对账）
+    let mut req = [0u8; 64];
+    let n_req = wl::encode_display_get_registry(&mut req, 1, 2).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &req[..n_req]).unwrap_or(0);
+    ok &= sent == n_req;
+    let mut globals_buf = [0u8; 512];
+    let mut got = 0usize;
+    let dl = ostd::time::now() + 240;
+    while got < 124 && ostd::time::now() < dl {
+        let n = unixsock::sock_recv(me, hc as u64, &mut globals_buf[got..]).unwrap_or(0);
+        if n > 0 {
+            got += n;
+        }
+    }
+    let mut off = 0usize;
+    let mut gcount = 0usize;
+    let mut compositor_seen = false;
+    while off + wl::HEADER <= got && gcount < 4 {
+        let Ok(m) = wl::parse_message(&globals_buf[off..got], wl::SIG_REGISTRY_GLOBAL) else {
+            break;
+        };
+        if m.header.object_id == 2 && m.header.opcode == wl::registry::EV_GLOBAL {
+            gcount += 1;
+            if m.args[1] == Some(wl::WlArg::Str(b"wl_compositor"))
+                && m.args[2] == Some(wl::WlArg::Uint(4))
+            {
+                compositor_seen = true;
+            }
+        }
+        off += m.wire_size();
+    }
+    let wire_ok = got == 124 && gcount == 4 && compositor_seen;
+    ok &= wire_ok;
+    let _ = writeln!(
+        log,
+        "t104: wire-ok={wire_ok} globals={gcount} bytes={got} compositor={compositor_seen}"
+    );
+
+    // (d) 仲裁策略承接 + SYS_FB_SURFACE 消费成像：bind compositor +
+    //     create_surface ×2 + damage + frame + commit ×2 → waycomp
+    //     cascade tiling 平面 z 序注入 → REGISTER + 代 Paint + SYNC/
+    //     COMPOSE → VRAM 模式读回 + surf_layer_of 策略/登记同源对账
+    //     + 帧回调 done 回执解析
+    // 预采快照（teardown 回退对账基线——pane 域 VRAM 原值）
+    let probe_pts = [(100i32, 100i32), (500, 600), (1200, 300), (1800, 900)];
+    let mut batch = [0u8; 512];
+    let mut bl = 0usize;
+    bl += wl::encode_registry_bind(&mut batch[bl..], 2, 1, "wl_compositor", 4, 3).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        3,
+        wl::compositor::REQ_CREATE_SURFACE,
+        &[wl::WlArg::NewId(0x21)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        3,
+        wl::compositor::REQ_CREATE_SURFACE,
+        &[wl::WlArg::NewId(0x25)],
+    )
+    .unwrap_or(0);
+    for sid in [0x21u32, 0x25] {
+        bl += wl::encode_message(
+            &mut batch[bl..],
+            sid,
+            wl::surface::REQ_DAMAGE,
+            &[
+                wl::WlArg::Int(0),
+                wl::WlArg::Int(0),
+                wl::WlArg::Int(948),
+                wl::WlArg::Int(944),
+            ],
+        )
+        .unwrap_or(0);
+    }
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        0x21,
+        wl::surface::REQ_FRAME,
+        &[wl::WlArg::NewId(0x22)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        0x25,
+        wl::surface::REQ_FRAME,
+        &[wl::WlArg::NewId(0x26)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_surface_commit(&mut batch[bl..], 0x21).unwrap_or(0);
+    bl += wl::encode_surface_commit(&mut batch[bl..], 0x25).unwrap_or(0);
+    let sent2 = unixsock::sock_send(me, hc as u64, &batch[..bl]).unwrap_or(0);
+    ok &= sent2 == bl;
+    // 有界等：commit 戳 ≥ 2（waycomp 发布应用域）
+    let dl = ostd::time::now() + 480;
+    let c2 = loop {
+        let c = waycomp::waycomp_stamps();
+        if c.3 >= c0.3 + 2 || ostd::time::now() >= dl {
+            break c;
+        }
+        core::hint::spin_loop();
+    };
+    let commits_ok = c2.3 >= c0.3 + 2;
+    // 帧回调 done 回执（2 × 12 B——done(0x22, s1) + done(0x26, s2)）
+    let mut done_buf = [0u8; 64];
+    let mut dgot = 0usize;
+    let dl = ostd::time::now() + 240;
+    while dgot < 24 && ostd::time::now() < dl {
+        let n = unixsock::sock_recv(me, hc as u64, &mut done_buf[dgot..]).unwrap_or(0);
+        if n > 0 {
+            dgot += n;
+        }
+    }
+    let mut dones_ok = dgot == 24;
+    let mut dserials = [0u32; 2];
+    if dones_ok {
+        for k in 0..2 {
+            match wl::parse_message(&done_buf[k * 12..dgot], wl::SIG_CALLBACK_DONE) {
+                Ok(m) => {
+                    let expect_id = if k == 0 { 0x22 } else { 0x26 };
+                    dones_ok &=
+                        m.header.object_id == expect_id && m.header.opcode == wl::callback::EV_DONE;
+                    if let Some(wl::WlArg::Uint(v)) = m.args[0] {
+                        dserials[k] = v;
+                    }
+                }
+                Err(_) => dones_ok = false,
+            }
+        }
+    }
+    // 策略/登记同源对账：cascade tiling 平面 z 序 + 矩形 = prism
+    // Layer 落账（surf_layer_of 读回——t79「两套面同一几何」先例）
+    let plan = cascade::tiling::tiling_plan(&[0x21u64, 0x25], waycomp::VIEWPORT);
+    let policy_ok = match &plan {
+        Ok(p) if p.panes.len() == 2 => {
+            let master = p.panes[0].1;
+            let stack = p.panes[1].1;
+            let l1 = fb::surf_layer_of(0x21)
+                .map(|(z, v, b)| z == waycomp::POLICY_Z_BASE && v && b == master);
+            let l2 = fb::surf_layer_of(0x25)
+                .map(|(z, v, b)| z == waycomp::POLICY_Z_BASE - 1 && v && b == stack);
+            l1.unwrap_or(false) && l2.unwrap_or(false)
+        }
+        _ => false,
+    };
+    // VRAM 模式读回（pane 域代 Paint 成像——pattern 局部坐标换算）
+    let master_rect = plan.as_ref().ok().map(|p| p.panes[0].1);
+    let stack_rect = plan.as_ref().ok().map(|p| p.panes[1].1);
+    let px_ok = match (master_rect, stack_rect) {
+        (Some(mr), Some(sr)) => {
+            let e0 = waycomp::pane_pattern(0x21, 100 - mr.x, 100 - mr.y) & 0x00FF_FFFF;
+            let e1 = waycomp::pane_pattern(0x21, 500 - mr.x, 600 - mr.y) & 0x00FF_FFFF;
+            let e2 = waycomp::pane_pattern(0x25, 1200 - sr.x, 300 - sr.y) & 0x00FF_FFFF;
+            let e3 = waycomp::pane_pattern(0x25, 1800 - sr.x, 900 - sr.y) & 0x00FF_FFFF;
+            fb::fb_probe_px_read(100, 100) == e0
+                && fb::fb_probe_px_read(500, 600) == e1
+                && fb::fb_probe_px_read(1200, 300) == e2
+                && fb::fb_probe_px_read(1800, 900) == e3
+        }
+        _ => false,
+    };
+    let count_ok = fb::surf_count() == 3; // stage 底层锚 + 双 surface
+    let compose_ok = commits_ok && dones_ok && policy_ok && px_ok && count_ok;
+    ok &= compose_ok;
+    let _ = writeln!(
+        log,
+        "t104: compose-ok={compose_ok} commits=+{} dones={dones_ok} serials=({},{}) policy={policy_ok} px={px_ok} count={}",
+        c2.3 - c0.3,
+        dserials[0],
+        dserials[1],
+        fb::surf_count()
+    );
+
+    // (e) EOF 对端终结面：shutdown → waycomp 排空 EOF（会话收场
+    //     teardown——surface 摘除 + pane 回退）+ 对己端 send ERR_PIPE
+    //     + 己端 recv 0 = EOF + VRAM 回退对账（快照复原）
+    let sys_shut_neg = unixsock::sys_unixsock(USOCK_SHUT, 63, 0, 0);
+    ok &= sys_shut_neg == ERR_CAP; // 坏句柄域（syscall 慢路径门禁）
+    let sys_ab_neg = unixsock::sys_unixsock(USOCK_ACCEPT_B, 63, 0, 0);
+    ok &= sys_ab_neg == ERR_CAP; // ACCEPT_B 同面负例
+    let shut = unixsock::sock_shutdown(me, hc as u64);
+    ok &= shut.is_ok();
+    // 有界等：**会话收场完成旗**（M42-COMP4 随行揭雷改域——原
+    // surf_count ≤1 早跳域：remove 后收场 sync+compose 尚在途，客户端
+    // 读到陈旧 VRAM/初始戳——旗 wait 免竞态，t102 应答先行时序同谱）
+    let dl = ostd::time::now() + 480;
+    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+        core::hint::spin_loop();
+    }
+    let teardown_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
+    let s2 = unixsock::usock_stamps();
+    let eofs = s2.7 - s0.7;
+    let pipe = unixsock::sock_send(me, hc as u64, b"x");
+    let mut rb = [0u8; 16];
+    let eof_own = unixsock::sock_recv(me, hc as u64, &mut rb).unwrap_or(99);
+    let eof_ok =
+        teardown_ok && eofs >= 1 && pipe == Err(unixsock::UsockError::Pipe) && eof_own == 0;
+    ok &= eof_ok;
+    // VRAM 回退对账：pane 域回 stage 基线（快照逐点复原——teardown
+    // surf_remove + sync + compose 回退链显形）
+    // 回退基线对账（M42-COMP4 裁定改域：teardown 后 pane = stage 单层
+    // 直通——VRAM == stage 直读 = 合成回退链显形；历史 VRAM 直写哨兵
+    // 〔t79 交盒哨兵域〕使 pre-快照先天不可比，pre 面仅存证不断言）
+    let mut restore_ok = true;
+    for (x, y) in probe_pts.iter() {
+        if fb::fb_probe_px_read(*x, *y) != fb::stage_probe_px_read(*x, *y) {
+            restore_ok = false;
+        }
+    }
+    ok &= restore_ok;
+    let _ = writeln!(
+        log,
+        "t104: eof-ok={eof_ok} teardown={teardown_ok} eofs=+{eofs} pipe={} own-eof={eof_own} restore={restore_ok} sys-neg=({sys_shut_neg},{sys_ab_neg}) rerr={} endc={} stage-anchor=1",
+        pipe == Err(unixsock::UsockError::Pipe),
+        waycomp::WLCOMP_REMOVE_ERR.load(Ordering::Acquire),
+        waycomp::WLCOMP_END_COUNT.load(Ordering::Acquire),
+    );
+
+    // 汇总取证行（双面板标记）
+    let _ = writeln!(
+        log,
+        "LUMINA-T104-COMP boot={boot_ok} accept={accept_ok} wire={wire_ok} compose={compose_ok} eof={eof_ok} restore={restore_ok}"
+    );
+    if ok {
+        let _ = writeln!(log, "LUMINA-T104-OK");
     }
     ok
 }

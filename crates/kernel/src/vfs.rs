@@ -853,9 +853,12 @@ pub fn sys_close(handle: u64) -> u64 {
                     Ok(o) if crate::unixsock::is_socket_object(o) => {
                         // M42-UNIX3 socket 句柄关闭落点（端点/监听者同一
                         // 守门面）：句柄/能力回收，对象存续（v0 注册表
-                        // 存续纪律——通道分支同款；EOF/回收面随阶段三挂账）
+                        // 存续纪律——通道分支同款）。M42-COMP4：终结旗标
+                        // 随行置位（mark_closed_by_object——对象行存续 +
+                        // 流终结双域分离：对端 recv 排空后 0 = EOF 显形）
                         let _ = crate::caps::table().lock().revoke(g);
                         task::clear_hflag(caller, h);
+                        crate::unixsock::mark_closed_by_object(o);
                         0
                     }
                     Ok(o) if is_pipe_object(o) => {

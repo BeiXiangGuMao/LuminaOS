@@ -27,7 +27,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use ostd::sync::SpinLock;
 
 use bedrock::abi::{
-    svc_name_ok, SVC_BLOCK, SVC_CONSOLE, SVC_FB, SVC_ID_BASE, SVC_KBD, SVC_MAX, SVC_VNET,
+    svc_name_ok, SVC_BLOCK, SVC_COMPOSITOR, SVC_CONSOLE, SVC_FB, SVC_ID_BASE, SVC_KBD, SVC_MAX,
+    SVC_VNET,
 };
 
 /// 注册失败集（fail-visible；注册闸全数显形）。
@@ -263,18 +264,23 @@ pub fn snapshot() -> (usize, usize, u64) {
 }
 
 /// boot 注册面（幂等闸：二次调用拒绝返回 0——kmain 单调用点，防御
-/// 面语义）。五驱动全数 [`Owner::KernelResident`] + (0, 0) 占位通道。
-/// 返回成功注册数（对账闸 = [`bedrock::abi::SVC_PRESET_COUNT`]）。
+/// 面语义）。六驱动/服务全数 [`Owner::KernelResident`] + (0, 0) 占位
+/// 通道（M42-COMP4：第 6 项 = 合成器进程面）。返回成功注册数（对账
+/// 闸 = [`bedrock::abi::SVC_PRESET_COUNT`]）。
 pub fn init() -> usize {
     if BOOT_N.load(Ordering::Acquire) != 0 {
         return 0; // 幂等闸（fail-visible——重复 init 计 0，对账闸必炸）
     }
-    let presets: [(u64, &'static str); 5] = [
+    let presets: [(u64, &'static str); 6] = [
         (SVC_VNET, "vnet"),
         (SVC_FB, "fb"),
         (SVC_KBD, "kbd"),
         (SVC_CONSOLE, "console"),
         (SVC_BLOCK, "block"),
+        // M42-COMP4 第 6 预设：合成器进程面（常驻 waycomp 服务登记域；
+        // 通道域 (0,0) 占位——合成器对外电气 = unix socket 名域非
+        // FastPath 环对，如实记档）
+        (SVC_COMPOSITOR, "compositor"),
     ];
     let mut n = 0usize;
     for (id, name) in presets {
