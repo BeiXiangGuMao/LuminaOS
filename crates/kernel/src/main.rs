@@ -86,8 +86,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106）。
-const SELFTEST_TOTAL: usize = 106;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108）。
+const SELFTEST_TOTAL: usize = 108;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7136,6 +7136,28 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t106 = t106_run(&mut log);
     report(&mut log, t106, "wl-shm-fdpass");
 
+    // t107) 重排改写面活体（M42-本笔 域①「UPDATE 几何演进」——M42-COMP4
+    //       「窗数演进重排 × REGISTER 形状锁」挂账域兑现）：双窗基线
+    //       〔REGISTER ×2 + cascade 2-pane 同源对账〕→ 增窗重排
+    //       〔create 0x33 不 commit——policy_rewrite 策略驱动几何演进
+    //       UPDATE + 全幅重呈现，形状锁退役显形〕→ 第三窗 REGISTER
+    //       〔三平面 z 序〕→ 销窗重排〔destroy → DropLog 摘除传播 +
+    //       存活窗重排 grow〕→ EOF teardown 复原。
+    //       LUMINA-T107-GEOM/OK。
+    let t107 = t107_run(&mut log);
+    report(&mut log, t107, "surface-rewrite");
+
+    // t108) fbdev 驱动进程 ELF 化迁移活体（M42-本笔 域②「用本笔 lane
+    //       把常驻 fbdev/waycomp 逐步迁出内核态」首割）：容器结构锚
+    //       〔bedrock::elf::parse 双映像字段对账〕→ resident × ELF lane
+    //       交叉〔spawn_elf_seed_resident + resident 旗标 + 有界收割〕
+    //       → fbsvc-elf 全链〔spawn_elf_seed_wired 接线域 h1/h2 + pio
+    //       授权生命周期闭环（owner 读→revoke→grant）+ svc Owner 移交
+    //       + 服务环回环 PAINT_RECT 成像/越域拒/QUIT 收割〕。
+    //       LUMINA-T108-ELFSVC/OK。
+    let t108 = t108_run(&mut log);
+    report(&mut log, t108, "elf-service-migration");
+
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
     //      pf_hook 入口扩判「U 位 或 CR2 落增长栈窗口域」——CPL0 用户
@@ -9582,6 +9604,621 @@ fn t106_run(log: &mut DualLog) -> bool {
     );
     if ok {
         let _ = writeln!(log, "LUMINA-T106-OK");
+    }
+    ok
+}
+
+/// t107 重排改写面活体执行体（M42-GEOM6 笔⑥域①「UPDATE 几何演进」）：
+/// 独立函数承载（t93/t101/t104 帧形态纪律）。相位序：
+/// (a) 双窗基线：connect（阻塞 accept 唤醒链）→ bind + create_surface
+///     ×2（0x31/0x32）+ damage 全 pane + frame ×2 + commit ×2 单批 →
+///     REGISTER ×2 + cascade 2-pane 几何/z 同源对账（surf_layer_of——
+///     t79「两套面同一几何」先例）+ VRAM pane_pattern 探针（t104 同款
+///     XRGB 掩码域）；
+/// (b) **增窗重排**：create_surface 0x33（**不 commit**）→ 重排改写在
+///     环——policy_rewrite 策略驱动几何演进（REWRITES ≥ +2）+
+///     surf_layer_of 3-pane 平面矩形对账（形状锁退役——fb 演进域
+///     UPDATE）+ 新布局 VRAM 探针（全幅重呈现——透明基线 + pane 重漆）；
+/// (c) 第三窗 commit → REGISTER（z 20/19/18 三平面 + surf_count=4）；
+/// (d) **销窗重排**：destroy 0x31 → DropLog 传播（DROPS ≥ +1 +
+///     surf_count=3 + 0x2031 摘除对账）→ 存活窗重排 grow（REWRITES
+///     增量 + surf_layer_of 2-pane 矩形 + VRAM 探针）；
+/// (e) EOF teardown：SHUT → SESSION_DONE 旗 wait（t104 早跳竞态收口
+///     先例）→ surf_count=1 + VRAM==stage 直读复原对账。
+/// LUMINA-T107-GEOM/OK 双面板标记。
+fn t107_run(log: &mut DualLog) -> bool {
+    use prism::wayland as wl;
+    let mut ok = true;
+    let me = task::current_task_id();
+    let c0 = waycomp::waycomp_stamps();
+    let rw0 = c0.6; // 重排改写基线（stamps 追加位序 7 = rewrites）
+    let dr0 = c0.7; // 摘除基线（stamps 追加位序 8 = drops）
+                    // fb id 域 = base | wl（base = 会话序 × 0x1000——SESSION_SEQ 单调，
+                    // t107 会话序 = 既有会话数 + 1 → base = 既有会话数 × 0x1000）
+    let base = (c0.2 as u32) * waycomp::FB_ID_SESSION_STRIDE;
+    let fb_a = base | 0x31;
+    let fb_b = base | 0x32;
+    let fb_c = base | 0x33;
+    // (a) connect（阻塞 accept 唤醒链——t104 同谱）
+    let hc = match unixsock::sock_connect(me, waycomp::WAYCOMP_SOCK_NAME) {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = writeln!(log, "t107: connect failed ({e:?})");
+            return false;
+        }
+    };
+    let dl = ostd::time::now() + 240;
+    let c1 = loop {
+        let c = waycomp::waycomp_stamps();
+        if c.2 > c0.2 || ostd::time::now() >= dl {
+            break c;
+        }
+        core::hint::spin_loop();
+    };
+    let accept_ok = c1.2 == c0.2 + 1;
+    ok &= accept_ok;
+    // (a) 双窗基线批：get_registry（registry=2 登记——bind 前置域，缺位
+    //     即 BadObject 断连 fail-visible）+ bind + create ×2 + damage 全
+    //     pane ×2 + frame ×2 + commit ×2
+    let mut batch = [0u8; 512];
+    let mut bl = 0usize;
+    bl += wl::encode_display_get_registry(&mut batch[bl..], 1, 2).unwrap_or(0);
+    bl += wl::encode_registry_bind(&mut batch[bl..], 2, 1, "wl_compositor", 4, 3).unwrap_or(0);
+    for sid in [0x31u32, 0x32] {
+        bl += wl::encode_message(
+            &mut batch[bl..],
+            3,
+            wl::compositor::REQ_CREATE_SURFACE,
+            &[wl::WlArg::NewId(sid)],
+        )
+        .unwrap_or(0);
+    }
+    for sid in [0x31u32, 0x32] {
+        bl += wl::encode_message(
+            &mut batch[bl..],
+            sid,
+            wl::surface::REQ_DAMAGE,
+            &[
+                wl::WlArg::Int(0),
+                wl::WlArg::Int(0),
+                wl::WlArg::Int(1920),
+                wl::WlArg::Int(1080),
+            ],
+        )
+        .unwrap_or(0);
+        // 帧回调 id 走 0x51/0x52 域（与第三窗 surface id 0x33 域正交——
+        // 对象表 id 冲突即 Table 错域会话断连，fail-visible）。
+        bl += wl::encode_message(
+            &mut batch[bl..],
+            sid,
+            wl::surface::REQ_FRAME,
+            &[wl::WlArg::NewId(if sid == 0x31 { 0x51 } else { 0x52 })],
+        )
+        .unwrap_or(0);
+    }
+    bl += wl::encode_surface_commit(&mut batch[bl..], 0x31).unwrap_or(0);
+    bl += wl::encode_surface_commit(&mut batch[bl..], 0x32).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &batch[..bl]).unwrap_or(0);
+    ok &= sent == bl;
+    // 有界等：commit ≥ +2
+    let dl = ostd::time::now() + 480;
+    let c2 = loop {
+        let c = waycomp::waycomp_stamps();
+        if c.3 >= c0.3 + 2 || ostd::time::now() >= dl {
+            break c;
+        }
+        core::hint::spin_loop();
+    };
+    let commits_ok = c2.3 >= c0.3 + 2;
+    // 2-pane 策略/登记同源对账 + VRAM 模式探针
+    let plan2 = cascade::tiling::tiling_plan(&[0x31u64, 0x32], waycomp::VIEWPORT);
+    let base_ok = match &plan2 {
+        Ok(p) if p.panes.len() == 2 => {
+            let (ma, mb) = (p.panes[0].1, p.panes[1].1);
+            let la = fb::surf_layer_of(fb_a)
+                .map(|(z, v, b)| z == waycomp::POLICY_Z_BASE && v && b == ma);
+            let lb = fb::surf_layer_of(fb_b)
+                .map(|(z, v, b)| z == waycomp::POLICY_Z_BASE - 1 && v && b == mb);
+            let pa = waycomp::pane_pattern(fb_a, ma.x + 64 - ma.x, ma.y + 64 - ma.y) & 0x00FF_FFFF;
+            let pb = waycomp::pane_pattern(fb_b, mb.x + 32 - mb.x, mb.y + 32 - mb.y) & 0x00FF_FFFF;
+            la.unwrap_or(false)
+                && lb.unwrap_or(false)
+                && fb::fb_probe_px_read(ma.x + 64, ma.y + 64) == pa
+                && fb::fb_probe_px_read(mb.x + 32, mb.y + 32) == pb
+        }
+        _ => false,
+    };
+    ok &= commits_ok && base_ok;
+    let _ = writeln!(
+        log,
+        "t107: accept={accept_ok} commits=+{} base-ok={base_ok} rw=+{} count={}",
+        c2.3 - c0.3,
+        c2.6 - rw0,
+        fb::surf_count()
+    );
+    // (b) 增窗重排：create 0x33（不 commit）→ 存活窗几何演进改写
+    let mut cre = [0u8; 32];
+    let n_cre = wl::encode_message(
+        &mut cre,
+        3,
+        wl::compositor::REQ_CREATE_SURFACE,
+        &[wl::WlArg::NewId(0x33)],
+    )
+    .unwrap_or(0);
+    let sent3 = unixsock::sock_send(me, hc as u64, &cre[..n_cre]).unwrap_or(0);
+    ok &= sent3 == n_cre;
+    let dl = ostd::time::now() + 480;
+    let c3 = loop {
+        let c = waycomp::waycomp_stamps();
+        if c.6 > c2.6 || ostd::time::now() >= dl {
+            break c;
+        }
+        core::hint::spin_loop();
+    };
+    // 3-pane 策略面矩形对账（形状演进 UPDATE——形状锁退役显形）+ 新布局 VRAM 探针
+    // 重排数口径：2→3 窗 master 矩形不变（cascade master_w 与窗数无关
+    // ——n≥2 同式），0x31 零改写；0x32 全栈→上半栈 h 演进 = 恰 1 次改写。
+    let plan3 = cascade::tiling::tiling_plan(&[0x31u64, 0x32, 0x33], waycomp::VIEWPORT);
+    let reflow_ok = match &plan3 {
+        Ok(p) if p.panes.len() == 3 => {
+            let (ma3, mb3) = (p.panes[0].1, p.panes[1].1);
+            let la = fb::surf_layer_of(fb_a)
+                .map(|(z, v, b)| z == waycomp::POLICY_Z_BASE && v && b == ma3);
+            let lb = fb::surf_layer_of(fb_b)
+                .map(|(z, v, b)| z == waycomp::POLICY_Z_BASE - 1 && v && b == mb3);
+            // 全幅重呈现探针（新布局 pane 域——透明基线 + pane 重漆）
+            let pa = waycomp::pane_pattern(fb_a, 16, 16) & 0x00FF_FFFF;
+            let pb = waycomp::pane_pattern(fb_b, 16, 16) & 0x00FF_FFFF;
+            la.unwrap_or(false)
+                && lb.unwrap_or(false)
+                && fb::fb_probe_px_read(ma3.x + 16, ma3.y + 16) == pa
+                && fb::fb_probe_px_read(mb3.x + 16, mb3.y + 16) == pb
+        }
+        _ => false,
+    };
+    let rw_reflow = c3.6 > c2.6;
+    ok &= reflow_ok && rw_reflow;
+    let _ = writeln!(
+        log,
+        "t107: reflow-ok={reflow_ok} rw=+{}（增窗重排——0x33 未 commit 几何演进在环，0x32 全栈→上半栈）",
+        c3.6 - c2.6
+    );
+    // (c) 第三窗 commit → REGISTER（三平面 z 序）
+    let mut batch3 = [0u8; 128];
+    let mut b3 = 0usize;
+    b3 += wl::encode_message(
+        &mut batch3[b3..],
+        0x33,
+        wl::surface::REQ_DAMAGE,
+        &[
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(1920),
+            wl::WlArg::Int(1080),
+        ],
+    )
+    .unwrap_or(0);
+    b3 += wl::encode_message(
+        &mut batch3[b3..],
+        0x33,
+        wl::surface::REQ_FRAME,
+        &[wl::WlArg::NewId(0x53)],
+    )
+    .unwrap_or(0);
+    b3 += wl::encode_surface_commit(&mut batch3[b3..], 0x33).unwrap_or(0);
+    let sentc = unixsock::sock_send(me, hc as u64, &batch3[..b3]).unwrap_or(0);
+    ok &= sentc == b3;
+    let dl = ostd::time::now() + 480;
+    let c4 = loop {
+        let c = waycomp::waycomp_stamps();
+        if c.3 >= c0.3 + 3 || ostd::time::now() >= dl {
+            break c;
+        }
+        core::hint::spin_loop();
+    };
+    let reg3_ok = c4.3 >= c0.3 + 3
+        && fb::surf_count() == 4
+        && fb::surf_layer_of(fb_c)
+            .map(|(z, v, _)| z == waycomp::POLICY_Z_BASE - 2 && v)
+            .unwrap_or(false);
+    ok &= reg3_ok;
+    let _ = writeln!(
+        log,
+        "t107: reg3-ok={reg3_ok} count={}（三平面）",
+        fb::surf_count()
+    );
+    // (d) 销窗重排：destroy 0x31 → 摘除传播 + 存活窗重排 grow
+    let mut des = [0u8; 16];
+    let n_des = wl::encode_message(&mut des, 0x31, wl::surface::REQ_DESTROY, &[]).unwrap_or(0);
+    let sentd = unixsock::sock_send(me, hc as u64, &des[..n_des]).unwrap_or(0);
+    ok &= sentd == n_des;
+    let dl = ostd::time::now() + 480;
+    let c5 = loop {
+        let c = waycomp::waycomp_stamps();
+        if c.7 > dr0 && c.6 >= c3.6 + 2 || ostd::time::now() >= dl {
+            break c;
+        }
+        core::hint::spin_loop();
+    };
+    // 销窗重排数口径：3→2 窗 0x32（上半栈→master 全换域）+ 0x33（下半
+    // 栈→全栈）双双演进 = 恰 2 次改写。
+    let plan1 = cascade::tiling::tiling_plan(&[0x32u64, 0x33], waycomp::VIEWPORT);
+    let drop_ok = match &plan1 {
+        Ok(p) if p.panes.len() == 2 => {
+            let (ma1, mb1) = (p.panes[0].1, p.panes[1].1);
+            let gone = fb::surf_layer_of(fb_a).is_none();
+            let lb = fb::surf_layer_of(fb_b)
+                .map(|(z, v, b)| z == waycomp::POLICY_Z_BASE && v && b == ma1);
+            let lc = fb::surf_layer_of(fb_c)
+                .map(|(z, v, b)| z == waycomp::POLICY_Z_BASE - 1 && v && b == mb1);
+            let pb = waycomp::pane_pattern(fb_b, 16, 16) & 0x00FF_FFFF;
+            gone && lb.unwrap_or(false)
+                && lc.unwrap_or(false)
+                && fb::fb_probe_px_read(ma1.x + 16, ma1.y + 16) == pb
+        }
+        _ => false,
+    } && c5.7 > dr0
+        && c5.6 >= c3.6 + 2
+        && fb::surf_count() == 3;
+    ok &= drop_ok;
+    let _ = writeln!(
+        log,
+        "t107: drop-ok={drop_ok} drops=+{} rw=+{} count={}（销窗重排 grow）",
+        c5.7 - dr0,
+        c5.6 - c3.6,
+        fb::surf_count()
+    );
+    // (e) EOF teardown：SHUT → SESSION_DONE 旗 wait → 全摘 + VRAM==stage 复原
+    let shut = unixsock::sock_shutdown(me, hc as u64);
+    ok &= shut.is_ok();
+    let dl = ostd::time::now() + 480;
+    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+        core::hint::spin_loop();
+    }
+    let teardown_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
+    // VRAM 复原对账（pane 域回 stage 基线——t104/t106 判定改域先例同谱）
+    let mut restore_ok = teardown_ok;
+    if let Ok(p) = plan1 {
+        for (_, r) in p.panes.iter() {
+            for (dx, dy) in [(16i32, 16i32), (r.w as i32 / 2, r.h as i32 / 2)] {
+                if fb::fb_probe_px_read(r.x + dx, r.y + dy)
+                    != fb::stage_probe_px_read(r.x + dx, r.y + dy)
+                {
+                    restore_ok = false;
+                }
+            }
+        }
+    } else {
+        restore_ok = false;
+    }
+    ok &= restore_ok;
+    let _ = writeln!(
+        log,
+        "t107: teardown={teardown_ok} restore={restore_ok} endc={} rerr={}",
+        waycomp::WLCOMP_END_COUNT.load(Ordering::Acquire),
+        waycomp::WLCOMP_REMOVE_ERR.load(Ordering::Acquire),
+    );
+    // 汇总取证行（双面板标记）
+    let _ = writeln!(
+        log,
+        "LUMINA-T107-GEOM accept={accept_ok} base={base_ok} reflow={reflow_ok} reg3={reg3_ok} drop={drop_ok} teardown={teardown_ok} restore={restore_ok}"
+    );
+    if ok {
+        let _ = writeln!(log, "LUMINA-T107-OK");
+    }
+    ok
+}
+
+/// t108 fbdev 驱动进程 ELF 化迁移活体执行体（M42-GEOM6 笔⑥域②）：独立
+/// 函数承载（帧形态纪律同 t107）。相位序：
+/// (a) 结构锚：bedrock::elf::parse 双映像字段对账（ET_EXEC/EM_X86_64/
+///     entry=ELF_LANE_ENTRY/PT_LOAD ×2〔RX @0x400000 + RW @0x401000〕
+///     ——gen 脚本容器自检同源口径）；
+/// (b) resident × ELF lane 交叉：spawn_elf_seed_resident(RESIDENT_SEED)
+///     → resident 旗标真（task_is_resident——批跑收敛谓词豁免域 ×
+///     lane 派生面复合显形）+ 原生 ABI（lin_abi=false）+ 有界收割
+///     exit=0（v0 结构活体为有界退出形——真常驻不退出形随 waycomp
+///     主体迁移批次挂账）；
+/// (c) fbsvc-elf 全链：kmain 双柄安装（FB 服务环对象）→
+///     spawn_elf_seed_wired 接线域（子 h1/h2 = FB 请求/应答通道——
+///     t102 LXE 接线谱同构）→ pio 授权生命周期闭环（grant_owner 读 →
+///     revoke 旧属主 → grant 新 pid——异 pid 同区间让位通道）→ svc
+///     Owner 移交链（release 旧 → adopt ELF pid）→ 服务环回环
+///     〔PAINT_RECT 成像 VRAM 行 1 读回 + 回帧 status/seq/tag|0x80
+///     对账〕→ 越域拒〔status=EDOM + VRAM 零变〕→ QUIT〔status=0 +
+///     seq=3〕→ 有界收割 exit=0 → Owner 存续 + boot 身份漆存续。
+///     LUMINA-T108-ELFSVC/OK 双面板标记。
+fn t108_run(log: &mut DualLog) -> bool {
+    use bedrock::abi::SVC_FB;
+    let mut ok = true;
+    task::reset_user_evidence(); // 零锁判据面清零（t101 同款）
+                                 // (a) 结构锚：双映像 bedrock::elf::parse 字段对账
+    let struct_ok = (|| {
+        let img = bedrock::elf::parse(&user::FBDEV_SVC_ELF).ok()?;
+        let ld = img.loads;
+        Some(
+            img.entry == user::ELF_LANE_ENTRY
+                && img.load_count == 2
+                && ld[0].vaddr == user::ELF_LANE_ENTRY
+                && ld[0].flags & bedrock::elf::PF_X != 0
+                && ld[1].vaddr == user::ELF_LANE_DATA_VA
+                && ld[1].flags & bedrock::elf::PF_W != 0,
+        )
+    })()
+    .unwrap_or(false)
+        && (|| {
+            let img = bedrock::elf::parse(&user::RESIDENT_SEED).ok()?;
+            Some(
+                img.entry == user::ELF_LANE_ENTRY
+                    && img.load_count == 2
+                    && img.loads[0].vaddr == user::ELF_LANE_ENTRY
+                    && img.loads[1].vaddr == user::ELF_LANE_DATA_VA,
+            )
+        })()
+        .unwrap_or(false);
+    ok &= struct_ok;
+    let _ = writeln!(
+        log,
+        "t108: struct-ok={struct_ok}（fbsvc-elf + resident-seed 容器字段）"
+    );
+    // (b) resident × ELF lane 交叉
+    let rpid = match procs::spawn_elf_seed_resident(
+        "resident-seed",
+        &user::RESIDENT_SEED,
+        &["resident-seed"],
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = writeln!(log, "t108: resident build failed ({e:?})");
+            return false;
+        }
+    };
+    let res_ok = rpid != usize::MAX
+        && task::task_is_resident(rpid)
+        && !task::task_is_lin_abi(rpid)
+        && procs::elf_seeds() > 0;
+    ok &= res_ok;
+    // 有界收割（RESIDENT_SEED YIELD×64 → EXIT(0)——有界退出形）
+    let dl = ostd::time::now() + 240;
+    while task::task_debug_exit_code(rpid) == u64::MAX && ostd::time::now() < dl {
+        core::hint::spin_loop();
+    }
+    let mut reap_res = false;
+    if task::task_debug_state(rpid) == 4 {
+        let r = procs::sys_wait_pid(rpid as u64);
+        reap_res = r >> 32 == 1 && (r & 0xFFFF) == 0 && !task::task_alive(rpid);
+    }
+    ok &= reap_res;
+    let _ = writeln!(
+        log,
+        "t108: resident-ok={res_ok} reaped={reap_res}（resident 旗标 × lane 交叉 + 有界收割）"
+    );
+    // (c) fbsvc-elf 全链（t102 服务环回环谱同构——ELF 容器迁移面对账）
+    let me = task::current_task_id();
+    let (kh_req, kh_resp) = task::with_task_handles(me, |t| {
+        let free: alloc::vec::Vec<usize> = t
+            .iter()
+            .enumerate()
+            .skip(1)
+            .filter_map(|(h, s)| s.is_none().then_some(h))
+            .take(2)
+            .collect();
+        (free.first().copied(), free.get(1).copied())
+    })
+    .unwrap_or((None, None));
+    let (Some(kh_req), Some(kh_resp)) = (kh_req, kh_resp) else {
+        let _ = writeln!(log, "t108: kmain handle table exhausted");
+        return false;
+    };
+    let rights = vanguard::Right::IPC_SEND.bits() | vanguard::Right::IPC_RECV.bits();
+    let g1 = crate::caps::alloc_slot(vanguard::Capability::new(ipc::FB_REQ_OBJECT, rights));
+    let g2 = crate::caps::alloc_slot(vanguard::Capability::new(ipc::FB_RESP_OBJECT, rights));
+    let (Some(g1), Some(g2)) = (g1, g2) else {
+        let _ = writeln!(log, "t108: capability table exhausted");
+        return false;
+    };
+    let inst = task::with_task_handles(me, |t| {
+        t[kh_req] = Some(g1);
+        t[kh_resp] = Some(g2);
+    })
+    .is_some();
+    ok &= inst;
+    let pid = match procs::spawn_elf_seed_wired(
+        "fbsvc-elf",
+        &user::FBDEV_SVC_ELF,
+        &["fbsvc-elf"],
+        &[(1, kh_req), (2, kh_resp)], // 子 h1 = FB 请求通道 / h2 = FB 应答通道
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = writeln!(log, "t108: fbsvc-elf build failed ({e:?})");
+            return false;
+        }
+    };
+    ok &= pid != usize::MAX;
+    // pio 授权生命周期闭环：区间属主读 → revoke 旧属主 → grant 新 pid
+    let old_owner = crate::dev::pio_grant_owner(0x1CE, 0x1CF);
+    let rev = old_owner
+        .map(|o| crate::dev::pio_revoke(o, 0x1CE, 0x1CF))
+        .unwrap_or(Err(crate::dev::PioGrantError::NotFound));
+    let rev_neg =
+        crate::dev::pio_revoke(u64::MAX, 0x1CE, 0x1CF) == Err(crate::dev::PioGrantError::NotFound); // miss 负例
+    let g = crate::dev::pio_grant(pid as u64, 0x1CE, 0x1CF);
+    let g_idem = g.is_ok() && crate::dev::pio_grant(pid as u64, 0x1CE, 0x1CF).is_ok(); // 幂等放行
+    let pio_ok = rev.is_ok() && rev_neg && g.is_ok() && g_idem;
+    ok &= pio_ok;
+    // svc Owner 移交链：release 旧属主（t102 亡 pid 存续态）→ adopt ELF pid
+    let mut adopt_ok = false;
+    if let Some(crate::svc::Owner::UserTask(old)) = crate::svc::lookup(SVC_FB).map(|(_, _, _, o)| o)
+    {
+        adopt_ok = crate::svc::release_user(SVC_FB, old as u64).is_ok()
+            && crate::svc::adopt_user(SVC_FB, pid as u64).is_ok();
+    }
+    ok &= adopt_ok;
+    let _ = writeln!(
+        log,
+        "t108: spawn pid={pid} pio-ok={pio_ok}（revoke-owner={old_owner:?}）adopt-ok={adopt_ok} wired=[h1←{kh_req} h2←{kh_resp}]"
+    );
+    // 服务环回环（t102 谱同构——ELF 容器迁移面）
+    let ds0 = ipc::DIAG_SENDS.load(Ordering::Acquire);
+    let rv0 = ipc::DIAG_RECVS.load(Ordering::Acquire);
+    let base_v = crate::fb::fb_base();
+    let mut req = [0u8; 20];
+    req[0..4].copy_from_slice(&user::FB_SVC_OP_PAINT.to_le_bytes());
+    req[4..8].copy_from_slice(&8u32.to_le_bytes());
+    req[8..12].copy_from_slice(&1u32.to_le_bytes());
+    req[12..16].copy_from_slice(&64u32.to_le_bytes());
+    req[16..20].copy_from_slice(&user::FB_SVC_PAINT.to_le_bytes());
+    let mut reply = [0u8; 32];
+    let r1 = ipc::sys_send(kh_req as u64, req.as_ptr() as u64, req.len() as u64, 0x61);
+    ok &= r1 == 0;
+    // 应答落环等待（240 拍——首请求吸收 fbsvc-elf boot 时延〔FB_MAP
+    // 2026 页走查 + PIO 探测重试窗，TCG 域〕；paint 先于 reply 契约）
+    let dl = ostd::time::now() + 240;
+    while ipc::DIAG_SENDS.load(Ordering::Acquire) < ds0 + 2 && ostd::time::now() < dl {
+        core::hint::spin_loop();
+    }
+    let replied1 = ipc::DIAG_SENDS.load(Ordering::Acquire) >= ds0 + 2;
+    let mut paint_ok = base_v != 0 && r1 == 0 && replied1;
+    if paint_ok {
+        let row1 = base_v + crate::fb::WIDTH as u64 * 4;
+        for i in 0..64u64 {
+            if ostd::hw::phys::read_u32(row1 + (8 + i) * 4) != user::FB_SVC_PAINT {
+                paint_ok = false;
+                break;
+            }
+        }
+    }
+    ok &= paint_ok;
+    let mut resp1_ok = false;
+    if replied1 {
+        let r = ipc::sys_recv(
+            kh_resp as u64,
+            reply.as_mut_ptr() as u64,
+            reply.len() as u64,
+        );
+        if r >> 32 == (0x61u32 | user::FB_SVC_REPLY_TAG) as u64 && (r & 0xFFFF_FFFF) == 8 {
+            let status = u32::from_le_bytes(reply[0..4].try_into().unwrap_or_default());
+            let seq1 = u32::from_le_bytes(reply[4..8].try_into().unwrap_or_default());
+            resp1_ok = status == user::FB_SVC_STATUS_OK && seq1 == 1;
+        }
+    }
+    ok &= resp1_ok;
+    let _ = writeln!(
+        log,
+        "t108: paint1-ok={paint_ok} resp1-ok={resp1_ok}（ELF 容器服务域成像——LXE t102 同谱）"
+    );
+    // 越域拒（status=EDOM + VRAM 零变——fail-visible 零副作用）
+    let mut req2 = [0u8; 20];
+    req2[0..4].copy_from_slice(&user::FB_SVC_OP_PAINT.to_le_bytes());
+    req2[4..8].copy_from_slice(&1900u32.to_le_bytes());
+    req2[8..12].copy_from_slice(&1u32.to_le_bytes());
+    req2[12..16].copy_from_slice(&64u32.to_le_bytes());
+    req2[16..20].copy_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+    let mut snap = [0u32; 64];
+    if base_v != 0 {
+        let row1 = base_v + crate::fb::WIDTH as u64 * 4;
+        for (i, s) in snap.iter_mut().enumerate() {
+            *s = ostd::hw::phys::read_u32(row1 + (1900 + i as u64) * 4);
+        }
+    }
+    let r2 = ipc::sys_send(kh_req as u64, req2.as_ptr() as u64, req2.len() as u64, 0x62);
+    ok &= r2 == 0;
+    let dl = ostd::time::now() + 120;
+    while ipc::DIAG_SENDS.load(Ordering::Acquire) < ds0 + 4 && ostd::time::now() < dl {
+        core::hint::spin_loop();
+    }
+    let mut resp2_ok = false;
+    if ipc::DIAG_SENDS.load(Ordering::Acquire) >= ds0 + 4 {
+        let r = ipc::sys_recv(
+            kh_resp as u64,
+            reply.as_mut_ptr() as u64,
+            reply.len() as u64,
+        );
+        if r >> 32 == (0x62u32 | user::FB_SVC_REPLY_TAG) as u64 && (r & 0xFFFF_FFFF) == 8 {
+            let status = u32::from_le_bytes(reply[0..4].try_into().unwrap_or_default());
+            let seq2 = u32::from_le_bytes(reply[4..8].try_into().unwrap_or_default());
+            resp2_ok = status == user::FB_SVC_STATUS_EDOM && seq2 == 2;
+        }
+    }
+    let mut no_write = base_v != 0;
+    if no_write {
+        let row1 = base_v + crate::fb::WIDTH as u64 * 4;
+        for (i, s) in snap.iter().enumerate() {
+            if ostd::hw::phys::read_u32(row1 + (1900 + i as u64) * 4) != *s {
+                no_write = false;
+                break;
+            }
+        }
+    }
+    ok &= resp2_ok && no_write;
+    // QUIT（status=0 + seq=3）→ 有界收割 exit=0
+    let mut req3 = [0u8; 4];
+    req3[0..4].copy_from_slice(&user::FB_SVC_OP_QUIT.to_le_bytes());
+    let r3 = ipc::sys_send(kh_req as u64, req3.as_ptr() as u64, 4, 0x63);
+    ok &= r3 == 0;
+    let dl = ostd::time::now() + 120;
+    while ipc::DIAG_SENDS.load(Ordering::Acquire) < ds0 + 6 && ostd::time::now() < dl {
+        core::hint::spin_loop();
+    }
+    let mut resp3_ok = false;
+    if ipc::DIAG_SENDS.load(Ordering::Acquire) >= ds0 + 6 {
+        let r = ipc::sys_recv(
+            kh_resp as u64,
+            reply.as_mut_ptr() as u64,
+            reply.len() as u64,
+        );
+        if r >> 32 == (0x63u32 | user::FB_SVC_REPLY_TAG) as u64 && (r & 0xFFFF_FFFF) == 8 {
+            let status = u32::from_le_bytes(reply[0..4].try_into().unwrap_or_default());
+            let seq3 = u32::from_le_bytes(reply[4..8].try_into().unwrap_or_default());
+            resp3_ok = status == user::FB_SVC_STATUS_OK && seq3 == 3;
+        }
+    }
+    ok &= resp3_ok;
+    let dl = ostd::time::now() + 240;
+    while task::task_debug_exit_code(pid) == u64::MAX && ostd::time::now() < dl {
+        core::hint::spin_loop();
+    }
+    let mut reap_ok = false;
+    if task::task_debug_state(pid) == 4 {
+        let r = procs::sys_wait_pid(pid as u64);
+        reap_ok = r >> 32 == 1 && (r & 0xFFFF) == 0 && !task::task_alive(pid);
+    } else {
+        ok = false; // 滞域 fail-visible（bail 码 70/71/72 显形）
+    }
+    ok &= reap_ok;
+    // 终态对账：boot 身份漆存续 + Owner 存续 + 服务消费三帧
+    let mut boot_paint_ok = base_v != 0;
+    if boot_paint_ok {
+        for i in 0..64u64 {
+            if ostd::hw::phys::read_u32(base_v + i * 4) != user::FBDEV_PAINT {
+                boot_paint_ok = false;
+                break;
+            }
+        }
+    }
+    ok &= boot_paint_ok;
+    let owner_ok = crate::svc::lookup(SVC_FB)
+        .is_some_and(|(_, _, _, o)| matches!(o, crate::svc::Owner::UserTask(t) if t == pid));
+    ok &= owner_ok;
+    let rv_delta = ipc::DIAG_RECVS.load(Ordering::Acquire) - rv0;
+    ok &= rv_delta >= 3;
+    // PIO 执行面取证（dispi 末读值 ≥ 0xB0C0——ELF 服务探测真面）
+    let pio_st = crate::dev::pio_stamps();
+    let pio_probe_ok = pio_st.3 >= 0xB0C0;
+    ok &= pio_probe_ok;
+    let _ = writeln!(
+        log,
+        "t108: reject-ok={resp2_ok} no-write={no_write} quit-ok={resp3_ok} reaped exit=0 boot-paint={boot_paint_ok} served={rv_delta} owner=user dispi={:#x}",
+        pio_st.3
+    );
+    // 汇总取证行（双面板标记）
+    let _ = writeln!(
+        log,
+        "LUMINA-T108-ELFSVC struct={struct_ok} resident={res_ok} pio={pio_ok} adopt={adopt_ok} paint1={paint_ok} reject={resp2_ok} reap={reap_ok}"
+    );
+    if ok {
+        let _ = writeln!(log, "LUMINA-T108-OK");
     }
     ok
 }

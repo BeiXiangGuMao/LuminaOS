@@ -47,6 +47,8 @@ pub enum PioGrantError {
     AlreadyGranted,
     /// 注册表满容（[`PIO_GRANT_CAP`] 定容）。
     Full,
+    /// 撤销 miss（pid × 区间三元无精确匹配——M42-GEOM6 revoke 面）。
+    NotFound,
 }
 
 /// 端口裁量注册表（定容 Vec<Option<_>>；槽位复用与 SVCS 同构）。
@@ -115,6 +117,35 @@ pub fn pio_check(pid: u64, port: u16) -> bool {
         .iter()
         .flatten()
         .any(|g| g.pid == pid && port >= g.lo && port <= g.hi)
+}
+
+/// 区间属主读面（M42-GEOM6 域②——授权生命周期闭环查询域）：闭区间
+/// 精确匹配的授权 pid；miss = None（不泄露其它区间拓扑——同
+/// [`pio_check`] 不泄面纪律）。
+pub fn pio_grant_owner(lo: u16, hi: u16) -> Option<u64> {
+    PIO_GRANTS
+        .lock()
+        .iter()
+        .flatten()
+        .find(|g| g.lo == lo && g.hi == hi)
+        .map(|g| g.pid)
+}
+
+/// 授权撤销（M42-GEOM6 域②——**授权生命周期闭环**：t102 LXE 服务
+/// pid 在账 grant → t108 ELF 服务异 pid 同区间承接前置——「异 pid 同
+/// 区间 AlreadyGranted 拒」裁量纪律下的让位通道）。精确匹配（pid ×
+/// 区间三元全同）撤销；miss = NotFound fail-visible。
+pub fn pio_revoke(pid: u64, lo: u16, hi: u16) -> Result<(), PioGrantError> {
+    let mut grants = PIO_GRANTS.lock();
+    let Some(pos) = grants.iter().enumerate().find_map(|(i, g)| {
+        g.as_ref()
+            .filter(|g| g.pid == pid && g.lo == lo && g.hi == hi)
+            .map(|_| i)
+    }) else {
+        return Err(PioGrantError::NotFound);
+    };
+    grants[pos] = None; // 槽位复用域（满容闸复用既有 None 槽——SVCS 同构）
+    Ok(())
 }
 
 /// 执行面取证快照：(IN 次数, OUT 次数, 末端口, 末读值, 末 op)。

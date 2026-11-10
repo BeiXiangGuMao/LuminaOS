@@ -375,6 +375,66 @@ pub fn spawn_elf_seed(
     blob: &[u8],
     argv: &[&str],
 ) -> Result<usize, crate::user::UserSpaceError> {
+    spawn_elf_seed_wired(name, blob, argv, &[])
+}
+
+/// **ELF 播种 lane 接线扩展**（M42-GEOM6 域②——fbdev 驱动进程 ELF
+/// 化迁移承接域）：[`spawn_elf_seed`] 同谱 + `wiring` 接线域透传
+/// （[`crate::task::spawn_stage_wired`] 同语义——(子句柄, 父句柄源)
+/// 对，同槽后者胜）：常驻服务环 h1/h2 双通道接线域（t102 LXE 服务
+/// spawn_stage_wired 接线谱同构）——ELF 容器服务进程经 lane 起环即
+/// 持服务电气（句柄表预装，无需环内自铸）。t108 fbsvc-elf 消费面。
+pub fn spawn_elf_seed_wired(
+    name: &'static str,
+    blob: &[u8],
+    argv: &[&str],
+    wiring: &[(usize, usize)],
+) -> Result<usize, crate::user::UserSpaceError> {
+    let es = elf_seed_space(name, blob, argv)?;
+    let me = task::current_task_id();
+    let mut slots = [0u64; 15];
+    slots[0] = 0x202; // RFLAGS = IF=1（用户入口契约——fork 快照槽序同源）
+    slots[1] = es.entry;
+    slots[7] = if es.rsp != 0 { es.rsp } else { es.stack_top };
+    let id = task::spawn_stage_wired(name, es.root, me, slots, false, wiring);
+    if id != usize::MAX {
+        ELF_SEEDS.fetch_add(1, Ordering::AcqRel);
+    }
+    Ok(id)
+}
+
+/// **ELF 播种 lane 常驻扩展**（M42-GEOM6 域②——**resident × ELF
+/// lane 交叉落点**，waycomp ELF 化迁移派生面）：[`spawn_elf_seed`] 同
+/// 谱 + [`crate::task::spawn_stage_resident`] 派生（resident 旗标置位
+/// ——批跑收敛谓词豁免域〔M42-COMP4 常驻语义〕× 真 ELF64 原生 ABI
+/// 播种〔M42-ELF5 lane 语义〕复合）：用户态常驻服务（ELF 容器）的
+/// 播种面——waycomp 主体迁移（编译进程链成熟随批）的派生路径在环。
+/// t108 resident-ELF 结构活体消费面。
+pub fn spawn_elf_seed_resident(
+    name: &'static str,
+    blob: &[u8],
+    argv: &[&str],
+) -> Result<usize, crate::user::UserSpaceError> {
+    let es = elf_seed_space(name, blob, argv)?;
+    let me = task::current_task_id();
+    let mut slots = [0u64; 15];
+    slots[0] = 0x202; // RFLAGS = IF=1（用户入口契约——fork 快照槽序同源）
+    slots[1] = es.entry;
+    slots[7] = if es.rsp != 0 { es.rsp } else { es.stack_top };
+    let id = task::spawn_stage_resident(name, es.root, me, slots, false, &[]);
+    if id != usize::MAX {
+        ELF_SEEDS.fetch_add(1, Ordering::AcqRel);
+    }
+    Ok(id)
+}
+
+/// ELF 播种公共装载核（AT_RANDOM 熵 + build_user_space_elf 环内装载
+/// ——spawn_elf_seed/wired/resident 三面共享）。
+fn elf_seed_space(
+    name: &'static str,
+    blob: &[u8],
+    argv: &[&str],
+) -> Result<crate::user::ExecSpace, crate::user::UserSpaceError> {
     let Some(frames) = crate::vmm::global_frames() else {
         return Err(crate::user::UserSpaceError::FramesExhausted);
     };
@@ -384,18 +444,7 @@ pub fn spawn_elf_seed(
     for (i, b) in random.iter_mut().enumerate() {
         *b = (t >> ((i % 8) * 8)) as u8 ^ (i as u8).rotate_left(3);
     }
-    let es =
-        crate::user::build_user_space_elf(blob, argv, &[], random, name, &mut || frames.alloc())?;
-    let me = task::current_task_id();
-    let mut slots = [0u64; 15];
-    slots[0] = 0x202; // RFLAGS = IF=1（用户入口契约——fork 快照槽序同源）
-    slots[1] = es.entry;
-    slots[7] = if es.rsp != 0 { es.rsp } else { es.stack_top };
-    let id = task::spawn_stage_wired(name, es.root, me, slots, false, &[]);
-    if id != usize::MAX {
-        ELF_SEEDS.fetch_add(1, Ordering::AcqRel);
-    }
-    Ok(id)
+    crate::user::build_user_space_elf(blob, argv, &[], random, name, &mut || frames.alloc())
 }
 
 /// EXEC 成功标记位：返回值 `(1 << 32) | image`（成功位与映像号域隔离）。

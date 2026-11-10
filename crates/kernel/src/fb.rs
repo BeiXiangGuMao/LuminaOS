@@ -1107,8 +1107,22 @@ pub fn surf_register(id: u32, x: i32, y: i32, w: u32, h: u32, z: i32) -> Result<
     Ok(slot)
 }
 
-/// Surface 更新核心（移动/显隐/z 改写一体——prism `update` 同构；形状
-/// 锁定：w/h 须与登记一致——缩放域随组合器服务批次挂账，fail-visible）。
+/// Surface 更新核心（移动/显隐/z 改写一体——prism `update` 同构）。
+/// **重排改写面（M42-GEOM6 域①——UPDATE 几何演进，M42-COMP4 挂账域
+/// 兑现）**：REGISTER 形状锁退役——w/h 与登记不一致时进入**演进域**：
+/// 散帧增长补配（增长复用纪律同 [`surf_register`]——已占页保留，仅
+/// 补配增量页）+ **全量透明基线清零**（面内紧排行主序 row stride =
+/// w×4——形状演进 = 旧像素布局随行距失效，[0..need) 全域零化 = 确定
+/// 性透明基线；呈现内容由重排改写执行面全幅重呈现承接——waycomp
+/// policy_rewrite 同笔落域）+ pages Latch 改写 + 表 bounds 改写；
+/// 同形更新（移动/显隐/z 改写）零清零直改写——内容随层平移语义保持
+/// （store 面位置无关，bounds 平转即呈现域平移）。收缩域（need <
+/// have）：Latch 收紧即可——超配帧保留不回收（分配器无 free 面，
+/// register 纪律同源）。
+///
+/// 错误域：ENOENT(2)（id 未登记）、EINVAL(22)（零尺寸/越屏/超页上限
+/// ）、ENOMEM(9)（演进域帧耗尽——**旧态完整保留**：表 bounds/已占页
+/// latch/旧内容零触碰，fail-visible 零副作用）。
 pub fn surf_update(
     id: u32,
     x: i32,
@@ -1120,21 +1134,74 @@ pub fn surf_update(
 ) -> Result<(), u64> {
     const ENOENT: u64 = 2;
     const EINVAL: u64 = 22;
-    let cur = { SURFACES.lock().get(id) };
-    let Some(cur) = cur else {
-        return Err(ENOENT);
-    };
-    if cur.bounds.w != w || cur.bounds.h != h {
-        return Err(EINVAL);
-    }
-    if x < 0
+    const ENOMEM: u64 = 9;
+    if w == 0
+        || h == 0
+        || x < 0
         || y < 0
         || i64::from(x) + i64::from(w) > i64::from(WIDTH)
         || i64::from(y) + i64::from(h) > i64::from(HEIGHT)
     {
         return Err(EINVAL);
     }
-    if !SURFACES.lock().update(id, Rect { x, y, w, h }, visible, z) {
+    let need = (u64::from(w) * u64::from(h) * 4).div_ceil(4096);
+    if need > SURF_MAX_PAGES as u64 {
+        return Err(EINVAL);
+    }
+    // 单写者窗口（register 同谱）：存在性快照 + 槽定位 + 演进域清零 +
+    // pages Latch + 表 bounds 改写全程 SURFACES 锁内——compose 快照
+    // （table/槽页表整体快照同锁域）要么全旧要么全新，无中间态显形。
+    let mut table = SURFACES.lock();
+    let Some(cur) = table.get(id) else {
+        return Err(ENOENT);
+    };
+    let Some(slot) = SURF_STORES
+        .iter()
+        .position(|s| s.id.load(Ordering::Acquire) == u64::from(id))
+    else {
+        return Err(ENOENT);
+    };
+    let store = &SURF_STORES[slot];
+    let evolved = cur.bounds.w != w || cur.bounds.h != h;
+    if evolved {
+        let have = store.pages.load(Ordering::Acquire);
+        if have < need {
+            let Some(alloc) = crate::vmm::global_frames() else {
+                return Err(ENOMEM);
+            };
+            for k in have..need {
+                let Some(p) = alloc.alloc() else {
+                    // 帧耗尽：已占页保留（增长复用纪律），本次演进放弃
+                    // ——表 bounds/pages Latch/旧内容零触碰（fail-visible
+                    // 零副作用——旧呈现域完整存续）
+                    return Err(ENOMEM);
+                };
+                if p == 0 || p >= 0x4000_0000 {
+                    // 恒等域断言 fail-closed（同 register 域闸）
+                    return Err(ENOMEM);
+                }
+                store.frames[k as usize].store(p, Ordering::Release);
+            }
+        }
+        // 全量透明基线（形状演进 = 行距/像素布局失效——[0..need) 全域
+        // 零化；零化在表 bounds 改写生效前——锁内单写者窗口）
+        for k in 0..need {
+            let phys = store.frames[k as usize].load(Ordering::Relaxed);
+            for off in (0..4096).step_by(4) {
+                let addr = (phys + off) as usize;
+                // SAFETY: 前置条件 —— phys 自帧分配器出且 < 0x4000_0000
+                //          （恒等域断言已过），addr = phys+off < 页界；
+                //          页内 4 字节对齐。
+                // 不变式 —— write_volatile 防合并；零化在表改写生效前
+                //          （SURFACES 锁内——compose 快照无中间态）。
+                unsafe {
+                    core::ptr::write_volatile(addr as *mut u32, 0);
+                }
+            }
+        }
+        store.pages.store(need, Ordering::Release);
+    }
+    if !table.update(id, Rect { x, y, w, h }, visible, z) {
         return Err(ENOENT);
     }
     Ok(())

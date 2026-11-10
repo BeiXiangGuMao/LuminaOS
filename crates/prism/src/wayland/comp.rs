@@ -42,7 +42,9 @@
 //! 实录 → commit 记录携带 buffer 几何（电气面自池读像素上屏——
 //! pane 代 Paint 替代域随行落域）；region 绑定域登记、其余请求域外
 //! fail-visible；callback 对象 commit 后不回收（delete_id 复用面挂
-//! 账）；fixed 原字透传（语义换算挂账）。
+//! 账）；fixed 原字透传（语义换算挂账）。**M42-GEOM6 域①**：destroy
+//! 摘除记录批（[`DropLog`]）——重排改写触发源（电气面摘 fb surface
+//! + 窗口表行 → 存活窗 tiling 重排 → 几何演进 UPDATE 改写）。
 //!
 //! 错误域 fail-visible 全谱显形（[`CompError`]）——不吞畸形不静默降
 //! 级；feed 单消息失败即 Err（会话域由消费方裁决：回 error 事件或断
@@ -71,6 +73,8 @@ pub const MAX_FRAME_CBS: usize = 4;
 pub const GLOBALS_MAX: usize = 4;
 /// 单次 feed 的 create_pool 记录上限（定容零堆）。
 pub const MAX_POOLS_PER_FEED: usize = 4;
+/// 单次 feed 的 destroy 摘除记录上限（定容零堆——MAX_POOLS_PER_FEED 同量级）。
+pub const MAX_DROPS_PER_FEED: usize = 4;
 /// 单会话 buffer 槽容量（定容零堆——SESSION_SURFACES 同量级先例）。
 pub const SESSION_BUFFERS: usize = 8;
 
@@ -138,6 +142,40 @@ impl PoolLog {
     /// 记录入批（满容静默拒收——feed 上界定容域，如实记档）。
     fn push(&mut self, rec: PoolRecord) {
         if self.n < MAX_POOLS_PER_FEED {
+            self.items[self.n] = Some(rec);
+            self.n += 1;
+        }
+    }
+}
+
+/// destroy 摘除记录（feed 回执——**重排改写触发源**，M42-GEOM6 域①：
+/// 电气面消费方据此摘除 fb surface/窗口表行 → 存活窗 tiling 重排
+/// → 几何演进 UPDATE 改写；会话域已同步摘槽，记录 = 电气面对账域）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DropRecord {
+    /// 摘除 surface 的 wl 对象 id（客户端域）。
+    pub wl_id: u32,
+}
+
+/// 单次 feed 的摘除记录批（定容零堆——CommitLog 同构）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DropLog {
+    /// 记录槽（`items[..n]` 有效）。
+    pub items: [Option<DropRecord>; MAX_DROPS_PER_FEED],
+    /// 记录数。
+    pub n: usize,
+}
+
+impl DropLog {
+    /// 空批。
+    pub const EMPTY: DropLog = DropLog {
+        items: [None; MAX_DROPS_PER_FEED],
+        n: 0,
+    };
+
+    /// 记录入批（满容静默拒收——feed 上界定容域，如实记档）。
+    fn push(&mut self, rec: DropRecord) {
+        if self.n < MAX_DROPS_PER_FEED {
             self.items[self.n] = Some(rec);
             self.n += 1;
         }
@@ -235,6 +273,9 @@ pub struct FeedReport {
     /// 池创建记录批（M42-ELF5——`pools.items[..pools.n]` 有效；每记
     /// 录对一 fd 占位字）。
     pub pools: PoolLog,
+    /// destroy 摘除记录批（M42-GEOM6 域①——`drops.items[..drops.n]`
+    /// 有效；重排改写触发源：电气面摘除域）。
+    pub drops: DropLog,
     /// 本 feed 消费的 fd 占位字数（电气面 RECV_FD 承接计数——与
     /// pools 批对账：每 create_pool 恰一 fd）。
     pub fd_need: usize,
@@ -391,6 +432,7 @@ impl CompSession {
     pub fn feed(&mut self, stream: &[u8], out: &mut [u8]) -> Result<FeedReport, CompError> {
         let mut log = CommitLog::EMPTY;
         let mut pools = PoolLog::EMPTY;
+        let mut drops = DropLog::EMPTY;
         let mut fd_need = 0usize;
         let mut out_len = 0usize;
         let mut consumed = 0usize;
@@ -407,6 +449,7 @@ impl CompSession {
                 out,
                 &mut log,
                 &mut pools,
+                &mut drops,
                 &mut fd_need,
             )?;
             consumed += step;
@@ -416,6 +459,7 @@ impl CompSession {
             out_len,
             commits: log,
             pools,
+            drops,
             fd_need,
         })
     }
@@ -430,6 +474,7 @@ impl CompSession {
         out: &mut [u8],
         log: &mut CommitLog,
         pools: &mut PoolLog,
+        drops: &mut DropLog,
         fd_need: &mut usize,
     ) -> Result<usize, CompError> {
         let header = parse_header(msg).map_err(CompError::Wire)?;
@@ -441,7 +486,7 @@ impl CompSession {
             WlIface::Display => self.dispatch_display(&header, body, out_len, out)?,
             WlIface::Registry => self.dispatch_registry(&header, body)?,
             WlIface::Compositor => self.dispatch_compositor(&header, body)?,
-            WlIface::Surface => self.dispatch_surface(&header, body, out_len, out, log)?,
+            WlIface::Surface => self.dispatch_surface(&header, body, out_len, out, log, drops)?,
             WlIface::Shm => self.dispatch_shm(&header, body, pools, fd_need)?,
             WlIface::ShmPool => self.dispatch_shm_pool(&header, body)?,
             // callback/seat/output/region/buffer：服务端
@@ -657,6 +702,7 @@ impl CompSession {
         out_len: &mut usize,
         out: &mut [u8],
         log: &mut CommitLog,
+        drops: &mut DropLog,
     ) -> Result<(), CompError> {
         match header.opcode {
             surface::REQ_DESTROY => {
@@ -664,6 +710,11 @@ impl CompSession {
                     return Err(CompError::BadObject);
                 }
                 self.session_surface_drop(header.object_id);
+                // 摘除记录入批（M42-GEOM6 域①——重排改写触发源；会话
+                // 槽已摘，电气面据记录摘 fb surface + 窗口表行）。
+                drops.push(DropRecord {
+                    wl_id: header.object_id,
+                });
                 Ok(())
             }
             surface::REQ_ATTACH => {
@@ -1610,5 +1661,100 @@ mod tests {
             s.feed(&bad[..n], &mut [0u8; 16]).map(|_| ()).unwrap_err(),
             CompError::UnknownRequest
         );
+    }
+
+    /// destroy 摘除记录批回执（M42-GEOM6 域①——重排改写触发源）：
+    /// 单 destroy → DropLog 单记录（wl id 对账）+ 摘除后槽/表双清；
+    /// 摘除后同 id commit → BadObject fail-visible（拓扑不泄）。
+    #[test]
+    fn destroy_drop_record() {
+        let mut s = new_session();
+        setup_registry(&mut s);
+        let bind = {
+            let mut b = [0u8; 64];
+            let n = encode_registry_bind(&mut b, 2, 1, "wl_compositor", 4, 3).unwrap();
+            b[..n].to_vec()
+        };
+        let cs = {
+            let mut b = [0u8; 64];
+            let n = encode_message(
+                &mut b,
+                3,
+                compositor::REQ_CREATE_SURFACE,
+                &[WlArg::NewId(0x31)],
+            )
+            .unwrap();
+            b[..n].to_vec()
+        };
+        s.feed(&stream_of(&[&bind, &cs]), &mut [0u8; 16]).unwrap();
+        let destroy = {
+            let mut b = [0u8; 64];
+            let n = encode_message(&mut b, 0x31, surf_ops::REQ_DESTROY, &[]).unwrap();
+            b[..n].to_vec()
+        };
+        let rep = s.feed(&destroy, &mut [0u8; 16]).unwrap();
+        assert_eq!(rep.drops.n, 1, "单 destroy → 单摘除记录");
+        let rec = rep.drops.items[0].expect("记录在批");
+        assert_eq!(rec.wl_id, 0x31);
+        assert_eq!(s.surfaces_count(), 0);
+        assert_eq!(s.table().lookup(0x31), None);
+        // 摘除后同 id commit → BadObject（会话槽已摘——拓扑不泄）
+        let commit = {
+            let mut b = [0u8; 64];
+            let n = encode_surface_commit(&mut b, 0x31).unwrap();
+            b[..n].to_vec()
+        };
+        assert_eq!(
+            s.feed(&commit, &mut [0u8; 16]).map(|_| ()).unwrap_err(),
+            CompError::BadObject
+        );
+    }
+
+    /// 多 destroy 单流批记录（M42-GEOM6 域①——批量摘除 = 批量重排
+    /// 触发源：双 surface 同批 destroy → DropLog 双记录槽序对账 +
+    /// surfaces_count 归零）。
+    #[test]
+    fn destroy_multi_drop_batch() {
+        let mut s = new_session();
+        setup_registry(&mut s);
+        let bind = {
+            let mut b = [0u8; 64];
+            let n = encode_registry_bind(&mut b, 2, 1, "wl_compositor", 4, 3).unwrap();
+            b[..n].to_vec()
+        };
+        let cs = {
+            let mut b = [0u8; 160];
+            let mut bl = 0usize;
+            bl += encode_message(
+                &mut b[bl..],
+                3,
+                compositor::REQ_CREATE_SURFACE,
+                &[WlArg::NewId(0x41)],
+            )
+            .unwrap();
+            bl += encode_message(
+                &mut b[bl..],
+                3,
+                compositor::REQ_CREATE_SURFACE,
+                &[WlArg::NewId(0x42)],
+            )
+            .unwrap();
+            b[..bl].to_vec()
+        };
+        s.feed(&stream_of(&[&bind, &cs]), &mut [0u8; 16]).unwrap();
+        assert_eq!(s.surfaces_count(), 2);
+        let drops = {
+            let mut b = [0u8; 128];
+            let mut bl = 0usize;
+            bl += encode_message(&mut b[bl..], 0x41, surf_ops::REQ_DESTROY, &[]).unwrap();
+            bl += encode_message(&mut b[bl..], 0x42, surf_ops::REQ_DESTROY, &[]).unwrap();
+            b[..bl].to_vec()
+        };
+        let rep = s.feed(&drops, &mut [0u8; 16]).unwrap();
+        assert_eq!(rep.drops.n, 2, "双 destroy → 双摘除记录");
+        assert_eq!(rep.drops.items[0].map(|r| r.wl_id), Some(0x41));
+        assert_eq!(rep.drops.items[1].map(|r| r.wl_id), Some(0x42));
+        assert_eq!(s.surfaces_count(), 0);
+        assert_eq!(rep.commits.n, 0, "纯摘除流零 commit 记录");
     }
 }

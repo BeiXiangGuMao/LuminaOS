@@ -1380,7 +1380,16 @@ pub fn spawn_fork_child(
     frame_slots: [u64; 15],
     lin_abi: bool,
 ) -> usize {
-    spawn_fork_child_impl(name, user_root, parent, frame_slots, lin_abi, &[], true)
+    spawn_fork_child_impl(
+        name,
+        user_root,
+        parent,
+        frame_slots,
+        lin_abi,
+        &[],
+        true,
+        false,
+    )
 }
 
 /// 无继承接线派生（M35-BBb sh 流水线段面）：fork 快照协议全同（定点
@@ -1398,11 +1407,48 @@ pub fn spawn_stage_wired(
     lin_abi: bool,
     wiring: &[(usize, usize)],
 ) -> usize {
-    spawn_fork_child_impl(name, user_root, parent, frame_slots, lin_abi, wiring, false)
+    spawn_fork_child_impl(
+        name,
+        user_root,
+        parent,
+        frame_slots,
+        lin_abi,
+        wiring,
+        false,
+        false,
+    )
+}
+
+/// 常驻接线派生（M42-GEOM6 域②——**resident × ELF lane 交叉落点**，
+/// waycomp ELF 化迁移派生面）：[`spawn_stage_wired`] 同谱 + resident
+/// 旗标置位——批跑收敛谓词豁免域（M42-COMP4 常驻语义）× 用户态 ELF
+/// 播种（M42-ELF5 lane 语义）复合：用户态常驻服务（ELF 容器）的派生
+/// 面。t108 resident-ELF 结构活体消费。
+pub fn spawn_stage_resident(
+    name: &'static str,
+    user_root: u64,
+    parent: usize,
+    frame_slots: [u64; 15],
+    lin_abi: bool,
+    wiring: &[(usize, usize)],
+) -> usize {
+    spawn_fork_child_impl(
+        name,
+        user_root,
+        parent,
+        frame_slots,
+        lin_abi,
+        wiring,
+        false,
+        true,
+    )
 }
 
 /// 接线派生公共核：`inherit_handles` = true 时执行 M35-BBa 句柄域
-/// skip(1) 全量继承，随后统一施焊 `wiring` 接线域（同槽后者胜）。
+/// skip(1) 全量继承，随后统一施焊 `wiring` 接线域（同槽后者胜）；
+/// `resident` = true 时常驻旗标置位（M42-GEOM6——批跑收敛谓词豁免
+/// 域 × 用户态 ELF lane 交叉）。
+#[allow(clippy::too_many_arguments)] // 派生面参数域（快照/接线/ABI/常驻四随链域）
 fn spawn_fork_child_impl(
     name: &'static str,
     user_root: u64,
@@ -1411,6 +1457,7 @@ fn spawn_fork_child_impl(
     lin_abi: bool,
     wiring: &[(usize, usize)],
     inherit_handles: bool,
+    resident: bool,
 ) -> usize {
     let _w = IntWindow::new();
     let mut s = sched_lock!();
@@ -1430,6 +1477,9 @@ fn spawn_fork_child_impl(
     // 同窗纪律；P1 缺口修复：fork 子代继承父 ABI 链，lin_fork 恒 true，
     // 缺位则子代恢复后 Linux 号域走 Lumina 原生派发语义错乱）。
     t.lin_abi = lin_abi;
+    // M42-GEOM6：常驻旗标随链（入队前落位——批跑收敛谓词首评估窗口
+    // 零竞态，与 ABI 随链同窗纪律；boot-spawn 常驻用户态服务派生面）。
+    t.resident = resident;
     // M39-MU：凭据全量继承（fork/spawn Linux 同款——父槽缺失防御回退
     // root 哨兵；kmain=root 口径，t93 领域换装派生消费面）。
     t.creds = s
@@ -2288,6 +2338,18 @@ pub fn task_is_lin_abi(id: usize) -> bool {
         .get_mut(id)
         .and_then(|t| t.as_mut())
         .map(|t| t.lin_abi)
+        .unwrap_or(false)
+}
+
+/// 常驻旗标只读探针（M42-GEOM6 域② t108 断言面——resident × ELF
+/// lane 交叉显形域）：任务不存在返回 false（防御域）。
+pub fn task_is_resident(id: usize) -> bool {
+    let _w = IntWindow::new();
+    let mut s = sched_lock!();
+    s.tasks
+        .get_mut(id)
+        .and_then(|t| t.as_mut())
+        .map(|t| t.resident)
         .unwrap_or(false)
 }
 

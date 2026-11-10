@@ -40,6 +40,16 @@
 //! 态 ELF 播种 lane 环内进程（[`crate::procs::spawn_elf_seed`]——真
 //! ELF64 静态映像原生 ABI 播种，t106 SHM_CLIENT 消费面）。
 //!
+//! **重排改写面**（M42-GEOM6 域①——UPDATE 几何演进，M42-COMP4
+//! 「窗数演进重排 × REGISTER 形状锁」挂账域兑现）：窗数演进（增窗/
+//! 销窗）→ cascade tiling 重排 → [`policy_rewrite`] 重排改写执行器
+//! 对几何演进窗执行 fb 演进域 UPDATE（[`crate::fb::surf_update`] 形
+//! 状锁退役——增长补配 + 透明基线）+ **全幅重呈现**（客户端池像素
+//! 全 pane 重漆 / 代 Paint 回退）+ SYNC/COMPOSE；destroy 摘除记录
+//! （[`DropLog`]）经 [`drop_apply`] 摘窗 → 存活窗重排。策略驱动
+//! （feed 后每轮）而非 commit 驱动——重排改写与客户端提交解耦
+//! （真实合成器语义：重排不依赖客户端重绘）。
+//!
 //! **常驻生命周期**（M42-FBSVC2 挂账域首割）：boot-spawn（kmain 单
 //! 调用点）+ 会话环常驻（accept ↔ session 循环不退出）；bind 失败/
 //! 监听者终结 = 服务退场（fail-visible——boot 证据行
@@ -120,9 +130,16 @@ pub static WLCOMP_POOLS: AtomicU64 = AtomicU64::new(0);
 pub static WLCOMP_FD_ERR: AtomicU64 = AtomicU64::new(0);
 /// 客户端像素上屏数（池像素写——pane 代 Paint 替代域对账）。
 pub static WLCOMP_SHM_PAINTS: AtomicU64 = AtomicU64::new(0);
+/// 重排改写执行数（M42-GEOM6 域①——几何演进 UPDATE + 全幅重呈现
+/// 执行计数，t107 断言面）。
+pub static WLCOMP_REWRITES: AtomicU64 = AtomicU64::new(0);
+/// destroy 摘除执行数（M42-GEOM6 域①——DropLog 电气面摘窗计数，
+/// t107 断言面）。
+pub static WLCOMP_DROPS: AtomicU64 = AtomicU64::new(0);
 
-/// 取证戳快照：(listener, bound, sessions, commits, composes, last_z)。
-pub fn waycomp_stamps() -> (u64, bool, u64, u64, u64, i32) {
+/// 取证戳快照：(listener, bound, sessions, commits, composes, last_z,
+/// rewrites, drops)——前六位 t104/t106 断言面索引稳定（追加位序）。
+pub fn waycomp_stamps() -> (u64, bool, u64, u64, u64, i32, u64, u64) {
     (
         WLCOMP_LISTENER.load(Ordering::Acquire),
         WLCOMP_BOUND.load(Ordering::Acquire),
@@ -130,6 +147,8 @@ pub fn waycomp_stamps() -> (u64, bool, u64, u64, u64, i32) {
         WLCOMP_COMMITS.load(Ordering::Acquire),
         WLCOMP_COMPOSES.load(Ordering::Acquire),
         WLCOMP_LAST_Z.load(Ordering::Acquire),
+        WLCOMP_REWRITES.load(Ordering::Acquire),
+        WLCOMP_DROPS.load(Ordering::Acquire),
     )
 }
 
@@ -154,8 +173,13 @@ struct Window {
     fb: u32,
     /// fb 散帧槽号。
     slot: usize,
-    /// 屏域矩形（策略面几何——teardown sync 域）。
+    /// 屏域矩形（策略面几何——重排改写域对账基准）。
     rect: Rect,
+    /// 末次 commit 附带 buffer 几何（M42-GEOM6 域①全幅重呈现像素
+    /// 源——None = 代 Paint 回退域）。
+    buf: Option<BufferRec>,
+    /// 末次 buffer 所属池的 shm 对象 id（0 = 无池——pattern 回退域）。
+    pool: u64,
 }
 
 /// 常驻服务任务体（kmain boot 单调用点——`task::spawn("waycomp", …)`）：
@@ -202,7 +226,9 @@ fn session_loop(conn: u64) {
         let mut out = [0u8; 1024];
         match session.feed(&stream, &mut out) {
             Ok(rep) => {
+                drop_apply(&rep, &mut windows, &mut slots);
                 policy_sync(&mut session, &mut windows);
+                policy_rewrite(&windows, &mut slots);
                 pool_admit(conn, &rep, &mut pools);
                 apply_commits(&rep, &windows, &mut slots, base, &pools);
                 if rep.out_len > 0 {
@@ -234,9 +260,8 @@ fn session_loop(conn: u64) {
 
 /// 策略同步（feed 后每轮执行——**仲裁策略面承接域**）：新建 surface
 /// 创建期即入窗（创建序 = 焦点序 v0 口径——同批 create+commit 时窗
-/// 全量在册，窗格形状一次定形；首映射序入窗的窗数演进重排域随行
-/// 揭雷收口：v0 REGISTER 形状锁不收重排改写，如实记档）+ cascade
-/// tiling 平面几何注入会话（commit 发布域的损伤裁剪键）。
+/// 全量在册，窗格形状一次定形）+ cascade tiling 平面几何注入会话
+/// （commit 发布域的损伤裁剪键）。
 fn policy_sync(session: &mut CompSession, windows: &mut Vec<u64>) {
     let (ids, n) = session.surface_ids();
     for id in ids[..n].iter().flatten() {
@@ -249,6 +274,87 @@ fn policy_sync(session: &mut CompSession, windows: &mut Vec<u64>) {
     };
     for (id, rect) in plan.panes.iter() {
         let _ = session.set_geometry(*id as u32, *rect);
+    }
+}
+
+/// destroy 摘除执行（feed 后每轮——**M42-GEOM6 域①重排前置域**）：
+/// DropLog 记录逐条电气面摘窗（窗口表摘除 + fb surface 摘除〔未登记
+/// 窗容忍——会话域已建未 commit 的摘除无 fb 行〕+ 旧矩形损伤量化
+/// 回退 + 合成执行）→ 存活窗交 [`policy_rewrite`] 重排改写。
+/// [`WLCOMP_DROPS`] 取证（t107 断言面）。
+fn drop_apply(rep: &FeedReport, windows: &mut Vec<u64>, slots: &mut Vec<Window>) {
+    for d in rep.drops.items[..rep.drops.n].iter().flatten() {
+        windows.retain(|id| *id != u64::from(d.wl_id));
+        if let Some(pos) = slots.iter().position(|w| w.wl == d.wl_id) {
+            let w = slots.remove(pos);
+            let _ = fb::surf_remove(w.fb);
+            let _ = fb::sys_fb_sync(
+                w.rect.x.max(0) as u64,
+                w.rect.y.max(0) as u64,
+                u64::from(w.rect.w),
+                u64::from(w.rect.h),
+            );
+            let _ = fb::fb_compose_tick();
+        }
+        WLCOMP_DROPS.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+/// **重排改写执行器**（feed 后每轮——M42-GEOM6 域①核心）：cascade
+/// tiling 平面 vs 窗口台账几何对账——矩形演进的已登记窗执行 fb 演进
+/// 域 UPDATE（[`fb::surf_update`] 形状锁退役：增长补配 + 全量透明基
+/// 线）+ **全幅重呈现**（形状演进 = 旧像素布局失效：客户端池像素全
+/// pane 重漆优先，无池回退代 Paint 确定性模式）+ 旧/新矩形双域损伤
+/// 量化 + 合成执行。**策略驱动而非 commit 驱动**——重排改写与客户
+/// 端提交解耦（窗数演进〔增窗/销窗〕后存活窗几何改写不依赖客户端
+/// 重绘；移动域零重漆——store 面位置无关，bounds 平转即呈现域平
+/// 移）。[`WLCOMP_REWRITES`] 取证（t107 断言面）。
+fn policy_rewrite(windows: &[u64], slots: &mut [Window]) {
+    let Ok(plan) = cascade::tiling::tiling_plan(windows, VIEWPORT) else {
+        return; // 平面失败——台账维持上轮态，fail-visible
+    };
+    for (idx, (id, rect)) in plan.panes.iter().enumerate() {
+        let wl = *id as u32;
+        let z = POLICY_Z_BASE - idx as i32;
+        let Some(pos) = slots.iter().position(|w| w.wl == wl) else {
+            continue; // 未 commit 窗（创建期入窗未 REGISTER）——REGISTER 域归 apply_commits
+        };
+        let old = slots[pos].rect;
+        if old == *rect {
+            continue; // 几何同形——零改写快径
+        }
+        let shape_changed = old.w != rect.w || old.h != rect.h;
+        let (fb_id, slot, src) = {
+            let w = &slots[pos];
+            (w.fb, w.slot, (w.buf, w.pool))
+        };
+        if fb::surf_update(fb_id, rect.x, rect.y, rect.w, rect.h, z, true).is_err() {
+            continue; // 机械面拒收（演进域 ENOMEM 等——fail-visible，台账维持旧态）
+        }
+        slots[pos].rect = *rect;
+        if shape_changed {
+            // 全幅重呈现（透明基线上的完整内容重建——像素源分流同
+            // commit 发布域：池像素优先 / 代 Paint 回退）
+            match src {
+                (Some(b), p) if p != 0 => paint_pool_damage(fb_id, slot, *rect, *rect, &b, p),
+                _ => paint_damage(fb_id, slot, *rect, *rect),
+            }
+        }
+        // 旧/新矩形双域损伤量化（旧呈现域回退 + 新呈现域成像）+ 合成
+        let _ = fb::sys_fb_sync(
+            old.x.max(0) as u64,
+            old.y.max(0) as u64,
+            u64::from(old.w),
+            u64::from(old.h),
+        );
+        let _ = fb::sys_fb_sync(
+            rect.x.max(0) as u64,
+            rect.y.max(0) as u64,
+            u64::from(rect.w),
+            u64::from(rect.h),
+        );
+        let _ = fb::fb_compose_tick();
+        WLCOMP_REWRITES.fetch_add(1, Ordering::AcqRel);
     }
 }
 
@@ -273,8 +379,9 @@ fn pool_admit(conn: u64, rep: &FeedReport, pools: &mut Vec<(u32, u64)>) {
 }
 
 /// commit 发布应用（仲裁策略面承接域——cascade tiling 几何/z 注入
-/// 〔policy_sync 已在环〕+ fb 机械面 REGISTER/UPDATE + 损伤域像素源
-/// 分流〔wl_shm 池直读 / 代 Paint 回退〕+ SYNC/COMPOSE 合流）。
+/// 〔policy_sync 已在环〕+ fb 机械面 REGISTER + 几何一致性裁决
+/// 〔重排改写执行器主责——commit 面兜底，M42-GEOM6 域①〕+ 损伤域
+/// 像素源分流〔wl_shm 池直读 / 代 Paint 回退〕+ SYNC/COMPOSE 合流）。
 fn apply_commits(
     rep: &FeedReport,
     windows: &[u64],
@@ -297,21 +404,63 @@ fn apply_commits(
         let (_, rect) = plan.panes[idx];
         let z = POLICY_Z_BASE - idx as i32;
         let fb_id = base | wl;
+        // 像素源预解（M42-ELF5）：attach buffer 且池已承接 → 客户端像
+        // 素直读（pool_px_read 物理帧域）；否则代 Paint 替代域。
+        let pool_obj = rec
+            .buffer
+            .as_ref()
+            .and_then(|b| pools.iter().find(|(w, _)| *w == b.pool_wl))
+            .map(|(_, o)| *o)
+            .unwrap_or(0);
         // 借用域纪律：存在性判定先行（bool——零借用滞留），登记/更新
         // 两域分别行动（match scrutinee 借用滞留面规避）
         let existing = slots.iter().any(|w| w.wl == wl);
         let slot = if existing {
-            // 已登记：UPDATE 域（几何/z 改写——形状锁定口径 v0 几何
-            // 不变形，重写同域）
-            let _ = fb::surf_update(fb_id, rect.x, rect.y, rect.w, rect.h, z, true);
-            let row = slots.iter_mut().find(|w| w.wl == wl);
-            match row {
-                Some(w) => {
-                    w.rect = rect;
-                    w.slot
+            // 已登记：几何一致性裁决（M42-GEOM6 域①——重排改写执行
+            // 器〔policy_rewrite〕主责，此处兜底：执行器未及的时序差
+            // 窗〔同 feed 重排 + commit 竞逐等〕几何演进 UPDATE + 全
+            // 幅重呈现；几何同形零改写快径——同形 commit 只走内容面）
+            let Some(pos) = slots.iter().position(|w| w.wl == wl) else {
+                continue; // 纵深防御域（查找窗内不可能——v0 单线程会话环）
+            };
+            let old = slots[pos].rect;
+            if old != rect {
+                let shape_changed = old.w != rect.w || old.h != rect.h;
+                let (row_fb, row_slot, src) = {
+                    let w = &slots[pos];
+                    (w.fb, w.slot, (w.buf, w.pool))
+                };
+                if fb::surf_update(row_fb, rect.x, rect.y, rect.w, rect.h, z, true).is_err() {
+                    continue; // 机械面拒收（演进域 ENOMEM 等——fail-visible）
                 }
-                None => continue, // 纵深防御域（查找窗内不可能——v0 单线程会话环）
+                slots[pos].rect = rect;
+                if shape_changed {
+                    // 全幅重呈现（透明基线上的完整内容重建——像素源
+                    // 分流：池像素优先 / 代 Paint 回退）
+                    match src {
+                        (Some(b), p) if p != 0 => {
+                            paint_pool_damage(row_fb, row_slot, rect, rect, &b, p)
+                        }
+                        _ => paint_damage(row_fb, row_slot, rect, rect),
+                    }
+                }
+                // 旧/新矩形双域损伤量化 + 合成（重排改写执行器同款）
+                let _ = fb::sys_fb_sync(
+                    old.x.max(0) as u64,
+                    old.y.max(0) as u64,
+                    u64::from(old.w),
+                    u64::from(old.h),
+                );
+                let _ = fb::sys_fb_sync(
+                    rect.x.max(0) as u64,
+                    rect.y.max(0) as u64,
+                    u64::from(rect.w),
+                    u64::from(rect.h),
+                );
+                let _ = fb::fb_compose_tick();
+                WLCOMP_REWRITES.fetch_add(1, Ordering::AcqRel);
             }
+            slots[pos].slot
         } else {
             match fb::surf_register(fb_id, rect.x, rect.y, rect.w, rect.h, z) {
                 Ok(slot) => {
@@ -320,6 +469,8 @@ fn apply_commits(
                         fb: fb_id,
                         slot,
                         rect,
+                        buf: None,
+                        pool: 0,
                     });
                     slot
                 }
@@ -327,6 +478,14 @@ fn apply_commits(
             }
         };
         WLCOMP_LAST_Z.store(z, Ordering::Release);
+        // 末次 buffer 几何入台账（M42-GEOM6 域①——全幅重呈现像素源
+        // = 末次 commit 承载域；无 buffer commit 保持既有台账）
+        if rec.buffer.is_some() {
+            if let Some(row) = slots.iter_mut().find(|w| w.wl == wl) {
+                row.buf = rec.buffer;
+                row.pool = pool_obj;
+            }
+        }
         // 内容面：损伤域代 Paint（v0 客户端缓冲域挂账——模式替代）。
         // 首映射兜底面：策略几何于创建期注入（policy_sync），commit
         // 损伤映射域在 feed 内执行〔同批 create→commit 的映射仍以零
@@ -338,15 +497,6 @@ fn apply_commits(
         } else {
             rec.damage
         };
-        // 像素源分流（M42-ELF5）：attach buffer 且池已承接 → 客户端像
-        // 素直读（pool_px_read 物理帧域）；否则代 Paint 替代域（t104
-        // 语义面保持——无 buffer commit 回退路径不变）。
-        let pool_obj = rec
-            .buffer
-            .as_ref()
-            .and_then(|b| pools.iter().find(|(w, _)| *w == b.pool_wl))
-            .map(|(_, o)| *o)
-            .unwrap_or(0);
         match rec.buffer.as_ref() {
             Some(b) if pool_obj != 0 => {
                 paint_pool_damage(fb_id, slot, rect, paint_dmg, b, pool_obj)
