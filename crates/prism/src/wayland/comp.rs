@@ -55,12 +55,16 @@
 use mirror::Rect;
 
 use super::{
-    compositor, display, encode_callback_done_event, encode_registry_global_event, iface_name,
-    parse_args, parse_header, registry, shm, shm_pool, surface, WlArg, WlError, WlHeader, WlIface,
-    WlObjectTable, HEADER, SIG_COMPOSITOR_CREATE_REGION, SIG_COMPOSITOR_CREATE_SURFACE,
-    SIG_DISPLAY_GET_REGISTRY, SIG_DISPLAY_SYNC, SIG_REGISTRY_BIND, SIG_SHM_CREATE_POOL,
-    SIG_SHM_POOL_CREATE_BUFFER, SIG_SHM_POOL_DESTROY, SIG_SURFACE_ATTACH, SIG_SURFACE_COMMIT,
-    SIG_SURFACE_DAMAGE, SIG_SURFACE_FRAME, WIRE_MAX,
+    compositor, display, encode_callback_done_event, encode_keyboard_enter_event,
+    encode_keyboard_key_event, encode_keyboard_keymap_event, encode_keyboard_leave_event,
+    encode_pointer_button_event, encode_pointer_enter_event, encode_pointer_leave_event,
+    encode_pointer_motion_event, encode_registry_global_event, encode_seat_capabilities_event,
+    iface_name, parse_args, parse_header, registry, seat, shm, shm_pool, surface, WlArg, WlError,
+    WlHeader, WlIface, WlObjectTable, HEADER, KEYMAP_FORMAT_XKB_V1, SEAT_CAPS_KEYBOARD,
+    SEAT_CAPS_POINTER, SIG_COMPOSITOR_CREATE_REGION, SIG_COMPOSITOR_CREATE_SURFACE,
+    SIG_DISPLAY_GET_REGISTRY, SIG_DISPLAY_SYNC, SIG_REGISTRY_BIND, SIG_SEAT_GET_KEYBOARD,
+    SIG_SEAT_GET_POINTER, SIG_SHM_CREATE_POOL, SIG_SHM_POOL_CREATE_BUFFER, SIG_SHM_POOL_DESTROY,
+    SIG_SURFACE_ATTACH, SIG_SURFACE_COMMIT, SIG_SURFACE_DAMAGE, SIG_SURFACE_FRAME, WIRE_MAX,
 };
 
 /// 单会话 surface 槽容量（定容零堆——SurfaceTable 同量级先例）。
@@ -77,6 +81,10 @@ pub const MAX_POOLS_PER_FEED: usize = 4;
 pub const MAX_DROPS_PER_FEED: usize = 4;
 /// 单会话 buffer 槽容量（定容零堆——SESSION_SURFACES 同量级先例）。
 pub const SESSION_BUFFERS: usize = 8;
+/// 输入事件队列深度（M42-INPUT7——键盘/指针各一定容；定容零堆纪律）。
+pub const INPUT_Q_MAX: usize = 8;
+/// 单次 feed 的输入事件记录上限（定容零堆——INPUT_Q_MAX 同量级）。
+pub const MAX_INPUTS_PER_FEED: usize = 8;
 
 /// registry global 名单项（合成器策略面输入——公告名单与版本域）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +150,114 @@ impl PoolLog {
     /// 记录入批（满容静默拒收——feed 上界定容域，如实记档）。
     fn push(&mut self, rec: PoolRecord) {
         if self.n < MAX_POOLS_PER_FEED {
+            self.items[self.n] = Some(rec);
+            self.n += 1;
+        }
+    }
+}
+
+/// 键盘事件类别（M42-INPUT7——焦点域迁移 + 击键域双分）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KbKind {
+    /// 键盘焦点入域（wl_keyboard.enter）。
+    Enter,
+    /// 键盘焦点离域（wl_keyboard.leave）。
+    Leave,
+    /// 击键（wl_keyboard.key）。
+    Key,
+}
+
+/// 键盘事件记录（feed 回执取证域——电气面对账 + t109 断言面）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyRecord {
+    /// 事件类别。
+    pub kind: KbKind,
+    /// 焦点 surface 对象 id（击键域 = 注入时焦点面）。
+    pub surface: u32,
+    /// 输入串号（单调——官方 serial 域；time 域 v0 = 串号复用）。
+    pub serial: u32,
+    /// 键码（v0 口径 = scancode set 1 原值——evdev 键码映射挂账）。
+    pub key: u32,
+    /// 键态。
+    pub state: u32,
+}
+
+/// 单次 feed 的键盘事件记录批（定容零堆）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyLog {
+    /// 记录槽（`items[..n]` 有效）。
+    pub items: [Option<KeyRecord>; MAX_INPUTS_PER_FEED],
+    /// 记录数。
+    pub n: usize,
+}
+
+impl KeyLog {
+    /// 空批。
+    pub const EMPTY: KeyLog = KeyLog {
+        items: [None; MAX_INPUTS_PER_FEED],
+        n: 0,
+    };
+
+    /// 记录入批（满容静默拒收——feed 上界定容域，如实记档）。
+    fn push(&mut self, rec: KeyRecord) {
+        if self.n < MAX_INPUTS_PER_FEED {
+            self.items[self.n] = Some(rec);
+            self.n += 1;
+        }
+    }
+}
+
+/// 指针事件类别（M42-INPUT7——焦点域/移动域/按键域三分）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PtrKind {
+    /// 指针焦点入域（wl_pointer.enter）。
+    Enter,
+    /// 指针焦点离域（wl_pointer.leave）。
+    Leave,
+    /// 指针移动（wl_pointer.motion）。
+    Motion,
+    /// 指针按键（wl_pointer.button）。
+    Button,
+}
+
+/// 指针事件记录（feed 回执取证域——电气面对账 + t109 断言面）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PtrRecord {
+    /// 事件类别。
+    pub kind: PtrKind,
+    /// 焦点 surface 对象 id（0 = 无焦点——Leave 记录保留旧面）。
+    pub surface: u32,
+    /// 输入串号（单调——time 域 v0 = 串号复用）。
+    pub serial: u32,
+    /// surface 局部坐标 x（fixed 24.8 原字——Enter/Motion 有效）。
+    pub x: i32,
+    /// surface 局部坐标 y（fixed 24.8 原字）。
+    pub y: i32,
+    /// evdev 按钮码（Button 有效）。
+    pub button: u32,
+    /// 按钮态（Button 有效）。
+    pub state: u32,
+}
+
+/// 单次 feed 的指针事件记录批（定容零堆）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PtrLog {
+    /// 记录槽（`items[..n]` 有效）。
+    pub items: [Option<PtrRecord>; MAX_INPUTS_PER_FEED],
+    /// 记录数。
+    pub n: usize,
+}
+
+impl PtrLog {
+    /// 空批。
+    pub const EMPTY: PtrLog = PtrLog {
+        items: [None; MAX_INPUTS_PER_FEED],
+        n: 0,
+    };
+
+    /// 记录入批（满容静默拒收——feed 上界定容域，如实记档）。
+    fn push(&mut self, rec: PtrRecord) {
+        if self.n < MAX_INPUTS_PER_FEED {
             self.items[self.n] = Some(rec);
             self.n += 1;
         }
@@ -279,6 +395,11 @@ pub struct FeedReport {
     /// 本 feed 消费的 fd 占位字数（电气面 RECV_FD 承接计数——与
     /// pools 批对账：每 create_pool 恰一 fd）。
     pub fd_need: usize,
+    /// 键盘事件记录批（M42-INPUT7——`keys.items[..keys.n]` 有效；
+    /// 输入链电气面对账域）。
+    pub keys: KeyLog,
+    /// 指针事件记录批（M42-INPUT7——`ptrs.items[..ptrs.n]` 有效）。
+    pub ptrs: PtrLog,
 }
 
 impl FeedReport {
@@ -304,6 +425,8 @@ pub enum CompError {
     UnknownGlobal,
     /// 会话 buffer 槽满（[`SESSION_BUFFERS`]——M42-ELF5）。
     BufferFull,
+    /// 输入事件队列满（[`INPUT_Q_MAX`]——M42-INPUT7）。
+    InputQFull,
     /// 对象表域错误（v0 表纪律透传——满容/id 冲突）。
     Table(WlError),
 }
@@ -325,6 +448,25 @@ pub struct CompSession {
     buf_n: usize,
     /// commit 串号（帧回调 done 事件 callback_data 事实源）。
     commit_serial: u32,
+    /// 输入串号（M42-INPUT7——wl_keyboard/wl_pointer 事件 serial 事实
+    /// 源，单调）。
+    input_serial: u32,
+    /// wl_seat 派生 pointer 对象 id（0 = 客户端未 get_pointer）。
+    pointer_obj: u32,
+    /// wl_seat 派生 keyboard 对象 id（0 = 客户端未 get_keyboard）。
+    keyboard_obj: u32,
+    /// 键盘焦点 surface（0 = 无焦点——策略面钩子注入域）。
+    kb_focus: u32,
+    /// 指针焦点 surface（0 = 无焦点）。
+    ptr_focus: u32,
+    /// 键盘事件待发队列（feed 冲刷域——定容零堆）。
+    key_q: [Option<KeyRecord>; INPUT_Q_MAX],
+    /// 键盘队列在队数。
+    key_n: usize,
+    /// 指针事件待发队列（feed 冲刷域）。
+    ptr_q: [Option<PtrRecord>; INPUT_Q_MAX],
+    /// 指针队列在队数。
+    ptr_n: usize,
 }
 
 impl CompSession {
@@ -342,6 +484,15 @@ impl CompSession {
             buffers: [None; SESSION_BUFFERS],
             buf_n: 0,
             commit_serial: 0,
+            input_serial: 0,
+            pointer_obj: 0,
+            keyboard_obj: 0,
+            kb_focus: 0,
+            ptr_focus: 0,
+            key_q: [None; INPUT_Q_MAX],
+            key_n: 0,
+            ptr_q: [None; INPUT_Q_MAX],
+            ptr_n: 0,
         }
     }
 
@@ -372,6 +523,193 @@ impl CompSession {
     /// commit 串号快照（帧回调对账域）。
     pub fn commit_serial(&self) -> u32 {
         self.commit_serial
+    }
+
+    /// wl_seat 派生 pointer 对象 id（0 = 客户端未 get_pointer——取证面）。
+    pub fn pointer_object(&self) -> u32 {
+        self.pointer_obj
+    }
+
+    /// wl_seat 派生 keyboard 对象 id（0 = 客户端未 get_keyboard——取证面）。
+    pub fn keyboard_object(&self) -> u32 {
+        self.keyboard_obj
+    }
+
+    /// 键盘焦点 surface 快照（0 = 无焦点——策略面对账域）。
+    pub fn keyboard_focus(&self) -> u32 {
+        self.kb_focus
+    }
+
+    /// 指针焦点 surface 快照（0 = 无焦点）。
+    pub fn pointer_focus(&self) -> u32 {
+        self.ptr_focus
+    }
+
+    /// 键盘焦点注入（M42-INPUT7 策略面钩子——waycomp 首窗初始聚焦 +
+    /// click-to-focus 迁移消费面）：焦点面切换 → 旧面 leave + 新面
+    /// enter 入队（serial 单调）；同面幂等零事件；设备未派生/目标面
+    /// 不在册 = BadObject；队列余量不足 = InputQFull（状态零扰动）。
+    pub fn set_keyboard_focus(&mut self, wl_id: u32) -> Result<(), CompError> {
+        if self.keyboard_obj == 0 {
+            return Err(CompError::BadObject); // 设备未派生——聚焦无承载
+        }
+        if wl_id == self.kb_focus {
+            return Ok(()); // 同面幂等快径（零事件零串号推进）
+        }
+        if wl_id != 0 && self.surface_slot(wl_id).is_none() {
+            return Err(CompError::BadObject); // 目标面不在册
+        }
+        let need = usize::from(self.kb_focus != 0) + usize::from(wl_id != 0);
+        if self.key_n + need > INPUT_Q_MAX {
+            return Err(CompError::InputQFull); // 容量前置闸——状态零扰动
+        }
+        self.input_serial = self.input_serial.wrapping_add(1);
+        let serial = self.input_serial;
+        let old = self.kb_focus;
+        self.kb_focus = wl_id;
+        if old != 0 {
+            self.key_q[self.key_n] = Some(KeyRecord {
+                kind: KbKind::Leave,
+                surface: old,
+                serial,
+                key: 0,
+                state: 0,
+            });
+            self.key_n += 1;
+        }
+        if wl_id != 0 {
+            self.key_q[self.key_n] = Some(KeyRecord {
+                kind: KbKind::Enter,
+                surface: wl_id,
+                serial,
+                key: 0,
+                state: 0,
+            });
+            self.key_n += 1;
+        }
+        Ok(())
+    }
+
+    /// 击键注入（M42-INPUT7——输入链生产域）：设备未派生或焦点域空 =
+    /// BadObject（官方语义：key 仅在键盘焦点在域时合法）；队列满 =
+    /// InputQFull。键码 v0 口径 = scancode set 1 原值。
+    pub fn keyboard_inject(&mut self, key: u32, state: u32) -> Result<(), CompError> {
+        if self.keyboard_obj == 0 || self.kb_focus == 0 {
+            return Err(CompError::BadObject); // 无设备/无焦点——击键无承载
+        }
+        if self.key_n >= INPUT_Q_MAX {
+            return Err(CompError::InputQFull);
+        }
+        self.input_serial = self.input_serial.wrapping_add(1);
+        let serial = self.input_serial;
+        let focus = self.kb_focus;
+        self.key_q[self.key_n] = Some(KeyRecord {
+            kind: KbKind::Key,
+            surface: focus,
+            serial,
+            key,
+            state,
+        });
+        self.key_n += 1;
+        Ok(())
+    }
+
+    /// 指针焦点注入（M42-INPUT7 策略面钩子——hit-test 消费域）：
+    /// wl_id != 0 = 入域（leave 旧面 + enter 新面）；wl_id == 0 = 离域；
+    /// 同面幂等零事件。
+    pub fn set_pointer_focus(&mut self, wl_id: u32, x: i32, y: i32) -> Result<(), CompError> {
+        if self.pointer_obj == 0 {
+            return Err(CompError::BadObject); // 设备未派生
+        }
+        if wl_id == self.ptr_focus {
+            return Ok(()); // 同面幂等快径
+        }
+        if wl_id != 0 && self.surface_slot(wl_id).is_none() {
+            return Err(CompError::BadObject); // 目标面不在册
+        }
+        let need = usize::from(self.ptr_focus != 0) + usize::from(wl_id != 0);
+        if self.ptr_n + need > INPUT_Q_MAX {
+            return Err(CompError::InputQFull); // 容量前置闸——状态零扰动
+        }
+        self.input_serial = self.input_serial.wrapping_add(1);
+        let serial = self.input_serial;
+        let old = self.ptr_focus;
+        self.ptr_focus = wl_id;
+        if old != 0 {
+            self.ptr_q[self.ptr_n] = Some(PtrRecord {
+                kind: PtrKind::Leave,
+                surface: old,
+                serial,
+                x: 0,
+                y: 0,
+                button: 0,
+                state: 0,
+            });
+            self.ptr_n += 1;
+        }
+        if wl_id != 0 {
+            self.ptr_q[self.ptr_n] = Some(PtrRecord {
+                kind: PtrKind::Enter,
+                surface: wl_id,
+                serial,
+                x,
+                y,
+                button: 0,
+                state: 0,
+            });
+            self.ptr_n += 1;
+        }
+        Ok(())
+    }
+
+    /// 指针移动注入（M42-INPUT7）：无焦点域移动零事件（官方语义——
+    /// 静默丢弃，Ok 返回）；队列满 = InputQFull。
+    pub fn pointer_motion(&mut self, x: i32, y: i32) -> Result<(), CompError> {
+        if self.pointer_obj == 0 || self.ptr_focus == 0 {
+            return Ok(()); // 无焦点域移动零事件（官方语义——静默丢弃）
+        }
+        if self.ptr_n >= INPUT_Q_MAX {
+            return Err(CompError::InputQFull);
+        }
+        self.input_serial = self.input_serial.wrapping_add(1);
+        let serial = self.input_serial;
+        let focus = self.ptr_focus;
+        self.ptr_q[self.ptr_n] = Some(PtrRecord {
+            kind: PtrKind::Motion,
+            surface: focus,
+            serial,
+            x,
+            y,
+            button: 0,
+            state: 0,
+        });
+        self.ptr_n += 1;
+        Ok(())
+    }
+
+    /// 指针按键注入（M42-INPUT7）：无焦点域按键无承载 = BadObject；
+    /// 队列满 = InputQFull。click-to-focus 迁移 = 电气面裁决。
+    pub fn pointer_button(&mut self, button: u32, state: u32) -> Result<(), CompError> {
+        if self.pointer_obj == 0 || self.ptr_focus == 0 {
+            return Err(CompError::BadObject); // 无焦点——按键无承载
+        }
+        if self.ptr_n >= INPUT_Q_MAX {
+            return Err(CompError::InputQFull);
+        }
+        self.input_serial = self.input_serial.wrapping_add(1);
+        let serial = self.input_serial;
+        let focus = self.ptr_focus;
+        self.ptr_q[self.ptr_n] = Some(PtrRecord {
+            kind: PtrKind::Button,
+            surface: focus,
+            serial,
+            x: 0,
+            y: 0,
+            button,
+            state,
+        });
+        self.ptr_n += 1;
+        Ok(())
     }
 
     /// 公告名单只读视图。
@@ -433,9 +771,14 @@ impl CompSession {
         let mut log = CommitLog::EMPTY;
         let mut pools = PoolLog::EMPTY;
         let mut drops = DropLog::EMPTY;
+        let mut keys = KeyLog::EMPTY;
+        let mut ptrs = PtrLog::EMPTY;
         let mut fd_need = 0usize;
         let mut out_len = 0usize;
         let mut consumed = 0usize;
+        // 输入事件冲刷先行（M42-INPUT7——官方语义：输入事件异步于
+        // 请求流；空流 feed 亦承载冲刷——waycomp 输入驱动轮询面消费域）。
+        self.flush_inputs(out, &mut out_len, &mut keys, &mut ptrs)?;
         while consumed + HEADER <= stream.len() {
             // 尺寸前窥：完整消息域判定（部分消息干净断流——非错误域；
             // 畸形尺寸域由派发层 BadLength fail-visible 显形）
@@ -461,7 +804,97 @@ impl CompSession {
             pools,
             drops,
             fd_need,
+            keys,
+            ptrs,
         })
+    }
+
+    /// 输入事件待发队列冲刷（M42-INPUT7——队列非空即编组出域：键盘批
+    /// 先随、指针批后随〔双队列分域冲刷——严格全局序挂账〕；设备对象
+    /// 缺席 = 仅记账不编组，防御域）；冲刷后队列清零。事件记录同步入
+    /// 回执批（KeyLog/PtrLog——电气面对账域）。
+    fn flush_inputs(
+        &mut self,
+        out: &mut [u8],
+        out_len: &mut usize,
+        keys: &mut KeyLog,
+        ptrs: &mut PtrLog,
+    ) -> Result<(), CompError> {
+        for i in 0..self.key_n {
+            if let Some(r) = self.key_q[i] {
+                if self.keyboard_obj != 0 {
+                    let n = match r.kind {
+                        KbKind::Enter => encode_keyboard_enter_event(
+                            &mut out[*out_len..],
+                            self.keyboard_obj,
+                            r.serial,
+                            r.surface,
+                            &[],
+                        ),
+                        KbKind::Leave => encode_keyboard_leave_event(
+                            &mut out[*out_len..],
+                            self.keyboard_obj,
+                            r.serial,
+                            r.surface,
+                        ),
+                        KbKind::Key => encode_keyboard_key_event(
+                            &mut out[*out_len..],
+                            self.keyboard_obj,
+                            r.serial,
+                            r.serial, // time 域 v0 = 串号复用（毫秒时间源挂账）
+                            r.key,
+                            r.state,
+                        ),
+                    }
+                    .map_err(CompError::Wire)?;
+                    *out_len += n;
+                }
+                keys.push(r);
+            }
+        }
+        self.key_n = 0;
+        for i in 0..self.ptr_n {
+            if let Some(r) = self.ptr_q[i] {
+                if self.pointer_obj != 0 {
+                    let n = match r.kind {
+                        PtrKind::Enter => encode_pointer_enter_event(
+                            &mut out[*out_len..],
+                            self.pointer_obj,
+                            r.serial,
+                            r.surface,
+                            r.x,
+                            r.y,
+                        ),
+                        PtrKind::Leave => encode_pointer_leave_event(
+                            &mut out[*out_len..],
+                            self.pointer_obj,
+                            r.serial,
+                            r.surface,
+                        ),
+                        PtrKind::Motion => encode_pointer_motion_event(
+                            &mut out[*out_len..],
+                            self.pointer_obj,
+                            r.serial, // time 域 v0 = 串号复用
+                            r.x,
+                            r.y,
+                        ),
+                        PtrKind::Button => encode_pointer_button_event(
+                            &mut out[*out_len..],
+                            self.pointer_obj,
+                            r.serial,
+                            r.serial,
+                            r.button,
+                            r.state,
+                        ),
+                    }
+                    .map_err(CompError::Wire)?;
+                    *out_len += n;
+                }
+                ptrs.push(r);
+            }
+        }
+        self.ptr_n = 0;
+        Ok(())
     }
 
     /// 单消息派发（头 + 签名驱动解析 + 对象路由 + 事件回执写入 +
@@ -484,12 +917,16 @@ impl CompSession {
         };
         match iface {
             WlIface::Display => self.dispatch_display(&header, body, out_len, out)?,
-            WlIface::Registry => self.dispatch_registry(&header, body)?,
+            WlIface::Registry => self.dispatch_registry(&header, body, out_len, out)?,
             WlIface::Compositor => self.dispatch_compositor(&header, body)?,
             WlIface::Surface => self.dispatch_surface(&header, body, out_len, out, log, drops)?,
             WlIface::Shm => self.dispatch_shm(&header, body, pools, fd_need)?,
             WlIface::ShmPool => self.dispatch_shm_pool(&header, body)?,
-            // callback/seat/output/region/buffer：服务端
+            WlIface::Seat => self.dispatch_seat(&header, body, out_len, out)?,
+            // pointer/keyboard：客户端只消费事件——请求域
+            // 外（release/set_repeat_info 挂账，M42-INPUT7）。
+            WlIface::Pointer | WlIface::Keyboard => return Err(CompError::UnknownRequest),
+            // callback/output/region/buffer：服务端
             // 请求域外（v0 子集——fail-visible）。
             _ => return Err(CompError::UnknownRequest),
         }
@@ -546,8 +983,16 @@ impl CompSession {
         }
     }
 
-    /// wl_registry 请求域（bind——接口名名单校验 + 版本上界 + 对象登记）。
-    fn dispatch_registry(&mut self, header: &WlHeader, body: &[u8]) -> Result<(), CompError> {
+    /// wl_registry 请求域（bind——接口名名单校验 + 版本上界 + 对象登
+    /// 记 + **seat 设备能力公告**〔M42-INPUT7——bind wl_seat 后
+    /// capabilities 事件随行，官方语义〕）。
+    fn dispatch_registry(
+        &mut self,
+        header: &WlHeader,
+        body: &[u8],
+        out_len: &mut usize,
+        out: &mut [u8],
+    ) -> Result<(), CompError> {
         match header.opcode {
             registry::REQ_BIND => {
                 let (args, _) = parse_args(body, SIG_REGISTRY_BIND).map_err(CompError::Wire)?;
@@ -574,6 +1019,65 @@ impl CompSession {
                 self.table
                     .install(new_id, g.iface)
                     .map_err(CompError::Table)?;
+                // seat 设备能力公告（M42-INPUT7 输入链——pointer|
+                // keyboard 位域；官方语义：bind wl_seat 后随行）。
+                if g.iface == WlIface::Seat {
+                    let n = encode_seat_capabilities_event(
+                        &mut out[*out_len..],
+                        new_id,
+                        SEAT_CAPS_POINTER | SEAT_CAPS_KEYBOARD,
+                    )
+                    .map_err(CompError::Wire)?;
+                    *out_len += n;
+                }
+                Ok(())
+            }
+            _ => Err(CompError::UnknownRequest),
+        }
+    }
+
+    /// wl_seat 请求域（M42-INPUT7 输入链——get_pointer/get_keyboard
+    /// 设备派生：对象装表 + 键盘 keymap 公告〔fd 占位字域，内容面挂
+    /// 账〕；get_touch/release 域外 fail-visible）。
+    fn dispatch_seat(
+        &mut self,
+        header: &WlHeader,
+        body: &[u8],
+        out_len: &mut usize,
+        out: &mut [u8],
+    ) -> Result<(), CompError> {
+        match header.opcode {
+            seat::REQ_GET_POINTER => {
+                let (args, _) = parse_args(body, SIG_SEAT_GET_POINTER).map_err(CompError::Wire)?;
+                let Some(WlArg::NewId(ptr_id)) = args[0] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                self.table
+                    .install(ptr_id, WlIface::Pointer)
+                    .map_err(CompError::Table)?;
+                self.pointer_obj = ptr_id;
+                Ok(())
+            }
+            seat::REQ_GET_KEYBOARD => {
+                let (args, _) = parse_args(body, SIG_SEAT_GET_KEYBOARD).map_err(CompError::Wire)?;
+                let Some(WlArg::NewId(kbd_id)) = args[0] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                self.table
+                    .install(kbd_id, WlIface::Keyboard)
+                    .map_err(CompError::Table)?;
+                self.keyboard_obj = kbd_id;
+                // keymap 公告（官方语义：keyboard 派生即发——fd 占位
+                // 字 0 + xkb v1 格式 + 零尺寸域，keymap 内容面挂账）。
+                let n = encode_keyboard_keymap_event(
+                    &mut out[*out_len..],
+                    kbd_id,
+                    0,
+                    KEYMAP_FORMAT_XKB_V1,
+                    0,
+                )
+                .map_err(CompError::Wire)?;
+                *out_len += n;
                 Ok(())
             }
             _ => Err(CompError::UnknownRequest),
@@ -837,8 +1341,39 @@ impl CompSession {
     }
 
     /// 会话 surface 摘除（destroy 域——对象表 + 槽位双清；id 不复用
-    /// v0 表纪律）。
+    /// v0 表纪律；焦点域摘除随行：被摘面即焦点面 → leave 事件入队 +
+    /// 焦点清零，M42-INPUT7）。
     fn session_surface_drop(&mut self, wl_id: u32) {
+        if self.kb_focus == wl_id {
+            if self.keyboard_obj != 0 && self.key_n < INPUT_Q_MAX {
+                self.input_serial = self.input_serial.wrapping_add(1);
+                self.key_q[self.key_n] = Some(KeyRecord {
+                    kind: KbKind::Leave,
+                    surface: wl_id,
+                    serial: self.input_serial,
+                    key: 0,
+                    state: 0,
+                });
+                self.key_n += 1;
+            }
+            self.kb_focus = 0;
+        }
+        if self.ptr_focus == wl_id {
+            if self.pointer_obj != 0 && self.ptr_n < INPUT_Q_MAX {
+                self.input_serial = self.input_serial.wrapping_add(1);
+                self.ptr_q[self.ptr_n] = Some(PtrRecord {
+                    kind: PtrKind::Leave,
+                    surface: wl_id,
+                    serial: self.input_serial,
+                    x: 0,
+                    y: 0,
+                    button: 0,
+                    state: 0,
+                });
+                self.ptr_n += 1;
+            }
+            self.ptr_focus = 0;
+        }
         let _ = self.table.remove(wl_id);
         if let Some(slot) = self
             .surfaces
@@ -957,7 +1492,8 @@ mod tests {
     use crate::wayland::{
         callback, encode_display_get_registry, encode_display_sync, encode_message,
         encode_registry_bind, encode_surface_commit, surface as surf_ops, SIG_CALLBACK_DONE,
-        SIG_REGISTRY_GLOBAL,
+        SIG_KEYBOARD_ENTER, SIG_KEYBOARD_KEY, SIG_KEYBOARD_KEYMAP, SIG_POINTER_BUTTON,
+        SIG_POINTER_ENTER, SIG_POINTER_MOTION, SIG_REGISTRY_GLOBAL, SIG_SEAT_CAPABILITIES,
     };
 
     /// 测试用公告名单：核心子集四 global（compositor v4 / seat v1 /
@@ -1756,5 +2292,289 @@ mod tests {
         assert_eq!(rep.drops.items[1].map(|r| r.wl_id), Some(0x42));
         assert_eq!(s.surfaces_count(), 0);
         assert_eq!(rep.commits.n, 0, "纯摘除流零 commit 记录");
+    }
+
+    // ---- M42-INPUT7 输入链宿主测试谱（wl_seat 派生 + 焦点/击键/指针
+    // ---- 事件语义 + 负例域——事实源 = 官方 wayland.xml 1.21.0） ----
+
+    /// seat bind 能力公告 + 设备派生域。
+    #[test]
+    fn seat_bind_capabilities_and_devices() {
+        let mut s = new_session();
+        setup_registry(&mut s);
+        let batch = {
+            let mut b = [0u8; 160];
+            let mut bl = 0usize;
+            bl += encode_registry_bind(&mut b[bl..], 2, 2, "wl_seat", 1, 0x30).unwrap();
+            bl += encode_message(
+                &mut b[bl..],
+                0x30,
+                seat::REQ_GET_POINTER,
+                &[WlArg::NewId(0x31)],
+            )
+            .unwrap();
+            bl += encode_message(
+                &mut b[bl..],
+                0x30,
+                seat::REQ_GET_KEYBOARD,
+                &[WlArg::NewId(0x32)],
+            )
+            .unwrap();
+            b[..bl].to_vec()
+        };
+        let mut out = [0u8; 256];
+        let rep = s.feed(&batch, &mut out).unwrap();
+        assert_eq!(rep.consumed, batch.len());
+        assert_eq!(rep.out_len, 12 + 20, "capabilities(12) + keymap(20)");
+        let m = crate::wayland::parse_message(&out, SIG_SEAT_CAPABILITIES).unwrap();
+        assert_eq!(m.header.object_id, 0x30);
+        assert_eq!(m.header.opcode, crate::wayland::seat::EV_CAPABILITIES);
+        assert_eq!(
+            m.args[0],
+            Some(WlArg::Uint(
+                crate::wayland::SEAT_CAPS_POINTER | crate::wayland::SEAT_CAPS_KEYBOARD
+            ))
+        );
+        let m = crate::wayland::parse_message(&out[12..rep.out_len], SIG_KEYBOARD_KEYMAP).unwrap();
+        assert_eq!(m.header.object_id, 0x32);
+        assert_eq!(m.header.opcode, crate::wayland::keyboard::EV_KEYMAP);
+        assert_eq!(m.args[0], Some(WlArg::Fd(0)));
+        assert_eq!(
+            m.args[1],
+            Some(WlArg::Uint(crate::wayland::KEYMAP_FORMAT_XKB_V1))
+        );
+        assert_eq!(s.table().lookup(0x30), Some(WlIface::Seat));
+        assert_eq!(s.table().lookup(0x31), Some(WlIface::Pointer));
+        assert_eq!(s.table().lookup(0x32), Some(WlIface::Keyboard));
+        assert_eq!(s.pointer_object(), 0x31);
+        assert_eq!(s.keyboard_object(), 0x32);
+    }
+
+    /// 键盘焦点 + 击键冲刷链。
+    #[test]
+    fn keyboard_focus_inject_flush_chain() {
+        let mut s = new_session();
+        setup_registry(&mut s);
+        let batch = {
+            let mut b = [0u8; 224];
+            let mut bl = 0usize;
+            bl += encode_registry_bind(&mut b[bl..], 2, 1, "wl_compositor", 4, 3).unwrap();
+            bl += encode_message(
+                &mut b[bl..],
+                3,
+                compositor::REQ_CREATE_SURFACE,
+                &[WlArg::NewId(0x21)],
+            )
+            .unwrap();
+            bl += encode_registry_bind(&mut b[bl..], 2, 2, "wl_seat", 1, 0x30).unwrap();
+            bl += encode_message(
+                &mut b[bl..],
+                0x30,
+                seat::REQ_GET_KEYBOARD,
+                &[WlArg::NewId(0x32)],
+            )
+            .unwrap();
+            b[..bl].to_vec()
+        };
+        s.feed(&batch, &mut [0u8; 256]).unwrap();
+        s.set_keyboard_focus(0x21).unwrap();
+        assert_eq!(s.keyboard_focus(), 0x21);
+        s.keyboard_inject(0x02, crate::wayland::KEY_STATE_PRESSED)
+            .unwrap();
+        s.keyboard_inject(0x02, crate::wayland::KEY_STATE_RELEASED)
+            .unwrap();
+        let mut out = [0u8; 128];
+        let rep = s.feed(&[], &mut out).unwrap();
+        assert_eq!(rep.consumed, 0);
+        assert_eq!(rep.keys.n, 3, "enter + key ×2 记录批");
+        assert_eq!(rep.out_len, 20 + 24 + 24, "enter(20) + key(24) ×2 回执");
+        let m = crate::wayland::parse_message(&out, SIG_KEYBOARD_ENTER).unwrap();
+        assert_eq!(m.header.object_id, 0x32);
+        assert_eq!(m.header.opcode, crate::wayland::keyboard::EV_ENTER);
+        assert_eq!(m.args[0], Some(WlArg::Uint(1)), "串号 1 起步（单调域）");
+        assert_eq!(m.args[1], Some(WlArg::Object(0x21)));
+        assert_eq!(m.args[2], Some(WlArg::Array(&[])), "v0 空 keys 数组");
+        let m = crate::wayland::parse_message(&out[20..], SIG_KEYBOARD_KEY).unwrap();
+        assert_eq!(m.header.opcode, crate::wayland::keyboard::EV_KEY);
+        assert_eq!(m.args[2], Some(WlArg::Uint(0x02)));
+        assert_eq!(
+            m.args[3],
+            Some(WlArg::Uint(crate::wayland::KEY_STATE_PRESSED))
+        );
+        let m = crate::wayland::parse_message(&out[20 + 24..], SIG_KEYBOARD_KEY).unwrap();
+        assert_eq!(
+            m.args[3],
+            Some(WlArg::Uint(crate::wayland::KEY_STATE_RELEASED))
+        );
+        assert_eq!(rep.keys.items[0].map(|r| r.kind), Some(KbKind::Enter));
+        assert_eq!(rep.keys.items[1].map(|r| (r.key, r.state)), Some((0x02, 1)));
+        assert_eq!(rep.keys.items[2].map(|r| (r.key, r.state)), Some((0x02, 0)));
+    }
+
+    /// 指针焦点/移动/按键链。
+    #[test]
+    fn pointer_focus_motion_button_chain() {
+        let mut s = new_session();
+        setup_registry(&mut s);
+        let batch = {
+            let mut b = [0u8; 224];
+            let mut bl = 0usize;
+            bl += encode_registry_bind(&mut b[bl..], 2, 1, "wl_compositor", 4, 3).unwrap();
+            bl += encode_message(
+                &mut b[bl..],
+                3,
+                compositor::REQ_CREATE_SURFACE,
+                &[WlArg::NewId(0x21)],
+            )
+            .unwrap();
+            bl += encode_registry_bind(&mut b[bl..], 2, 2, "wl_seat", 1, 0x30).unwrap();
+            bl += encode_message(
+                &mut b[bl..],
+                0x30,
+                seat::REQ_GET_POINTER,
+                &[WlArg::NewId(0x31)],
+            )
+            .unwrap();
+            b[..bl].to_vec()
+        };
+        s.feed(&batch, &mut [0u8; 256]).unwrap();
+        s.set_pointer_focus(0x21, 32 << 8, 64 << 8).unwrap();
+        assert_eq!(s.pointer_focus(), 0x21);
+        s.pointer_motion(40 << 8, 80 << 8).unwrap();
+        s.pointer_button(crate::wayland::BTN_LEFT, crate::wayland::BTN_STATE_PRESSED)
+            .unwrap();
+        let mut out = [0u8; 128];
+        let rep = s.feed(&[], &mut out).unwrap();
+        assert_eq!(rep.ptrs.n, 3, "enter + motion + button 记录批");
+        assert_eq!(
+            rep.out_len,
+            24 + 20 + 24,
+            "enter(24) + motion(20) + button(24)"
+        );
+        let m = crate::wayland::parse_message(&out, SIG_POINTER_ENTER).unwrap();
+        assert_eq!(m.header.object_id, 0x31);
+        assert_eq!(m.header.opcode, crate::wayland::pointer::EV_ENTER);
+        assert_eq!(m.args[1], Some(WlArg::Object(0x21)));
+        assert_eq!(m.args[2], Some(WlArg::Fixed(32 << 8)));
+        let m = crate::wayland::parse_message(&out[24..], SIG_POINTER_MOTION).unwrap();
+        assert_eq!(m.header.opcode, crate::wayland::pointer::EV_MOTION);
+        assert_eq!(m.args[1], Some(WlArg::Fixed(40 << 8)));
+        let m = crate::wayland::parse_message(&out[24 + 20..], SIG_POINTER_BUTTON).unwrap();
+        assert_eq!(m.header.opcode, crate::wayland::pointer::EV_BUTTON);
+        assert_eq!(m.args[2], Some(WlArg::Uint(crate::wayland::BTN_LEFT)));
+        assert_eq!(
+            m.args[3],
+            Some(WlArg::Uint(crate::wayland::BTN_STATE_PRESSED))
+        );
+        assert_eq!(rep.ptrs.items[0].map(|r| r.kind), Some(PtrKind::Enter));
+        assert_eq!(rep.ptrs.items[1].map(|r| r.kind), Some(PtrKind::Motion));
+        assert_eq!(
+            rep.ptrs.items[2].map(|r| (r.button, r.state)),
+            Some((0x110, 1))
+        );
+    }
+
+    /// 焦点面 destroy → leave 事件入域（flush 先行于 dispatch——双 feed 断言）。
+    #[test]
+    fn focus_destroy_emits_leave() {
+        let mut s = new_session();
+        setup_registry(&mut s);
+        let batch = {
+            let mut b = [0u8; 224];
+            let mut bl = 0usize;
+            bl += encode_registry_bind(&mut b[bl..], 2, 1, "wl_compositor", 4, 3).unwrap();
+            bl += encode_message(
+                &mut b[bl..],
+                3,
+                compositor::REQ_CREATE_SURFACE,
+                &[WlArg::NewId(0x21)],
+            )
+            .unwrap();
+            bl += encode_registry_bind(&mut b[bl..], 2, 2, "wl_seat", 1, 0x30).unwrap();
+            bl += encode_message(
+                &mut b[bl..],
+                0x30,
+                seat::REQ_GET_POINTER,
+                &[WlArg::NewId(0x31)],
+            )
+            .unwrap();
+            bl += encode_message(
+                &mut b[bl..],
+                0x30,
+                seat::REQ_GET_KEYBOARD,
+                &[WlArg::NewId(0x32)],
+            )
+            .unwrap();
+            b[..bl].to_vec()
+        };
+        s.feed(&batch, &mut [0u8; 256]).unwrap();
+        s.set_keyboard_focus(0x21).unwrap();
+        s.set_pointer_focus(0x21, 0, 0).unwrap();
+        let drop = {
+            let mut b = [0u8; 16];
+            let n = encode_message(&mut b, 0x21, surf_ops::REQ_DESTROY, &[]).unwrap();
+            b[..n].to_vec()
+        };
+        let mut out = [0u8; 128];
+        let rep = s.feed(&drop, &mut out).unwrap();
+        assert_eq!(rep.drops.n, 1);
+        assert_eq!(s.keyboard_focus(), 0, "键盘焦点清零");
+        assert_eq!(s.pointer_focus(), 0, "指针焦点清零");
+        assert_eq!(rep.keys.n, 1, "kb Enter（焦点 set 残队）");
+        assert_eq!(rep.ptrs.n, 1, "ptr Enter（焦点 set 残队）");
+        let mut out2 = [0u8; 128];
+        let rep2 = s.feed(&[], &mut out2).unwrap();
+        assert_eq!(rep2.keys.n, 1, "kb leave（destroy 摘除域）");
+        assert_eq!(rep2.ptrs.n, 1, "ptr leave（destroy 摘除域）");
+        assert_eq!(rep2.keys.items[0].map(|r| r.kind), Some(KbKind::Leave));
+        assert_eq!(rep2.ptrs.items[0].map(|r| r.kind), Some(PtrKind::Leave));
+        assert_eq!(rep2.keys.items[0].map(|r| r.surface), Some(0x21));
+        assert_eq!(rep2.ptrs.items[0].map(|r| r.surface), Some(0x21));
+    }
+
+    /// 输入链负例域。
+    #[test]
+    fn input_gates_negative() {
+        let mut s = new_session();
+        setup_registry(&mut s);
+        assert_eq!(s.set_keyboard_focus(0x21), Err(CompError::BadObject));
+        assert_eq!(s.keyboard_inject(1, 1), Err(CompError::BadObject));
+        assert_eq!(s.pointer_button(0x110, 1), Err(CompError::BadObject));
+        assert_eq!(s.set_pointer_focus(0x21, 0, 0), Err(CompError::BadObject));
+        let batch = {
+            let mut b = [0u8; 224];
+            let mut bl = 0usize;
+            bl += encode_registry_bind(&mut b[bl..], 2, 1, "wl_compositor", 4, 3).unwrap();
+            bl += encode_message(
+                &mut b[bl..],
+                3,
+                compositor::REQ_CREATE_SURFACE,
+                &[WlArg::NewId(0x21)],
+            )
+            .unwrap();
+            bl += encode_registry_bind(&mut b[bl..], 2, 2, "wl_seat", 1, 0x30).unwrap();
+            bl += encode_message(
+                &mut b[bl..],
+                0x30,
+                seat::REQ_GET_KEYBOARD,
+                &[WlArg::NewId(0x32)],
+            )
+            .unwrap();
+            b[..bl].to_vec()
+        };
+        s.feed(&batch, &mut [0u8; 256]).unwrap();
+        assert_eq!(s.set_keyboard_focus(0x99), Err(CompError::BadObject));
+        assert_eq!(s.keyboard_focus(), 0);
+        assert_eq!(s.keyboard_inject(1, 1), Err(CompError::BadObject));
+        s.set_keyboard_focus(0x21).unwrap();
+        s.feed(&[], &mut [0u8; 64]).unwrap(); // Enter 冲净——容量复位
+        for i in 0..INPUT_Q_MAX {
+            assert_eq!(s.keyboard_inject(0x10 + i as u32, 1), Ok(()));
+        }
+        assert_eq!(s.keyboard_inject(0x99, 1), Err(CompError::InputQFull));
+        let mut out = [0u8; 512];
+        let rep = s.feed(&[], &mut out).unwrap();
+        assert_eq!(rep.keys.n, INPUT_Q_MAX);
+        assert_eq!(s.keyboard_inject(0xAA, 1), Ok(()));
     }
 }

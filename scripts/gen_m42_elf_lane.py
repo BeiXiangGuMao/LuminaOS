@@ -95,6 +95,17 @@ FB_SVC_EVID_OFF, FB_SVC_REQ_OFF, FB_SVC_RESP_OFF = 0x00, 0x40, 0x60
 RESIDENT_EVIDENCE = b"LUMINA-T108-RESIDENT resident-elf lane"
 RESIDENT_YIELDS = 64
 
+# ---- 域④常量（M42-INPUT7——waycomp 主体迁移前置：native 编译进程链）----
+INPUT_EVIDENCE = b"LUMINA-T109-CLIENT input-chain ok"
+INPUT_BAIL_CONNECT, INPUT_BAIL_SEND, INPUT_BAIL_RECV, INPUT_BAIL_BUDGET = 90, 91, 92, 93
+INPUT_ACC_CAP = 512
+INPUT_RECV_BUDGET = 64
+INPUT_TOTAL_TARGET = 272  # 事件流累计目标（globals+caps+keymap+enter+key×2+ptr enter+button×2 = 272B——客户端存活至指针域事件到达）
+# 客户端对象 id 域（wire 批内静态分配——与 prism::wayland 对账）
+INPUT_REGISTRY, INPUT_SEAT, INPUT_COMP, INPUT_SURF, INPUT_PTR, INPUT_KBD = 2, 3, 4, 5, 6, 7
+# wl 事件 opcode（官方 XML 声明序——与 SIG_KEYBOARD_KEY 对账）
+WL_EV_KEY, WL_EV_CAPS = 3, 0
+
 OUT = Path(__file__).resolve().parent.parent / "crates/kernel/src/exec_images_gen_m42_elf.rs"
 
 
@@ -447,6 +458,116 @@ def rs_hex(data, indent="    "):
 # r14 = 请求帧缓冲 / r15 = 应答帧缓冲 / rbx = 收帧 tag（callee-saved
 # 跨 syscall 存续契约）。数据段：+0x00 取证串 / +0x40 请求帧缓冲 /
 # +0x60 应答帧缓冲。bail 码 70/71/72 fail-visible——LXE 同码域。）----
+def build_input_wire_blob():
+    """7 消息 wire 批（M42-INPUT7 输入链客户端）：registry → bind
+    wl_seat/wl_compositor → surface → seat.get_pointer/get_keyboard →
+    commit（首映射窗 = 焦点策略面输入——键盘 enter 前随域）。"""
+    blob = b""
+    blob += w_msg(1, 1, w_u32(INPUT_REGISTRY))                                          # get_registry
+    blob += w_msg(INPUT_REGISTRY, 0, w_u32(2) + w_str(b"wl_seat") + w_u32(1) + w_u32(INPUT_SEAT))
+    blob += w_msg(INPUT_REGISTRY, 0, w_u32(1) + w_str(b"wl_compositor") + w_u32(4) + w_u32(INPUT_COMP))
+    blob += w_msg(INPUT_COMP, 0, w_u32(INPUT_SURF))                                      # create_surface
+    blob += w_msg(INPUT_SEAT, 0, w_u32(INPUT_PTR))                                       # get_pointer
+    blob += w_msg(INPUT_SEAT, 1, w_u32(INPUT_KBD))                                       # get_keyboard
+    blob += w_msg(INPUT_SURF, 6, b"")                                                    # commit
+    return blob
+
+
+def build_input_client_code():
+    """域④：INPUT_CLIENT 代码段（M42-INPUT7——native 编译进程链成熟
+    首割：桌面链输入客户端真 wire 协议消费者）。车道：CONNECT →
+    wire 批 7 消息单发 → RECV 字节计数等待（t106 车道——事件流累计
+    ≥ 272B = 键盘+指针事件字节域全部到达）→ LOG 取证 →
+    SHUT（EOF teardown 链）→ YIELD×16 → EXIT(0)。寄存器契约：r13d =
+    连接句柄 / r14 = ACC 窗基址 / r12 = 累计字节数 / r15d = 预算
+    （callee-saved 跨 syscall 存续域）。"""
+    a = Asm()
+    WIRE = build_input_wire_blob()
+    NAME_OFF, EVID_OFF, WIRE_OFF, ACC_OFF = 0x00, 0x10, 0x40, 0x200
+
+    # 1) SYS_UNIXSOCK CONNECT("wayland-comp") → r13d = 连接句柄
+    mov_edi_i(a, USOCK_CONNECT)
+    a.db(0x31, 0xF6)                           # xor esi, esi
+    a.db(0xBA); a.imm32(ELF_DATA_VA + NAME_OFF)  # mov edx, name ptr
+    a.db(0x41, 0xBA); a.imm32(len(SOCK_NAME))    # mov r10d, 12
+    mov_eax_i(a, SYS_UNIXSOCK)
+    syscall(a)
+    a.db(0x41, 0x89, 0xC5)                     # mov r13d, eax
+    a.db(0x45, 0x85, 0xED)                     # test r13d, r13d
+    a.jcc32(0x84, "bail_connect")
+    a.db(0x41, 0x83, 0xFD, 15)                 # cmp r13d, 15
+    a.jcc32(0x87, "bail_connect")
+
+    # 2) SYS_UNIXSOCK SEND(conn, wire 批 7 消息)
+    mov_edi_i(a, USOCK_SEND)
+    a.db(0x44, 0x89, 0xEE)                     # mov esi, r13d
+    a.db(0xBA); a.imm32(ELF_DATA_VA + WIRE_OFF)  # mov edx, wire ptr
+    a.db(0x41, 0xBA); a.imm32(len(WIRE))         # mov r10d, WIRE_LEN
+    mov_eax_i(a, SYS_UNIXSOCK)
+    syscall(a)
+    a.db(0x48, 0x3D); a.imm32(len(WIRE))         # cmp rax, WIRE_LEN
+    a.jcc32(0x85, "bail_send")
+
+    # 3) RECV 字节计数等待（t106 车道——纯字节域）：事件流累计 ≥
+    #    INPUT_TOTAL_TARGET（272B = globals 124 + caps 12 + keymap 20 +
+    #    enter 20 + key ×2 48 + ptr enter 24 + button ×2 48——客户端存活
+    #    至指针域事件到达，t109 键盘+指针双相位对账窗）。
+    #    事件语义证明 = 服务端 stamps（WLCOMP_KEYS/INPUT_KEYS）+ 本计
+    #    数对账；窗内容解析挂账（用户态读路径诊断域随批摘除）。
+    mov_r15d_i(a, INPUT_RECV_BUDGET)
+    a.db(0x49, 0xBE); a.imm64(ELF_DATA_VA + ACC_OFF)                  # movabs r14, ACC base
+    a.db(0x45, 0x31, 0xE4)                     # xor r12d, r12d（累计 = 0）
+    a.label("recv")
+    mov_edi_i(a, USOCK_RECV)
+    a.db(0x44, 0x89, 0xEE)                     # mov esi, r13d
+    a.db(0x4C, 0x89, 0xF2)                     # mov rdx, r14（固定窗基址）
+    mov_r10d_i(a, INPUT_ACC_CAP)               # mov r10d, 512（窗容量）
+    mov_eax_i(a, SYS_UNIXSOCK)
+    syscall(a)
+    a.db(0x48, 0x85, 0xC0)                     # test rax, rax
+    a.jcc32(0x84, "bail_recv")                 # 0 = EOF
+    a.db(0x4C, 0x01, 0xE0)                     # add rax, r12（累计 += n）
+    a.db(0x49, 0x89, 0xC4)                     # mov r12, rax
+    a.db(0x49, 0x81, 0xFC); a.imm32(INPUT_TOTAL_TARGET)   # cmp r12, TARGET
+    a.jcc32(0x83, "hit")                       # jae → 事件域到达
+    a.db(0x41, 0xFF, 0xCF)                     # dec r15d
+    a.jcc32(0x84, "bail_budget")
+    a.jmp32u("recv")
+
+    # 4) hit：LOG 取证 → SHUT（EOF teardown 链）→ YIELD×16 → EXIT(0)
+    a.label("hit")
+    a.db(0x48, 0xBF); a.imm64(ELF_DATA_VA + EVID_OFF)  # movabs rdi, evidence
+    a.db(0xBE); a.imm32(len(INPUT_EVIDENCE))    # mov esi, len
+    mov_eax_i(a, SYS_LOG)
+    syscall(a)
+    mov_edi_i(a, 7)                            # USOCK_SHUT
+    a.db(0x44, 0x89, 0xEE)                     # mov esi, r13d
+    mov_eax_i(a, SYS_UNIXSOCK)
+    syscall(a)                                 # EOF 对端终结（错误忽略）
+    mov_r15d_i(a, 16)
+    a.label("yld")
+    mov_eax_i(a, SYS_YIELD)
+    syscall(a)
+    a.db(0x41, 0xFF, 0xCF)                     # dec r15d
+    a.jmp8(0x75, "yld")                        # jnz yld
+    a.db(0x31, 0xFF)                           # xor edi, edi
+    mov_eax_i(a, SYS_EXIT)
+    syscall(a)
+    a.db(0xEB, 0xFE)                           # jmp $
+
+    # bail 族（fail-visible）
+    a.label("bail_connect")
+    mov_edi_i(a, INPUT_BAIL_CONNECT); mov_eax_i(a, SYS_EXIT); syscall(a); a.db(0xEB, 0xFE)
+    a.label("bail_send")
+    mov_edi_i(a, INPUT_BAIL_SEND); mov_eax_i(a, SYS_EXIT); syscall(a); a.db(0xEB, 0xFE)
+    a.label("bail_recv")
+    mov_edi_i(a, INPUT_BAIL_RECV); mov_eax_i(a, SYS_EXIT); syscall(a); a.db(0xEB, 0xFE)
+    a.label("bail_budget")
+    mov_edi_i(a, INPUT_BAIL_BUDGET); mov_eax_i(a, SYS_EXIT); syscall(a); a.db(0xEB, 0xFE)
+    a.resolve()
+    return bytes(a.buf), WIRE
+
+
 def build_fbdev_svc_code():
     a = Asm()
     # 1) SYS_FB_MAP(FB_VA_BASE)——va 走 rsi（abi 契约：rsi = 用户虚地址）
@@ -605,6 +726,7 @@ def main():
     client_code, wire = build_client_code()
     fbsvc_code = build_fbdev_svc_code()
     resident_code = build_resident_code()
+    input_code, input_wire = build_input_client_code()
 
     # 数据段
     native_data = bytearray(0x40)
@@ -618,6 +740,12 @@ def main():
     fbsvc_data[FB_SVC_EVID_OFF:FB_SVC_EVID_OFF + len(FB_SVC_EVIDENCE)] = FB_SVC_EVIDENCE
     resident_data = bytearray(0x40)
     resident_data[0:len(RESIDENT_EVIDENCE)] = RESIDENT_EVIDENCE
+    input_data = bytearray(0x400)
+    input_data[0x00:0x00 + len(SOCK_NAME)] = SOCK_NAME
+    input_data[0x10:0x10 + len(INPUT_EVIDENCE)] = INPUT_EVIDENCE
+    input_data[0x40:0x40 + len(input_wire)] = input_wire
+    input_data[0x380:0x382] = b"CL"
+    assert len(input_wire) <= 0x1C0
 
     elf_native = elf64(ELF_ENTRY, [
         (ELF_ENTRY, 5, native_code),            # PF_R|PF_X
@@ -634,6 +762,10 @@ def main():
     elf_resident = elf64(ELF_ENTRY, [
         (ELF_ENTRY, 5, resident_code),
         (ELF_DATA_VA, 6, bytes(resident_data)),
+    ])
+    elf_input = elf64(ELF_ENTRY, [
+        (ELF_ENTRY, 5, input_code),
+        (ELF_DATA_VA, 6, bytes(input_data)),
     ])
 
     # objdump 反汇编锚定 + syscall 计数
@@ -668,6 +800,12 @@ def main():
     objdump_check(resident_code, [
         ("movabs $0x401000,%rdi", "取证串指针"),
     ], n_sys=3)  # LOG 1 + YIELD 1 + EXIT 1
+    objdump_check(input_code, [
+        ("mov $0x401000,%edx", "套接字名指针"),
+        ("mov $0x401040,%edx", "wire 批指针"),
+        ("movabs $0x401200,%r14", "ACC 固定窗基址"),
+        ("movabs $0x401010,%rdi", "取证串指针"),
+    ], n_sys=11)  # 主道 7（CONNECT/SEND/RECV/LOG/SHUT/YIELD/EXIT）+ bail EXIT ×4
 
     # Rust 生成物
     out = f"""// 本文件由 scripts/gen_m42_elf_lane.py 生成——勿手改；重跑脚本再生成。
@@ -744,6 +882,27 @@ pub const FB_SVC_ELF_H2: usize = {FB_SVC_H2};
 #[allow(dead_code)] // 文档锚点：mov r15d, imm32 内嵌同值
 pub const RESIDENT_SEED_YIELDS: u32 = {RESIDENT_YIELDS};
 
+/// 域④ wire 批长度（M42-INPUT7——INPUT_CLIENT 7 消息 =
+/// {len(input_wire)} B，单发域 ≤ USOCK_BUF）。
+#[allow(dead_code)] // 文档锚点：SEND r10d imm32 内嵌同值（gen 脚本对账）
+pub const INPUT_CLIENT_WIRE_LEN: usize = {len(input_wire)};
+/// 域④ bail 退出码：CONNECT 失败（input-client——输入链客户端）。
+#[allow(dead_code)] // 文档锚点：bail_connect EXIT imm32 内嵌同值
+pub const INPUT_CLIENT_BAIL_CONNECT: i32 = {INPUT_BAIL_CONNECT};
+/// 域④ bail 退出码：SEND 短写/失败。
+#[allow(dead_code)] // 文档锚点：bail_send EXIT imm32 内嵌同值
+pub const INPUT_CLIENT_BAIL_SEND: i32 = {INPUT_BAIL_SEND};
+/// 域④ bail 退出码：RECV EOF（key 事件未达即对端终结）。
+#[allow(dead_code)] // 文档锚点：bail_recv EXIT imm32 内嵌同值
+pub const INPUT_CLIENT_BAIL_RECV: i32 = {INPUT_BAIL_RECV};
+/// 域④ bail 退出码：预算耗尽（key 事件未达）。
+#[allow(dead_code)] // 文档锚点：bail_budget EXIT imm32 内嵌同值
+pub const INPUT_CLIENT_BAIL_BUDGET: i32 = {INPUT_BAIL_BUDGET};
+/// 域④ 客户端 wl_keyboard 对象 id（wire 批内静态分配——扫描器对账
+/// 域；与 kernel 侧 t109 断言同源）。
+#[allow(dead_code)] // 文档锚点：扫描器 cmp edi imm8 内嵌同值
+pub const INPUT_CLIENT_KBD_OBJ: u32 = {INPUT_KBD};
+
 /// 域① 映像：ELF_NATIVE（原生 ABI ELF64 静态——真 ELF 容器，播种
 /// lane `spawn_elf_seed` 消费；lin_abi = false 原生派发）。车道：LOG
 /// 取证 → r12d 累加 1..=10 → EXIT({77})。t105 消费。
@@ -785,11 +944,26 @@ pub static FBDEV_SVC_ELF: [u8; {len(elf_fbsvc)}] = [
 pub static RESIDENT_SEED: [u8; {len(elf_resident)}] = [
 {rs_hex(elf_resident)}
 ];
+
+/// 域④ 映像：INPUT_CLIENT（M42-INPUT7——**waycomp 主体迁移前置：
+/// native 编译进程链成熟首割**，桌面链输入客户端真 wire 协议消费
+/// 者，播种 lane `spawn_elf_seed` 消费）。车道：SYS_UNIXSOCK
+/// CONNECT(wayland-comp) → wire 批 7 消息单发（get_registry → bind
+/// wl_seat/wl_compositor → create_surface → seat.get_pointer/
+/// get_keyboard → commit——首映射窗 = 焦点策略面输入）→ RECV 固定
+/// 窗加逐消息游标扫描（客户端 wire 解析器——键盘 key 事件检测域
+/// obj == wl_keyboard(0x{INPUT_KBD:X}) 且 opcode == EV_KEY(3)）→
+/// LOG 取证 → SHUT（EOF teardown 链）→ YIELD×16 → EXIT(0)。t109
+/// 消费（编译进程链四形齐备：协议形/shm 形/服务环形/常驻形）。
+pub static INPUT_CLIENT: [u8; {len(elf_input)}] = [
+{rs_hex(elf_input)}
+];
 """
     OUT.write_text(out)
     print(
         f"[gen_m42_elf_lane] ELF_NATIVE={len(elf_native)}B SHM_CLIENT={len(elf_client)}B "
-        f"FBDEV_SVC_ELF={len(elf_fbsvc)}B RESIDENT_SEED={len(elf_resident)}B wire={len(wire)}B → {OUT}"
+        f"FBDEV_SVC_ELF={len(elf_fbsvc)}B RESIDENT_SEED={len(elf_resident)}B "
+        f"INPUT_CLIENT={len(elf_input)}B wire={len(wire)}B input_wire={len(input_wire)}B → {OUT}"
     )
 
 

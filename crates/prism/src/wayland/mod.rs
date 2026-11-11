@@ -360,6 +360,10 @@ pub enum WlIface {
     Buffer,
     /// wl_seat。
     Seat,
+    /// wl_pointer（M42-INPUT7 输入链——seat.get_pointer 派生对象）。
+    Pointer,
+    /// wl_keyboard（M42-INPUT7 输入链——seat.get_keyboard 派生对象）。
+    Keyboard,
     /// wl_output。
     Output,
     /// wl_region。
@@ -380,6 +384,8 @@ pub fn iface_name(iface: WlIface) -> &'static str {
         WlIface::Surface => "wl_surface",
         WlIface::Buffer => "wl_buffer",
         WlIface::Seat => "wl_seat",
+        WlIface::Pointer => "wl_pointer",
+        WlIface::Keyboard => "wl_keyboard",
         WlIface::Output => "wl_output",
         WlIface::Region => "wl_region",
         WlIface::Shm => "wl_shm",
@@ -582,6 +588,38 @@ pub mod seat {
     pub const EV_NAME: u16 = 1;
 }
 
+/// wl_keyboard 事件 opcode（M42-INPUT7 输入链——官方 XML 声明序；
+/// 请求域〔release/set_repeat_info〕域外挂账）。
+pub mod keyboard {
+    /// event keymap（fd + uint format + uint size——fd 占位字）。
+    pub const EV_KEYMAP: u16 = 0;
+    /// event enter（uint serial + object surface + array keys）。
+    pub const EV_ENTER: u16 = 1;
+    /// event leave（uint serial + object surface）。
+    pub const EV_LEAVE: u16 = 2;
+    /// event key（uint serial + uint time + uint key + uint state）。
+    pub const EV_KEY: u16 = 3;
+    /// event modifiers（uint × 5：serial + depressed/latched/locked
+    /// mods + group）。
+    pub const EV_MODIFIERS: u16 = 4;
+    /// event repeat_info（uint rate + uint delay）。
+    pub const EV_REPEAT_INFO: u16 = 5;
+}
+
+/// wl_pointer 事件 opcode（M42-INPUT7 输入链——官方 XML 声明序；
+/// axis 族/frame/请求域域外挂账）。
+pub mod pointer {
+    /// event enter（uint serial + object surface + fixed x + fixed y）。
+    pub const EV_ENTER: u16 = 0;
+    /// event leave（uint serial + object surface）。
+    pub const EV_LEAVE: u16 = 1;
+    /// event motion（uint time + fixed x + fixed y）。
+    pub const EV_MOTION: u16 = 2;
+    /// event button（uint serial + uint time + uint button + uint
+    /// state）。
+    pub const EV_BUTTON: u16 = 3;
+}
+
 /// wl_output 请求/事件 opcode。
 pub mod output {
     /// request release。
@@ -668,6 +706,39 @@ pub const SIG_SURFACE_ENTER: &[WlType] = &[WlType::Object];
 pub const SIG_BUFFER_RELEASE: &[WlType] = &[];
 /// wl_seat.capabilities 事件：`(uint)`。
 pub const SIG_SEAT_CAPABILITIES: &[WlType] = &[WlType::Uint];
+/// wl_seat.get_pointer：`(new_id)`。
+pub const SIG_SEAT_GET_POINTER: &[WlType] = &[WlType::NewId];
+/// wl_seat.get_keyboard：`(new_id)`。
+pub const SIG_SEAT_GET_KEYBOARD: &[WlType] = &[WlType::NewId];
+/// wl_keyboard.keymap 事件：`(fd, uint format, uint size)`——fd 走
+/// 消息内 1 字占位（附带数据电气挂账，M42-UNIX3 口径同源）。
+pub const SIG_KEYBOARD_KEYMAP: &[WlType] = &[WlType::Fd, WlType::Uint, WlType::Uint];
+/// wl_keyboard.enter 事件：`(uint serial, object surface, array keys)`
+/// ——keys = 当前按下键码数组（v0 空数组域）。
+pub const SIG_KEYBOARD_ENTER: &[WlType] = &[WlType::Uint, WlType::Object, WlType::Array];
+/// wl_keyboard.leave 事件：`(uint serial, object surface)`。
+pub const SIG_KEYBOARD_LEAVE: &[WlType] = &[WlType::Uint, WlType::Object];
+/// wl_keyboard.key 事件：`(uint serial, uint time, uint key, uint state)`。
+pub const SIG_KEYBOARD_KEY: &[WlType] = &[WlType::Uint, WlType::Uint, WlType::Uint, WlType::Uint];
+/// wl_keyboard.modifiers 事件：`(uint × 5)`（v0 全零域——修饰键语义挂账）。
+pub const SIG_KEYBOARD_MODIFIERS: &[WlType] = &[
+    WlType::Uint,
+    WlType::Uint,
+    WlType::Uint,
+    WlType::Uint,
+    WlType::Uint,
+];
+/// wl_pointer.enter 事件：`(uint serial, object surface, fixed x,
+/// fixed y)`——surface 局部坐标域（fixed 24.8 原字透传）。
+pub const SIG_POINTER_ENTER: &[WlType] =
+    &[WlType::Uint, WlType::Object, WlType::Fixed, WlType::Fixed];
+/// wl_pointer.leave 事件：`(uint serial, object surface)`。
+pub const SIG_POINTER_LEAVE: &[WlType] = &[WlType::Uint, WlType::Object];
+/// wl_pointer.motion 事件：`(uint time, fixed x, fixed y)`。
+pub const SIG_POINTER_MOTION: &[WlType] = &[WlType::Uint, WlType::Fixed, WlType::Fixed];
+/// wl_pointer.button 事件：`(uint serial, uint time, uint button,
+/// uint state)`。
+pub const SIG_POINTER_BUTTON: &[WlType] = &[WlType::Uint, WlType::Uint, WlType::Uint, WlType::Uint];
 /// wl_shm.create_pool：`(new_id, fd, int)`。
 pub const SIG_SHM_CREATE_POOL: &[WlType] = &[WlType::NewId, WlType::Fd, WlType::Int];
 /// wl_shm_pool.create_buffer：`(new_id, int offset, int width, int
@@ -683,6 +754,27 @@ pub const SIG_SHM_POOL_CREATE_BUFFER: &[WlType] = &[
 ];
 /// wl_shm_pool.destroy：`()`。
 pub const SIG_SHM_POOL_DESTROY: &[WlType] = &[];
+
+// --- 输入链语义常量（官方 XML 枚举值逐字对账——宿主测试 + t109 消费面） ---
+
+/// wl_seat.capabilities 位域：pointer（1）。
+pub const SEAT_CAPS_POINTER: u32 = 1;
+/// wl_seat.capabilities 位域：keyboard（2）。
+pub const SEAT_CAPS_KEYBOARD: u32 = 2;
+/// wl_keyboard.keymap format：no keymap（0）。
+pub const KEYMAP_FORMAT_NO_KEYMAP: u32 = 0;
+/// wl_keyboard.keymap format：xkb v1（1）。
+pub const KEYMAP_FORMAT_XKB_V1: u32 = 1;
+/// wl_keyboard.key state：released（0）。
+pub const KEY_STATE_RELEASED: u32 = 0;
+/// wl_keyboard.key state：pressed（1）。
+pub const KEY_STATE_PRESSED: u32 = 1;
+/// wl_pointer.button state：released（0）。
+pub const BTN_STATE_RELEASED: u32 = 0;
+/// wl_pointer.button state：pressed（1）。
+pub const BTN_STATE_PRESSED: u32 = 1;
+/// evdev 按钮码：BTN_LEFT（0x110——官方 XML 枚举域）。
+pub const BTN_LEFT: u32 = 0x110;
 
 // ---------------------------------------------------------------------------
 // 语义便利编组器（阶段三合成器/客户端车道预置——宿主测试 + t103 消费面）
@@ -776,6 +868,168 @@ pub fn encode_callback_done_event(
 /// wl_surface.commit 请求编组（零参消息——签名空表域）。
 pub fn encode_surface_commit(buf: &mut [u8], surface_id: u32) -> Result<usize, WlError> {
     encode_message(buf, surface_id, surface::REQ_COMMIT, &[])
+}
+
+/// wl_seat.capabilities 事件编组（M42-INPUT7 输入链——seat bind 后
+/// 设备能力公告；caps = [`SEAT_CAPS_POINTER`] ∪ [`SEAT_CAPS_KEYBOARD`]）。
+pub fn encode_seat_capabilities_event(
+    buf: &mut [u8],
+    seat_id: u32,
+    caps: u32,
+) -> Result<usize, WlError> {
+    encode_message(buf, seat_id, seat::EV_CAPABILITIES, &[WlArg::Uint(caps)])
+}
+
+/// wl_keyboard.keymap 事件编组（fd 占位字域——keymap 内容面挂账）。
+pub fn encode_keyboard_keymap_event(
+    buf: &mut [u8],
+    keyboard_id: u32,
+    fd_placeholder: u32,
+    format: u32,
+    size: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        keyboard_id,
+        keyboard::EV_KEYMAP,
+        &[
+            WlArg::Fd(fd_placeholder),
+            WlArg::Uint(format),
+            WlArg::Uint(size),
+        ],
+    )
+}
+
+/// wl_keyboard.enter 事件编组（键盘焦点域——keys 数组 v0 空域）。
+pub fn encode_keyboard_enter_event(
+    buf: &mut [u8],
+    keyboard_id: u32,
+    serial: u32,
+    surface_id: u32,
+    keys: &[u8],
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        keyboard_id,
+        keyboard::EV_ENTER,
+        &[
+            WlArg::Uint(serial),
+            WlArg::Object(surface_id),
+            WlArg::Array(keys),
+        ],
+    )
+}
+
+/// wl_keyboard.leave 事件编组（键盘焦点离域）。
+pub fn encode_keyboard_leave_event(
+    buf: &mut [u8],
+    keyboard_id: u32,
+    serial: u32,
+    surface_id: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        keyboard_id,
+        keyboard::EV_LEAVE,
+        &[WlArg::Uint(serial), WlArg::Object(surface_id)],
+    )
+}
+
+/// wl_keyboard.key 事件编组（击键域）。
+pub fn encode_keyboard_key_event(
+    buf: &mut [u8],
+    keyboard_id: u32,
+    serial: u32,
+    time: u32,
+    key: u32,
+    state: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        keyboard_id,
+        keyboard::EV_KEY,
+        &[
+            WlArg::Uint(serial),
+            WlArg::Uint(time),
+            WlArg::Uint(key),
+            WlArg::Uint(state),
+        ],
+    )
+}
+
+/// wl_pointer.enter 事件编组（指针焦点域——fixed 24.8 原字）。
+pub fn encode_pointer_enter_event(
+    buf: &mut [u8],
+    pointer_id: u32,
+    serial: u32,
+    surface_id: u32,
+    x: i32,
+    y: i32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        pointer_id,
+        pointer::EV_ENTER,
+        &[
+            WlArg::Uint(serial),
+            WlArg::Object(surface_id),
+            WlArg::Fixed(x),
+            WlArg::Fixed(y),
+        ],
+    )
+}
+
+/// wl_pointer.leave 事件编组（指针焦点离域）。
+pub fn encode_pointer_leave_event(
+    buf: &mut [u8],
+    pointer_id: u32,
+    serial: u32,
+    surface_id: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        pointer_id,
+        pointer::EV_LEAVE,
+        &[WlArg::Uint(serial), WlArg::Object(surface_id)],
+    )
+}
+
+/// wl_pointer.motion 事件编组（指针移动域）。
+pub fn encode_pointer_motion_event(
+    buf: &mut [u8],
+    pointer_id: u32,
+    time: u32,
+    x: i32,
+    y: i32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        pointer_id,
+        pointer::EV_MOTION,
+        &[WlArg::Uint(time), WlArg::Fixed(x), WlArg::Fixed(y)],
+    )
+}
+
+/// wl_pointer.button 事件编组（按键域——evdev 按钮码 + 键态）。
+pub fn encode_pointer_button_event(
+    buf: &mut [u8],
+    pointer_id: u32,
+    serial: u32,
+    time: u32,
+    button: u32,
+    state: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        pointer_id,
+        pointer::EV_BUTTON,
+        &[
+            WlArg::Uint(serial),
+            WlArg::Uint(time),
+            WlArg::Uint(button),
+            WlArg::Uint(state),
+        ],
+    )
 }
 
 // -------------------------------------------------------- 宿主测试谱
@@ -1038,6 +1292,18 @@ mod tests {
         assert_eq!(shm_pool::REQ_CREATE_BUFFER, 0);
         assert_eq!(shm_pool::REQ_DESTROY, 1);
         assert_eq!(shm_pool::REQ_RESIZE, 2);
+        // M42-INPUT7 输入链：wl_seat 派生 + wl_keyboard / wl_pointer
+        // 事件 opcode（官方 XML 声明序逐字对账）。
+        assert_eq!(keyboard::EV_KEYMAP, 0);
+        assert_eq!(keyboard::EV_ENTER, 1);
+        assert_eq!(keyboard::EV_LEAVE, 2);
+        assert_eq!(keyboard::EV_KEY, 3);
+        assert_eq!(keyboard::EV_MODIFIERS, 4);
+        assert_eq!(keyboard::EV_REPEAT_INFO, 5);
+        assert_eq!(pointer::EV_ENTER, 0);
+        assert_eq!(pointer::EV_LEAVE, 1);
+        assert_eq!(pointer::EV_MOTION, 2);
+        assert_eq!(pointer::EV_BUTTON, 3);
     }
 
     /// 接口官方名面（registry global interface string 事实源）。
@@ -1050,6 +1316,8 @@ mod tests {
         assert_eq!(iface_name(WlIface::Surface), "wl_surface");
         assert_eq!(iface_name(WlIface::Buffer), "wl_buffer");
         assert_eq!(iface_name(WlIface::Seat), "wl_seat");
+        assert_eq!(iface_name(WlIface::Pointer), "wl_pointer");
+        assert_eq!(iface_name(WlIface::Keyboard), "wl_keyboard");
         assert_eq!(iface_name(WlIface::Output), "wl_output");
         assert_eq!(iface_name(WlIface::Region), "wl_region");
         assert_eq!(iface_name(WlIface::Shm), "wl_shm");
@@ -1103,5 +1371,63 @@ mod tests {
         let mg = parse_message(&buf, SIG_DISPLAY_GET_REGISTRY).expect("parse");
         assert_eq!(mg.header.opcode, display::REQ_GET_REGISTRY);
         assert_eq!(mg.args[0], Some(WlArg::NewId(2)));
+    }
+
+    /// 输入链语义面回环（M42-INPUT7）：capabilities / keymap / enter /
+    /// leave / key / pointer enter / motion / button 八编组器逐对
+    /// encode→parse 对账（签名表 + fixed/array/fd 域原字透传）。
+    #[test]
+    fn input_chain_encoders_roundtrip() {
+        let mut buf = [0u8; 128];
+        let n = encode_seat_capabilities_event(&mut buf, 3, SEAT_CAPS_POINTER | SEAT_CAPS_KEYBOARD)
+            .expect("encode");
+        let m = parse_message(&buf, SIG_SEAT_CAPABILITIES).expect("parse");
+        assert_eq!(m.header.opcode, seat::EV_CAPABILITIES);
+        assert_eq!(m.args[0], Some(WlArg::Uint(3)));
+        assert_eq!(m.wire_size(), n);
+        let n =
+            encode_keyboard_keymap_event(&mut buf, 7, 0, KEYMAP_FORMAT_XKB_V1, 0).expect("encode");
+        let m = parse_message(&buf, SIG_KEYBOARD_KEYMAP).expect("parse");
+        assert_eq!(m.header.opcode, keyboard::EV_KEYMAP);
+        assert_eq!(m.args[0], Some(WlArg::Fd(0)));
+        assert_eq!(m.args[1], Some(WlArg::Uint(KEYMAP_FORMAT_XKB_V1)));
+        assert_eq!(m.wire_size(), n);
+        let n = encode_keyboard_enter_event(&mut buf, 7, 11, 5, &[]).expect("encode");
+        let m = parse_message(&buf, SIG_KEYBOARD_ENTER).expect("parse");
+        assert_eq!(m.header.opcode, keyboard::EV_ENTER);
+        assert_eq!(m.args[0], Some(WlArg::Uint(11)));
+        assert_eq!(m.args[1], Some(WlArg::Object(5)));
+        assert_eq!(m.args[2], Some(WlArg::Array(&[])));
+        assert_eq!(m.wire_size(), n);
+        let n = encode_keyboard_leave_event(&mut buf, 7, 12, 5).expect("encode");
+        let m = parse_message(&buf, SIG_KEYBOARD_LEAVE).expect("parse");
+        assert_eq!(m.header.opcode, keyboard::EV_LEAVE);
+        assert_eq!(m.args[0], Some(WlArg::Uint(12)));
+        assert_eq!(m.wire_size(), n);
+        let n = encode_keyboard_key_event(&mut buf, 7, 13, 13, 0x02, KEY_STATE_PRESSED)
+            .expect("encode");
+        let m = parse_message(&buf, SIG_KEYBOARD_KEY).expect("parse");
+        assert_eq!(m.header.opcode, keyboard::EV_KEY);
+        assert_eq!(m.args[2], Some(WlArg::Uint(0x02)));
+        assert_eq!(m.args[3], Some(WlArg::Uint(KEY_STATE_PRESSED)));
+        assert_eq!(m.wire_size(), n);
+        let n = encode_pointer_enter_event(&mut buf, 6, 14, 5, 32 << 8, 64 << 8).expect("encode");
+        let m = parse_message(&buf, SIG_POINTER_ENTER).expect("parse");
+        assert_eq!(m.header.opcode, pointer::EV_ENTER);
+        assert_eq!(m.args[1], Some(WlArg::Object(5)));
+        assert_eq!(m.args[2], Some(WlArg::Fixed(32 << 8)));
+        assert_eq!(m.wire_size(), n);
+        let n = encode_pointer_motion_event(&mut buf, 6, 14, 40 << 8, 80 << 8).expect("encode");
+        let m = parse_message(&buf, SIG_POINTER_MOTION).expect("parse");
+        assert_eq!(m.header.opcode, pointer::EV_MOTION);
+        assert_eq!(m.args[1], Some(WlArg::Fixed(40 << 8)));
+        assert_eq!(m.wire_size(), n);
+        let n = encode_pointer_button_event(&mut buf, 6, 15, 15, BTN_LEFT, BTN_STATE_PRESSED)
+            .expect("encode");
+        let m = parse_message(&buf, SIG_POINTER_BUTTON).expect("parse");
+        assert_eq!(m.header.opcode, pointer::EV_BUTTON);
+        assert_eq!(m.args[2], Some(WlArg::Uint(BTN_LEFT)));
+        assert_eq!(m.args[3], Some(WlArg::Uint(BTN_STATE_PRESSED)));
+        assert_eq!(m.wire_size(), n);
     }
 }

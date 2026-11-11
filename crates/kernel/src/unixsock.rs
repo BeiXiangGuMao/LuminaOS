@@ -798,6 +798,21 @@ pub fn sock_recv(caller: usize, handle: u64, buf: &mut [u8]) -> Result<usize, Us
     recv_by_object(object, buf)
 }
 
+/// 会话探针（M42-INPUT7——waycomp 输入驱动会话环 v0 让步轮询面）：
+/// 对象寻址**非消费**双读 =（环内字节数, 终结旗）。零阻塞零消费——
+/// 环空且终结旗置位 → 会话环据此收场（EOF 语义同 [`recv_by_object`]
+/// 读域）；环非空 → 才走 [`recv_by_object`]（必有数据即时返回）。
+/// 对象不在域 =（0, true）fail-visible 收场。
+pub fn session_probe_by_object(object: u64) -> (usize, bool) {
+    match end_by_object(object) {
+        Some((rx, _, _, dead, peer_dead)) => (
+            rx.len(),
+            dead.load(Ordering::Acquire) || peer_dead.load(Ordering::Acquire),
+        ),
+        None => (0, true),
+    }
+}
+
 /// 对象寻址流读取（内核侧服务消费面；阻塞语义同心）。EOF 域（M42-
 /// COMP4）：环空且己端/对端已 shutdown → 返回 0（POSIX read 对齐）。
 pub fn recv_by_object(object: u64, buf: &mut [u8]) -> Result<usize, UsockError> {

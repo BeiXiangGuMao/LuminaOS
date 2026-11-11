@@ -50,6 +50,18 @@
 //! （feed 后每轮）而非 commit 驱动——重排改写与客户端提交解耦
 //! （真实合成器语义：重排不依赖客户端重绘）。
 //!
+//! **输入链**（M42-INPUT7——waycomp 主体迁移前置，wl_seat +
+//! wl_keyboard 输入链）：全局输入源（[`input_key`] /
+//! [`input_pointer_motion`] / [`input_pointer_button`] 生产面——v0
+//! 内核态注入域，ring3 输入守护挂账随 waycomp 主体迁移批次）→ 会
+//! 话环排空（[`drain_input`]——键盘直注入；指针 hit-test 焦点裁决
+//! 〔z 序顶窗优先——cascade 平面逆序首个含点窗〕+ click-to-focus
+//! 〔按下域指针焦点面 = 键盘焦点迁移域〕）→ 会话待发队列（prism
+//! CompSession 焦点/注入钩子）→ feed 冲刷 wl_keyboard/wl_pointer
+//! 事件出域 → 客户端。会话环 v0 = 探针轮询 + 让步
+//! （[`unixsock::session_probe_by_object`] 非消费双读——阻塞输入
+//! 等待面〔WaitWhat 扩域〕挂账随 waycomp 主体迁移批次）。
+//!
 //! **常驻生命周期**（M42-FBSVC2 挂账域首割）：boot-spawn（kmain 单
 //! 调用点）+ 会话环常驻（accept ↔ session 循环不退出）；bind 失败/
 //! 监听者终结 = 服务退场（fail-visible——boot 证据行
@@ -60,9 +72,10 @@
 //! 同谱）；阻塞点 = accept_wait/recv（WaitWhat 双源，探针无锁读）。
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 use mirror::Rect;
+use ostd::sync::spsc::SpscRing;
 use prism::wayland::comp::{
     BufferRec, CommitRecord, CompSession, FeedReport, GlobalDef, GLOBALS_MAX,
 };
@@ -136,10 +149,52 @@ pub static WLCOMP_REWRITES: AtomicU64 = AtomicU64::new(0);
 /// destroy 摘除执行数（M42-GEOM6 域①——DropLog 电气面摘窗计数，
 /// t107 断言面）。
 pub static WLCOMP_DROPS: AtomicU64 = AtomicU64::new(0);
+/// 键盘事件 wire 发出数（M42-INPUT7——feed 冲刷 KeyLog 记录批计数，
+/// t109 断言面）。
+pub static WLCOMP_KEYS: AtomicU64 = AtomicU64::new(0);
+/// 指针事件 wire 发出数（M42-INPUT7——feed 冲刷 PtrLog 记录批计数，
+/// t109 断言面）。
+pub static WLCOMP_PTRS: AtomicU64 = AtomicU64::new(0);
+/// 键盘焦点面快照（M42-INPUT7——首窗初始聚焦 + click-to-focus 迁移
+/// 取证，t109 断言面）。
+pub static WLCOMP_KBFOCUS: AtomicU32 = AtomicU32::new(0);
+/// 输入源键盘注入受理数（M42-INPUT7——会话注入成功计数）。
+pub static WLCOMP_INPUT_KEYS: AtomicU64 = AtomicU64::new(0);
+/// 输入源指针注入受理数（M42-INPUT7——会话 hit-test 命中域计数）。
+pub static WLCOMP_INPUT_PTRS: AtomicU64 = AtomicU64::new(0);
+
+/// 输入源队列深度（键盘/指针各一定容——定容零堆纪律，SPSC 单生产
+/// 者域 v0 如实记档：批跑环境事实单生产者，多产者域挂账）。
+const INPUT_CAP: usize = 16;
+/// 键盘输入队列（元素 = (key << 32) | state 打包）。
+static KEY_Q: SpscRing<u64, INPUT_CAP> = SpscRing::new();
+/// 指针输入队列（元素 = bit63=按钮旗 | (button/x << 32) | state/y）。
+static PTR_Q: SpscRing<u64, INPUT_CAP> = SpscRing::new();
+
+/// 输入链生产面：击键（M42-INPUT7——v0 内核态输入源注入域；键码
+/// v0 口径 = scancode set 1 原值，evdev 键码映射挂账）。
+pub fn input_key(key: u32, state: u32) {
+    let raw = ((key as u64) << 32) | (state as u64 & 0xFFFF_FFFF);
+    let _ = KEY_Q.send(raw); // 队满静默丢弃（SPSC 环纪律——KBD_DROP 同谱）
+}
+
+/// 输入链生产面：指针移动（屏幕坐标——会话侧 hit-test 裁决焦点域）。
+pub fn input_pointer_motion(x: i32, y: i32) {
+    let raw = (((x as u32) as u64) << 32) | ((y as u32) as u64 & 0xFFFF_FFFF);
+    let _ = PTR_Q.send(raw & !(1u64 << 63)); // bit63 = 0（移动域）
+}
+
+/// 输入链生产面：指针按键（evdev 按钮码 + 键态——BTN_LEFT 0x110 等）。
+pub fn input_pointer_button(button: u32, state: u32) {
+    let raw = (1u64 << 63) | ((button as u64) << 32) | (state as u64 & 0xFFFF_FFFF);
+    let _ = PTR_Q.send(raw); // bit63 = 1（按钮域）
+}
 
 /// 取证戳快照：(listener, bound, sessions, commits, composes, last_z,
-/// rewrites, drops)——前六位 t104/t106 断言面索引稳定（追加位序）。
-pub fn waycomp_stamps() -> (u64, bool, u64, u64, u64, i32, u64, u64) {
+/// rewrites, drops, keys, ptrs)——前八位 t104/t106/t107 断言面索引稳
+/// 定（追加位序；9/10 位 = M42-INPUT7 keys/ptrs）。
+#[allow(clippy::type_complexity)]
+pub fn waycomp_stamps() -> (u64, bool, u64, u64, u64, i32, u64, u64, u64, u64) {
     (
         WLCOMP_LISTENER.load(Ordering::Acquire),
         WLCOMP_BOUND.load(Ordering::Acquire),
@@ -149,6 +204,8 @@ pub fn waycomp_stamps() -> (u64, bool, u64, u64, u64, i32, u64, u64) {
         WLCOMP_LAST_Z.load(Ordering::Acquire),
         WLCOMP_REWRITES.load(Ordering::Acquire),
         WLCOMP_DROPS.load(Ordering::Acquire),
+        WLCOMP_KEYS.load(Ordering::Acquire),
+        WLCOMP_PTRS.load(Ordering::Acquire),
     )
 }
 
@@ -218,25 +275,42 @@ fn session_loop(conn: u64) {
     let mut stream: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 512];
     loop {
-        match unixsock::recv_by_object(conn, &mut chunk) {
-            Ok(0) => break, // EOF（对端终结——会话收场）
-            Ok(n) => stream.extend_from_slice(&chunk[..n]),
-            Err(_) => break,
+        // 输入面排空（M42-INPUT7 输入链——队列 → 会话注入 + 焦点裁决）
+        drain_input(&mut session, &windows);
+        // 流消费探针（非消费双读——环空且终结旗 = EOF 收场域）
+        let (pending, dead) = unixsock::session_probe_by_object(conn);
+        let mut got = 0usize;
+        if pending > 0 || dead {
+            match unixsock::recv_by_object(conn, &mut chunk) {
+                Ok(0) => break, // EOF（对端终结——会话收场；USOCK_EOFS 计数域）
+                Ok(n) => {
+                    stream.extend_from_slice(&chunk[..n]);
+                    got = n;
+                }
+                Err(_) => break,
+            }
         }
-        let mut out = [0u8; 1024];
+        let mut out = [0u8; 2048];
         match session.feed(&stream, &mut out) {
             Ok(rep) => {
                 drop_apply(&rep, &mut windows, &mut slots);
                 policy_sync(&mut session, &mut windows);
+                policy_focus(&mut session, &windows);
                 policy_rewrite(&windows, &mut slots);
                 pool_admit(conn, &rep, &mut pools);
                 apply_commits(&rep, &windows, &mut slots, base, &pools);
+                // 输入事件 wire 发出数（M42-INPUT7——KeyLog/PtrLog 记录批对账）
+                WLCOMP_KEYS.fetch_add(rep.keys.n as u64, Ordering::AcqRel);
+                WLCOMP_PTRS.fetch_add(rep.ptrs.n as u64, Ordering::AcqRel);
                 if rep.out_len > 0 {
                     send_all(conn, &out[..rep.out_len]);
                 }
                 stream.drain(..rep.consumed);
             }
             Err(_) => break, // 会话域 fail-visible 断连（v0 口径——回执 error 事件挂账）
+        }
+        if pending == 0 && got == 0 {
+            task::yield_now(); // 无流无输入域让步（v0 轮询口径——TCG 批跑时序域）
         }
     }
     // 收场域：surface 摘除 + 损伤量化回退（pane 回退 stage 基线）
@@ -256,6 +330,83 @@ fn session_loop(conn: u64) {
     WLCOMP_END_COUNT.store(fb::surf_count() as u64, Ordering::Release);
     WLCOMP_SESSION_DONE.store(true, Ordering::Release);
     let _ = unixsock::shutdown_by_object(conn);
+}
+
+/// 焦点策略（feed 后每轮——M42-INPUT7 键盘焦点裁决域）：键盘焦点空
+/// 域且键盘设备已派生且窗口在案 → **首窗初始聚焦**（创建序 v0 口径
+/// ——t104 焦点序口径同源）。click-to-focus 迁移 = [`drain_input`]
+/// 指针按键域裁决。受理即落 [`WLCOMP_KBFOCUS`] 取证（t109 断言面）。
+fn policy_focus(session: &mut CompSession, windows: &[u64]) {
+    if session.keyboard_object() == 0 || session.keyboard_focus() != 0 || windows.is_empty() {
+        return; // 设备未派生 / 焦点在域 / 窗口空域——零动作快径
+    }
+    let first = windows[0] as u32;
+    if session.set_keyboard_focus(first).is_ok() {
+        WLCOMP_KBFOCUS.store(first, Ordering::Release);
+    }
+}
+
+/// 输入源排空（M42-INPUT7 输入链电气面——全局输入队列 → 会话注入）：
+/// 键盘批直注入（受理即计 [`WLCOMP_INPUT_KEYS`]）；指针批 hit-test
+/// 焦点裁决——cascade 平面**逆序**首个含点窗（z 序顶窗优先）→ 面切
+/// 换域 set_pointer_focus / 同面域 pointer_motion；按下域 click-to-
+/// focus（指针焦点面 = 键盘焦点迁移域）。受理即计
+/// [`WLCOMP_INPUT_PTRS`]（t109 断言面）。
+fn drain_input(session: &mut CompSession, windows: &[u64]) {
+    while let Some(raw) = KEY_Q.recv() {
+        let state = (raw & 0xFFFF_FFFF) as u32;
+        let key = (raw >> 32) as u32;
+        if session.keyboard_inject(key, state).is_ok() {
+            WLCOMP_INPUT_KEYS.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+    while let Some(raw) = PTR_Q.recv() {
+        let is_btn = raw >> 63 == 1;
+        let lo = (raw & 0xFFFF_FFFF) as u32;
+        let hi = ((raw >> 32) & 0x7FFF_FFFF) as u32;
+        if is_btn {
+            let (button, state) = (hi, lo);
+            if state == 1 {
+                // click-to-focus：指针焦点面按键 = 键盘焦点迁移域
+                let pf = session.pointer_focus();
+                if pf != 0 && session.set_keyboard_focus(pf).is_ok() {
+                    WLCOMP_KBFOCUS.store(pf, Ordering::Release);
+                }
+            }
+            if session.pointer_button(button, state).is_ok() {
+                WLCOMP_INPUT_PTRS.fetch_add(1, Ordering::AcqRel);
+            }
+        } else {
+            let (x, y) = (hi as i32, lo as i32);
+            // hit-test：z 序顶窗优先（cascade 平面逆序——master 顶层）
+            let mut hit = (0u32, 0i32, 0i32);
+            if let Ok(plan) = cascade::tiling::tiling_plan(windows, VIEWPORT) {
+                for (id, rect) in plan.panes.iter().rev() {
+                    let r = *rect;
+                    if x >= r.x && x < r.x + r.w as i32 && y >= r.y && y < r.y + r.h as i32 {
+                        hit = (
+                            *id as u32,
+                            (x - r.x).wrapping_mul(256), // surface 局部 fixed 24.8
+                            (y - r.y).wrapping_mul(256),
+                        );
+                        break;
+                    }
+                }
+            }
+            let (target, lx, ly) = hit;
+            let prev = session.pointer_focus();
+            if target != prev {
+                // 面切换域（含 target=0 离域 leave）
+                let _ = session.set_pointer_focus(target, lx, ly);
+            } else if target != 0 {
+                // 同面移动域
+                let _ = session.pointer_motion(lx, ly);
+            }
+            if target != 0 {
+                WLCOMP_INPUT_PTRS.fetch_add(1, Ordering::AcqRel);
+            }
+        }
+    }
 }
 
 /// 策略同步（feed 后每轮执行——**仲裁策略面承接域**）：新建 surface

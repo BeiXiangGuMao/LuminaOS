@@ -87,7 +87,7 @@ use crate::multiboot1::BOOT_MAGIC;
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
 /// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108）。
-const SELFTEST_TOTAL: usize = 108;
+const SELFTEST_TOTAL: usize = 109;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7158,6 +7158,17 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t108 = t108_run(&mut log);
     report(&mut log, t108, "elf-service-migration");
 
+    // t109) waycomp 主体迁移前置活体（M42-INPUT7 笔⑦「native 编译进
+    //       程链 / wl_seat+wl_keyboard 输入链 / 指针键盘事件语义面」）：
+    //       INPUT_CLIENT ELF 结构锚〔native 编译进程链域④——真 wire
+    //       协议消费者〕→ 播种 + connect → wire 批处理域〔capabilities
+    //       + 设备派生 + 首映射 commit + 首窗初始聚焦〕→ 键盘注入链
+    //       〔press/release → wl_keyboard 事件出域〕→ 指针注入链
+    //       〔hit-test 命中 → enter + click-to-focus + button〕→ 收割
+    //       exit=0 + teardown 复原。LUMINA-T109-INPUT/OK。
+    let t109 = t109_run(&mut log);
+    report(&mut log, t109, "waycomp-input-chain");
+
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
     //      pf_hook 入口扩判「U 位 或 CR2 落增长栈窗口域」——CPL0 用户
@@ -10219,6 +10230,187 @@ fn t108_run(log: &mut DualLog) -> bool {
     );
     if ok {
         let _ = writeln!(log, "LUMINA-T108-OK");
+    }
+    ok
+}
+
+/// t109 waycomp 主体迁移前置活体执行体（M42-INPUT7 笔⑦——「native
+/// 编译进程链 / wl_seat+wl_keyboard 输入链 / 指针键盘事件语义面」）：
+/// 独立函数承载（t93/t101 帧形态纪律）。相位序：
+/// (a) 结构锚：INPUT_CLIENT 真 ELF64 容器字段对账（native 编译进程
+///     链域④——真 wire 协议消费者，编译进程链四形齐备）；
+/// (b) 播种 + connect（accept 唤醒链）→ wire 批处理域：capabilities
+///     + 设备派生 + 首映射 commit（客户端 surface 0x05——创建序 =
+///     焦点序 v0 口径，KBFOCUS 首窗初始聚焦策略面对账）；
+/// (c) 键盘注入链：input_key press/release → 会话注入 → wl_keyboard
+///     事件出域（KEYS/INPUT_KEYS stamps 对账）；
+/// (d) 指针注入链：input_pointer_motion hit-test 命中（cascade 单窗
+///     pane）→ pointer enter（PTRS）→ BTN_LEFT press（click-to-focus
+///     ——KBFOCUS 焦点域对账）+ release；
+/// (e) 收割 exit=0（客户端 key 事件检测 + LOG 取证 + SHUT teardown
+///     链）+ SESSION_DONE 旗 + surf_count=1 + VRAM==stage 复原。
+/// LUMINA-T109-INPUT/OK 双面板标记。
+fn t109_run(log: &mut DualLog) -> bool {
+    let mut ok = true;
+    task::reset_user_evidence(); // 零锁判据面清零（t101 同款）
+    let us0 = unixsock::usock_stamps(); // 流字节基线（客户端收发对账域）
+    let struct_ok = (|| {
+        let img = bedrock::elf::parse(&user::INPUT_CLIENT).ok()?;
+        Some(
+            img.entry == user::ELF_LANE_ENTRY
+                && img.load_count == 2
+                && img.loads[0].vaddr == user::ELF_LANE_ENTRY
+                && img.loads[0].flags & bedrock::elf::PF_X != 0
+                && img.loads[1].vaddr == user::ELF_LANE_DATA_VA
+                && img.loads[1].flags & bedrock::elf::PF_W != 0,
+        )
+    })()
+    .unwrap_or(false);
+    ok &= struct_ok;
+    // (b) 播种 + connect（accept 唤醒链——t106 同谱）
+    let c0 = waycomp::waycomp_stamps();
+    let pid = match procs::spawn_elf_seed("input-client", &user::INPUT_CLIENT, &["input-client"]) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = writeln!(log, "t109: client build failed ({e:?})");
+            return false;
+        }
+    };
+    ok &= pid != usize::MAX;
+    let dl = ostd::time::now() + 480;
+    let c1 = loop {
+        let c = waycomp::waycomp_stamps();
+        if c.2 > c0.2 || ostd::time::now() >= dl {
+            break c;
+        }
+        core::hint::spin_loop();
+    };
+    let accept_ok = c1.2 == c0.2 + 1;
+    ok &= accept_ok;
+    // wire 批处理域：commit ≥ +1（首映射 REGISTER + 代 Paint 全 pane）
+    let dl = ostd::time::now() + 480;
+    let c2 = loop {
+        let c = waycomp::waycomp_stamps();
+        if c.3 > c0.3 || ostd::time::now() >= dl {
+            break c;
+        }
+        core::hint::spin_loop();
+    };
+    let commit_ok = c2.3 > c0.3;
+    // 首窗初始聚焦策略面对账（客户端 surface 0x05 = 创建序焦点序）
+    let focus_ok = waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire) == 0x05;
+    ok &= commit_ok && focus_ok;
+    let _ = writeln!(
+        log,
+        "t109: struct={struct_ok} spawn={pid} accept={accept_ok} commit=+{} kbfocus={:#x}（wire 批处理域 + 首窗聚焦）",
+        c2.3 - c0.3,
+        waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire)
+    );
+    // (c) 键盘注入链（key = 0x02 scancode set 1 原值——press → release）
+    let k0 = c2.8;
+    waycomp::input_key(0x02, 1); // KEY_STATE_PRESSED
+    waycomp::input_key(0x02, 0); // KEY_STATE_RELEASED
+    let dl = ostd::time::now() + 480;
+    let c3 = loop {
+        let c = waycomp::waycomp_stamps();
+        if c.8 > k0 + 1 || ostd::time::now() >= dl {
+            break c;
+        }
+        core::hint::spin_loop();
+    };
+    let key_ok = c3.8 > k0 + 1 && waycomp::WLCOMP_INPUT_KEYS.load(Ordering::Acquire) >= 2;
+    ok &= key_ok;
+    // (d) 指针注入链：hit-test 命中域 = cascade 单窗 pane（surface 0x05）
+    let plan = cascade::tiling::tiling_plan(&[0x05u64], waycomp::VIEWPORT);
+    let pane = plan
+        .as_ref()
+        .ok()
+        .and_then(|p| p.panes.first().map(|(_, r)| *r));
+    let p0 = c3.9;
+    if let Some(pane) = pane {
+        waycomp::input_pointer_motion(pane.x + 32, pane.y + 32); // enter 域（面切换）
+        let dl = ostd::time::now() + 480;
+        while waycomp::waycomp_stamps().9 <= p0 && ostd::time::now() < dl {
+            core::hint::spin_loop();
+        }
+        // click-to-focus + button press/release（BTN_LEFT 0x110）
+        waycomp::input_pointer_button(0x110, 1);
+        waycomp::input_pointer_button(0x110, 0);
+    }
+    let dl = ostd::time::now() + 480;
+    let c4 = loop {
+        let c = waycomp::waycomp_stamps();
+        if c.9 > p0 + 2 || ostd::time::now() >= dl {
+            break c;
+        }
+        core::hint::spin_loop();
+    };
+    let ptr_ok = pane.is_some()
+        && c4.9 > p0 + 2
+        && waycomp::WLCOMP_INPUT_PTRS.load(Ordering::Acquire) >= 3
+        && waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire) == 0x05;
+    ok &= ptr_ok;
+    let _ = writeln!(
+        log,
+        "t109: keys=+{} keysrc=+{} ptrs=+{} ptrsrc=+{} kbfocus={:#x}（输入链出域 + click-to-focus）",
+        c3.8 - k0,
+        waycomp::WLCOMP_INPUT_KEYS.load(Ordering::Acquire),
+        c4.9 - p0,
+        waycomp::WLCOMP_INPUT_PTRS.load(Ordering::Acquire),
+        waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire)
+    );
+    // (e) 收割 exit=0（客户端 key 检测 + LOG 取证 + SHUT teardown）
+    let dl = ostd::time::now() + 480;
+    while task::task_debug_exit_code(pid) == u64::MAX && ostd::time::now() < dl {
+        core::hint::spin_loop();
+    }
+    let code = task::task_debug_exit_code(pid);
+    if task::task_debug_state(pid) == 4 {
+        let r = procs::sys_wait_pid(pid as u64);
+        let rcode = r & 0xFFFF;
+        ok &= r >> 32 == 1 && rcode == 0 && !task::task_alive(pid);
+    } else {
+        ok = false; // 滞域 fail-visible（bail 码 90..=93 显形）
+    }
+    // 会话收场完成旗（t104 早跳竞态收口先例——旗 wait 免竞态）
+    let dl = ostd::time::now() + 480;
+    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+        core::hint::spin_loop();
+    }
+    let teardown_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
+    ok &= teardown_ok;
+    // VRAM 复原对账（pane 域回 stage 基线——teardown 摘除链显形）
+    let mut restore_ok = pane.is_some();
+    if let Some(pane) = pane {
+        for (lx, ly) in [(8i32, 8i32), (300, 8), (8, 190)] {
+            if fb::fb_probe_px_read(pane.x + lx, pane.y + ly)
+                != fb::stage_probe_px_read(pane.x + lx, pane.y + ly)
+            {
+                restore_ok = false;
+            }
+        }
+    }
+    ok &= restore_ok;
+    let ust = unixsock::usock_stamps();
+    let _ = writeln!(
+        log,
+        "t109: reap exit={code:#x} teardown={teardown_ok} restore={restore_ok} endc={} commits=+{} usock=(sends={},sbytes={},rbytes={},blocks={},wakes={},eofs={})",
+        waycomp::WLCOMP_END_COUNT.load(Ordering::Acquire),
+        c4.3 - c0.3,
+        ust.0 - us0.0,
+        ust.1 - us0.1,
+        ust.2 - us0.2,
+        ust.3 - us0.3,
+        ust.4 - us0.4,
+        ust.7 - us0.7,
+    );
+    // 汇总取证行（双面板标记）
+    let _ = writeln!(
+        log,
+        "LUMINA-T109-INPUT struct={struct_ok} accept={accept_ok} commit={commit_ok} focus={focus_ok} key={key_ok} ptr={ptr_ok} teardown={teardown_ok}"
+    );
+    if ok {
+        let _ = writeln!(log, "LUMINA-T109-OK");
     }
     ok
 }
