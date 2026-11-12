@@ -250,7 +250,7 @@ const KERNEL_ELF: &str =
 const KERNEL_BIN: &str =
     "/home/z/my-project/lumina-build/target/x86_64-unknown-none/release/lumina-kernel.bin";
 
-/// 自检标记总数（与内核 SELFTEST_TOTAL 同步；M12 完成态 = 43，M13-② 起 46，M15 起 52，M16 起 55，M17 起 58，M18 起 62，M21-③ 起 63，M23 起 65，M23-B 起 67，M23-C1 起 68，M23-C2 起 69，M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M25-T1 起 75，M26-T1 起 76，M28-T1 起 77，M27-N2 起 78，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110）。
+/// 自检标记总数（与内核 SELFTEST_TOTAL 同步；M12 完成态 = 43，M13-② 起 46，M15 起 52，M16 起 55，M17 起 58，M18 起 62，M21-③ 起 63，M23 起 65，M23-B 起 67，M23-C1 起 68，M23-C2 起 69，M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M25-T1 起 75，M26-T1 起 76，M28-T1 起 77，M27-N2 起 78，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP9 笔⑨ t110 环内升级（客户端全谱 walk + 畸形拒收探针——WIRE 标记 +1，t 号/总数不变，双面板 65）。
 const SELFTEST_EXPECTED: &str = "110/110";
 
 /// TLV 请求帧：tag 0x0007，value = b"lumina-m5"。
@@ -509,7 +509,7 @@ fn smoke_inner() -> bool {
     // 3) 串口日志断言：启动标记 + 十五项自检 + 用户态标记 + TLV 双向
     //    （M31-W1 起：Weave 自举装载证据行在环——机器可验）
     let selftest_marker = format!("LUMINA-SELFTEST-PASS {SELFTEST_EXPECTED}");
-    let required: [&[u8]; 64] = [
+    let required: [&[u8]; 65] = [
         b"LUMINA-BOOT-OK",
         selftest_marker.as_bytes(),
         b"LUMINA-TLV-OK",
@@ -629,6 +629,9 @@ fn smoke_inner() -> bool {
         // 环/合流电气面 ring3 化——真常驻回环；t110 标记 + ELF boot 取证）
         b"LUMINA-WAYCOMPELF-BOOT",
         b"LUMINA-T110-WAYCOMPELF",
+        // M42-WAYCOMP9 笔⑨：会话环全谱 wire 解析活体（客户端全谱
+        // walk 裁决 + 畸形拒收探针——t110 域⑥ 标记）
+        b"LUMINA-T110-WIRE",
         b"LUMINA-T110-OK",
         // M40-CRYSTAL：盘上属主域活体（InodeRec v2 属主三域 + chown/
         // chmod 车道 + stat 真面 + 门禁回源 + 持久化对账；t96 标记）
@@ -805,7 +808,7 @@ fn longrun_tlv_check(all: &[u8]) -> (bool, bool) {
 fn longrun_boot_fails(serial: &[u8], tlv_ok: bool, resp_checked: bool) -> Vec<String> {
     let mut fails = Vec::new();
     let selftest_marker = format!("LUMINA-SELFTEST-PASS {SELFTEST_EXPECTED}");
-    let markers: [&[u8]; 64] = [
+    let markers: [&[u8]; 65] = [
         b"LUMINA-BOOT-OK",
         selftest_marker.as_bytes(),
         b"LUMINA-TLV-OK",
@@ -885,6 +888,9 @@ fn longrun_boot_fails(serial: &[u8], tlv_ok: bool, resp_checked: bool) -> Vec<St
         // 环/合流电气面 ring3 化——真常驻回环；t110 标记 + ELF boot 取证）
         b"LUMINA-WAYCOMPELF-BOOT",
         b"LUMINA-T110-WAYCOMPELF",
+        // M42-WAYCOMP9 笔⑨：会话环全谱 wire 解析活体（客户端全谱
+        // walk 裁决 + 畸形拒收探针——t110 域⑥ 标记）
+        b"LUMINA-T110-WIRE",
         b"LUMINA-T110-OK",
         b"LUMINA-T97-CAT",
         b"LUMINA-T97-OK",

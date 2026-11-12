@@ -33,6 +33,23 @@
   bail 码：80 = CREATE / 81 = MAP / 82 = CONNECT / 83 = SEND_FD /
   84 = SEND / 85 = RECV（fail-visible——装置不静默）。
 
+【域⑥】WAYCOMP_SVC_ELF 全谱 wire 解析（M42-WAYCOMP9——客户端窗内
+  容解析域：v0 定形匹配器〔A@0/C@88 固定偏移〕退役为 walk 裁决解析
+  器——逐消息头 walk〔obj id + (size<<16|opcode)〕+ 签名域闸：
+  get_registry(1,1) 12B → registry id 槽承接 + globals 124B 公告单发
+  门控 / bind(reg,0) 40B → 接口名 string walk〔len=14 + "wl_c"/
+  "ompo"/"sito"/"r" 四 dword 内容域闸〕→ compositor id 槽承接 /
+  create_surface(comp,0) 12B → surface id 槽承接 / damage(surf,2)
+  24B → 计数槽 / commit(surf,6) 8B → REGISTER（surface id 解析槽直
+  读）+ pane_pattern 直写 + SYNC + done 12B（串号槽面跨会话存续）/
+  dispatch default（未知 obj/op/null 对象）→ 畸形拒收 → teardown 收
+  场回环（fail-visible）；留尾搬移 compact（rep movsb——部分消息跨
+  RECV 窗承载）。会话游标域（fill/walk/串号）全量内存槽面化（r15 寄
+  存器打包退役——paint 跨 tick 计算域实测 r15.hi 被外部清零，揭雷随
+  行落账）。t110 round1 walk 裁决批（120 B——commit 步进 88→112，
+  定形匹配器必失域）+ round2 畸形拒收探针（obj=9 op=3 零事件到达）
+  双活体。
+
 交叉锚点常量（与 kernel::shm / kernel::unixsock / kernel::waycomp /
 kernel::main(t105/t106) 双向对账，漂移即红）：
   ELF_ENTRY       = 0x40_0000   （PD[2] 槽域——build_user_space_elf 放置域）
@@ -128,6 +145,29 @@ WC_BAIL_BIND, WC_BAIL_ACCEPT, WC_BAIL_REG = 100, 101, 104
 WC_EVID_OFF, WC_GLOB_OFF, WC_DONE_OFF, WC_BUF_OFF = 0x10, 0x40, 0x100, 0x140
 WC_BUF_CAP = 512
 WC_EV_TARGET = 136  # globals 124 + done 12（客户端字节计数车道——t106 已验证模式）
+
+# ---- 域⑥常量（M42-WAYCOMP9——客户端窗内容解析域：WAYCOMP_SVC_ELF
+# 全谱 wire 解析——walk 裁决 + bind string 内容域闸 + 畸形拒收）----
+# 解析槽面（数据段绝对偏移——r14 = WC_BUF_OFF 基址，disp = 绝对 −
+# WC_BUF_OFF；buf 占 0x140..0x340，槽区自 0x340 起）
+WC_ST_COMP = 0x340   # compositor id（bind new_id 承接——dispatch 域）
+WC_ST_SURF = 0x344   # surface id（create_surface new_id 承接——REGISTER/REMOVE 域）
+WC_ST_MSGC = 0x348   # 消息计数（解析面活体——v0 无计数域扩容）
+WC_ST_DMGC = 0x34C   # damage 计数（域闸活体）
+WC_ST_FLAGS = 0x350  # bit0 = globals 已发（公告单发门控——v0 rbx 旗标槽面化）
+WC_ST_REG = 0x354    # registry id（get_registry new_id 承接——bind dispatch 域）
+WC_ST_NEXT = 0x358   # walk_next 暂存（commit 臂 paint 域 rbp 让位）
+WC_ST_FILL = 0x35C   # 填充游标（域⑥——r15 高 32 位打包退役为内存槽）
+WC_ST_SER = 0x360    # done 串号（域⑥——r15 低 32 位退役；跨会话存续不复位）
+WC_DATA_SIZE = 0x380  # 数据段（v0 0x340 扩容——+域⑥ 解析槽面）
+# walk 裁决批（120 B——标准批 + 第二 damage，commit 步进 88→112）
+WC_BATCH_EXT_LEN = 120
+WC_BATCH_EXT_COMMIT_OFF = 112
+# bind 接口名内容域闸（"wl_compositor" = 14 B 含 NUL——四 dword）
+WC_IFACE_LEN = 14
+WC_IFACE_DW = (0x635F_6C77, 0x6F70_6D6F, 0x6F74_6973, 0x0000_0072)  # wl_c/ompo/sito/r\0\0\0
+# 定形外消息探针（t110 round2 畸形拒收——dispatch default 域）
+WC_NEG_OBJ, WC_NEG_OP, WC_NEG_SIZE = 9, 3, 8
 
 OUT = Path(__file__).resolve().parent.parent / "crates/kernel/src/exec_images_gen_m42_elf.rs"
 
@@ -509,6 +549,22 @@ def build_wc_client_batch():
     return blob
 
 
+def build_wc_client_batch_ext():
+    """客户端 wire 批·walk 裁决形（120 B——M42-WAYCOMP9 域⑥ 活体批：
+    标准批 + 第二 damage 入批，commit 步进 88→112——v0 定形匹配器
+    C@88 锚在此批下必失，全谱 walk 裁决域必须成立）。gen 侧仅锚域
+    断言（内核侧 t110 round1 经 prism 编码器同源构建——批内容逐字节
+    同源，walk 解析器对批位置无关）。"""
+    blob = build_wc_client_batch()[:-8]  # 摘尾 commit（前 4 消息原位）
+    blob += w_msg(WC_SURF, 2, w_u32(0) + w_u32(0) + w_u32(WC_W) + w_u32(WC_H))  # damage#2
+    blob += w_msg(WC_SURF, 6, b"")  # commit @112
+    assert len(blob) == WC_BATCH_EXT_LEN, f"walk 裁决批长漂移：{len(blob)} ≠ {WC_BATCH_EXT_LEN}"
+    assert blob[WC_BATCH_EXT_COMMIT_OFF:WC_BATCH_EXT_COMMIT_OFF + 4] == w_u32(WC_SURF) and \
+        blob[WC_BATCH_EXT_COMMIT_OFF + 4:WC_BATCH_EXT_COMMIT_OFF + 8] == w_u32((8 << 16) | 6), \
+        "walk 裁决批 commit 锚域漂移（@112）"
+    return blob
+
+
 def build_input_wire_blob():
     """7 消息 wire 批（M42-INPUT7 输入链客户端）：registry → bind
     wl_seat/wl_compositor → surface → seat.get_pointer/get_keyboard →
@@ -748,23 +804,37 @@ def build_fbdev_svc_code():
     return bytes(a.buf)
 
 
-# ---- 域⑤：WAYCOMP_SVC_ELF 代码段（M42-WAYCOMP8——waycomp 主体 ELF
-# 化迁移本体：常驻合成器服务会话环/合流电气面 ring3 化。车道：BIND
+# ---- 域⑤⑥：WAYCOMP_SVC_ELF 代码段（M42-WAYCOMP8 域⑤ + M42-WAYCOMP9
+# 域⑥——waycomp 主体 ELF 化迁移本体 + 客户端窗内容解析域：常驻合成器
+# 服务会话环/合流电气面 ring3 化 + 全谱 wire 解析。车道：BIND
 # ("wayland-1") → LOG boot 取证 → 真常驻环〔ACCEPT_B 阻塞收连接 → 会
-# 话环：RECV 游标累计 ≥ 96B → 定形匹配器〔A@0 = get_registry →
-# globals 124B 单发；C@88 = commit → SYS_FB_SURFACE op0 REGISTER（返
-# 回槽写窗 VA）→ pane_pattern 320×200 直写 → SYS_FB_SYNC 损伤记账 →
-# done 事件 12B（串号递增）〕→ RECV 0 = EOF → teardown〔op2 REMOVE +
-# SYNC〕→ 回 ACCEPT_B——真常驻不退出形，RESIDENT_SEED v0 有界退出形
-# 挂账摘牌〕。寄存器契约：r12d = 监听者 / r13d = 连接 / r14 = 接收窗
-# 基址 / rbx = 会话旗标〔bit0 = globals 已发 / bit1 = commit 已处理〕
-# / r15 = 高 32 位累计游标 ‖ 低 32 位 done 串号（跨会话存续——双槽寄
-# 存器打包）；done blob / globals 批 / 名字 / 取证串落数据段。错误码
-# 大值域（u64::MAX-1 等）→ cmp cap ja teardown fail-visible 收场回环。
-# bail 100/101 fail-visible。）----
+# 话环：RECV 填充环 → **walk 裁决解析器（v0 定形匹配器 A@0/C@88 固定
+# 偏移退役）**：逐消息头 walk〔obj id + (size<<16|opcode)〕+ 签名域闸
+# 〔get_registry(1,1) 12B → registry id 槽承接 + globals 124B 公告单发
+# 门控；bind(reg,0) 40B → 接口名 string walk〔len=14 + "wl_c"/"ompo"/
+# "sito"/"r" 四 dword 内容域闸〕→ compositor id 槽承接；
+# create_surface(comp,0) 12B → surface id 槽承接；damage(surf,2) 24B
+# → 计数槽；commit(surf,6) 8B → SYS_FB_SURFACE op0 REGISTER（surface
+# id 解析槽直读——协议驱动，v0 常量域退役）→ pane_pattern 320×200 直
+# 写 → SYS_FB_SYNC 损伤记账 → done 事件 12B（串号槽面递增）；dispatch
+# default（未知 obj/op/null 对象/重复 get_registry）→ 畸形拒收 →
+# teardown〕→ RECV 0 = EOF / 畸形拒收 → teardown〔op2 REMOVE（surface
+# id 解析槽直读）+ SYNC〕→ 回 ACCEPT_B——真常驻不退出形〕。寄存器契
+# 约：r12d = 监听者 / r13d = 连接 / r14 = 接收窗基址 / rbx = walk 游标
+# （解析位置）/ rbp = walk_next 暂存（commit 臂 paint 域让位——ST_NEXT
+# 槽面兜底）；填充游标与 done 串号 = **内存槽面**（域⑥——v0 r15 高 32
+# 位游标 ‖ 低 32 位串号双槽寄存器打包退役：paint 320×200 = 全 ELF 唯
+# 一跨 timer tick 的用户态长计算，TCG 实测 r15.hi 被外部清零〔R0=0060
+# / R1=0060 / R2=0000 探针证据链——揭雷随行落账〕，槽面免疫寄存器侵
+# 蚀）；串号槽跨会话存续（复位域 = 会话槽面，串号槽不在复位清单）。
+# 解析槽面（comp/surf/msgc/dmgc/flags/reg/next/fill/ser）落数据段
+# 0x340..；done blob / globals 批 / 名字 / 取证串落数据段。错误码大值
+# 域（u64::MAX-1 等）→ cmp cap ja teardown fail-visible 收场回环；窗
+# 口满无完整消息 → teardown 防御收场。bail 100/101 fail-visible。）----
 def build_wc_svc_code():
     a = Asm()
-    BATCH_LEN = 96
+    D = WC_BUF_OFF  # r14 = DATA_VA + 0x140（接收窗基址）——槽 disp = 绝对 − 0x140
+    st = lambda slot: slot - D
 
     # 1) SYS_UNIXSOCK BIND("wayland-1") → r12d = 监听者句柄
     mov_edi_i(a, USOCK_BIND)
@@ -785,7 +855,10 @@ def build_wc_svc_code():
     mov_eax_i(a, SYS_LOG)
     syscall(a)
 
-    # 3) 真常驻环：ACCEPT_B 阻塞收连接
+    # 3) 接收窗基址装载（一次——跨会话常量）
+    a.db(0x49, 0xBE); a.imm64(ELF_DATA_VA + WC_BUF_OFF)    # movabs r14, buf
+
+    # 4) 真常驻环：ACCEPT_B 阻塞收连接
     a.label("accept")
     mov_edi_i(a, USOCK_ACCEPT_B)
     a.db(0x44, 0x89, 0xE6)                     # mov esi, r12d
@@ -796,59 +869,116 @@ def build_wc_svc_code():
     a.jcc32(0x84, "bail_accept")               # jz bail_accept
     a.db(0x41, 0x83, 0xFD, 15)                 # cmp r13d, 15
     a.jcc32(0x87, "bail_accept")               # ja bail_accept
-    a.db(0xBB); a.imm32(0)                     # mov ebx, 0（会话旗标清零）
-    a.db(0x49, 0x81, 0xE7); a.imm32(0xFFFF_FFFF)  # and r15, 0xFFFFFFFF（游标清零——串号存续）
 
-    # 4) 会话环：RECV 游标累计 ≥ 96B → 定形匹配器
-    a.db(0x49, 0xBE); a.imm64(ELF_DATA_VA + WC_BUF_OFF)    # movabs r14, buf
-    a.label("recv")
+    # 5) 会话状态复位（域⑥ 解析槽面——fill 入复位清单；串号槽跨会话存续）
+    for slot in (WC_ST_COMP, WC_ST_SURF, WC_ST_MSGC, WC_ST_DMGC, WC_ST_FLAGS, WC_ST_REG, WC_ST_FILL):
+        a.db(0x41, 0xC7, 0x86); a.imm32(st(slot)); a.imm32(0)   # mov dword [r14+disp], 0
+    a.db(0x31, 0xDB)                           # xor ebx, ebx（walk = 0）
+
+    # 6) 填充环：RECV 游标域接收（游标 = FILL 槽；错误码大值域 → teardown）
+    a.label("fill")
     mov_edi_i(a, USOCK_RECV)
     a.db(0x44, 0x89, 0xEE)                     # mov esi, r13d
-    a.db(0x4D, 0x89, 0xFB)                     # mov r11, r15
-    a.db(0x49, 0xC1, 0xEB, 32)                 # shr r11, 32（累计游标）
+    a.db(0x41, 0x8B, 0x8E); a.imm32(st(WC_ST_FILL))           # mov ecx, [r14+fill]（填充游标）
     a.db(0x4C, 0x89, 0xF2)                     # mov rdx, r14
-    a.db(0x4C, 0x01, 0xDA)                     # add rdx, r11（游标域接收）
+    a.db(0x48, 0x01, 0xCA)                     # add rdx, rcx（游标域接收）
     a.db(0x41, 0xBA); a.imm32(WC_BUF_CAP)      # mov r10d, 512
-    a.db(0x45, 0x29, 0xDA)                     # sub r10d, r11d（余量域）
+    a.db(0x41, 0x29, 0xCA)                     # sub r10d, ecx（余量域——REX.B：0x44 是 R 位误置揭雷收口）
     mov_eax_i(a, SYS_UNIXSOCK)
     syscall(a)
     a.db(0x48, 0x85, 0xC0)                     # test rax, rax
     a.jcc32(0x84, "teardown")                  # jz teardown（EOF——会话收场回环）
     a.db(0x48, 0x81, 0xF8); a.imm32(WC_BUF_CAP)   # cmp rax, 512（错误码大值域闸）
     a.jcc32(0x87, "teardown")                  # ja teardown（fail-visible 收场回环）
-    a.db(0x48, 0xC1, 0xE0, 32)                 # shl rax, 32
-    a.db(0x49, 0x01, 0xC7)                     # add r15, rax（累计游标 += n）
-    a.db(0x4D, 0x89, 0xFB)                     # mov r11, r15
-    a.db(0x49, 0xC1, 0xEB, 32)                 # shr r11, 32
-    a.db(0x41, 0x81, 0xFB); a.imm32(BATCH_LEN) # cmp r11d, 96
-    a.jcc32(0x82, "recv")                      # jb recv（未满续收）
+    a.db(0x41, 0x8B, 0x8E); a.imm32(st(WC_ST_FILL))           # mov ecx, [r14+fill]
+    a.db(0x01, 0xC1)                           # add ecx, eax（+= n）
+    a.db(0x41, 0x89, 0x8E); a.imm32(st(WC_ST_FILL))           # mov [r14+fill], ecx
 
-    # 5) 定形匹配器 A@0（get_registry 头 → globals 124B 单发）
-    a.db(0xF7, 0xC3, 0x01, 0x00, 0x00, 0x00)   # test rbx, 1
-    a.jcc32(0x85, "match_c")                   # jnz match_c
-    a.db(0x41, 0x83, 0x3E, 0x01)               # cmp dword [r14], 1
-    a.jcc32(0x85, "match_c")                   # jne match_c
-    a.db(0x41, 0x81, 0x7E, 0x04); a.imm32(0x000C_0001)  # cmp dword [r14+4], 0x000C0001
-    a.jcc32(0x85, "match_c")                   # jne match_c
+    # 7) walk 裁决解析环（域⑥——逐消息头 walk + 签名域闸 + dispatch）
+    a.label("parse")
+    a.db(0x41, 0x8B, 0x8E); a.imm32(st(WC_ST_FILL))           # mov ecx, [r14+fill]
+    a.db(0x29, 0xD9)                           # sub ecx, ebx（rem = fill − walk）
+    a.db(0x83, 0xF9, 8)                        # cmp ecx, 8
+    a.jcc32(0x82, "compact")                   # jb compact（不足一头条——留尾续收）
+    a.db(0x41, 0x8B, 0x04, 0x1E)               # mov eax, [r14+rbx]（obj id）
+    a.db(0x45, 0x8B, 0x44, 0x1E, 0x04)         # mov r8d, [r14+rbx+4]（hdr = (size<<16)|op）
+    a.db(0x44, 0x89, 0xC2)                     # mov edx, r8d
+    a.db(0xC1, 0xEA, 16)                       # shr edx, 16（size）
+    a.db(0x83, 0xFA, 8)                        # cmp edx, 8
+    a.jcc32(0x82, "bad_msg")                   # jb bad_msg（size < 8 畸形拒收）
+    a.db(0x39, 0xD1)                           # cmp ecx, edx
+    a.jcc32(0x82, "compact")                   # jb compact（部分消息待续——留尾续收）
+    a.db(0x8D, 0x2C, 0x13)                     # lea ebp, [rbx+rdx*1]（walk_next）
+
+    # —— A) display.get_registry(1,1) 12B：registry id 槽承接 + globals 单发
+    a.db(0x83, 0xF8, 1)                        # cmp eax, 1
+    a.jcc32(0x85, "bind_chk")                  # jne bind_chk
+    a.db(0x41, 0x81, 0xF8); a.imm32(0x000C_0001)  # cmp r8d, (12<<16)|1
+    a.jcc32(0x85, "bad_msg")                   # jne bad_msg（display 域定形外拒收——sync 挂账）
+    a.db(0x41, 0xF7, 0x86); a.imm32(st(WC_ST_FLAGS)); a.imm32(1)  # test dword [r14+flags], 1
+    a.jcc32(0x85, "bad_msg")                   # jnz bad_msg（重复 get_registry 拒收——公告单发纪律）
+    a.db(0x41, 0x8B, 0x44, 0x1E, 0x08)         # mov eax, [r14+rbx+8]（new_id = registry）
+    a.db(0x41, 0x89, 0x86); a.imm32(st(WC_ST_REG))            # mov [r14+reg], eax（registry id 槽承接）
     mov_edi_i(a, USOCK_SEND)
     a.db(0x44, 0x89, 0xEE)                     # mov esi, r13d
     mov_edx_i(a, ELF_DATA_VA + WC_GLOB_OFF)    # mov edx, globals 批指针
     a.db(0x41, 0xBA); a.imm32(124)             # mov r10d, 124
     mov_eax_i(a, SYS_UNIXSOCK)
     syscall(a)
-    a.db(0x83, 0xCB, 0x01)                     # or rbx, 1（globals 已发）
+    a.db(0x41, 0x83, 0x8E); a.imm32(st(WC_ST_FLAGS)); a.db(0x01)  # or dword [r14+flags], 1（已发）
+    a.db(0x41, 0xFF, 0x86); a.imm32(st(WC_ST_MSGC))           # inc dword [r14+msgc]
+    a.jmp32u("advance")
 
-    # 6) 定形匹配器 C@88（commit 头 → REGISTER + 漆面 + SYNC + done）
-    a.label("match_c")
-    a.db(0xF7, 0xC3, 0x02, 0x00, 0x00, 0x00)   # test rbx, 2
-    a.jcc32(0x85, "after_scan")                # jnz after_scan
-    a.db(0x41, 0x83, 0x7E, 0x58, 0x21)         # cmp dword [r14+88], 0x21
-    a.jcc32(0x85, "after_scan")                # jne after_scan
-    a.db(0x41, 0x81, 0x7E, 0x5C); a.imm32((8 << 16) | 6)  # cmp dword [r14+92], 0x00080006
-    a.jcc32(0x85, "after_scan")                # jne after_scan
-    # REGISTER：op0 → 槽写窗 VA（域闸 0x60000000）
+    # —— B) registry.bind(reg,0) 40B：接口名 string walk + 内容域闸
+    a.label("bind_chk")
+    a.db(0x41, 0x3B, 0x86); a.imm32(st(WC_ST_REG))            # cmp eax, [r14+reg]
+    a.jcc32(0x85, "comp_chk")                  # jne comp_chk
+    a.db(0x41, 0x81, 0xF8); a.imm32(0x0028_0000)  # cmp r8d, (40<<16)|0
+    a.jcc32(0x85, "bad_msg")                   # jne bad_msg
+    a.db(0x41, 0x81, 0x7C, 0x1E, 0x0C); a.imm32(WC_IFACE_LEN)    # cmp dword [r14+rbx+12], 14（len 含 NUL）
+    a.jcc32(0x85, "bad_msg")                   # jne bad_msg
+    a.db(0x41, 0x81, 0x7C, 0x1E, 0x10); a.imm32(WC_IFACE_DW[0])  # "wl_c"
+    a.jcc32(0x85, "bad_msg")
+    a.db(0x41, 0x81, 0x7C, 0x1E, 0x14); a.imm32(WC_IFACE_DW[1])  # "ompo"
+    a.jcc32(0x85, "bad_msg")
+    a.db(0x41, 0x81, 0x7C, 0x1E, 0x18); a.imm32(WC_IFACE_DW[2])  # "sito"
+    a.jcc32(0x85, "bad_msg")
+    a.db(0x41, 0x81, 0x7C, 0x1E, 0x1C); a.imm32(WC_IFACE_DW[3])  # "r\0\0\0"
+    a.jcc32(0x85, "bad_msg")
+    a.db(0x41, 0x8B, 0x44, 0x1E, 0x24)         # mov eax, [r14+rbx+36]（new_id = compositor）
+    a.db(0x41, 0x89, 0x86); a.imm32(st(WC_ST_COMP))           # mov [r14+comp], eax（compositor id 槽承接）
+    a.db(0x41, 0xFF, 0x86); a.imm32(st(WC_ST_MSGC))           # inc msgc
+    a.jmp32u("advance")
+
+    # —— C) compositor.create_surface(comp,0) 12B：surface id 槽承接
+    a.label("comp_chk")
+    a.db(0x85, 0xC0)                           # test eax, eax（null 对象拒收）
+    a.jcc32(0x84, "bad_msg")                   # jz bad_msg
+    a.db(0x41, 0x3B, 0x86); a.imm32(st(WC_ST_COMP))           # cmp eax, [r14+comp]
+    a.jcc32(0x85, "surf_chk")                  # jne surf_chk
+    a.db(0x41, 0x81, 0xF8); a.imm32(0x000C_0000)  # cmp r8d, (12<<16)|0
+    a.jcc32(0x85, "bad_msg")                   # jne bad_msg
+    a.db(0x41, 0x8B, 0x44, 0x1E, 0x08)         # mov eax, [r14+rbx+8]（new_id = surface）
+    a.db(0x41, 0x89, 0x86); a.imm32(st(WC_ST_SURF))           # mov [r14+surf], eax（surface id 槽承接）
+    a.db(0x41, 0xFF, 0x86); a.imm32(st(WC_ST_MSGC))           # inc msgc
+    a.jmp32u("advance")
+
+    # —— D/E) surface.damage(surf,2) 24B / surface.commit(surf,6) 8B
+    a.label("surf_chk")
+    a.db(0x85, 0xC0)                           # test eax, eax（null 对象拒收）
+    a.jcc32(0x84, "bad_msg")                   # jz bad_msg
+    a.db(0x41, 0x3B, 0x86); a.imm32(st(WC_ST_SURF))           # cmp eax, [r14+surf]
+    a.jcc32(0x85, "bad_msg")                   # jne bad_msg（未登记 surface 域外拒收）
+    a.db(0x41, 0x81, 0xF8); a.imm32(0x0018_0002)  # cmp r8d, (24<<16)|2（damage）
+    a.jcc32(0x84, "dmg_arm")                   # je dmg_arm
+    a.db(0x41, 0x81, 0xF8); a.imm32(0x0008_0006)  # cmp r8d, (8<<16)|6（commit）
+    a.jcc32(0x85, "bad_msg")                   # jne bad_msg（定形外拒收）
+
+    # commit 臂：walk_next 入槽（paint 域 rbp 让位——槽面兜底）
+    a.db(0x41, 0x89, 0xAE); a.imm32(st(WC_ST_NEXT))           # mov [r14+next], ebp
+    # REGISTER：op0 → 槽写窗 VA（surface id 解析槽直读——协议驱动，v0 常量域退役）
     a.db(0x31, 0xFF)                           # xor edi, edi
-    mov_esi_i(a, WC_SURF)
+    a.db(0x41, 0x8B, 0xB6); a.imm32(st(WC_ST_SURF))           # mov esi, [r14+surf]
     a.db(0x48, 0xBA); a.imm64((WC_Y << 32) | WC_X)        # movabs rdx, xy
     a.db(0x49, 0xBA); a.imm64((WC_H << 32) | WC_W)        # movabs r10, wh
     a.db(0x41, 0xB8); a.imm32(WC_Z)            # mov r8d, 20
@@ -888,26 +1018,65 @@ def build_wc_svc_code():
     a.db(0x41, 0xBA); a.imm32(WC_H)            # mov r10d, 200
     mov_eax_i(a, SYS_FB_SYNC)
     syscall(a)
-    # done 事件 12B（串号递增——跨会话存续域）
+    # done 事件 12B（串号槽面递增——跨会话存续域）
     a.label("send_done")
-    a.db(0x41, 0xFF, 0xC7)                     # inc r15d（串号低 32 位）
+    a.db(0x41, 0x8B, 0x8E); a.imm32(st(WC_ST_SER))            # mov ecx, [r14+ser]（串号槽）
+    a.db(0xFF, 0xC1)                           # inc ecx
+    a.db(0x41, 0x89, 0x8E); a.imm32(st(WC_ST_SER))            # mov [r14+ser], ecx（串号存续）
     a.db(0x49, 0xBB); a.imm64(ELF_DATA_VA + WC_DONE_OFF)  # movabs r11, done blob
-    a.db(0x45, 0x89, 0x7B, 0x08)               # mov [r11+8], r15d（串号域改写）
+    a.db(0x41, 0x89, 0x4B, 0x08)               # mov [r11+8], ecx（串号域改写——32 位无 REX.W）
     mov_edi_i(a, USOCK_SEND)
     a.db(0x44, 0x89, 0xEE)                     # mov esi, r13d
     a.db(0x48, 0xBA); a.imm64(ELF_DATA_VA + WC_DONE_OFF)  # movabs rdx, done blob
     a.db(0x41, 0xBA); a.imm32(12)              # mov r10d, 12
     mov_eax_i(a, SYS_UNIXSOCK)
     syscall(a)
-    a.db(0x83, 0xCB, 0x02)                     # or rbx, 2（commit 已处理）
-    a.label("after_scan")
-    a.db(0x49, 0x81, 0xE7); a.imm32(0xFFFF_FFFF)  # and r15, 0xFFFFFFFF（游标清零——串号存续）
-    a.jmp32u("recv")
+    a.db(0x41, 0x8B, 0xAE); a.imm32(st(WC_ST_NEXT))           # mov ebp, [r14+next]（walk_next 槽面回装）
+    a.db(0x41, 0xFF, 0x86); a.imm32(st(WC_ST_MSGC))           # inc msgc
+    a.jmp32u("advance")
 
-    # 7) teardown：REMOVE + SYNC → 回 ACCEPT_B（真常驻回环）
+    # damage 臂：计数槽（域闸活体——24B 定形已过）
+    a.label("dmg_arm")
+    a.db(0x41, 0xFF, 0x86); a.imm32(st(WC_ST_DMGC))           # inc dword [r14+dmgc]
+    a.db(0x41, 0xFF, 0x86); a.imm32(st(WC_ST_MSGC))           # inc msgc
+    a.jmp32u("advance")
+
+    # —— 游标推进（walk = walk_next——步进 = 消息尺寸）
+    a.label("advance")
+    a.db(0x48, 0x89, 0xEB)                     # mov rbx, ebp
+    a.jmp32u("parse")
+
+    # —— 畸形拒收（dispatch default / size 闸 / null 对象 / 重复公告——
+    #     fail-visible 收场回环，与 EOF 同路）
+    a.label("bad_msg")
+    a.jmp32u("teardown")
+
+    # —— compact：留尾搬移（rep movsb——部分消息跨 RECV 窗承载）+ 容量防御
+    a.label("compact")
+    a.db(0x48, 0x85, 0xDB)                     # test rbx, rbx
+    a.jcc32(0x84, "no_move")                   # jz no_move（无已消费域——原位续收）
+    a.db(0x4C, 0x89, 0xF7)                     # mov rdi, r14（dst = buf）
+    a.db(0x4C, 0x89, 0xF6)                     # mov rsi, r14
+    a.db(0x48, 0x01, 0xDE)                     # add rsi, rbx（src = buf + walk）
+    a.db(0x41, 0x8B, 0x8E); a.imm32(st(WC_ST_FILL))           # mov ecx, [r14+fill]
+    a.db(0x29, 0xD9)                           # sub ecx, ebx（rem = fill − walk）
+    a.db(0x48, 0x63, 0xC9)                     # movsxd rcx, ecx（64 位搬移字节域——rep movsb 消费 rcx）
+    a.db(0xFC)                                 # cld
+    a.db(0xF3, 0xA4)                           # rep movsb
+    a.db(0x41, 0x8B, 0x8E); a.imm32(st(WC_ST_FILL))           # mov ecx, [r14+fill]
+    a.db(0x29, 0xD9)                           # sub ecx, ebx（fill −= walk）
+    a.db(0x41, 0x89, 0x8E); a.imm32(st(WC_ST_FILL))           # mov [r14+fill], ecx
+    a.db(0x31, 0xDB)                           # xor ebx, ebx（walk = 0）
+    a.label("no_move")
+    a.db(0x41, 0x8B, 0x8E); a.imm32(st(WC_ST_FILL))           # mov ecx, [r14+fill]
+    a.db(0x81, 0xF9); a.imm32(WC_BUF_CAP)      # cmp ecx, 512（无 REX——0x41 会使 rm 扩展成 r9d 揭雷收口）
+    a.jcc32(0x83, "teardown")                  # jae teardown（窗口满无完整消息——防御收场）
+    a.jmp32u("fill")
+
+    # 8) teardown：REMOVE（surface id 解析槽直读）+ SYNC → 回 ACCEPT_B（真常驻回环）
     a.label("teardown")
     mov_edi_i(a, 2)                            # op2 REMOVE
-    mov_esi_i(a, WC_SURF)
+    a.db(0x41, 0x8B, 0xB6); a.imm32(st(WC_ST_SURF))           # mov esi, [r14+surf]（解析槽直读）
     a.db(0x48, 0xBA); a.imm64((WC_Y << 32) | WC_X)
     a.db(0x49, 0xBA); a.imm64((WC_H << 32) | WC_W)
     a.db(0x45, 0x31, 0xC0)                     # xor r8d, r8d
@@ -959,6 +1128,7 @@ def main():
     wc_code = build_wc_svc_code()
     wc_globals = build_wc_globals_blob()
     wc_batch = build_wc_client_batch()
+    wc_batch_ext = build_wc_client_batch_ext()
 
     # 数据段
     native_data = bytearray(0x40)
@@ -978,7 +1148,7 @@ def main():
     input_data[0x40:0x40 + len(input_wire)] = input_wire
     input_data[0x380:0x382] = b"CL"
     assert len(input_wire) <= 0x1C0
-    wc_data = bytearray(0x340)
+    wc_data = bytearray(WC_DATA_SIZE)  # 域⑥：0x340→0x380 扩容（+解析槽面 comp/surf/msgc/dmgc/flags/reg/next/fill/ser）
     wc_data[0x00:0x00 + len(WC_NAME)] = WC_NAME
     wc_data[WC_EVID_OFF:WC_EVID_OFF + len(WC_BOOT_EVID)] = WC_BOOT_EVID
     wc_data[WC_GLOB_OFF:WC_GLOB_OFF + len(wc_globals)] = wc_globals
@@ -1054,13 +1224,37 @@ def main():
         ("mov $0x401040,%edx", "globals 批指针"),
         ("movabs $0x401100,%r11", "done blob 指针"),
         ("movabs $0x401140,%r14", "接收窗基址"),
+        ("(%r14,%rbx,1),%eax", "obj id walk 装载域（REX.B 无 X——r11 索引揭雷收口先例）"),
+        ("0x4(%r14,%rbx,1),%r8d", "hdr walk 装载域（(size<<16)|op）"),
+        ("cmp $0xc0001,%r8d", "get_registry 头定形域闸（12<<16|1）"),
+        ("cmp $0x280000,%r8d", "bind 头定形域闸（40<<16|0）"),
+        ("$0x635f6c77", "bind 接口名内容域闸 dword1（wl_c）"),
+        ("0x1c(%r14,%rbx,1)", "bind 接口名尾域锚（r\\0\\0\\0 @+28）"),
+        ("cmp $0xc0000,%r8d", "create_surface 头定形域闸（12<<16|0）"),
+        ("cmp $0x180002,%r8d", "damage 头定形域闸（24<<16|2）"),
+        ("cmp $0x80006,%r8d", "commit 头定形域闸（8<<16|6）"),
+        ("(%rbx,%rdx,1),%ebp", "walk_next 步进域（lea walk+size）"),
+        ("rep movsb", "compact 留尾搬移域（部分消息跨 RECV 窗）"),
+        ("0x210(%r14)", "公告单发门控/旗标域（flags 槽）"),
+        ("0x21c(%r14)", "填充游标槽域（FILL 槽——r15 打包退役）"),
+        ("0x220(%r14)", "done 串号槽域（SER 槽——跨会话存续）"),
+        ("mov %ecx,0x8(%r11)", "done blob 串号域改写"),
+        ("mov %eax,0x214(%r14)", "registry id 槽写域（get_registry new_id 承接）"),
+        ("cmp 0x214(%r14),%eax", "registry id dispatch 域（bind 对象域闸）"),
+        ("mov %eax,0x200(%r14)", "compositor id 槽写域（bind new_id 承接）"),
+        ("cmp 0x200(%r14),%eax", "compositor id dispatch 域"),
+        ("mov %eax,0x204(%r14)", "surface id 槽写域（create_surface new_id 承接）"),
+        ("cmp 0x204(%r14),%eax", "surface id dispatch 域"),
+        ("mov 0x204(%r14),%esi", "surface id 槽读域（REGISTER/REMOVE 解析槽直读）"),
+        ("incl 0x20c(%r14)", "damage 计数域"),
+        ("mov %ebp,0x218(%r14)", "walk_next 槽面暂存（paint 域 rbp 让位）"),
+        ("mov 0x218(%r14),%ebp", "walk_next 槽面回装（done 后步进）"),
         ("cmp $0x60000000,%rax", "槽写窗 VA 域闸"),
-        ("mov $0x21,%esi", "surface id 域"),
         ("movabs $0x2000000020,%rdx", "xy 打包域"),
         ("movabs $0xc800000140,%r10", "wh 打包域"),
         ("mov $0x28,%eax", "SYS_FB_SURFACE"),
         ("mov $0x24,%eax", "SYS_FB_SYNC"),
-    ], n_sys=12)  # BIND 1 + LOG 1 + ACCEPT 1 + RECV 1 + SEND(globals) 1 + REGISTER 1 + SYNC 1 + SEND(done) 1 + REMOVE 1 + SYNC(td) 1 + bail EXIT ×2
+    ], n_sys=12)  # BIND 1 + LOG 1 + ACCEPT 1 + RECV 1 + SEND(globals) 1 + REGISTER 1 + SYNC 1 + SEND(done) 1 + REMOVE 1 + SYNC(td) 1 + bail EXIT ×2（域⑥——walk 解析器零 syscall 增量：电气面 v0 同谱）
 
     # Rust 生成物
     out = f"""// 本文件由 scripts/gen_m42_elf_lane.py 生成——勿手改；重跑脚本再生成。
@@ -1161,6 +1355,10 @@ pub const INPUT_CLIENT_KBD_OBJ: u32 = {INPUT_KBD};
 /// 域⑤ 客户端 wire 批长（M42-WAYCOMP8——t110 内核侧客户端经 prism
 /// 编码器同源构建，96 B 单发域）。
 pub const WC_SVC_WIRE_LEN: usize = {len(wc_batch)};
+/// 域⑥ 客户端 walk 裁决批长（M42-WAYCOMP9——标准批 + 第二 damage =
+/// {len(wc_batch_ext)} B，commit 步进 88→112——v0 定形匹配器 C@88 锚
+/// 在此批下必失，全谱 walk 裁决活体批；t110 round1 消费）。
+pub const WC_SVC_WIRE_LEN_EXT: usize = {len(wc_batch_ext)};
 /// 域⑤ 合成器套接字名（内核侧 t110 客户端 connect 域——映像数据段
 /// 内嵌同值）。
 pub const WC_SVC_SOCK_NAME: &[u8] = b"wayland-1";
@@ -1254,22 +1452,33 @@ pub static INPUT_CLIENT: [u8; {len(elf_input)}] = [
 {rs_hex(elf_input)}
 ];
 
-/// 域⑤ 映像：WAYCOMP_SVC_ELF（M42-WAYCOMP8——**waycomp 主体 ELF 化
-/// 迁移本体：常驻合成器服务会话环/合流电气面 ring3 化**，真常驻不退
-/// 出形服务，播种 lane `spawn_elf_seed_resident` 消费）。车道：
+/// 域⑤⑥ 映像：WAYCOMP_SVC_ELF（M42-WAYCOMP8 域⑤ + M42-WAYCOMP9
+/// 域⑥——**waycomp 主体 ELF 化迁移本体 + 客户端窗内容解析域：常驻
+/// 合成器服务会话环/合流电气面 ring3 化 + 全谱 wire 解析**，真常驻不
+/// 退出形服务，播种 lane `spawn_elf_seed_resident` 消费）。车道：
 /// SYS_UNIXSOCK BIND("wayland-1")〔名域正交——wayland-0 = t103 /
 /// wayland-comp = 内核 waycomp 双轨回归锚〕→ SYS_LOG boot 取证 → 真
-/// 常驻环：ACCEPT_B 阻塞收连接 → 会话环〔RECV 游标累计 ≥ 96B → 定
-/// 形匹配器：A@0 = get_registry 头 → globals 124B 公告单发〔
-/// encode_registry_global_event 同源字节——registry=2 + 四 global
-/// 声明序〕；C@88 = commit 头 → SYS_FB_SURFACE op0 REGISTER（v0 策
-/// 略几何 32,32,320,200 z=20——返回槽写窗 VA）→ pane_pattern 320×200
-/// 直写〔双色 0x{WC_C0:X}/0x{WC_C1:X}——fb id 色相 0x{WC_TINT:X}〕→
-/// SYS_FB_SYNC 损伤记账 → wl_callback.done 12B（串号递增——跨会话
-/// 存续）〕→ RECV 0 = EOF → teardown〔op2 REMOVE + SYNC〕→ 回
-/// ACCEPT_B。错误码大值域 → teardown 收场回环（fail-visible）。bail
-/// 100/101。t110 消费（RESIDENT_SEED v0 有界退出形挂账摘牌——真常驻
-/// 不退出形在环；窗内容解析域挂账随 ring3 车道重验批次）。
+/// 常驻环：ACCEPT_B 阻塞收连接 → 会话环〔RECV 填充环 → **walk 裁决
+/// 解析器（v0 定形匹配器 A@0/C@88 固定偏移退役）**：逐消息头 walk +
+/// 签名域闸——get_registry(1,1) 12B → registry id 槽承接 + globals
+/// 124B 公告单发〔encode_registry_global_event 同源字节——registry=2 +
+/// 四 global 声明序，单发门控〕；bind(reg,0) 40B → 接口名 string
+/// walk〔len=14 + "wl_c"/"ompo"/"sito"/"r" 四 dword 内容域闸〕→
+/// compositor id 槽承接；create_surface(comp,0) 12B → surface id 槽
+/// 承接；damage(surf,2) 24B → 计数槽；commit(surf,6) 8B →
+/// SYS_FB_SURFACE op0 REGISTER（v0 策略几何 32,32,320,200 z=20，
+/// surface id 解析槽直读——协议驱动）→ pane_pattern 320×200 直写〔
+/// 双色 0x{WC_C0:X}/0x{WC_C1:X}——fb id 色相 0x{WC_TINT:X}〕→
+/// SYS_FB_SYNC 损伤记账 → wl_callback.done 12B（串号槽面递增——跨会
+/// 话存续）；dispatch default（未知 obj/op/null 对象/重复公告）→ 畸形
+/// 拒收 → teardown；留尾搬移 compact（rep movsb——部分消息跨 RECV
+/// 窗承载）〕→ RECV 0 = EOF / 畸形拒收 → teardown〔op2 REMOVE（
+/// surface id 解析槽直读）+ SYNC〕→ 回 ACCEPT_B。会话游标域
+/// （fill/walk/串号）全量内存槽面化（v0 r15 双槽寄存器打包退役——
+/// paint 跨 tick 计算域 r15.hi 被外部清零实测，槽面免疫寄存器侵蚀）。
+/// 错误码大值域 → teardown 收场回环（fail-visible）。bail 100/101。
+/// t110 消费（域⑥活体批：round1 walk 裁决批 120 B——commit @112 定
+/// 形匹配器必失域；round2 畸形拒收探针 obj=9 op=3 零事件到达）。
 pub static WAYCOMP_SVC_ELF: [u8; {len(elf_wc)}] = [
 {rs_hex(elf_wc)}
 ];
@@ -1280,7 +1489,7 @@ pub static WAYCOMP_SVC_ELF: [u8; {len(elf_wc)}] = [
         f"FBDEV_SVC_ELF={len(elf_fbsvc)}B RESIDENT_SEED={len(elf_resident)}B "
         f"INPUT_CLIENT={len(elf_input)}B WAYCOMP_SVC_ELF={len(elf_wc)}B "
         f"wire={len(wire)}B input_wire={len(input_wire)}B wc_batch={len(wc_batch)}B "
-        f"wc_globals={len(wc_globals)}B → {OUT}"
+        f"wc_batch_ext={len(wc_batch_ext)}B wc_globals={len(wc_globals)}B → {OUT}"
     )
 
 
