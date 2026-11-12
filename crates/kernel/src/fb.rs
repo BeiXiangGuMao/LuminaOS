@@ -1310,6 +1310,16 @@ pub fn sys_fb_surface(req: SurfReq) -> u64 {
                 mem: &mut IdentityAccess,
                 alloc_table: || frames.alloc(),
             };
+            // 写窗前置清域（M42-WAYCOMP8——会话环回环域）：teardown→重
+            // 连→重登记回环中，前会话的写窗映射残留在调用方任务根（对象
+            // 存续纪律——op0 从不回收映射），且重登记页帧为新铸帧（旧叶
+            // 指向旧物理帧）——不清理则 Walker::map AlreadyMapped 拒
+            // （t110 round1 LUMINA-FB-SURF-ERR 实录）。逐页 unmap 幂等
+            // 前置（未映射页忽略——首轮登记零扰动），map 语义保持单写者
+            // 严格性不变。
+            for k in 0..pages {
+                let _ = walker.unmap(user_root, va + k * 4096);
+            }
             let mut mapped = 0u64;
             for k in 0..pages {
                 let phys = SURF_STORES[slot].frames[k as usize].load(Ordering::Acquire);
@@ -1351,7 +1361,17 @@ pub fn sys_fb_surface(req: SurfReq) -> u64 {
             Err(e) => e,
         },
         2 => match surf_remove(id as u32) {
-            Ok(()) => 0,
+            Ok(()) => {
+                // 属主生命周期闭环（M42-WAYCOMP8——ELF 会话环回环域）：
+                // ring3 REGISTER（op0）单客户 CAS 取主，REMOVE 随行释放
+                // ——同 pid teardown→重连→重登记回环不再 EEXIST（waycomp
+                // ELF 化迁移会话环第二会话域；内核侧 surf_register 直调
+                // 不经 CAS 不受扰，t88 单次登记面语义不变）
+                if SURF_OWNER.load(Ordering::Acquire) == crate::procs::current_pid() {
+                    SURF_OWNER.store(SURFACE_FREE, Ordering::Release);
+                }
+                0
+            }
             Err(e) => e,
         },
         _ => EINVAL,

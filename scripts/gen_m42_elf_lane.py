@@ -106,6 +106,29 @@ INPUT_REGISTRY, INPUT_SEAT, INPUT_COMP, INPUT_SURF, INPUT_PTR, INPUT_KBD = 2, 3,
 # wl 事件 opcode（官方 XML 声明序——与 SIG_KEYBOARD_KEY 对账）
 WL_EV_KEY, WL_EV_CAPS = 3, 0
 
+# ---- 域⑤常量（M42-WAYCOMP8——waycomp 主体 ELF 化迁移本体：常驻合成器
+# 服务会话环/合流电气面 ring3 化）----
+SYS_FB_SURFACE, SYS_FB_SYNC = 40, 36
+USOCK_BIND, USOCK_ACCEPT_B = 1, 6
+SURF_VA_BASE = 0x6000_0000  # bedrock::abi SURF_VA_BASE 同源（槽写窗基域）
+WC_NAME = b"wayland-1"      # 名域正交登记（wayland-0 = t103 / wayland-comp = 内核 waycomp 双轨回归锚）
+WC_SURF = 0x21              # 会话 surface id（= fb surface id——v0 跨会话复用，teardown 摘除后重登记）
+WC_CB = 0x31                # 帧回调对象 id（服务端固定分配——客户端解析对账域）
+WC_X, WC_Y, WC_W, WC_H = 32, 32, 320, 200  # v0 策略几何（单窗定形——cascade tiling 单窗全盒缩编面）
+WC_Z = 20                   # POLICY_Z_BASE 同源（master 顶层）
+WC_TINT = WC_SURF & 0xFF    # pane_pattern 色相域（fb id & 0xFF——waycomp::pane_pattern 同源）
+WC_C0 = 0xFF00_0000 | (WC_TINT << 16) | 0x3030  # checker 0（r=tint / g=0x30 / b=0x30）
+WC_C1 = 0xFF00_0000 | 0x30C0 | WC_TINT          # checker 1（r=tint / g=0x30 / b=0xC0）
+WC_REGISTRY, WC_COMP = 2, 3  # 客户端批对象 id 域（registry=2 / compositor=3——t104 车道同源）
+WC_BOOT_EVID = b"LUMINA-WAYCOMPELF-BOOT bind=wayland-1 ring3"
+WC_BAIL_BIND, WC_BAIL_ACCEPT, WC_BAIL_REG = 100, 101, 104
+# 数据段布局：+0x00 套接字名 / +0x10 boot 取证串 / +0x40 globals 公告批 /
+# +0x100 done 事件 blob / +0x140 接收窗（r15 = 高 32 位累计游标 ‖ 低 32
+# 位 done 串号——跨会话存续域，双槽寄存器打包）
+WC_EVID_OFF, WC_GLOB_OFF, WC_DONE_OFF, WC_BUF_OFF = 0x10, 0x40, 0x100, 0x140
+WC_BUF_CAP = 512
+WC_EV_TARGET = 136  # globals 124 + done 12（客户端字节计数车道——t106 已验证模式）
+
 OUT = Path(__file__).resolve().parent.parent / "crates/kernel/src/exec_images_gen_m42_elf.rs"
 
 
@@ -458,6 +481,34 @@ def rs_hex(data, indent="    "):
 # r14 = 请求帧缓冲 / r15 = 应答帧缓冲 / rbx = 收帧 tag（callee-saved
 # 跨 syscall 存续契约）。数据段：+0x00 取证串 / +0x40 请求帧缓冲 /
 # +0x60 应答帧缓冲。bail 码 70/71/72 fail-visible——LXE 同码域。）----
+def build_wc_globals_blob():
+    """globals 公告批（124 B——encode_registry_global_event 同源字节：
+    registry=2 客户端域 + 四 global 声明序〔compositor v4 / seat v1 /
+    shm v1 / output v2〕——waycomp::GLOBALS 与 prism 编码器逐字节对账）。"""
+    blob = b""
+    for name, iface, ver in [(1, b"wl_compositor", 4), (2, b"wl_seat", 1),
+                             (3, b"wl_shm", 1), (4, b"wl_output", 2)]:
+        blob += w_msg(WC_REGISTRY, 0, w_u32(name) + w_str(iface) + w_u32(ver))
+    assert len(blob) == 124, f"globals 批长漂移：{len(blob)} ≠ 124"
+    return blob
+
+
+def build_wc_client_batch():
+    """客户端 wire 批（96 B——内核侧 t110 经 prism 编码器同源构建）：
+    get_registry → bind compositor → create_surface → damage → commit。
+    定形匹配器锚域断言：A@0（get_registry 头）/ C@88（commit 头）。"""
+    blob = b""
+    blob += w_msg(1, 1, w_u32(WC_REGISTRY))                                     # get_registry → registry=2
+    blob += w_msg(WC_REGISTRY, 0, w_u32(1) + w_str(b"wl_compositor") + w_u32(4) + w_u32(WC_COMP))  # bind → comp=3
+    blob += w_msg(WC_COMP, 0, w_u32(WC_SURF))                                   # create_surface → 0x21
+    blob += w_msg(WC_SURF, 2, w_u32(0) + w_u32(0) + w_u32(WC_W) + w_u32(WC_H))  # damage 全 buffer
+    blob += w_msg(WC_SURF, 6, b"")                                              # commit
+    assert len(blob) == 96, f"客户端批长漂移：{len(blob)} ≠ 96"
+    assert blob[0:8] == w_u32(1) + w_u32((12 << 16) | 1), "A 锚域漂移（get_registry 头）"
+    assert blob[88:92] == w_u32(WC_SURF) and blob[92:96] == w_u32((8 << 16) | 6), "C 锚域漂移（commit 头）"
+    return blob
+
+
 def build_input_wire_blob():
     """7 消息 wire 批（M42-INPUT7 输入链客户端）：registry → bind
     wl_seat/wl_compositor → surface → seat.get_pointer/get_keyboard →
@@ -697,10 +748,188 @@ def build_fbdev_svc_code():
     return bytes(a.buf)
 
 
-# ---- 域③：RESIDENT_SEED 代码段（resident × ELF lane 结构活体——
-# LOG 取证 → YIELD×64 → EXIT(0)。v0 结构活体为有界退出形：常驻旗标
-# 语义（批跑收敛谓词豁免域）为旗标面断言；真常驻不退出形服务随
-# waycomp 主体迁移批次挂账如实登记。）----
+# ---- 域⑤：WAYCOMP_SVC_ELF 代码段（M42-WAYCOMP8——waycomp 主体 ELF
+# 化迁移本体：常驻合成器服务会话环/合流电气面 ring3 化。车道：BIND
+# ("wayland-1") → LOG boot 取证 → 真常驻环〔ACCEPT_B 阻塞收连接 → 会
+# 话环：RECV 游标累计 ≥ 96B → 定形匹配器〔A@0 = get_registry →
+# globals 124B 单发；C@88 = commit → SYS_FB_SURFACE op0 REGISTER（返
+# 回槽写窗 VA）→ pane_pattern 320×200 直写 → SYS_FB_SYNC 损伤记账 →
+# done 事件 12B（串号递增）〕→ RECV 0 = EOF → teardown〔op2 REMOVE +
+# SYNC〕→ 回 ACCEPT_B——真常驻不退出形，RESIDENT_SEED v0 有界退出形
+# 挂账摘牌〕。寄存器契约：r12d = 监听者 / r13d = 连接 / r14 = 接收窗
+# 基址 / rbx = 会话旗标〔bit0 = globals 已发 / bit1 = commit 已处理〕
+# / r15 = 高 32 位累计游标 ‖ 低 32 位 done 串号（跨会话存续——双槽寄
+# 存器打包）；done blob / globals 批 / 名字 / 取证串落数据段。错误码
+# 大值域（u64::MAX-1 等）→ cmp cap ja teardown fail-visible 收场回环。
+# bail 100/101 fail-visible。）----
+def build_wc_svc_code():
+    a = Asm()
+    BATCH_LEN = 96
+
+    # 1) SYS_UNIXSOCK BIND("wayland-1") → r12d = 监听者句柄
+    mov_edi_i(a, USOCK_BIND)
+    a.db(0x31, 0xF6)                           # xor esi, esi
+    a.db(0xBA); a.imm32(ELF_DATA_VA + 0x00)    # mov edx, name ptr
+    a.db(0x41, 0xBA); a.imm32(len(WC_NAME))    # mov r10d, 9
+    mov_eax_i(a, SYS_UNIXSOCK)
+    syscall(a)
+    a.db(0x41, 0x89, 0xC4)                     # mov r12d, eax
+    a.db(0x45, 0x85, 0xE4)                     # test r12d, r12d
+    a.jcc32(0x84, "bail_bind")                 # jz bail_bind
+    a.db(0x41, 0x83, 0xFC, 15)                 # cmp r12d, 15
+    a.jcc32(0x87, "bail_bind")                 # ja bail_bind
+
+    # 2) SYS_LOG boot 取证
+    a.db(0x48, 0xBF); a.imm64(ELF_DATA_VA + WC_EVID_OFF)   # movabs rdi, evid
+    mov_esi_i(a, len(WC_BOOT_EVID))
+    mov_eax_i(a, SYS_LOG)
+    syscall(a)
+
+    # 3) 真常驻环：ACCEPT_B 阻塞收连接
+    a.label("accept")
+    mov_edi_i(a, USOCK_ACCEPT_B)
+    a.db(0x44, 0x89, 0xE6)                     # mov esi, r12d
+    mov_eax_i(a, SYS_UNIXSOCK)
+    syscall(a)
+    a.db(0x41, 0x89, 0xC5)                     # mov r13d, eax
+    a.db(0x45, 0x85, 0xED)                     # test r13d, r13d
+    a.jcc32(0x84, "bail_accept")               # jz bail_accept
+    a.db(0x41, 0x83, 0xFD, 15)                 # cmp r13d, 15
+    a.jcc32(0x87, "bail_accept")               # ja bail_accept
+    a.db(0xBB); a.imm32(0)                     # mov ebx, 0（会话旗标清零）
+    a.db(0x49, 0x81, 0xE7); a.imm32(0xFFFF_FFFF)  # and r15, 0xFFFFFFFF（游标清零——串号存续）
+
+    # 4) 会话环：RECV 游标累计 ≥ 96B → 定形匹配器
+    a.db(0x49, 0xBE); a.imm64(ELF_DATA_VA + WC_BUF_OFF)    # movabs r14, buf
+    a.label("recv")
+    mov_edi_i(a, USOCK_RECV)
+    a.db(0x44, 0x89, 0xEE)                     # mov esi, r13d
+    a.db(0x4D, 0x89, 0xFB)                     # mov r11, r15
+    a.db(0x49, 0xC1, 0xEB, 32)                 # shr r11, 32（累计游标）
+    a.db(0x4C, 0x89, 0xF2)                     # mov rdx, r14
+    a.db(0x4C, 0x01, 0xDA)                     # add rdx, r11（游标域接收）
+    a.db(0x41, 0xBA); a.imm32(WC_BUF_CAP)      # mov r10d, 512
+    a.db(0x45, 0x29, 0xDA)                     # sub r10d, r11d（余量域）
+    mov_eax_i(a, SYS_UNIXSOCK)
+    syscall(a)
+    a.db(0x48, 0x85, 0xC0)                     # test rax, rax
+    a.jcc32(0x84, "teardown")                  # jz teardown（EOF——会话收场回环）
+    a.db(0x48, 0x81, 0xF8); a.imm32(WC_BUF_CAP)   # cmp rax, 512（错误码大值域闸）
+    a.jcc32(0x87, "teardown")                  # ja teardown（fail-visible 收场回环）
+    a.db(0x48, 0xC1, 0xE0, 32)                 # shl rax, 32
+    a.db(0x49, 0x01, 0xC7)                     # add r15, rax（累计游标 += n）
+    a.db(0x4D, 0x89, 0xFB)                     # mov r11, r15
+    a.db(0x49, 0xC1, 0xEB, 32)                 # shr r11, 32
+    a.db(0x41, 0x81, 0xFB); a.imm32(BATCH_LEN) # cmp r11d, 96
+    a.jcc32(0x82, "recv")                      # jb recv（未满续收）
+
+    # 5) 定形匹配器 A@0（get_registry 头 → globals 124B 单发）
+    a.db(0xF7, 0xC3, 0x01, 0x00, 0x00, 0x00)   # test rbx, 1
+    a.jcc32(0x85, "match_c")                   # jnz match_c
+    a.db(0x41, 0x83, 0x3E, 0x01)               # cmp dword [r14], 1
+    a.jcc32(0x85, "match_c")                   # jne match_c
+    a.db(0x41, 0x81, 0x7E, 0x04); a.imm32(0x000C_0001)  # cmp dword [r14+4], 0x000C0001
+    a.jcc32(0x85, "match_c")                   # jne match_c
+    mov_edi_i(a, USOCK_SEND)
+    a.db(0x44, 0x89, 0xEE)                     # mov esi, r13d
+    mov_edx_i(a, ELF_DATA_VA + WC_GLOB_OFF)    # mov edx, globals 批指针
+    a.db(0x41, 0xBA); a.imm32(124)             # mov r10d, 124
+    mov_eax_i(a, SYS_UNIXSOCK)
+    syscall(a)
+    a.db(0x83, 0xCB, 0x01)                     # or rbx, 1（globals 已发）
+
+    # 6) 定形匹配器 C@88（commit 头 → REGISTER + 漆面 + SYNC + done）
+    a.label("match_c")
+    a.db(0xF7, 0xC3, 0x02, 0x00, 0x00, 0x00)   # test rbx, 2
+    a.jcc32(0x85, "after_scan")                # jnz after_scan
+    a.db(0x41, 0x83, 0x7E, 0x58, 0x21)         # cmp dword [r14+88], 0x21
+    a.jcc32(0x85, "after_scan")                # jne after_scan
+    a.db(0x41, 0x81, 0x7E, 0x5C); a.imm32((8 << 16) | 6)  # cmp dword [r14+92], 0x00080006
+    a.jcc32(0x85, "after_scan")                # jne after_scan
+    # REGISTER：op0 → 槽写窗 VA（域闸 0x60000000）
+    a.db(0x31, 0xFF)                           # xor edi, edi
+    mov_esi_i(a, WC_SURF)
+    a.db(0x48, 0xBA); a.imm64((WC_Y << 32) | WC_X)        # movabs rdx, xy
+    a.db(0x49, 0xBA); a.imm64((WC_H << 32) | WC_W)        # movabs r10, wh
+    a.db(0x41, 0xB8); a.imm32(WC_Z)            # mov r8d, 20
+    mov_eax_i(a, SYS_FB_SURFACE)
+    syscall(a)
+    a.db(0x48, 0x3D); a.imm32(SURF_VA_BASE)    # cmp rax, 0x60000000
+    a.jcc32(0x82, "send_done")                 # jb send_done（VA 域外 fail-visible——漆面跳过，done 照发）
+    # 漆面：pane_pattern 320×200 直写（rbp = ly / rsi = rowpar / r10d = lx）
+    a.db(0x48, 0x89, 0xC7)                     # mov rdi, rax（写窗游标）
+    a.db(0x31, 0xED)                           # xor ebp, ebp（ly）
+    a.label("row")
+    a.db(0x89, 0xEE)                           # mov esi, ebp
+    a.db(0xC1, 0xEE, 3)                        # shr esi, 3
+    a.db(0x83, 0xE6, 1)                        # and esi, 1（rowpar）
+    a.db(0x45, 0x31, 0xD2)                     # xor r10d, r10d（lx）
+    a.label("px")
+    a.db(0x44, 0x89, 0xD0)                     # mov eax, r10d
+    a.db(0xC1, 0xE8, 3)                        # shr eax, 3
+    a.db(0x83, 0xE0, 1)                        # and eax, 1
+    a.db(0x31, 0xF0)                           # xor eax, esi（parity = (lx>>3)+(ly>>3) 低位 XOR）
+    mov_edx_i(a, WC_C1)
+    a.db(0x85, 0xC0)                           # test eax, eax
+    mov_eax_i(a, WC_C0)
+    a.db(0x0F, 0x44, 0xD0)                     # cmove edx, eax（Intel cmovz edx,eax——parity=0 → C0）
+    a.db(0x89, 0x17)                           # mov [rdi], edx
+    a.db(0x48, 0x83, 0xC7, 4)                  # add rdi, 4
+    a.db(0x41, 0xFF, 0xC2)                     # inc r10d
+    a.db(0x41, 0x81, 0xFA); a.imm32(WC_W)      # cmp r10d, 320
+    a.jmp8(0x72, "px")                         # jb px
+    a.db(0xFF, 0xC5)                           # inc ebp
+    a.db(0x81, 0xFD); a.imm32(WC_H)            # cmp ebp, 200
+    a.jmp8(0x72, "row")                        # jb row
+    # SYNC 损伤记账（唯一入口——ADR-0004 双轨语义同源）
+    mov_edi_i(a, WC_X)
+    mov_esi_i(a, WC_Y)
+    mov_edx_i(a, WC_W)
+    a.db(0x41, 0xBA); a.imm32(WC_H)            # mov r10d, 200
+    mov_eax_i(a, SYS_FB_SYNC)
+    syscall(a)
+    # done 事件 12B（串号递增——跨会话存续域）
+    a.label("send_done")
+    a.db(0x41, 0xFF, 0xC7)                     # inc r15d（串号低 32 位）
+    a.db(0x49, 0xBB); a.imm64(ELF_DATA_VA + WC_DONE_OFF)  # movabs r11, done blob
+    a.db(0x45, 0x89, 0x7B, 0x08)               # mov [r11+8], r15d（串号域改写）
+    mov_edi_i(a, USOCK_SEND)
+    a.db(0x44, 0x89, 0xEE)                     # mov esi, r13d
+    a.db(0x48, 0xBA); a.imm64(ELF_DATA_VA + WC_DONE_OFF)  # movabs rdx, done blob
+    a.db(0x41, 0xBA); a.imm32(12)              # mov r10d, 12
+    mov_eax_i(a, SYS_UNIXSOCK)
+    syscall(a)
+    a.db(0x83, 0xCB, 0x02)                     # or rbx, 2（commit 已处理）
+    a.label("after_scan")
+    a.db(0x49, 0x81, 0xE7); a.imm32(0xFFFF_FFFF)  # and r15, 0xFFFFFFFF（游标清零——串号存续）
+    a.jmp32u("recv")
+
+    # 7) teardown：REMOVE + SYNC → 回 ACCEPT_B（真常驻回环）
+    a.label("teardown")
+    mov_edi_i(a, 2)                            # op2 REMOVE
+    mov_esi_i(a, WC_SURF)
+    a.db(0x48, 0xBA); a.imm64((WC_Y << 32) | WC_X)
+    a.db(0x49, 0xBA); a.imm64((WC_H << 32) | WC_W)
+    a.db(0x45, 0x31, 0xC0)                     # xor r8d, r8d
+    mov_eax_i(a, SYS_FB_SURFACE)
+    syscall(a)
+    mov_edi_i(a, WC_X)
+    mov_esi_i(a, WC_Y)
+    mov_edx_i(a, WC_W)
+    a.db(0x41, 0xBA); a.imm32(WC_H)
+    mov_eax_i(a, SYS_FB_SYNC)
+    syscall(a)
+    a.jmp32u("accept")
+
+    # bail 族（fail-visible）
+    a.label("bail_bind")
+    mov_edi_i(a, WC_BAIL_BIND); mov_eax_i(a, SYS_EXIT); syscall(a); a.db(0xEB, 0xFE)
+    a.label("bail_accept")
+    mov_edi_i(a, WC_BAIL_ACCEPT); mov_eax_i(a, SYS_EXIT); syscall(a); a.db(0xEB, 0xFE)
+    a.resolve()
+    return bytes(a.buf)
+
+
 def build_resident_code():
     a = Asm()
     a.db(0x48, 0xBF); a.imm64(ELF_DATA_VA)    # movabs rdi, DATA_VA
@@ -727,6 +956,9 @@ def main():
     fbsvc_code = build_fbdev_svc_code()
     resident_code = build_resident_code()
     input_code, input_wire = build_input_client_code()
+    wc_code = build_wc_svc_code()
+    wc_globals = build_wc_globals_blob()
+    wc_batch = build_wc_client_batch()
 
     # 数据段
     native_data = bytearray(0x40)
@@ -746,6 +978,12 @@ def main():
     input_data[0x40:0x40 + len(input_wire)] = input_wire
     input_data[0x380:0x382] = b"CL"
     assert len(input_wire) <= 0x1C0
+    wc_data = bytearray(0x340)
+    wc_data[0x00:0x00 + len(WC_NAME)] = WC_NAME
+    wc_data[WC_EVID_OFF:WC_EVID_OFF + len(WC_BOOT_EVID)] = WC_BOOT_EVID
+    wc_data[WC_GLOB_OFF:WC_GLOB_OFF + len(wc_globals)] = wc_globals
+    # done 事件 blob：obj = WC_CB / header = (12<<16)|0 / serial = 0（运行期改写）
+    struct.pack_into("<III", wc_data, WC_DONE_OFF, WC_CB, (12 << 16) | 0, 0)
 
     elf_native = elf64(ELF_ENTRY, [
         (ELF_ENTRY, 5, native_code),            # PF_R|PF_X
@@ -766,6 +1004,10 @@ def main():
     elf_input = elf64(ELF_ENTRY, [
         (ELF_ENTRY, 5, input_code),
         (ELF_DATA_VA, 6, bytes(input_data)),
+    ])
+    elf_wc = elf64(ELF_ENTRY, [
+        (ELF_ENTRY, 5, wc_code),
+        (ELF_DATA_VA, 6, bytes(wc_data)),
     ])
 
     # objdump 反汇编锚定 + syscall 计数
@@ -806,6 +1048,19 @@ def main():
         ("movabs $0x401200,%r14", "ACC 固定窗基址"),
         ("movabs $0x401010,%rdi", "取证串指针"),
     ], n_sys=11)  # 主道 7（CONNECT/SEND/RECV/LOG/SHUT/YIELD/EXIT）+ bail EXIT ×4
+    objdump_check(wc_code, [
+        ("mov $0x401000,%edx", "套接字名指针"),
+        ("movabs $0x401010,%rdi", "boot 取证串指针"),
+        ("mov $0x401040,%edx", "globals 批指针"),
+        ("movabs $0x401100,%r11", "done blob 指针"),
+        ("movabs $0x401140,%r14", "接收窗基址"),
+        ("cmp $0x60000000,%rax", "槽写窗 VA 域闸"),
+        ("mov $0x21,%esi", "surface id 域"),
+        ("movabs $0x2000000020,%rdx", "xy 打包域"),
+        ("movabs $0xc800000140,%r10", "wh 打包域"),
+        ("mov $0x28,%eax", "SYS_FB_SURFACE"),
+        ("mov $0x24,%eax", "SYS_FB_SYNC"),
+    ], n_sys=12)  # BIND 1 + LOG 1 + ACCEPT 1 + RECV 1 + SEND(globals) 1 + REGISTER 1 + SYNC 1 + SEND(done) 1 + REMOVE 1 + SYNC(td) 1 + bail EXIT ×2
 
     # Rust 生成物
     out = f"""// 本文件由 scripts/gen_m42_elf_lane.py 生成——勿手改；重跑脚本再生成。
@@ -903,6 +1158,46 @@ pub const INPUT_CLIENT_BAIL_BUDGET: i32 = {INPUT_BAIL_BUDGET};
 #[allow(dead_code)] // 文档锚点：扫描器 cmp edi imm8 内嵌同值
 pub const INPUT_CLIENT_KBD_OBJ: u32 = {INPUT_KBD};
 
+/// 域⑤ 客户端 wire 批长（M42-WAYCOMP8——t110 内核侧客户端经 prism
+/// 编码器同源构建，96 B 单发域）。
+pub const WC_SVC_WIRE_LEN: usize = {len(wc_batch)};
+/// 域⑤ 合成器套接字名（内核侧 t110 客户端 connect 域——映像数据段
+/// 内嵌同值）。
+pub const WC_SVC_SOCK_NAME: &[u8] = b"wayland-1";
+/// 域⑤ 客户端 registry 对象 id（批内静态分配——gen 批对账）。
+pub const WC_SVC_REGISTRY_ID: u32 = {WC_REGISTRY};
+/// 域⑤ 客户端 compositor 对象 id（批内静态分配）。
+pub const WC_SVC_COMP_ID: u32 = {WC_COMP};
+/// 域⑤ 客户端字节计数目标（globals 124 + done 12 = {WC_EV_TARGET} B
+/// ——t106 字节计数车道同源）。
+pub const WC_SVC_EV_TARGET: usize = {WC_EV_TARGET};
+/// 域⑤ 会话 surface id（= fb surface id——v0 跨会话复用）。
+#[allow(dead_code)] // 文档锚点：REGISTER esi imm32 内嵌同值
+pub const WC_SVC_SURF: u32 = {WC_SURF};
+/// 域⑤ 帧回调对象 id（服务端固定分配——客户端解析对账域）。
+#[allow(dead_code)] // 文档锚点：done blob obj 字段内嵌同值
+pub const WC_SVC_CB: u32 = {WC_CB};
+/// 域⑤ v0 策略几何（单窗定形——REGISTER xy/wh 打包域对账）。
+pub const WC_SVC_X: u32 = {WC_X};
+pub const WC_SVC_Y: u32 = {WC_Y};
+pub const WC_SVC_W: u32 = {WC_W};
+pub const WC_SVC_H: u32 = {WC_H};
+/// 域⑤ z 序（POLICY_Z_BASE 同源——master 顶层）。
+pub const WC_SVC_Z: i32 = {WC_Z};
+/// 域⑤ pane_pattern 双色（fb id 色相域 0x{WC_TINT:X}——waycomp::
+/// pane_pattern 同源逐位对账；t110 断言面走 waycomp::pane_pattern
+/// 同源函数，本常量为文档锚点）。
+#[allow(dead_code)] // 文档锚点：漆面 mov edx/eax imm32 内嵌同值
+pub const WC_SVC_C0: u32 = {WC_C0:#x};
+#[allow(dead_code)] // 文档锚点：cmove edx 备选色 imm32 内嵌同值
+pub const WC_SVC_C1: u32 = {WC_C1:#x};
+/// 域⑤ bail 退出码：BIND 失败（waycomp-svc-elf——主体迁移服务）。
+#[allow(dead_code)] // 文档锚点：bail_bind EXIT imm32 内嵌同值
+pub const WC_SVC_BAIL_BIND: i32 = {WC_BAIL_BIND};
+/// 域⑤ bail 退出码：ACCEPT_B 失败。
+#[allow(dead_code)] // 文档锚点：bail_accept EXIT imm32 内嵌同值
+pub const WC_SVC_BAIL_ACCEPT: i32 = {WC_BAIL_ACCEPT};
+
 /// 域① 映像：ELF_NATIVE（原生 ABI ELF64 静态——真 ELF 容器，播种
 /// lane `spawn_elf_seed` 消费；lin_abi = false 原生派发）。车道：LOG
 /// 取证 → r12d 累加 1..=10 → EXIT({77})。t105 消费。
@@ -958,12 +1253,34 @@ pub static RESIDENT_SEED: [u8; {len(elf_resident)}] = [
 pub static INPUT_CLIENT: [u8; {len(elf_input)}] = [
 {rs_hex(elf_input)}
 ];
+
+/// 域⑤ 映像：WAYCOMP_SVC_ELF（M42-WAYCOMP8——**waycomp 主体 ELF 化
+/// 迁移本体：常驻合成器服务会话环/合流电气面 ring3 化**，真常驻不退
+/// 出形服务，播种 lane `spawn_elf_seed_resident` 消费）。车道：
+/// SYS_UNIXSOCK BIND("wayland-1")〔名域正交——wayland-0 = t103 /
+/// wayland-comp = 内核 waycomp 双轨回归锚〕→ SYS_LOG boot 取证 → 真
+/// 常驻环：ACCEPT_B 阻塞收连接 → 会话环〔RECV 游标累计 ≥ 96B → 定
+/// 形匹配器：A@0 = get_registry 头 → globals 124B 公告单发〔
+/// encode_registry_global_event 同源字节——registry=2 + 四 global
+/// 声明序〕；C@88 = commit 头 → SYS_FB_SURFACE op0 REGISTER（v0 策
+/// 略几何 32,32,320,200 z=20——返回槽写窗 VA）→ pane_pattern 320×200
+/// 直写〔双色 0x{WC_C0:X}/0x{WC_C1:X}——fb id 色相 0x{WC_TINT:X}〕→
+/// SYS_FB_SYNC 损伤记账 → wl_callback.done 12B（串号递增——跨会话
+/// 存续）〕→ RECV 0 = EOF → teardown〔op2 REMOVE + SYNC〕→ 回
+/// ACCEPT_B。错误码大值域 → teardown 收场回环（fail-visible）。bail
+/// 100/101。t110 消费（RESIDENT_SEED v0 有界退出形挂账摘牌——真常驻
+/// 不退出形在环；窗内容解析域挂账随 ring3 车道重验批次）。
+pub static WAYCOMP_SVC_ELF: [u8; {len(elf_wc)}] = [
+{rs_hex(elf_wc)}
+];
 """
     OUT.write_text(out)
     print(
         f"[gen_m42_elf_lane] ELF_NATIVE={len(elf_native)}B SHM_CLIENT={len(elf_client)}B "
         f"FBDEV_SVC_ELF={len(elf_fbsvc)}B RESIDENT_SEED={len(elf_resident)}B "
-        f"INPUT_CLIENT={len(elf_input)}B wire={len(wire)}B input_wire={len(input_wire)}B → {OUT}"
+        f"INPUT_CLIENT={len(elf_input)}B WAYCOMP_SVC_ELF={len(elf_wc)}B "
+        f"wire={len(wire)}B input_wire={len(input_wire)}B wc_batch={len(wc_batch)}B "
+        f"wc_globals={len(wc_globals)}B → {OUT}"
     )
 
 

@@ -86,8 +86,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108）。
-const SELFTEST_TOTAL: usize = 109;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110）。
+const SELFTEST_TOTAL: usize = 110;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7169,6 +7169,18 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t109 = t109_run(&mut log);
     report(&mut log, t109, "waycomp-input-chain");
 
+    // t110) waycomp 主体 ELF 化迁移活体（M42-WAYCOMP8 笔⑧「常驻
+    //       waycomp 服务会话环/合流电气面迁出内核态」迁移本体）：
+    //       WAYCOMP_SVC_ELF 结构锚（gen 域⑤——真常驻不退出形，编译
+    //       进程链第五形）→ 常驻播种（spawn_elf_seed_resident）→ 会
+    //       话环合流电气面 ×2 轮同构（connect + wire 批 96B + RECV 字
+    //       节计数 ≥136 + done 串号递增 + VRAM pane_pattern 探针 +
+    //       SHUT/摘除/EOF——真常驻回环显形）→ 收束（usock 对账 + ELF
+    //       存续 + surface 表复原 + VRAM 复原）。
+    //       LUMINA-T110-WAYCOMPELF/OK。
+    let t110 = t110_run(&mut log);
+    report(&mut log, t110, "waycomp-elf-migration");
+
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
     //      pf_hook 入口扩判「U 位 或 CR2 落增长栈窗口域」——CPL0 用户
@@ -10411,6 +10423,281 @@ fn t109_run(log: &mut DualLog) -> bool {
     );
     if ok {
         let _ = writeln!(log, "LUMINA-T109-OK");
+    }
+    ok
+}
+
+/// t110 waycomp 主体 ELF 化迁移活体执行体（M42-WAYCOMP8 笔⑧——「常驻
+/// waycomp 服务会话环/合流电气面迁出内核态」迁移本体）。相位序：
+/// (a) 结构锚：WAYCOMP_SVC_ELF 真 ELF64 容器字段对账（gen 域⑤——
+///     真常驻不退出形服务，编译进程链第五形）；
+/// (b) 常驻播种：spawn_elf_seed_resident → resident 旗标 × 原生 ABI
+///     复合显形（RESIDENT_SEED v0 有界退出形挂账摘牌域）；
+/// (c) 会话环合流电气面 ×2 轮同构（真常驻回环显形域）：connect（
+///     NoEnt 重试窗——ELF bind 时延吸收，t108 dispi 重试同谱）→ wire
+///     批 96 B 单发〔prism 编码器同源构建——get_registry → bind
+///     compositor → create_surface 0x21 → damage → commit〕→ RECV 字
+///     节计数 ≥136（globals 124 + done 12——t106 字节计数车道）+
+///     globals 头/done 尾解析〔obj=0x31 + 串号 1→2 递增——跨会话存续
+///     域〕→ 合成执行 + VRAM pane_pattern 四探针（ELF REGISTER 槽写
+///     窗直写 + SYS_FB_SYNC 记账——ring3 合流电气面显形）→ SHUT →
+///     surface 摘除有界等 → EOF 排空对账；
+/// (d) 收束：usock 对账〔ACCEPT_WAKES +2 / EOFS +2 / SENDS ≥ +4 /
+///     收字节 ≥ 2×136〕+ ELF 存续（alive × resident——真常驻不退出）
+///     + surface 表复原 + VRAM pane 域回 stage 基线。
+/// LUMINA-T110-WAYCOMPELF/OK 双面板标记。
+fn t110_run(log: &mut DualLog) -> bool {
+    use prism::wayland as wl;
+    let mut ok = true;
+    task::reset_user_evidence(); // 零锁判据面清零（t101 同款）
+    let me = task::current_task_id();
+    let us0 = unixsock::usock_stamps(); // 流字节基线（客户端收发对账域）
+    let sc0 = fb::surf_count();
+    // (a) 结构锚：WAYCOMP_SVC_ELF 容器字段对账（gen 域⑤）
+    let struct_ok = (|| {
+        let img = bedrock::elf::parse(&user::WAYCOMP_SVC_ELF).ok()?;
+        Some(
+            img.entry == user::ELF_LANE_ENTRY
+                && img.load_count == 2
+                && img.loads[0].vaddr == user::ELF_LANE_ENTRY
+                && img.loads[0].flags & bedrock::elf::PF_X != 0
+                && img.loads[1].vaddr == user::ELF_LANE_DATA_VA
+                && img.loads[1].flags & bedrock::elf::PF_W != 0,
+        )
+    })()
+    .unwrap_or(false);
+    ok &= struct_ok;
+    // (b) 常驻播种（spawn_elf_seed_resident——真常驻不退出形）
+    let pid = match procs::spawn_elf_seed_resident(
+        "waycomp-svc-elf",
+        &user::WAYCOMP_SVC_ELF,
+        &["waycomp-svc-elf"],
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = writeln!(log, "t110: svc build failed ({e:?})");
+            return false;
+        }
+    };
+    let res_ok = pid != usize::MAX && task::task_is_resident(pid) && !task::task_is_lin_abi(pid);
+    ok &= res_ok;
+    // (c) 会话环合流电气面 ×2 轮同构（真常驻回环——第二轮 connect 复
+    //     用同服务进程；connect NoEnt 重试窗吸收 ELF bind 时延）
+    let mut round_ok = [false; 2];
+    let mut sers = [0u32; 2];
+    for round in 0..2usize {
+        let hc = {
+            let mut found = None;
+            let dl = ostd::time::now() + 480;
+            loop {
+                match unixsock::sock_connect(me, user::WC_SVC_SOCK_NAME) {
+                    Ok(h) => {
+                        found = Some(h);
+                        break;
+                    }
+                    Err(unixsock::UsockError::NoEnt) if ostd::time::now() < dl => {
+                        task::yield_now();
+                    }
+                    Err(_) => break,
+                }
+            }
+            found
+        };
+        let Some(hc) = hc else {
+            let _ = writeln!(log, "t110: round {} connect failed (bind 缺位)", round);
+            break;
+        };
+        // wire 批 96 B（prism 编码器同源构建——gen 域⑤客户端批逐字节对账）
+        let mut batch = [0u8; 128];
+        let mut bl = 0usize;
+        bl += wl::encode_display_get_registry(&mut batch[bl..], 1, user::WC_SVC_REGISTRY_ID)
+            .unwrap_or(0);
+        bl += wl::encode_registry_bind(
+            &mut batch[bl..],
+            user::WC_SVC_REGISTRY_ID,
+            1,
+            "wl_compositor",
+            4,
+            user::WC_SVC_COMP_ID,
+        )
+        .unwrap_or(0);
+        bl += wl::encode_message(
+            &mut batch[bl..],
+            user::WC_SVC_COMP_ID,
+            wl::compositor::REQ_CREATE_SURFACE,
+            &[wl::WlArg::NewId(user::WC_SVC_SURF)],
+        )
+        .unwrap_or(0);
+        bl += wl::encode_message(
+            &mut batch[bl..],
+            user::WC_SVC_SURF,
+            wl::surface::REQ_DAMAGE,
+            &[
+                wl::WlArg::Int(0),
+                wl::WlArg::Int(0),
+                wl::WlArg::Int(user::WC_SVC_W as i32),
+                wl::WlArg::Int(user::WC_SVC_H as i32),
+            ],
+        )
+        .unwrap_or(0);
+        bl += wl::encode_surface_commit(&mut batch[bl..], user::WC_SVC_SURF).unwrap_or(0);
+        let batch_ok = bl == user::WC_SVC_WIRE_LEN;
+        let sent = unixsock::sock_send(me, hc as u64, &batch[..bl]).unwrap_or(0);
+        let send_ok = batch_ok && sent == bl;
+        ok &= send_ok;
+        // RECV 字节计数 ≥136（globals 124 + done 12——t106 车道）+ 结构解析
+        let mut acc = [0u8; 512];
+        let mut got = 0usize;
+        let dl = ostd::time::now() + 960;
+        while got < user::WC_SVC_EV_TARGET && ostd::time::now() < dl {
+            match unixsock::sock_recv(me, hc as u64, &mut acc[got..]) {
+                Ok(0) => break,
+                Ok(n) => got += n,
+                Err(_) => break,
+            }
+        }
+        let recv_ok = got >= user::WC_SVC_EV_TARGET;
+        // globals 头对账（registry=2 global 事件——36 B 头打包域）
+        let ghdr = |a: &[u8]| -> (u32, u32) {
+            (
+                u32::from_le_bytes(a[0..4].try_into().unwrap_or_default()),
+                u32::from_le_bytes(a[4..8].try_into().unwrap_or_default()),
+            )
+        };
+        let glob_ok = got >= 12 && ghdr(&acc) == (user::WC_SVC_REGISTRY_ID, (36u32) << 16);
+        // done 尾解析（obj=0x31 / header (12<<16)|0 / 串号 = round+1）
+        let tail = &acc[got.saturating_sub(12)..got.max(12)];
+        let (dobj, dhdr) = ghdr(tail);
+        let ser = u32::from_le_bytes(tail[8..12].try_into().unwrap_or_default());
+        let done_ok = dobj == user::WC_SVC_CB && dhdr == (12u32) << 16 && ser == round as u32 + 1;
+        sers[round] = ser;
+        ok &= recv_ok && glob_ok && done_ok;
+        // 合成执行 + VRAM pane_pattern 四探针（ELF REGISTER 槽写窗直写
+        // + SYS_FB_SYNC 记账——ring3 合流电气面显形；掩码域 t107 同款）。
+        // 合成快照「登记次拍生效」一帧滞后语义——有界多拍合成重试
+        // （确定性域：次拍必达，4 拍上界只吸收时序差窗）
+        let layer_ok = fb::surf_layer_of(user::WC_SVC_SURF)
+            .map(|(z, v, b)| {
+                z == user::WC_SVC_Z
+                    && v
+                    && b.x == user::WC_SVC_X as i32
+                    && b.y == user::WC_SVC_Y as i32
+                    && b.w == user::WC_SVC_W
+                    && b.h == user::WC_SVC_H
+            })
+            .unwrap_or(false);
+        let mut px_ok = false;
+        let mut diag = [0u32; 4];
+        for _ in 0..4 {
+            task::yield_now(); // 帧边界推进（同 tick 合成快照不更新——一帧滞后语义）
+                               // 损伤重录（首拍陈旧快照消费损伤计划后，后续拍重渲染域——
+                               // 试探确定性：次拍快照必达新态）
+            let _ = fb::sys_fb_sync(
+                user::WC_SVC_X as u64,
+                user::WC_SVC_Y as u64,
+                user::WC_SVC_W as u64,
+                user::WC_SVC_H as u64,
+            );
+            let _ = fb::fb_compose_tick();
+            px_ok = true;
+            for (i, (lx, ly)) in [(8i32, 8i32), (100, 8), (8, 190), (200, 100)]
+                .into_iter()
+                .enumerate()
+            {
+                let want = waycomp::pane_pattern(user::WC_SVC_SURF, lx, ly) & 0x00FF_FFFF;
+                let got =
+                    fb::fb_probe_px_read(user::WC_SVC_X as i32 + lx, user::WC_SVC_Y as i32 + ly);
+                diag[i] = got;
+                if got != want {
+                    px_ok = false;
+                }
+            }
+            if px_ok {
+                break;
+            }
+        }
+        ok &= layer_ok && px_ok;
+        let _ = writeln!(
+            log,
+            "t110: px-diag want=({:#x},{:#x}) got=({:#x},{:#x},{:#x},{:#x})",
+            waycomp::pane_pattern(user::WC_SVC_SURF, 8, 8) & 0x00FF_FFFF,
+            waycomp::pane_pattern(user::WC_SVC_SURF, 100, 8) & 0x00FF_FFFF,
+            diag[0],
+            diag[1],
+            diag[2],
+            diag[3]
+        );
+        // SHUT → ELF REMOVE 回环（surface 摘除有界等）+ EOF 排空对账
+        let shut = unixsock::sys_unixsock(bedrock::abi::USOCK_SHUT, hc as u64, 0, 0);
+        ok &= shut == 0;
+        let dl = ostd::time::now() + 480;
+        while fb::surf_layer_of(user::WC_SVC_SURF).is_some() && ostd::time::now() < dl {
+            core::hint::spin_loop();
+        }
+        let removed = fb::surf_layer_of(user::WC_SVC_SURF).is_none();
+        let eof = unixsock::sock_recv(me, hc as u64, &mut acc[..32]).unwrap_or(1);
+        // 客户端句柄收口（SYS_CLOSE socket 分支终结旗标随行置位——
+        // 15 槽定容句柄表跨轮/跨测试耗尽免疫；对象存续纪律不变）
+        let closed = vfs::sys_close(hc as u64) == 0;
+        round_ok[round] = removed && eof == 0 && recv_ok && glob_ok && done_ok && send_ok && closed;
+        ok &= round_ok[round];
+        let _ = writeln!(
+            log,
+            "t110: round{} send={} recv={} glob={} done(obj={dobj:#x} ser={ser}) layer={} px={} removed={} eof={eof}",
+            round, send_ok, recv_ok, glob_ok, layer_ok, px_ok, removed
+        );
+    }
+    let rounds_ok = round_ok[0] && round_ok[1] && sers == [1, 2];
+    ok &= rounds_ok;
+    // (d) 收束：usock 对账 + ELF 存续 + surface 表复原 + VRAM 复原
+    let ust = unixsock::usock_stamps();
+    let stamps_ok = ust.6 > us0.6 // ACCEPT_WAKES ≥ +1（阻塞 accept 唤醒链——round0 定向唤醒；round1 拾取已排队连接视 ELF teardown 时序可免唤醒，双形态合法域）
+        && ust.7 >= us0.7 + 2 // EOFS ≥ +2（两轮 ELF EOF——客户端排空另行计数）
+        && ust.0 >= us0.0 + 4 // SENDS：客户端 2 批 + ELF globals/done ×2
+        && ust.2 - us0.2 >= 2 * user::WC_SVC_EV_TARGET as u64; // 客户端收字节
+    ok &= stamps_ok;
+    // 真常驻不退出形：ELF 存续 × resident 旗标（t110 终态——服务回环
+    // 第三次 accept 阻塞域）
+    let alive_ok = task::task_alive(pid) && task::task_is_resident(pid);
+    ok &= alive_ok;
+    let count_ok = fb::surf_count() == sc0;
+    ok &= count_ok;
+    // VRAM 复原（终态合成后 pane 域回 stage 基线——teardown 摘除链显
+    // 形；摘除「次拍生效」同款有界多拍合成）
+    let mut restore_ok = false;
+    for _ in 0..4 {
+        task::yield_now(); // 帧边界推进（摘除次拍生效同款）
+        let _ = fb::sys_fb_sync(32, 32, user::WC_SVC_W as u64, user::WC_SVC_H as u64);
+        let _ = fb::fb_compose_tick();
+        restore_ok = true;
+        for (px, py) in [(40i32, 40i32), (200, 100), (64, 160)] {
+            if fb::fb_probe_px_read(px, py) != fb::stage_probe_px_read(px, py) {
+                restore_ok = false;
+            }
+        }
+        if restore_ok {
+            break;
+        }
+    }
+    ok &= restore_ok;
+    let _ = writeln!(
+        log,
+        "t110: rounds={rounds_ok} sers=({},{}) alive={alive_ok} count={}=={} stamps=(wakes=+{},eofs=+{},sends=+{}) restore={restore_ok}",
+        sers[0],
+        sers[1],
+        fb::surf_count(),
+        sc0,
+        ust.6 - us0.6,
+        ust.7 - us0.7,
+        ust.0 - us0.0,
+    );
+    // 汇总取证行（双面板标记）
+    let _ = writeln!(
+        log,
+        "LUMINA-T110-WAYCOMPELF struct={struct_ok} resident={res_ok} rounds={rounds_ok} stamps={stamps_ok} restore={restore_ok}"
+    );
+    if ok {
+        let _ = writeln!(log, "LUMINA-T110-OK");
     }
     ok
 }
