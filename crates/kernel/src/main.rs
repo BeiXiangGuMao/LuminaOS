@@ -86,8 +86,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110）。
-const SELFTEST_TOTAL: usize = 110;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111）。
+const SELFTEST_TOTAL: usize = 111;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -914,6 +914,31 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
             log,
             "LUMINA-WAYCOMP-BOOT pid={waycomp_pid} listener={:#x} name=wayland-comp (常驻合成器服务化 boot 面)",
             waycomp::WLCOMP_LISTENER.load(Ordering::Acquire)
+        );
+    }
+
+    // M42-WAYCOMP10（笔⑩）boot 面切换（kmain spawn 换防）：WAYCOMP_SVC_ELF
+    // boot 常驻（ring3 合成器守备面 boot 化——spawn_elf_seed_resident 派生
+    // 面 × boot 单调用点交叉；名域 wayland-1 正交于内核 waycomp
+    // wayland-comp——**内核 waycomp 双轨回归锚保持**，t104/t106/t107/t109
+    // 断言面不变）。bind 时延吸收 = 名域登记只读探针有界轮询（零会话
+    // 扰动——不 connect 不 stamp）；fail-visible：名域未登记即证据行缺位
+    // （t110 (b) 相位 boot-face 对账必炸）。
+    let wcelf_pid = procs::spawn_elf_seed_resident(
+        "waycomp-svc-elf",
+        &user::WAYCOMP_SVC_ELF,
+        &["waycomp-svc-elf"],
+    )
+    .unwrap_or(usize::MAX);
+    procs::set_waycomp_svc_boot_pid(wcelf_pid);
+    let dlw2 = ostd::time::now() + 480; // ELF 装载 + bind 时延吸收窗（t110 connect 重试窗同谱）
+    while !unixsock::listener_name_registered(user::WC_SVC_SOCK_NAME) && ostd::time::now() < dlw2 {
+        core::hint::spin_loop();
+    }
+    if wcelf_pid != usize::MAX && unixsock::listener_name_registered(user::WC_SVC_SOCK_NAME) {
+        let _ = writeln!(
+            log,
+            "LUMINA-WAYCOMP-BOOT-ELF pid={wcelf_pid} name=wayland-1 (常驻合成器 ring3 换防 boot 面)"
         );
     }
 
@@ -7181,6 +7206,17 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t110 = t110_run(&mut log);
     report(&mut log, t110, "waycomp-elf-migration");
 
+    // t111) 内核 ISR/抢占路径寄存器契约面标本活体（M42-WAYCOMP10 域②
+    //       ——揭雷①根因调查标本批次，M22-③ 同族手法）：SPEC_ISR
+    //       结构锚（gen 域⑦——编译进程链第七形）→ 播种 → callee-saved
+    //       六寄存器 canary 三相位侵蚀窗实测〔A 纯计算窗 1M 迭代（PIT
+    //       tick 域）/ B VMM 映射域窗 ×4 轮 / C 让权窗 YIELD×64〕→
+    //       EXIT(128|掩码) 对账——内核契约面标本在环（揭雷①根因裁决
+    //       面）。
+    //       LUMINA-T111-ISR/OK。
+    let t111 = t111_run(&mut log);
+    report(&mut log, t111, "isr-contract-spec");
+
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
     //      pf_hook 入口扩判「U 位 或 CR2 落增长栈窗口域」——CPL0 用户
@@ -10432,8 +10468,10 @@ fn t109_run(log: &mut DualLog) -> bool {
 /// 笔⑨——会话环从字节计数车道升级为真协议消费者）。相位序：
 /// (a) 结构锚：WAYCOMP_SVC_ELF 真 ELF64 容器字段对账（gen 域⑤⑥——
 ///     真常驻不退出形服务 + 全谱 wire 解析，编译进程链第六形）；
-/// (b) 常驻播种：spawn_elf_seed_resident → resident 旗标 × 原生 ABI
-///     复合显形（RESIDENT_SEED v0 有界退出形挂账摘牌域）；
+/// (b) boot 面换防对账（M42-WAYCOMP10——WAYCOMP_SVC_ELF boot 常驻：
+///     kmain spawn 换防落账，v0 in-test 播种退役）→ boot pid 槽 +
+///     resident 旗标 × 原生 ABI 复合显形 + 名域登记对账（内核 waycomp
+///     双轨回归锚保持——wayland-comp 断言面不变）；
 /// (c) 会话环合流电气面 ×2 轮同构（真常驻回环显形域）：connect（
 ///     NoEnt 重试窗——ELF bind 时延吸收，t108 dispi 重试同谱）→ wire
 ///     批单发〔round0 = 标准批 96 B（A@0/C@88 锚域回归锚——gen 域⑤
@@ -10477,19 +10515,16 @@ fn t110_run(log: &mut DualLog) -> bool {
     })()
     .unwrap_or(false);
     ok &= struct_ok;
-    // (b) 常驻播种（spawn_elf_seed_resident——真常驻不退出形）
-    let pid = match procs::spawn_elf_seed_resident(
-        "waycomp-svc-elf",
-        &user::WAYCOMP_SVC_ELF,
-        &["waycomp-svc-elf"],
-    ) {
-        Ok(p) => p,
-        Err(e) => {
-            let _ = writeln!(log, "t110: svc build failed ({e:?})");
-            return false;
-        }
-    };
-    let res_ok = pid != usize::MAX && task::task_is_resident(pid) && !task::task_is_lin_abi(pid);
+    // (b) boot 面换防对账（M42-WAYCOMP10——WAYCOMP_SVC_ELF boot 常驻：
+    //     kmain spawn 换防落账〔boot 证据行 LUMINA-WAYCOMP-BOOT-ELF〕，
+    //     内核 waycomp 双轨回归锚保持；v0 in-test 播种退役）——boot pid
+    //     槽 + resident × 原生 ABI 复合显形 + 名域登记对账
+    let pid = procs::waycomp_svc_boot_pid();
+    let res_ok = pid != usize::MAX
+        && task::task_alive(pid)
+        && task::task_is_resident(pid)
+        && !task::task_is_lin_abi(pid)
+        && unixsock::listener_name_registered(user::WC_SVC_SOCK_NAME);
     ok &= res_ok;
     // (c) 会话环合流电气面 ×2 轮同构（真常驻回环——第二轮 connect 复
     //     用同服务进程；connect NoEnt 重试窗吸收 ELF bind 时延）
@@ -10841,6 +10876,89 @@ fn t110_run(log: &mut DualLog) -> bool {
     );
     if ok {
         let _ = writeln!(log, "LUMINA-T110-OK");
+    }
+    ok
+}
+
+/// t111 内核 ISR/抢占路径寄存器契约面标本活体执行体（M42-WAYCOMP10 域
+/// ②——揭雷①根因调查标本批次，M22-③ 同族手法：DR0 哨兵/-d int 标本
+/// → canary 标本 → 定根因 → 收口 → 回归）。相位序：
+/// (a) 结构锚：SPEC_ISR 真 ELF64 容器字段对账（gen 域⑦——编译进程链
+///     第七形〔契约面标本形〕）；
+/// (b) 播种：spawn_elf_seed（原生 ABI）→ callee-saved 六寄存器 canary
+///     〔rbx/rbp/r12-r15——ctx 七槽 0x08..0x30 契约面全谱，bit0=r15 =
+///     揭雷①主角〕三相位侵蚀窗实测——A 纯计算窗 1M 迭代（跨 ≥1 PIT
+///     tick：M40-ASH2 后 ring3 ISR 量子抢占互斥，内核唯一执行面 = PIT
+///     ISR 保存/恢复 + 计账）/ B VMM 映射域窗 ×4 轮（REGISTER/REMOVE +
+///     写窗 + SYNC——映射/反映射/损伤记账 syscall 密集窗）/ C 让权窗
+///     YIELD×64（协作上下文交换面）；
+/// (c) 有界收割：EXIT(128 | 掩码)——全契约完好 = 0x80；侵蚀位域解码
+///     取证行（A/B/C 掩码——归因域直读）；
+/// (d) 对账：exit == SPEC_ISR_EXIT_OK（内核寄存器保存域契约面标本在
+///     环——揭雷①根因裁决面：内核侧无写穿面，v0 归因 = 映像手编汇金
+///     imm32 符号扩展编码缺陷〔and r15, 0xFFFFFFFF 无操作——游标清零
+///     语义未执行，陈旧派发链自噬〕如实改判落账）。
+/// LUMINA-T111-ISR/OK 面板标记。
+fn t111_run(log: &mut DualLog) -> bool {
+    let mut ok = true;
+    task::reset_user_evidence(); // 零锁判据面清零（t101 同款）
+                                 // (a) 结构锚：SPEC_ISR 容器字段对账（gen 域⑦）
+    let struct_ok = (|| {
+        let img = bedrock::elf::parse(&user::SPEC_ISR).ok()?;
+        Some(
+            img.entry == user::ELF_LANE_ENTRY
+                && img.load_count == 2
+                && img.loads[0].vaddr == user::ELF_LANE_ENTRY
+                && img.loads[0].flags & bedrock::elf::PF_X != 0
+                && img.loads[1].vaddr == user::ELF_LANE_DATA_VA
+                && img.loads[1].flags & bedrock::elf::PF_W != 0,
+        )
+    })()
+    .unwrap_or(false);
+    ok &= struct_ok;
+    // (b) 播种（原生 ABI——spawn_elf_seed 有界退出形）
+    let pid = match procs::spawn_elf_seed("spec-isr", &user::SPEC_ISR, &["spec-isr"]) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = writeln!(log, "t111: spec build failed ({e:?})");
+            return false;
+        }
+    };
+    let spawn_ok = pid != usize::MAX && !task::task_is_lin_abi(pid);
+    ok &= spawn_ok;
+    // (c) 有界收割（2400 拍上界——相位 A 1M 迭代 TCG 慢因子吸收域；
+    //     实测窗 ≈ 数十拍量级，上界只吸收极端时序）
+    let deadline = ostd::time::now() + 2400;
+    while task::user_exit_codes().1 == u64::MAX && ostd::time::now() < deadline {
+        core::hint::spin_loop();
+    }
+    let st = task::task_debug_state(pid);
+    let code = task::task_debug_exit_code(pid);
+    let dhit = ostd::time::now() >= deadline;
+    if st == 4 {
+        let r = procs::sys_wait_pid(pid as u64);
+        let rcode = r & 0xFFFF;
+        let reap_ok =
+            r >> 32 == 1 && rcode as i32 == user::SPEC_ISR_EXIT_OK && !task::task_alive(pid);
+        ok &= reap_ok;
+        // (d) 侵蚀位域解码（取证面——exit ≠ 0x80 时 A/B/C 掩码直读）
+        let ma = code & 0x3F;
+        let mb = (code >> 8) & 0x3F;
+        let mc = (code >> 16) & 0x3F;
+        let _ = writeln!(
+            log,
+            "t111: reaped exit={rcode:#x} (expect 0x80) alive={} masks=(A={ma:#x} B={mb:#x} C={mc:#x})",
+            task::task_alive(pid)
+        );
+    } else {
+        ok = false; // 滞域 fail-visible（标本未收敛——deadline-hit 显形）
+    }
+    let _ = writeln!(
+        log,
+        "LUMINA-T111-ISR struct={struct_ok} spawn={spawn_ok} st={st} exit={code:#x} deadline-hit={dhit}"
+    );
+    if ok {
+        let _ = writeln!(log, "LUMINA-T111-OK");
     }
     ok
 }

@@ -50,6 +50,22 @@
   定形匹配器必失域）+ round2 畸形拒收探针（obj=9 op=3 零事件到达）
   双活体。
 
+【域⑦】SPEC_ISR 内核寄存器契约面标本（M42-WAYCOMP10——内核 ISR/抢占
+  路径寄存器契约面标本批次，揭雷①根因调查，M22-③ 同族手法）：
+  callee-saved 契约面六寄存器〔rbx/rbp/r12/r13/r14/r15——ctx 七槽
+  0x08..0x30 全谱〕装 canary → 三相位侵蚀窗实测：
+  A. 纯计算窗 1M 迭代（跨 ≥1 PIT tick——M40-ASH2 后 ring3 ISR 量子
+     抢占互斥，内核唯一执行面 = PIT ISR 保存/恢复 + 计账）;
+  B. VMM 映射域窗 ×4 轮（SYS_FB_SURFACE REGISTER/REMOVE + 内层写窗
+     + SYNC——映射/反映射/损伤记账路径 syscall 密集窗）;
+  C. 让权窗 YIELD×64（协作上下文交换面——lumina_context_switch
+     七槽保存/恢复契约）。
+  三相位各自 canary 对账（侵蚀位掩码 A[0..6)/B[8..14)/C[16..22)——
+  bit0=r15（揭雷①主角）/bit1=r14/bit2=r13/bit3=r12/bit4=rbx/
+  bit5=rbp）→ EXIT(128 | 掩码)——全契约完好 = 0x80。寄存器纪律：
+  六 callee-saved = 纯 canary（装载后零触碰）；循环计数/掩码 = 内存
+  槽面（r11 = 数据段基址——syscall 指令硬件清 r11，逐 syscall 重装）。
+
 交叉锚点常量（与 kernel::shm / kernel::unixsock / kernel::waycomp /
 kernel::main(t105/t106) 双向对账，漂移即红）：
   ELF_ENTRY       = 0x40_0000   （PD[2] 槽域——build_user_space_elf 放置域）
@@ -168,6 +184,57 @@ WC_IFACE_LEN = 14
 WC_IFACE_DW = (0x635F_6C77, 0x6F70_6D6F, 0x6F74_6973, 0x0000_0072)  # wl_c/ompo/sito/r\0\0\0
 # 定形外消息探针（t110 round2 畸形拒收——dispatch default 域）
 WC_NEG_OBJ, WC_NEG_OP, WC_NEG_SIZE = 9, 3, 8
+
+# ---- 域⑦常量（M42-WAYCOMP10——内核 ISR/抢占路径寄存器契约面标本批次：
+# 揭雷①根因调查，M22-③ 同族手法。callee-saved 契约面六寄存器 canary
+# 三相位侵蚀窗实测——A 纯计算窗（PIT tick 域）/ B VMM 映射域窗
+#（REGISTER/REMOVE ×4）/ C 让权窗（YIELD×64）。侵蚀位掩码落退出码：
+# 128 = 全契约完好，bit0=r15〔揭雷①主角——v0 r15 双槽打包域〕/
+# bit1=r14/bit2=r13/bit3=r12/bit4=rbx/bit5=rbp；B/C 相位掩码左移
+# 8/16 位并入。canary 互斥于 t110 域（surface 0x3A ∉ {0x21}；矩形
+# 700,500 ∉ waycomp pane 32,32,320,200——VRAM 断言面零扰动）。）----
+SYS_FB_SYNC_D7 = 36  # 同域⑤ SYS_FB_SYNC（独立常量——域内自洽）
+SPEC_EVID = b"LUMINA-T111-ISR canary ok"
+SPEC_DATA_SIZE = 0x140
+# 内存槽面（r11 = ELF_DATA_VA 基址，disp = 绝对偏移——syscall 清 r11，
+# 逐 syscall 重装；槽面纪律 = 域⑥ 解析槽面同源）
+SPEC_ST_CNT_A = 0x20   # 相位 A 迭代计数（dword）
+SPEC_ST_CNT_B = 0x24   # 相位 B 轮计数（dword）
+SPEC_ST_CNT_BI = 0x28  # 相位 B 内层写窗迭代计数（dword）
+SPEC_ST_YLD = 0x2C     # 相位 C 让权余量（dword）
+SPEC_ST_MASK_A = 0x30  # 相位 A 侵蚀掩码（dword）
+SPEC_ST_MASK_B = 0x34  # 相位 B 侵蚀掩码（dword）
+SPEC_ST_MASK_C = 0x38  # 相位 C 侵蚀掩码（dword）
+SPEC_SCR_OFF = 0x40    # 相位 A 转存缓冲（64 槽 ×4B 轮转——数据段写活跃域）
+SPEC_ITERS_A = 1_000_000   # 相位 A 纯计算迭代（≈6M insn——跨 ≥1 PIT tick 窗）
+SPEC_ROUNDS_B = 4          # 相位 B REGISTER/REMOVE 轮数（VMM 映射/反映射域窗）
+SPEC_INNER_B = 64          # 相位 B 每轮写窗像素数（64×4B = 256B ≤ 窗 16KiB）
+SPEC_YIELDS_C = 64         # 相位 C 让权拍数（RESIDENT_SEED YIELD × N 同窗）
+SPEC_SURF = 0x3A           # 标本 surface id（域外正交——waycomp ELF = 0x21）
+SPEC_X, SPEC_Y, SPEC_W, SPEC_H, SPEC_Z = 700, 500, 64, 64, 10
+SPEC_XY_PACK = (SPEC_Y << 32) | SPEC_X
+SPEC_WH_PACK = (SPEC_H << 32) | SPEC_W
+# canary 值域（六 callee-saved——ctx 七槽 0x08..0x30 契约面全谱；
+# 揭雷①主角 r15 置 bit0——v0 双槽打包域〔hi=fill ‖ lo=串号〕直接对账）
+SPEC_CAN_RBX = 0xA111_1111_1111_1111
+SPEC_CAN_RBP = 0xA666_6666_6666_6666
+SPEC_CAN_R12 = 0xA222_2222_2222_2222
+SPEC_CAN_R13 = 0xA333_3333_3333_3333
+SPEC_CAN_R14 = 0xA444_4444_4444_4444
+SPEC_CAN_R15 = 0xA555_5555_5555_5555
+# 侵蚀位序（bit0 = r15 揭雷①主角 / bit1 = r14 / bit2 = r13 / bit3 = r12
+# / bit4 = rbx / bit5 = rbp——对账编码 = movabs rcx, canary + cmp reg,rcx
+# + je +2 + or ebp, bit）
+SPEC_CAN_TABLE = (
+    (1 << 0, SPEC_CAN_R15, (0x49, 0x39, 0xCF)),  # cmp r15, rcx
+    (1 << 1, SPEC_CAN_R14, (0x49, 0x39, 0xCE)),  # cmp r14, rcx
+    (1 << 2, SPEC_CAN_R13, (0x49, 0x39, 0xCD)),  # cmp r13, rcx
+    (1 << 3, SPEC_CAN_R12, (0x49, 0x39, 0xCC)),  # cmp r12, rcx
+    (1 << 4, SPEC_CAN_RBX, (0x48, 0x39, 0xCB)),  # cmp rbx, rcx
+    (1 << 5, SPEC_CAN_RBP, (0x48, 0x39, 0xCD)),  # cmp rbp, rcx（REX.W 无 B——与 r13 域字节分立）
+)
+SPEC_EXIT_OK = 128  # 0x80 = 全契约完好（侵蚀位掩码并入退出码——内核对账面）
+
 
 OUT = Path(__file__).resolve().parent.parent / "crates/kernel/src/exec_images_gen_m42_elf.rs"
 
@@ -1119,6 +1186,163 @@ def build_resident_code():
     return bytes(a.buf)
 
 
+# ---- 域⑦：SPEC_ISR 代码段（M42-WAYCOMP10——内核 ISR/抢占路径寄存器
+# 契约面标本：callee-saved 六寄存器 canary 三相位侵蚀窗实测。寄存器
+# 纪律：rbx/rbp/r12-r15 = 纯 canary（装载后零触碰——ctx 七槽 0x08..0x30
+# 契约面全谱）；r11 = 数据段基址（syscall 指令硬件清 r11/rcx——逐
+# syscall 重装）；工作寄存器 = caller-saved 全谱（rax/rcx/rdx/rsi/rdi/
+# r8-r11）；循环计数/掩码 = 内存槽面（域⑥解析槽面纪律同源）。相位：
+# A 纯计算窗 1M 迭代（跨 ≥1 PIT tick——M40-ASH2 后 ring3 ISR 量子抢占
+# 互斥，内核唯一执行面 = PIT ISR 保存/恢复 + 计账）；B VMM 映射域窗
+# ×4 轮（REGISTER/REMOVE + 内层写窗 + SYNC）；C 让权窗 YIELD×64
+#（协作上下文交换面）。侵蚀位掩码：bit0=r15〔揭雷①主角〕/bit1=r14/
+# bit2=r13/bit3=r12/bit4=rbx/bit5=rbp——EXIT(128|掩码)，全契约完好
+# = 0x80。）----
+def emit_canary_verify(a, phase):
+    """canary 六寄存器对账块：r9d = 侵蚀位掩码（调用方先 xor r9d,r9d）。
+
+    逐寄存器：movabs rcx, canary → cmp reg, rcx → je +2 → or r9d, bit。
+    零 syscall——caller-saved rcx/r9d 自由使用（无契约面）。标号 = 相位
+    前缀（A/B/C 三相位复用同一对账块——域⑦标号全谱唯一纪律）。
+
+    **随行揭雷收口（标本自噬域）**：掩码累加器 v0 = ebp——rbp 本体 =
+    canary（bit5 对账对象），xor ebp,ebp 先毁 canary 再比对 = bit5 三
+    相位恒置位（首跑实录 masks=(A=0x20 B=0x20 C=0x20)——五寄存器
+    r15/r14/r13/r12/rbx 三相位全存活 = 内核契约面真实证据）。收口 =
+    累加器改 r9d（caller-saved 无契约面——canary 六寄存器全谱脱离对账
+    工作寄存器域）。"""
+    for k, (bit, can, cmp_bytes) in enumerate(SPEC_CAN_TABLE):
+        a.db(0x48, 0xB9)                       # movabs rcx, imm64
+        a.imm64(can)
+        a.db(*cmp_bytes)                       # cmp reg, rcx
+        a.jmp8(0x74, f"cv_{phase}{k}")         # je cv_{phase}{k}（前向 rel8——跳过 or 仅 3B）
+        a.db(0x41, 0x83, 0xC9)                 # or r9d, imm8（侵蚀位置位）
+        a.db(bit)
+        a.label(f"cv_{phase}{k}")
+
+
+def build_spec_isr_code():
+    a = Asm()
+
+    # 1) SYS_LOG boot 取证（无条件诊断行——面板标记由内核 t111 断言面承载）
+    a.db(0x48, 0xBF); a.imm64(ELF_DATA_VA)     # movabs rdi, evid
+    mov_esi_i(a, len(SPEC_EVID))
+    mov_eax_i(a, SYS_LOG)
+    syscall(a)
+
+    # 2) canary 装载（callee-saved 六寄存器——契约面活体域，此后零触碰）
+    a.db(0x48, 0xBB); a.imm64(SPEC_CAN_RBX)    # movabs rbx, canary
+    a.db(0x48, 0xBD); a.imm64(SPEC_CAN_RBP)    # movabs rbp, canary
+    a.db(0x49, 0xBC); a.imm64(SPEC_CAN_R12)    # movabs r12, canary
+    a.db(0x49, 0xBD); a.imm64(SPEC_CAN_R13)    # movabs r13, canary
+    a.db(0x49, 0xBE); a.imm64(SPEC_CAN_R14)    # movabs r14, canary
+    a.db(0x49, 0xBF); a.imm64(SPEC_CAN_R15)    # movabs r15, canary
+
+    # 3) 相位 A：纯计算窗（1M 迭代——跨 ≥1 PIT tick；无 syscall——
+    #    r11 基址一次装载贯穿全相位；内核唯一执行面 = PIT ISR）
+    a.db(0x49, 0xBB); a.imm64(ELF_DATA_VA)     # movabs r11, DATA（相位 A 基址）
+    a.db(0x41, 0xC7, 0x43); a.db(SPEC_ST_CNT_A); a.imm32(0)   # mov dword [r11+0x20], 0
+    a.label("a_loop")
+    a.db(0x41, 0xFF, 0x43); a.db(SPEC_ST_CNT_A)               # inc dword [r11+0x20]
+    a.db(0x41, 0x8B, 0x43); a.db(SPEC_ST_CNT_A)               # mov eax, dword [r11+0x20]
+    a.db(0x83, 0xE0, 63)                       # and eax, 63（轮转槽）
+    a.db(0x41, 0x89, 0x44, 0x83); a.db(SPEC_SCR_OFF)          # mov dword [r11+rax*4+0x40], eax（数据段写活跃域）
+    a.db(0x41, 0x81, 0x7B); a.db(SPEC_ST_CNT_A); a.imm32(SPEC_ITERS_A)  # cmp dword [r11+0x20], 1M
+    a.jmp8(0x72, "a_loop")                     # jb a_loop（rel8 后向——体长 ≈26B）
+    # 相位 A canary 对账 → 掩码槽（累加器 r9d——rbp canary 本体脱工作域）
+    a.db(0x45, 0x31, 0xC9)                     # xor r9d, r9d（掩码累加器）
+    emit_canary_verify(a, "a")
+    a.db(0x45, 0x89, 0x4B); a.db(SPEC_ST_MASK_A)      # mov dword [r11+0x30], r9d（REX.R|B——v0 0x41 缺 R 位存成 ecx 揭雷收口）
+
+    # 4) 相位 B：VMM 映射域窗 ×4 轮（REGISTER/REMOVE + 内层写窗 + SYNC
+    #    ——映射/反映射/损伤记账路径 syscall 密集窗；r11 逐 syscall 重装）
+    a.label("b_round")
+    # REGISTER op0：edi=0 / esi=surf / rdx=xy / r10=wh / r8d=z → rax = 槽写窗 VA
+    a.db(0x31, 0xFF)                           # xor edi, edi
+    mov_esi_i(a, SPEC_SURF)
+    a.db(0x48, 0xBA); a.imm64(SPEC_XY_PACK)    # movabs rdx, xy
+    a.db(0x49, 0xBA); a.imm64(SPEC_WH_PACK)    # movabs r10, wh
+    a.db(0x41, 0xB8); a.imm32(SPEC_Z)          # mov r8d, 10
+    mov_eax_i(a, SYS_FB_SURFACE)
+    syscall(a)
+    a.db(0x48, 0x3D); a.imm32(SURF_VA_BASE)    # cmp rax, 0x60000000
+    a.jcc32(0x82, "b_after")                   # jb b_after（VA 域外——漆面跳过，REMOVE 照发）
+    a.db(0x48, 0x89, 0xC7)                     # mov rdi, rax（写窗游标）
+    a.db(0x49, 0xBB); a.imm64(ELF_DATA_VA)     # movabs r11, DATA（syscall 清 r11——重装）
+    a.db(0x41, 0xC7, 0x43); a.db(SPEC_ST_CNT_BI); a.imm32(0)  # mov dword [r11+0x28], 0
+    a.label("b_px")
+    a.db(0x41, 0x8B, 0x43); a.db(SPEC_ST_CNT_BI)              # mov eax, dword [r11+0x28]
+    a.db(0x89, 0x04, 0x87)                     # mov dword [rdi+rax*4], eax（写窗活跃域）
+    a.db(0x41, 0xFF, 0x43); a.db(SPEC_ST_CNT_BI)              # inc dword [r11+0x28]
+    a.db(0x41, 0x81, 0x7B); a.db(SPEC_ST_CNT_BI); a.imm32(SPEC_INNER_B)  # cmp dword [r11+0x28], 64
+    a.jmp8(0x72, "b_px")                       # jb b_px（rel8 后向）
+    # SYNC（记账唯一入口——ADR-0004 双轨语义同源）
+    mov_edi_i(a, SPEC_X)
+    mov_esi_i(a, SPEC_Y)
+    mov_edx_i(a, SPEC_W)
+    a.db(0x41, 0xBA); a.imm32(SPEC_H)          # mov r10d, 64
+    mov_eax_i(a, SYS_FB_SYNC_D7)
+    syscall(a)
+    a.label("b_after")
+    # REMOVE op2：edi=2 / esi=surf / rdx=xy / r10=wh / r8d=0
+    mov_edi_i(a, 2)
+    mov_esi_i(a, SPEC_SURF)
+    a.db(0x48, 0xBA); a.imm64(SPEC_XY_PACK)
+    a.db(0x49, 0xBA); a.imm64(SPEC_WH_PACK)
+    a.db(0x45, 0x31, 0xC0)                     # xor r8d, r8d
+    mov_eax_i(a, SYS_FB_SURFACE)
+    syscall(a)
+    # SYNC（teardown 对账——waycomp teardown 同谱）
+    mov_edi_i(a, SPEC_X)
+    mov_esi_i(a, SPEC_Y)
+    mov_edx_i(a, SPEC_W)
+    a.db(0x41, 0xBA); a.imm32(SPEC_H)
+    mov_eax_i(a, SYS_FB_SYNC_D7)
+    syscall(a)
+    a.db(0x49, 0xBB); a.imm64(ELF_DATA_VA)     # movabs r11, DATA（重装）
+    a.db(0x41, 0xFF, 0x43); a.db(SPEC_ST_CNT_B)               # inc dword [r11+0x24]
+    a.db(0x41, 0x81, 0x7B); a.db(SPEC_ST_CNT_B); a.imm32(SPEC_ROUNDS_B)  # cmp dword [r11+0x24], 4
+    a.jcc32(0x82, "b_round")                   # jb b_round（rel32 后向——体长 ≈150B）
+    # 相位 B canary 对账 → 掩码槽
+    a.db(0x45, 0x31, 0xC9)
+    emit_canary_verify(a, "b")
+    a.db(0x45, 0x89, 0x4B); a.db(SPEC_ST_MASK_B)      # mov dword [r11+0x34], r9d（REX.R|B——v0 0x41 缺 R 位存成 ecx 揭雷收口）
+
+    # 5) 相位 C：让权窗（YIELD×64——协作上下文交换面；r11 逐拍重装）
+    a.db(0x49, 0xBB); a.imm64(ELF_DATA_VA)     # movabs r11, DATA
+    a.db(0x41, 0xC7, 0x43); a.db(SPEC_ST_YLD); a.imm32(SPEC_YIELDS_C)  # mov dword [r11+0x2C], 64
+    a.label("c_yld")
+    mov_eax_i(a, SYS_YIELD)
+    syscall(a)
+    a.db(0x49, 0xBB); a.imm64(ELF_DATA_VA)     # movabs r11, DATA（syscall 清 r11——重装）
+    a.db(0x41, 0xFF, 0x4B); a.db(SPEC_ST_YLD)  # dec dword [r11+0x2C]
+    a.jmp8(0x75, "c_yld")                      # jnz c_yld（rel8 后向）
+    # 相位 C canary 对账 → 掩码槽
+    a.db(0x45, 0x31, 0xC9)
+    emit_canary_verify(a, "c")
+    a.db(0x45, 0x89, 0x4B); a.db(SPEC_ST_MASK_C)      # mov dword [r11+0x38], r9d（REX.R|B——v0 0x41 缺 R 位存成 ecx 揭雷收口）
+
+    # 6) 退出码组装：edi = 128 | A | B<<8 | C<<16（侵蚀位域——内核对账面）
+    mov_edi_i(a, SPEC_EXIT_OK)
+    a.db(0x49, 0xBB); a.imm64(ELF_DATA_VA)     # movabs r11, DATA
+    a.db(0x41, 0x8B, 0x73); a.db(SPEC_ST_MASK_A)              # mov esi, dword [r11+0x30]
+    a.db(0x83, 0xE6, 63)                       # and esi, 63
+    a.db(0x09, 0xF7)                           # or edi, esi
+    a.db(0x41, 0x8B, 0x73); a.db(SPEC_ST_MASK_B)              # mov esi, dword [r11+0x34]
+    a.db(0x83, 0xE6, 63)
+    a.db(0xC1, 0xE6, 8)                        # shl esi, 8
+    a.db(0x09, 0xF7)
+    a.db(0x41, 0x8B, 0x73); a.db(SPEC_ST_MASK_C)              # mov esi, dword [r11+0x38]
+    a.db(0x83, 0xE6, 63)
+    a.db(0xC1, 0xE6, 16)                       # shl esi, 16
+    a.db(0x09, 0xF7)
+    mov_eax_i(a, SYS_EXIT)
+    syscall(a)
+    a.db(0xEB, 0xFE)                           # jmp $（EXIT 失效停机）
+    a.resolve()
+    return bytes(a.buf)
+
+
 def main():
     native_code = build_native_code()
     client_code, wire = build_client_code()
@@ -1126,6 +1350,7 @@ def main():
     resident_code = build_resident_code()
     input_code, input_wire = build_input_client_code()
     wc_code = build_wc_svc_code()
+    spec_code = build_spec_isr_code()
     wc_globals = build_wc_globals_blob()
     wc_batch = build_wc_client_batch()
     wc_batch_ext = build_wc_client_batch_ext()
@@ -1154,6 +1379,8 @@ def main():
     wc_data[WC_GLOB_OFF:WC_GLOB_OFF + len(wc_globals)] = wc_globals
     # done 事件 blob：obj = WC_CB / header = (12<<16)|0 / serial = 0（运行期改写）
     struct.pack_into("<III", wc_data, WC_DONE_OFF, WC_CB, (12 << 16) | 0, 0)
+    spec_data = bytearray(SPEC_DATA_SIZE)  # 域⑦：+0x00 取证串 / +0x20..0x3C 槽面 / +0x40 转存缓冲
+    spec_data[0x00:0x00 + len(SPEC_EVID)] = SPEC_EVID
 
     elf_native = elf64(ELF_ENTRY, [
         (ELF_ENTRY, 5, native_code),            # PF_R|PF_X
@@ -1178,6 +1405,10 @@ def main():
     elf_wc = elf64(ELF_ENTRY, [
         (ELF_ENTRY, 5, wc_code),
         (ELF_DATA_VA, 6, bytes(wc_data)),
+    ])
+    elf_spec = elf64(ELF_ENTRY, [
+        (ELF_ENTRY, 5, spec_code),
+        (ELF_DATA_VA, 6, bytes(spec_data)),
     ])
 
     # objdump 反汇编锚定 + syscall 计数
@@ -1255,6 +1486,25 @@ def main():
         ("mov $0x28,%eax", "SYS_FB_SURFACE"),
         ("mov $0x24,%eax", "SYS_FB_SYNC"),
     ], n_sys=12)  # BIND 1 + LOG 1 + ACCEPT 1 + RECV 1 + SEND(globals) 1 + REGISTER 1 + SYNC 1 + SEND(done) 1 + REMOVE 1 + SYNC(td) 1 + bail EXIT ×2（域⑥——walk 解析器零 syscall 增量：电气面 v0 同谱）
+    objdump_check(spec_code, [
+        ("movabs $0x401000,%rdi", "取证串指针"),
+        ("movabs $0xa111111111111111,%rbx", "rbx canary 装载域"),
+        ("movabs $0xa666666666666666,%rbp", "rbp canary 装载域（ctx 槽 0x10 契约面）"),
+        ("movabs $0xa222222222222222,%r12", "r12 canary 装载域"),
+        ("movabs $0xa333333333333333,%r13", "r13 canary 装载域"),
+        ("movabs $0xa444444444444444,%r14", "r14 canary 装载域"),
+        ("movabs $0xa555555555555555,%r15", "r15 canary 装载域（揭雷①主角——v0 双槽打包域）"),
+        ("cmp %rcx,%r15", "r15 canary 对账域（bit0——揭雷①对账位）"),
+        ("cmp %rcx,%rbp", "rbp canary 对账域（bit5——ctx 槽 0x10）"),
+        ("cmp %rcx,%rbx", "rbx canary 对账域（bit4）"),
+        ("cmpl $0xf4240,0x20(%r11)", "相位 A 迭代上域（1M——跨 PIT tick 窗）"),
+        ("movabs $0x1f4000002bc,%rdx", "xy 打包域（700,500）"),
+        ("movabs $0x4000000040,%r10", "wh 打包域（64,64）"),
+        ("mov %eax,(%rdi,%rax,4)", "写窗活跃域（内层 64 px）"),
+        ("mov $0x28,%eax", "SYS_FB_SURFACE"),
+        ("mov $0x24,%eax", "SYS_FB_SYNC"),
+        ("mov $0x2,%eax", "SYS_YIELD"),
+    ], n_sys=7)  # LOG 1 + REGISTER 1 + SYNC 2（记账/teardown）+ REMOVE 1 + YIELD 1 + EXIT 1（域⑦——B/C 相位运行期循环：×4 轮/×64 拍执行面，静态单出现；零 bail 臂确定性单道）
 
     # Rust 生成物
     out = f"""// 本文件由 scripts/gen_m42_elf_lane.py 生成——勿手改；重跑脚本再生成。
@@ -1482,12 +1732,56 @@ pub static INPUT_CLIENT: [u8; {len(elf_input)}] = [
 pub static WAYCOMP_SVC_ELF: [u8; {len(elf_wc)}] = [
 {rs_hex(elf_wc)}
 ];
+
+/// 域⑦ 契约面完好退出码（M42-WAYCOMP10——SPEC_ISR EXIT 基值 0x80；
+/// 侵蚀位掩码 A[0..6)/B[8..14)/C[16..22) 并入——内核 t111 对账面）。
+pub const SPEC_ISR_EXIT_OK: i32 = {SPEC_EXIT_OK};
+/// 域⑦ 标本 surface id（0x3A——waycomp ELF 0x21 域外正交）。
+#[allow(dead_code)] // 文档锚点：REGISTER/REMOVE esi imm32 内嵌同值
+pub const SPEC_ISR_SURF: u32 = {SPEC_SURF};
+/// 域⑦ 标本矩形（700,500,64,64——waycomp pane 32,32,320,200 域外
+/// 正交，VRAM 断言面零扰动）。
+#[allow(dead_code)] // 文档锚点：REGISTER/REMOVE xy 打包域内嵌同值（gen 脚本对账）
+pub const SPEC_ISR_X: u32 = {SPEC_X};
+#[allow(dead_code)] // 文档锚点：xy 打包域高 32 位内嵌同值
+pub const SPEC_ISR_Y: u32 = {SPEC_Y};
+#[allow(dead_code)] // 文档锚点：wh 打包域低 32 位内嵌同值
+pub const SPEC_ISR_W: u32 = {SPEC_W};
+#[allow(dead_code)] // 文档锚点：wh 打包域高 32 位内嵌同值
+pub const SPEC_ISR_H: u32 = {SPEC_H};
+/// 域⑦ 标本 z 序（10——waycomp master z=20 域外）。
+#[allow(dead_code)] // 文档锚点：REGISTER r8d imm32 内嵌同值
+pub const SPEC_ISR_Z: i32 = {SPEC_Z};
+/// 域⑦ 相位域上域（A 迭代 1M / B 轮数 4 / C 让权 64——gen 同源）。
+#[allow(dead_code)] // 文档锚点：相位 A 迭代上域 cmp imm32 内嵌同值
+pub const SPEC_ISR_ITERS_A: u32 = {SPEC_ITERS_A};
+#[allow(dead_code)] // 文档锚点：相位 B 轮数 cmp imm32 内嵌同值
+pub const SPEC_ISR_ROUNDS_B: u32 = {SPEC_ROUNDS_B};
+#[allow(dead_code)] // 文档锚点：相位 C 让权余量 imm32 内嵌同值
+pub const SPEC_ISR_YIELDS_C: u32 = {SPEC_YIELDS_C};
+
+/// 域⑦ 映像：SPEC_ISR（M42-WAYCOMP10——**内核 ISR/抢占路径寄存器
+/// 契约面标本**，播籽 lane `spawn_elf_seed` 消费，揭雷①根因调查
+/// M22-③ 同族手法）。车道：SYS_LOG 取证 → callee-saved 六寄存器
+/// canary 装载〔rbx/rbp/r12-r15——ctx 七槽 0x08..0x30 契约面全谱〕
+/// → 相位 A 纯计算窗 1M 迭代〔跨 ≥1 PIT tick——M40-ASH2 后 ring3
+/// ISR 量子抢占互斥，内核唯一执行面 = PIT ISR 保存/恢复 + 计账〕→
+/// 相位 B VMM 映射域窗 ×4 轮〔SYS_FB_SURFACE REGISTER/REMOVE + 内层
+/// 写窗 64 px + SYNC——映射/反映射/损伤记账 syscall 密集窗〕→ 相位
+/// C 让权窗 YIELD×64〔协作上下文交换面〕→ 退出码组装
+/// EXIT(128 | A | B<<8 | C<<16)。侵蚀位序：bit0=r15〔揭雷①主角——
+/// v0 双槽打包域 hi=fill ‖ lo=串号〕/bit1=r14/bit2=r13/bit3=r12/
+/// bit4=rbx/bit5=rbp。t111 消费（内核契约面标本活体）。
+pub static SPEC_ISR: [u8; {len(elf_spec)}] = [
+{rs_hex(elf_spec)}
+];
 """
     OUT.write_text(out)
     print(
         f"[gen_m42_elf_lane] ELF_NATIVE={len(elf_native)}B SHM_CLIENT={len(elf_client)}B "
         f"FBDEV_SVC_ELF={len(elf_fbsvc)}B RESIDENT_SEED={len(elf_resident)}B "
         f"INPUT_CLIENT={len(elf_input)}B WAYCOMP_SVC_ELF={len(elf_wc)}B "
+        f"SPEC_ISR={len(elf_spec)}B "
         f"wire={len(wire)}B input_wire={len(input_wire)}B wc_batch={len(wc_batch)}B "
         f"wc_batch_ext={len(wc_batch_ext)}B wc_globals={len(wc_globals)}B → {OUT}"
     )

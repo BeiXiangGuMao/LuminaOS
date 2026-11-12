@@ -251,6 +251,15 @@ pub fn listeners_usage() -> (usize, usize) {
     (ls.len(), LISTEN_MAX)
 }
 
+/// 名域登记只读探针（M42-WAYCOMP10 boot 面切换——kmain 换防对账域）：
+/// 监听者注册表内是否存在同名登记。零变更零铸造——bind 时延吸收窗的
+/// 有界轮询消费面（boot 证据行 `LUMINA-WAYCOMP-BOOT-ELF` 门槛，t110
+/// (b) 相位 boot-face 对账同源）；同面不泄拓扑纪律：只回是/否。
+pub fn listener_name_registered(name: &[u8]) -> bool {
+    let ls = LISTENERS.lock();
+    ls.iter().any(|l| l.name.as_slice() == name)
+}
+
 /// 套接字对象判定（SYS_CLOSE 分支守门——identity/文件/管道/通道对象
 /// 不误消费；同面不泄拓扑纪律：只回是/否）。
 pub fn is_socket_object(object: u64) -> bool {

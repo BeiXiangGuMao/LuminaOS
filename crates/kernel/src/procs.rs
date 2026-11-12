@@ -30,7 +30,7 @@
 //!
 //! unsafe 面：零。
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::task;
 
@@ -351,6 +351,23 @@ static ELF_SEEDS: AtomicU64 = AtomicU64::new(0);
 /// ELF 播种数快照（t105 断言面）。
 pub fn elf_seeds() -> u64 {
     ELF_SEEDS.load(Ordering::Acquire)
+}
+
+/// M42-WAYCOMP10（笔⑩）boot 面切换：WAYCOMP_SVC_ELF boot 常驻 pid
+/// （kmain spawn 换防落账——ring3 合成器守备面 boot 化；内核 waycomp
+/// 双轨回归锚保持〔wayland-comp = t104/t106/t107/t109 断言面不变〕）。
+/// 消费面 = t110 (b) 相位 boot-face 对账域。`usize::MAX` = boot 播种
+/// 失败/未落（fail-visible——t110 必炸，无静默降级）。
+static WAYCOMP_SVC_BOOT_PID: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+/// boot 换防 pid 落账（kmain 单调用点——boot 常驻播种返回槽号）。
+pub fn set_waycomp_svc_boot_pid(pid: usize) {
+    WAYCOMP_SVC_BOOT_PID.store(pid, Ordering::Release);
+}
+
+/// boot 换防 pid 读面（t110 (b) 相位消费——`usize::MAX` = 未落）。
+pub fn waycomp_svc_boot_pid() -> usize {
+    WAYCOMP_SVC_BOOT_PID.load(Ordering::Acquire)
 }
 
 /// **用户态 ELF 播种 lane**（M42-ELF5 次笔——「ring3 编译进程承接」
