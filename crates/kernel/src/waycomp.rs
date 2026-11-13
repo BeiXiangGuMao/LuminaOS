@@ -51,16 +51,19 @@
 //! （真实合成器语义：重排不依赖客户端重绘）。
 //!
 //! **输入链**（M42-INPUT7——waycomp 主体迁移前置，wl_seat +
-//! wl_keyboard 输入链）：全局输入源（[`input_key`] /
-//! [`input_pointer_motion`] / [`input_pointer_button`] 生产面——v0
-//! 内核态注入域，ring3 输入守护挂账随 waycomp 主体迁移批次）→ 会
-//! 话环排空（[`drain_input`]——键盘直注入；指针 hit-test 焦点裁决
-//! 〔z 序顶窗优先——cascade 平面逆序首个含点窗〕+ click-to-focus
-//! 〔按下域指针焦点面 = 键盘焦点迁移域〕）→ 会话待发队列（prism
-//! CompSession 焦点/注入钩子）→ feed 冲刷 wl_keyboard/wl_pointer
-//! 事件出域 → 客户端。会话环 v0 = 探针轮询 + 让步
-//! （[`unixsock::session_probe_by_object`] 非消费双读——阻塞输入
-//! 等待面〔WaitWhat 扩域〕挂账随 waycomp 主体迁移批次）。
+//! wl_keyboard 输入链；**M42-WAYCOMP12 笔⑫ 双域落域**）：全局输入源
+//! （[`input_key`] / [`input_pointer_motion`] / [`input_pointer_button`]
+//! 生产面——v0 内核态注入域，**ring3 输入守护门禁在环**〔域①——
+//! Kind::User 语境拒绝 fail-visible，ABI 负空间纪律：SYS 号域零注入
+//! 臂〕）→ 会话环排空（[`drain_input`]——键盘直注入；指针 hit-test
+//! 焦点裁决〔z 序顶窗优先——cascade 平面逆序首个含点窗〕+
+//! click-to-focus〔按下域指针焦点面 = 键盘焦点迁移域〕）→ 会话待发
+//! 队列（prism CompSession 焦点/注入钩子）→ feed 冲刷
+//! wl_keyboard/wl_pointer 事件出域 → 客户端。会话环 = **阻塞输入等
+//! 待面**（域②——WaitWhat::CompIn 扩域：三静域〔输入队列空 + 会话
+//! 流空 + 非终结〕登记阻塞，v0 探针轮询 + 让步口径退役；唤醒源三向
+//! = 输入生产 wake 全域 + send 落环 conn 匹配域 + shutdown 双向；
+//! 探针预捕获静态视图零锁读——SCHED 锁窗内零 SOCKETS 取锁）。
 //!
 //! **常驻生命周期**（M42-FBSVC2 挂账域首割）：boot-spawn（kmain 单
 //! 调用点）+ 会话环常驻（accept ↔ session 循环不退出）；bind 失败/
@@ -69,7 +72,8 @@
 //! 面挂账**（M42-FBSVC2 既录口径不变）。
 //!
 //! 锁序契约：无自持锁（全部域内锁单取即放——unixsock/fb 单锁纪律
-//! 同谱）；阻塞点 = accept_wait/recv（WaitWhat 双源，探针无锁读）。
+//! 同谱）；阻塞点 = accept_wait（WaitWhat::UnixAccept）+ 会话环三静
+//! 域（WaitWhat::CompIn——M42-WAYCOMP12 扩域，探针零锁读）。
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
@@ -162,6 +166,17 @@ pub static WLCOMP_KBFOCUS: AtomicU32 = AtomicU32::new(0);
 pub static WLCOMP_INPUT_KEYS: AtomicU64 = AtomicU64::new(0);
 /// 输入源指针注入受理数（M42-INPUT7——会话 hit-test 命中域计数）。
 pub static WLCOMP_INPUT_PTRS: AtomicU64 = AtomicU64::new(0);
+/// ring3 输入守护违规计数（M42-WAYCOMP12 域①——Kind::User 任务语境
+/// 的注入调用拒绝取证；fail-visible 零静默——t113 断言面）。
+pub static WLCOMP_GUARD_ERR: AtomicU64 = AtomicU64::new(0);
+/// 会话环阻塞登记数（M42-WAYCOMP12 域②——三静域阻塞点登记前计数
+/// 〔t39 口径：阻塞点即落证〕；含探针命中未阻塞域——WAKES 为真实
+/// 阻塞显形面，t113 断言面）。
+pub static WLCOMP_IN_WAITS: AtomicU64 = AtomicU64::new(0);
+/// 会话环阻塞唤醒数（M42-WAYCOMP12 域②——CompIn 真实阻塞后被唤醒
+/// 计数：唤醒源三向〔输入生产/send 落环/shutdown〕全谱对账，t113
+/// 断言面）。
+pub static WLCOMP_IN_WAKES: AtomicU64 = AtomicU64::new(0);
 
 /// 输入源队列深度（键盘/指针各一定容——定容零堆纪律，SPSC 单生产
 /// 者域 v0 如实记档：批跑环境事实单生产者，多产者域挂账）。
@@ -171,23 +186,81 @@ static KEY_Q: SpscRing<u64, INPUT_CAP> = SpscRing::new();
 /// 指针输入队列（元素 = bit63=按钮旗 | (button/x << 32) | state/y）。
 static PTR_Q: SpscRing<u64, INPUT_CAP> = SpscRing::new();
 
+/// 输入注入域门禁（M42-WAYCOMP12 域①——ring3 输入守护）：当前语境
+/// = ring3（Kind::User 任务——syscall 派发器执行域同源）→ 拒绝（违规
+/// 计数 + false——fail-visible 零静默）；内核任务 / IDLE 语境 → 放行
+/// （true）。判定面 = [`task::current_is_user`]（SCHED 锁窗权威读）。
+/// ABI 负空间纪律：SYS 号域零输入注入臂——ring3 可达内核面仅 syscall
+/// 派发器，门禁使任何未来误接线 fail-visible 显形（t113 对账）。
+fn input_guard() -> bool {
+    if task::current_is_user() {
+        WLCOMP_GUARD_ERR.fetch_add(1, Ordering::AcqRel);
+        return false;
+    }
+    true
+}
+
 /// 输入链生产面：击键（M42-INPUT7——v0 内核态输入源注入域；键码
-/// v0 口径 = scancode set 1 原值，evdev 键码映射挂账）。
-pub fn input_key(key: u32, state: u32) {
+/// v0 口径 = scancode set 1 原值，evdev 键码映射挂账）。M42-WAYCOMP12
+/// 域①守护门禁前置（Kind::User 语境拒绝）+ 域②受理入环唤醒链
+/// （CompIn 全域 wake——阻塞会话环定向显形）。返回受理（入环成功）。
+pub fn input_key(key: u32, state: u32) -> bool {
+    if !input_guard() {
+        return false;
+    }
     let raw = ((key as u64) << 32) | (state as u64 & 0xFFFF_FFFF);
-    let _ = KEY_Q.send(raw); // 队满静默丢弃（SPSC 环纪律——KBD_DROP 同谱）
+    if KEY_Q.send(raw).is_ok() {
+        task::wake_tasks(|w| matches!(w, task::WaitWhat::CompIn { .. }));
+        true
+    } else {
+        false // 队满丢弃（SPSC 环纪律——KBD_DROP 同谱）
+    }
 }
 
 /// 输入链生产面：指针移动（屏幕坐标——会话侧 hit-test 裁决焦点域）。
-pub fn input_pointer_motion(x: i32, y: i32) {
+/// 守护门禁 + 受理入环唤醒链同 [`input_key`]。
+pub fn input_pointer_motion(x: i32, y: i32) -> bool {
+    if !input_guard() {
+        return false;
+    }
     let raw = (((x as u32) as u64) << 32) | ((y as u32) as u64 & 0xFFFF_FFFF);
-    let _ = PTR_Q.send(raw & !(1u64 << 63)); // bit63 = 0（移动域）
+    if PTR_Q.send(raw & !(1u64 << 63)).is_ok() {
+        // bit63 = 0（移动域）
+        task::wake_tasks(|w| matches!(w, task::WaitWhat::CompIn { .. }));
+        true
+    } else {
+        false
+    }
 }
 
 /// 输入链生产面：指针按键（evdev 按钮码 + 键态——BTN_LEFT 0x110 等）。
-pub fn input_pointer_button(button: u32, state: u32) {
+/// 守护门禁 + 受理入环唤醒链同 [`input_key`]。
+pub fn input_pointer_button(button: u32, state: u32) -> bool {
+    if !input_guard() {
+        return false;
+    }
     let raw = (1u64 << 63) | ((button as u64) << 32) | (state as u64 & 0xFFFF_FFFF);
-    let _ = PTR_Q.send(raw); // bit63 = 1（按钮域）
+    if PTR_Q.send(raw).is_ok() {
+        // bit63 = 1（按钮域）
+        task::wake_tasks(|w| matches!(w, task::WaitWhat::CompIn { .. }));
+        true
+    } else {
+        false
+    }
+}
+
+/// 输入队列深度取证读面（M42-WAYCOMP12 域①——t113 守护受理对账
+/// 域）：(键盘队列, 指针队列) 各自可消费元素数。零变更只读。
+pub fn input_queue_depth() -> (usize, usize) {
+    (KEY_Q.len(), PTR_Q.len())
+}
+
+/// 输入队列排水装置面（M42-WAYCOMP12——t113 相位间卫生域：守护受理
+/// 对账后排水复原，零污染后续批次；drain_input 会话消费面同款出环
+/// 纪律——逐元素弹出丢弃，零会话注入）。
+pub fn input_queue_flush() {
+    while KEY_Q.recv().is_some() {}
+    while PTR_Q.recv().is_some() {}
 }
 
 /// 取证戳快照：(listener, bound, sessions, commits, composes, last_z,
@@ -310,7 +383,37 @@ fn session_loop(conn: u64) {
             Err(_) => break, // 会话域 fail-visible 断连（v0 口径——回执 error 事件挂账）
         }
         if pending == 0 && got == 0 {
-            task::yield_now(); // 无流无输入域让步（v0 轮询口径——TCG 批跑时序域）
+            // M42-WAYCOMP12 域②阻塞输入等待面（WaitWhat::CompIn 扩域
+            // ——v0 探针轮询 + 让步口径退役）：三静域（输入队列空 +
+            // 会话流空 + 非终结）登记阻塞。探针 = 预捕获静态视图零锁
+            // 读（rx 环 len + 终结旗对 + 输入队列 is_empty）——SCHED
+            // 锁窗内零 SOCKETS 取锁（锁序 SOCKETS→SCHED 单向保持，
+            // recv_by_object 探针同款纪律）。唤醒源三向：输入生产
+            // （wake 全域）+ 会话流到达（send 落环 conn 匹配域）+
+            // 对端终结（shutdown 双向）。miss → 零阻塞回环（顶层探
+            // 针 dead 收场——fail-visible）。fd 附带数据域维持 feed
+            // 报告驱动（v0 协议时序域不变——pool_admit 触发源 = feed
+            // 池记录，阻塞面零触碰）。
+            let views = unixsock::session_wait_views(conn);
+            WLCOMP_IN_WAITS.fetch_add(1, Ordering::AcqRel); // 登记前计数（t39 口径）
+            let blocked = task::block_current_unless(task::WaitWhat::CompIn { conn }, true, || {
+                // still_pending 契约（recv_by_object 探针同款）：true = 三
+                // 静域持续（输入队列空 ∧ 会话流空 ∧ 非终结）——继续阻塞；
+                // 任一唤醒源就绪 = false → 探针命中回滚，调用方重试消费。
+                match views {
+                    Some((rx, dead, peer_dead)) => {
+                        KEY_Q.is_empty()
+                            && PTR_Q.is_empty()
+                            && rx.is_empty()
+                            && !dead.load(Ordering::Acquire)
+                            && !peer_dead.load(Ordering::Acquire)
+                    }
+                    None => false, // 对象不在域——零阻塞回环收场（fail-visible）
+                }
+            });
+            if blocked {
+                WLCOMP_IN_WAKES.fetch_add(1, Ordering::AcqRel);
+            }
         }
     }
     // 收场域：surface 摘除 + 损伤量化回退（pane 回退 stage 基线）

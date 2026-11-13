@@ -196,6 +196,20 @@ pub enum WaitWhat {
         /// 等待监听者对象 id。
         object: u64,
     },
+    /// 合成器会话输入等待（M42-WAYCOMP12 笔⑫——阻塞输入等待面
+    /// WaitWhat 扩域）：waycomp 会话环三静域（输入队列空 + 会话流
+    /// 空 + 非终结）登记阻塞——v0 探针轮询 + 让步口径退役。唤醒源
+    /// 三向〔①输入生产面——inject 入环 wake 全域 CompIn，输入源全
+    ///   局域零 conn 键；②会话流到达——unixsock send 落环定向唤醒，
+    ///   conn = 会话端点对象 id 匹配域；③对端终结——shutdown 双向
+    ///   唤醒，EOF 收场域〕。探针为预捕获静态视图零锁读（rx 环
+    ///   is_empty、终结旗对、输入队列 is_empty）——SCHED 锁窗内零
+    ///   SOCKETS 取锁，锁序 SOCKETS→SCHED 单向保持（recv_by_object
+    ///   探针同款纪律，丢失唤醒免疫同款）。
+    CompIn {
+        /// 会话端点对象 id（流/终结唤醒键——输入域唤醒为零键全域）。
+        conn: u64,
+    },
 }
 
 /// 任务入口函数指针。
@@ -1295,10 +1309,14 @@ fn lock_stall_report(addr: usize) {
     // 即持锁者现形（round-173 型「cpu1 持锁卡死 + cpu0 ISR 等锁」的直接
     // 指认面）。
     let h = SCHED_HOLDER.load(Ordering::Acquire);
+    // M42-WAYCOMP12 随行取证（临时）：per-CPU CURRENT 槽直读（免锁原子——
+    // ISR 语境纪律保持）——ABBA 场景下 CAPS 持有者现形面。
+    let c0 = CURRENT[0].load(Ordering::Relaxed);
+    let c1 = CURRENT[1].load(Ordering::Relaxed);
     let _ = core::fmt::Write::write_fmt(
         &mut serial,
         format_args!(
-            "LUMINA-LOCK-STALL addr={:#x} sched={} ticks={} cpu={} iff={iff} h-cpu={} h-line={}\n",
+            "LUMINA-LOCK-STALL addr={:#x} sched={} ticks={} cpu={} iff={iff} h-cpu={} h-line={} c0={c0} c1={c1}\n",
             addr,
             is_sched as u8,
             ostd::time::now(),
@@ -2244,6 +2262,13 @@ pub fn prio_stamps() -> (u64, u64) {
     )
 }
 
+/// ring3 语境 syscall 计数（M42-WAYCOMP12 笔⑫——输入守护判定面标本
+/// 戳，syscall.rs LOG 臂调用）：ring3 语境内核执行显形。syscall 入口
+/// = ring3 唯一内核执行域（内核任务零 syscall 指令），LOG 臂执行语境
+/// = 派生该 syscall 的 Kind::User 任务——[`current_is_user`] 判定面
+/// 真值域活体证据（t113 对账；零注入路径——ABI 负空间纪律不变）。
+pub static SC_RING3_CTX: AtomicU64 = AtomicU64::new(0);
+
 /// 系统调用计数递增（syscall.rs 调用）。
 pub fn count_syscall(kind: u8) {
     match kind {
@@ -2271,6 +2296,28 @@ pub fn current_task_id() -> usize {
     let _w = IntWindow::new();
     let cpu = my_cpu();
     CURRENT[cpu].load(Ordering::Relaxed)
+}
+
+/// 当前任务 ring3 判定（M42-WAYCOMP12 笔⑫——输入守护判定面，waycomp
+/// 注入生产域门禁消费）：当前核任务类别 = Kind::User → true；IDLE
+/// 语境（无任务）→ false。SCHED 锁窗权威读（Kind 域本体——
+/// PERCPU_IS_USER 零锁旗为派发侧镜像，守护面取权威源）。ISR 语境注
+/// 记：中断打断 Kind::User 任务时 CURRENT 承载被打断任务 → 本判定
+/// true——v0 输入生产域无 ISR 臂（kbd IRQ1 桩体 → tty 环；waycomp
+/// 注入面仅任务语境生产），守护面无假阳性窗；未来 kbd→waycomp ISR
+/// 转接臂挂账需携带内核语境旗随批。
+pub fn current_is_user() -> bool {
+    let _w = IntWindow::new();
+    let cpu = my_cpu();
+    let cur = CURRENT[cpu].load(Ordering::Relaxed);
+    if cur == IDLE {
+        return false;
+    }
+    let s = sched_lock!();
+    s.tasks
+        .get(cur)
+        .and_then(|t| t.as_ref())
+        .is_some_and(|t| matches!(t.kind, Kind::User))
 }
 
 /// 本核是否运行在任务上下文（非 idle；M10-B 阻塞面调用前置检查——
@@ -2385,6 +2432,7 @@ pub fn task_ppid(id: usize) -> usize {
 /// 任务阻塞等待对象类别诊断戳（M40-ASH2 滞点标本取证面；task_debug_
 /// state 同款诊断域）：0 无 1 Swap 2 Child 3 IpcRecv 4 Timer 5 PipeRead
 /// 6 PipeWrite 7 TtyRead 8 UnixRecv（M42-UNIX3）9 UnixAccept（M42-COMP4）
+/// 10 CompIn（M42-WAYCOMP12——合成器会话输入等待）
 /// ——滞域 H2（内核无声 Blocked）判别面（Timer = t52 后唤醒链退役域
 /// 死锁标本）。
 pub fn task_debug_wait(id: usize) -> u8 {
@@ -2403,6 +2451,7 @@ pub fn task_debug_wait(id: usize) -> u8 {
             Some(WaitWhat::TtyRead) => 7,
             Some(WaitWhat::UnixRecv { .. }) => 8,
             Some(WaitWhat::UnixAccept { .. }) => 9,
+            Some(WaitWhat::CompIn { .. }) => 10,
         },
     }
 }

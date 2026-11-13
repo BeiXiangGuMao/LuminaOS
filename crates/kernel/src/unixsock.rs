@@ -743,9 +743,11 @@ pub fn shutdown_by_object(object: u64) -> Result<(), UsockError> {
         if let Some(e) = socks.iter().find(|e| e.object == object) {
             e.dead.store(true, Ordering::Release);
         }
-        task::wake_tasks(
-            |w| matches!(w, task::WaitWhat::UnixRecv { object: o } if *o == object || *o == peer_object),
-        );
+        task::wake_tasks(|w| {
+            matches!(w, task::WaitWhat::UnixRecv { object: o } if *o == object || *o == peer_object)
+                || matches!(w,
+                    task::WaitWhat::CompIn { conn: c } if *c == object || *c == peer_object)
+        });
         return Ok(());
     }
     // 监听者域（终结旗 + accept_b 等待者定向唤醒）
@@ -793,9 +795,10 @@ pub fn send_by_object(object: u64, payload: &[u8]) -> Result<usize, UsockError> 
     }
     USOCK_SEND_BYTES.fetch_add(n as u64, Ordering::AcqRel);
     if n > 0 {
-        task::wake_tasks(
-            |w| matches!(w, task::WaitWhat::UnixRecv { object: o } if *o == peer_object),
-        );
+        task::wake_tasks(|w| {
+            matches!(w, task::WaitWhat::UnixRecv { object: o } if *o == peer_object)
+                || matches!(w, task::WaitWhat::CompIn { conn: c } if *c == peer_object)
+        });
     }
     Ok(n)
 }
@@ -820,6 +823,32 @@ pub fn session_probe_by_object(object: u64) -> (usize, bool) {
         ),
         None => (0, true),
     }
+}
+
+/// 会话阻塞等待视图（M42-WAYCOMP12 笔⑫——WaitWhat::CompIn 探针域）：
+/// 对象反查返回（己端接收环, 己端终结旗, 对端终结旗）**静态引用**三
+/// 元组（`end_by_object` 同款 'static 纪律——SOCKETS 表项存续行不
+/// 回收）。取用方在 SCHED 锁窗内做**零锁探针**（锁窗内零 SOCKETS
+/// 取锁——锁序 SOCKETS→SCHED 单向保持，recv_by_object 探针同款纪
+/// 律）。miss → None（fail-visible：调用方零阻塞回环——顶层探针
+/// dead 收场域）。
+pub fn session_wait_views(
+    object: u64,
+) -> Option<(
+    &'static SpscRing<u8, USOCK_BUF>,
+    &'static AtomicBool,
+    &'static AtomicBool,
+)> {
+    end_by_object(object).map(|(rx, _, _, dead, peer_dead)| (rx, dead, peer_dead))
+}
+
+/// 句柄面会话探针（M42-WAYCOMP12——t113 有界排水域）：句柄 → 对象
+/// → [`session_probe_by_object`] 非消费双读（环内字节数, 终结旗）。
+/// 零阻塞——调用方据 pending 门控 recv（空环 sock_recv 阻塞域的
+/// 免阻面）。miss → None（句柄失效——调用方收场域）。
+pub fn sock_probe(caller: usize, handle: u64) -> Option<(usize, bool)> {
+    let object = resolve_object(caller, handle, Right::IPC_RECV).ok()?;
+    Some(session_probe_by_object(object))
 }
 
 /// 对象寻址流读取（内核侧服务消费面；阻塞语义同心）。EOF 域（M42-

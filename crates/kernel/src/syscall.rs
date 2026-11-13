@@ -274,6 +274,13 @@ extern "C" fn lumina_syscall_dispatch(frame: &mut SyscallFrame) -> u64 {
         Syscall::Log { len } => {
             task::count_syscall(0);
             task::note_log_cpu(); // 跨核取证面（服务核 + 本核 RSP0/调用栈）
+                                  // M42-WAYCOMP12 守护语境标本戳：ring3 语境内核执行显形
+                                  // （LOG 臂执行语境 = 派生 syscall 的 Kind::User 任务——
+                                  // current_is_user 判定面真值域活体证据，t113 对账；LOG 臂
+                                  // 冷路径锁窗成本可忽略；零注入路径——ABI 负空间纪律不变）
+            if task::current_is_user() {
+                task::SC_RING3_CTX.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            }
             let ptr = frame.rdi;
             if let Some(text) = validate_user_slice(ptr, len) {
                 // M24-A1：去向面改 shell::log_sink——捕获武装期入捕

@@ -86,8 +86,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112）。
-const SELFTEST_TOTAL: usize = 112;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113）。
+const SELFTEST_TOTAL: usize = 113;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7232,6 +7232,22 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t112 = t112_run(&mut log);
     report(&mut log, t112, "hygiene-batch");
 
+    // t113) 输入守护 + 阻塞等待双域活体（M42-WAYCOMP12 笔⑫——**ring3
+    //       输入守护面〔v0 内核态注入域〕+ 阻塞输入等待面〔WaitWhat
+    //       扩域〕双域兑现**）：〔守护语境标本——内核语境
+    //       current_is_user()==false × 注入生产面受理（bool 返回 + 队
+    //       深增量 + GUARD_ERR 零）× 排水复原装置面〕→〔ring3 语境
+    //       内核执行显形——ARGV_SEED lane 播种（LOG 臂标本戳
+    //       SC_RING3_CTX）+ EXIT(argc=2) 收割〕→〔负空间收口——ring3
+    //       语境全谱在环 × 注入域零 ring3 触达（GUARD_ERR 零）〕→
+    //       〔阻塞输入等待面活体——内核 waycomp 新会话（get_registry
+    //       → 回执）→ 键盘链全谱（bind wl_seat + get_keyboard +
+    //       create_surface + commit → 首窗焦点）→ input_key 注入出域
+    //       （CompIn 唤醒 + INPUT_KEYS/KEYS 对账）→ SHUT EOF 收场复
+    //       原〕。LUMINA-T113-GUARD/T113-WAIT/OK。
+    let t113 = t113_run(&mut log);
+    report(&mut log, t113, "input-guard-blockwait");
+
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
     //      pf_hook 入口扩判「U 位 或 CR2 落增长栈窗口域」——CPL0 用户
@@ -11267,6 +11283,251 @@ fn t112_run(log: &mut DualLog) -> bool {
     );
     if ok {
         let _ = writeln!(log, "LUMINA-T112-OK");
+    }
+    ok
+}
+
+/// t113 输入守护 + 阻塞等待双域活体执行体（M42-WAYCOMP12 笔⑫）：
+/// 独立函数承载（t93/t101 帧形态纪律）。相位序：
+/// (a) 守护语境标本：内核语境 current_is_user()==false + 注入生产面
+///     受理（bool true + 队深增量 + GUARD_ERR 零）→ 排水复原（装置
+///     面——零污染后续批次）；
+/// (b) ring3 语境内核执行显形：ARGV_SEED lane 播种（LOG 臂标本戳
+///     SC_RING3_CTX——域⑧复用，argv 真消费双验随行）→ EXIT(argc=2)
+///     收割；
+/// (c) 负空间收口：SC_RING3_CTX > 0（ring3 语境全谱在环——判定面
+///     真值域活体）× WLCOMP_GUARD_ERR == 0（注入域零 ring3 触达——
+///     ABI 负空间纪律在环）；
+/// (d) 阻塞输入等待面活体：内核 waycomp 新会话（sock_connect →
+///     get_registry → 回执 124 B）→ 键盘链全谱（bind wl_seat +
+///     get_keyboard + bind compositor + create_surface + damage +
+///     commit → 首窗焦点域）→ input_key 注入出域（CompIn 唤醒链
+///     WAKES ≥ 1 + INPUT_KEYS ≥ 2 + KEYS ≥ 1 wire 事件显形）→ SHUT
+///     EOF 收场（SESSION_DONE 旗 + surf_count 复原 + GUARD_ERR 恒零）。
+/// LUMINA-T113-GUARD/T113-WAIT/OK 双面板标记。
+fn t113_run(log: &mut DualLog) -> bool {
+    use prism::wayland as wl;
+    let mut ok = true;
+    let me = task::current_task_id();
+
+    // (a) 守护语境标本（内核语境正域 + 生产面受理 + 排水复原装置面）
+    waycomp::input_queue_flush(); // 相位间卫生域（跨测试零残留基线）
+    let (kq0, pq0) = waycomp::input_queue_depth();
+    let g0 = waycomp::WLCOMP_GUARD_ERR.load(Ordering::Acquire);
+    let ctx_ok = !task::current_is_user();
+    let acc1 = waycomp::input_key(0x30, 1);
+    let acc2 = waycomp::input_pointer_motion(64, 64);
+    let acc3 = waycomp::input_pointer_button(0x110, 1);
+    let (kq1, pq1) = waycomp::input_queue_depth();
+    let guard_ok = ctx_ok
+        && acc1
+        && acc2
+        && acc3
+        && kq1 == kq0 + 1
+        && pq1 == pq0 + 2
+        && waycomp::WLCOMP_GUARD_ERR.load(Ordering::Acquire) == g0;
+    ok &= guard_ok;
+    waycomp::input_queue_flush();
+    let (kq2, pq2) = waycomp::input_queue_depth();
+    let flush_ok = kq2 == 0 && pq2 == 0;
+    ok &= flush_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T113-GUARD ctx-kernel={ctx_ok} accept=({},{},{}) depth=({kq1},{pq1}) flush=({kq2},{pq2}) guard_err={}",
+        u8::from(acc1),
+        u8::from(acc2),
+        u8::from(acc3),
+        waycomp::WLCOMP_GUARD_ERR.load(Ordering::Acquire)
+    );
+
+    // (b) ring3 语境内核执行显形（ARGV_SEED 域⑧复用——LOG 臂标本戳域，
+    //     argv 真消费双验随行：EXIT(argc=2) 对账）
+    let sc0 = task::SC_RING3_CTX.load(Ordering::Acquire);
+    let pid = match procs::spawn_elf_seed(
+        "guard-probe",
+        &user::ARGV_SEED,
+        &["lumina-guard-probe", "guard"],
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = writeln!(log, "t113: probe build failed ({e:?})");
+            return false;
+        }
+    };
+    ok &= pid != usize::MAX;
+    let dl = ostd::time::now() + 1200;
+    while task::task_debug_state(pid) != 4 && ostd::time::now() < dl {
+        core::hint::spin_loop();
+    }
+    let zombie_ok = task::task_debug_state(pid) == 4;
+    let r = procs::sys_wait_pid(pid as u64);
+    let reap_ok = r >> 32 == 1 && (r & 0xFFFF) == 2; // EXIT(argc=2)
+    ok &= zombie_ok && reap_ok;
+    let scd = task::SC_RING3_CTX
+        .load(Ordering::Acquire)
+        .saturating_sub(sc0);
+    let _ = writeln!(
+        log,
+        "LUMINA-T113-RING3CTX spawn={pid} exit={} ring3ctx=+{scd}",
+        r & 0xFFFF
+    );
+
+    // (c) 负空间收口：ring3 语境全谱在环 × 注入域零 ring3 触达
+    let neg_ok = scd >= 1 && waycomp::WLCOMP_GUARD_ERR.load(Ordering::Acquire) == g0;
+    ok &= neg_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T113-NEGSPACE ring3ctx=+{scd} guard_err={}（注入域零 ring3 触达——ABI 负空间在环）",
+        waycomp::WLCOMP_GUARD_ERR.load(Ordering::Acquire)
+    );
+
+    // (d) 阻塞输入等待面活体（内核 waycomp 新会话——CompIn 唤醒链）
+    let c0 = waycomp::waycomp_stamps();
+    let iw0 = waycomp::WLCOMP_IN_WAITS.load(Ordering::Acquire);
+    let ik0 = waycomp::WLCOMP_IN_WAKES.load(Ordering::Acquire);
+    let hc = match unixsock::sock_connect(me, waycomp::WAYCOMP_SOCK_NAME) {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = writeln!(log, "t113: connect failed ({e:?})");
+            return false;
+        }
+    };
+    // (d-1) get_registry → 回执 124 B（send 落环唤醒链——探针轮询退役域；
+    //       recv 探针门控——空环 sock_recv 阻塞域免阻，deadline 真实可达）
+    let mut req = [0u8; 64];
+    let n_req = wl::encode_display_get_registry(&mut req, 1, 2).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &req[..n_req]).unwrap_or(0);
+    ok &= sent == n_req;
+    let mut gbuf = [0u8; 512];
+    let mut got = 0usize;
+    let dl = ostd::time::now() + 480;
+    while got < 124 && ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            task::yield_now();
+            continue;
+        }
+        let n = unixsock::sock_recv(me, hc as u64, &mut gbuf[got..]).unwrap_or(0);
+        if n > 0 {
+            got += n;
+        }
+    }
+    let wire_ok = got == 124;
+    ok &= wire_ok;
+    // (d-2) 键盘链全谱：bind wl_seat + get_keyboard + bind compositor +
+    //       create_surface + damage + commit（首窗焦点域——t109 客户端
+    //       流同源；prism 编码器同谱；wl id 域：registry=2/comp=3/
+    //       seat=4/kb=5/surf=0x41）
+    let mut batch = [0u8; 512];
+    let mut bl = 0usize;
+    bl += wl::encode_registry_bind(&mut batch[bl..], 2, 2, "wl_seat", 1, 4).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        4,
+        wl::seat::REQ_GET_KEYBOARD,
+        &[wl::WlArg::NewId(5)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_registry_bind(&mut batch[bl..], 2, 1, "wl_compositor", 4, 3).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        3,
+        wl::compositor::REQ_CREATE_SURFACE,
+        &[wl::WlArg::NewId(0x41)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        0x41,
+        wl::surface::REQ_DAMAGE,
+        &[
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(320),
+            wl::WlArg::Int(200),
+        ],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_surface_commit(&mut batch[bl..], 0x41).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &batch[..bl]).unwrap_or(0);
+    ok &= sent == bl;
+    // commit 发到位对账（REGISTER〔commits 增量〕+ 首窗焦点——
+    // KBFOCUS=0x41 域）
+    let dl = ostd::time::now() + 480;
+    loop {
+        let c = waycomp::waycomp_stamps();
+        if (c.3 > c0.3 && waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire) == 0x41)
+            || ostd::time::now() >= dl
+        {
+            break;
+        }
+        task::yield_now();
+    }
+    let c2 = waycomp::waycomp_stamps();
+    let focus_ok = c2.3 > c0.3 && waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire) == 0x41;
+    ok &= focus_ok;
+    // 回执排空（capabilities/keymap/enter/done——rx 环防满域；探针门
+    // 控有界排水——空环 sock_recv 阻塞域免阻，零无界窗）
+    let dl = ostd::time::now() + 120;
+    while ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            break;
+        }
+        let mut sink = [0u8; 512];
+        let n = unixsock::sock_recv(me, hc as u64, &mut sink).unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+    }
+
+    // (d-3) 键盘注入出域（CompIn 唤醒链——阻塞会话环定向显形；守护
+    //       门禁内核语境受理随行）
+    let k0 = waycomp::waycomp_stamps().8;
+    let acc = waycomp::input_key(0x02, 1); // KEY_STATE_PRESSED
+    ok &= acc;
+    let acc = waycomp::input_key(0x02, 0); // KEY_STATE_RELEASED
+    ok &= acc;
+    let dl = ostd::time::now() + 480;
+    let c3 = loop {
+        let c = waycomp::waycomp_stamps();
+        if c.8 > k0 + 1 || ostd::time::now() >= dl {
+            break c;
+        }
+        task::yield_now();
+    };
+    let ik1 = waycomp::WLCOMP_IN_WAKES.load(Ordering::Acquire);
+    let key_ok =
+        c3.8 > k0 + 1 && waycomp::WLCOMP_INPUT_KEYS.load(Ordering::Acquire) >= 2 && ik1 > ik0;
+    ok &= key_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T113-WAIT keys=+{} keysrc=+{} waits=+{} wakes=+{}（CompIn 唤醒链——探针轮询退役显形）",
+        c3.8 - k0,
+        waycomp::WLCOMP_INPUT_KEYS.load(Ordering::Acquire),
+        waycomp::WLCOMP_IN_WAITS.load(Ordering::Acquire) - iw0,
+        ik1 - ik0,
+    );
+
+    // (d-4) SHUT EOF 收场（shutdown 双向唤醒——EOF 收场域）+ 复原对账
+    let _ = unixsock::sock_shutdown(me, hc as u64);
+    let dl = ostd::time::now() + 480;
+    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+        core::hint::spin_loop();
+    }
+    let eof_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
+    ok &= eof_ok;
+    let guard_final = waycomp::WLCOMP_GUARD_ERR.load(Ordering::Acquire) == g0;
+    ok &= guard_final;
+    // 客户端句柄收口（SYS_CLOSE——t110 同谱卫生域）
+    let _ = crate::vfs::sys_close(hc as u64);
+    let _ = writeln!(
+        log,
+        "LUMINA-T113-EOF teardown={eof_ok} endc={} surf={} guard_err_stable={guard_final}",
+        waycomp::WLCOMP_END_COUNT.load(Ordering::Acquire),
+        fb::surf_count()
+    );
+
+    if ok {
+        let _ = writeln!(log, "LUMINA-T113-OK");
     }
     ok
 }
