@@ -327,9 +327,45 @@ fn session_loop(conn: u64) {
         let _ = fb::fb_compose_tick();
         windows.retain(|id| *id != u64::from(w.wl));
     }
+    // M42-WAYCOMP11：池承接域生命周期收场（RECV_FD 句柄撤销 + 引用
+    // 归零池回收——客户端已亡会话的池帧归还分配器；fd 传递存续池
+    // 引用 > 0 延迟回收 fail-visible）。surface 摘除后执行——合成
+    // 像素读域先行收口，池帧归还无读后释放窗。
+    release_session_pools(&pools);
     WLCOMP_END_COUNT.store(fb::surf_count() as u64, Ordering::Release);
     WLCOMP_SESSION_DONE.store(true, Ordering::Release);
     let _ = unixsock::shutdown_by_object(conn);
+}
+
+/// 池承接域收场释放（M42-WAYCOMP11 卫生批次）：RECV_FD 装入的池句柄
+/// 逐条撤销 + 引用归零池就地回收（[`shm::release_if_unreferenced`]——
+/// 帧归还 + 注册表摘除；客户端尚存活则引用 > 0 延迟回收 fail-visible）。
+/// 句柄查找 = 本任务句柄表快照 → CAPS 对象比对 → 精确撤销（锁序纪律
+/// 两段式——句柄表窗与 CAPS 锁分离，shm::resolve 同款手法）。
+fn release_session_pools(pools: &[(u32, u64)]) {
+    if pools.is_empty() {
+        return;
+    }
+    let me = task::current_task_id();
+    for (_, obj) in pools {
+        // 段一：本任务句柄表全谱快照（SCHED 锁窗——零 CAPS 嵌套）。
+        let slots: Vec<usize> = task::with_task_handles(me, |t| {
+            t.iter()
+                .enumerate()
+                .skip(1)
+                .filter_map(|(_, s)| *s)
+                .collect::<Vec<usize>>()
+        })
+        .unwrap_or_default();
+        // 段二：CAPS 对象比对（单取 CAPS 锁）→ 精确撤销 + 回收尝试。
+        let g = slots
+            .into_iter()
+            .find(|g| crate::caps::table().lock().get(*g).map(|c| c.object()) == Ok(*obj));
+        if let Some(g) = g {
+            let _ = crate::caps::table().lock().revoke(g);
+            let _ = shm::release_if_unreferenced(*obj);
+        }
+    }
 }
 
 /// 焦点策略（feed 后每轮——M42-INPUT7 键盘焦点裁决域）：键盘焦点空

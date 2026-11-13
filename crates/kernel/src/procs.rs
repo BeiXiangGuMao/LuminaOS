@@ -32,6 +32,8 @@
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
+use ostd::sync::SpinLock;
+
 use crate::task;
 
 /// GRANT 成功标记位：返回值 `(1 << 32) | handle`（句柄域与错误码域隔离）。
@@ -370,6 +372,135 @@ pub fn waycomp_svc_boot_pid() -> usize {
     WAYCOMP_SVC_BOOT_PID.load(Ordering::Acquire)
 }
 
+// ---- M42-WAYCOMP11（笔⑪）域②：服务退出后 boot 重启面 ----
+//（M42-FBSVC2「常驻服务 boot-spawn 生命周期面」挂账域摘牌：boot 播种
+// → 死亡 → 自动重启生命周期闭环——boot_service_spawn 换防点 ×
+// boot_restart_tick idle 收割窗配对。M22-③ 同族 bounded-retry 纪律：
+// 重启尝试有界 [`BOOT_RESTART_MAX`]，超限行停摆 fail-visible——崩溃
+// 循环服务零广播零无界繁殖。）
+
+/// boot 服务行：名域 + 映像 blob + 现任.pid + 重启尝试计数。
+struct BootSvc {
+    /// 服务名（名域唯一键——spawn/探针/移除寻址域）。
+    name: &'static str,
+    /// 映像 blob（重生域种子——spawn_elf_seed_resident 消费）。
+    blob: &'static [u8],
+    /// 现任任务号（`usize::MAX` = 播种失败/待首启 fail-visible）。
+    pid: usize,
+    /// 重启尝试计数（成功与失败尝试并入——上限域含失败面）。
+    restarts: u64,
+}
+
+/// boot 服务重启表（定容纪律 = Vec 动态——boot 服务个位数规模）。
+static BOOT_SVCS: SpinLock<alloc::vec::Vec<BootSvc>> = SpinLock::new(alloc::vec::Vec::new());
+/// 累计成功重启数（t112 断言面）。
+static BOOT_RESTARTS: AtomicU64 = AtomicU64::new(0);
+/// 单行重启尝试上限（M22-③ bounded-retry 纪律——超限停摆 fail-visible，
+/// 崩溃循环服务零无界繁殖；waycomp 名域重 bind 依赖 socket 对象
+/// 生命周期回收面〔挂账〕——重 bind 失败即尝试计数收敛到上限停摆）。
+pub const BOOT_RESTART_MAX: u64 = 64;
+
+/// boot 服务注册 + 常驻播种（M42-WAYCOMP10 boot 换防点承接面——kmain
+/// 单调用点 `spawn_elf_seed_resident` 换防为本面，重启表随行登记）。
+/// argv = `[name]`（kmain v0 传参同谱）。返回现任任务号（`usize::MAX`
+/// = 播种失败 fail-visible——表行照常登记，tick 收割窗重试）。
+pub fn boot_service_spawn(name: &'static str, blob: &'static [u8]) -> usize {
+    let pid = match spawn_elf_seed_resident(name, blob, &[name]) {
+        Ok(p) => p,
+        Err(_) => usize::MAX,
+    };
+    BOOT_SVCS.lock().push(BootSvc {
+        name,
+        blob,
+        pid,
+        restarts: 0,
+    });
+    pid
+}
+
+/// 重启收割 tick（M42-WAYCOMP11 域②核心）：逐行终态读面
+/// （[`task::task_finished`]——Zombie/槽空即已退场，[`task::task_alive`]
+/// 对 Zombie 仍真须分野）→ 锁外常驻重播种 → 表行更新 + 计数。
+/// 调用域 = idle reap 收割窗（main boot 注册闭包）+ 测试直接调用面
+/// （t112 确定性收割——双域在环）。返回本轮成功重启数。
+///
+/// 锁序纪律：BOOT_SVCS 行快照（零嵌套）→ task_finished（SCHED 锁单取）
+/// → spawn（零锁持有）→ BOOT_SVCS 行更新（重验证 name/pid 防并发 tick
+/// 双写）——SCHED 最外层全局纪律保持。
+pub fn boot_restart_tick() -> usize {
+    let rows: alloc::vec::Vec<(usize, &'static str, &'static [u8], usize)> = {
+        let v = BOOT_SVCS.lock();
+        v.iter()
+            .enumerate()
+            .map(|(i, s)| (i, s.name, s.blob, s.pid))
+            .collect()
+    };
+    let mut n = 0usize;
+    for (i, name, blob, old_pid) in rows {
+        let due = old_pid == usize::MAX || task::task_finished(old_pid);
+        if !due {
+            continue;
+        }
+        let restarts = {
+            let v = BOOT_SVCS.lock();
+            v.get(i)
+                .filter(|s| s.name == name && s.pid == old_pid)
+                .map(|s| s.restarts)
+                .unwrap_or(BOOT_RESTART_MAX) // 行已变（并发 tick/移除）——不再处理
+        };
+        if restarts >= BOOT_RESTART_MAX {
+            continue; // bounded-retry 上限域——行停摆 fail-visible
+        }
+        let pid = spawn_elf_seed_resident(name, blob, &[name]).unwrap_or(usize::MAX);
+        let mut v = BOOT_SVCS.lock();
+        if let Some(s) = v.get_mut(i).filter(|s| s.name == name && s.pid == old_pid) {
+            s.pid = pid;
+            s.restarts += 1; // 尝试计数（fail-visible——上限含失败面）
+            if pid != usize::MAX {
+                BOOT_RESTARTS.fetch_add(1, Ordering::AcqRel);
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// boot 服务注销（测试卫生面——探针服务收割后停面，零无界繁殖）。
+pub fn boot_service_remove(name: &str) -> bool {
+    let mut v = BOOT_SVCS.lock();
+    let before = v.len();
+    v.retain(|s| s.name != name);
+    v.len() != before
+}
+
+/// boot 服务在表读面（t112 waycomp boot face 对账域）。
+pub fn boot_service_registered(name: &str) -> bool {
+    BOOT_SVCS.lock().iter().any(|s| s.name == name)
+}
+
+/// 累计成功重启数快照（t112 断言面）。
+pub fn boot_restarts() -> u64 {
+    BOOT_RESTARTS.load(Ordering::Acquire)
+}
+
+/// 单行重启计数读面（t112 断言面——名域寻址）。
+pub fn boot_svc_restarts(name: &str) -> Option<u64> {
+    BOOT_SVCS
+        .lock()
+        .iter()
+        .find(|s| s.name == name)
+        .map(|s| s.restarts)
+}
+
+/// 现任任务号读面（t112 断言面——名域寻址；`usize::MAX` = 播种失败）。
+pub fn boot_svc_pid(name: &str) -> Option<usize> {
+    BOOT_SVCS
+        .lock()
+        .iter()
+        .find(|s| s.name == name)
+        .map(|s| s.pid)
+}
+
 /// **用户态 ELF 播种 lane**（M42-ELF5 次笔——「ring3 编译进程承接」
 /// 域核心）：真 ELF64 静态映像（编译产物——`bedrock::elf` 逐字段
 /// 解析）→ 环内装载（[`crate::user::build_user_space_elf`]——段映射与
@@ -382,8 +513,9 @@ pub fn waycomp_svc_boot_pid() -> usize {
 /// **原生 ABI 链**（lin_abi = false——桌面链编译进程承接面：ELF
 /// 容器 + Lumina 号域 syscall 的静态编译映像，t105/t106 客户端即
 /// 首批消费者）。初始栈随 ELF 链构造（argc/argv/envp/auxv 域——
-/// native v0 口径不消费，如实记档；argv 记账随 harbor 动态链接族
-/// 远线既录）。
+/// M42-WAYCOMP11 起映像侧真消费在环〔ARGV_SEED 域⑧：[rsp]=argc /
+/// [rsp+8]=argv[0] 栈直读 + LOG 取证 + EXIT(argc) 对账〕，harbor
+/// 动态链接族远线既录不变）。
 ///
 /// 返回任务槽号；槽位耗尽返回 `usize::MAX`（调用方 fail-visible）；
 /// 映像结构面失败返回 [`crate::user::UserSpaceError`]。

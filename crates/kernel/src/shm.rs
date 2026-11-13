@@ -3,8 +3,9 @@
 //! **定位**：M42 次笔「桌面链批次（wl_shm/fd 传递）」的客户端像素缓冲
 //! 电气面——Wayland `wl_shm.create_pool → wl_shm_pool.create_buffer →
 //! wl_surface.attach` 语义的内核承载：池 = 内核帧阵列对象（对象 id 段
-//! `0xC0DE_0000_0000_003X`，与预设 0x…000X / fb 服务 0x…001X / socket
-//! 0x…002X / 运行时 0x…0001_0000 正交），调用方 CREATE 铸池（帧分配 +
+//! `0xC0DE_0000_0000_0060` 起，与预设 0x…000X / fb 服务 0x…001X / socket
+//! 0x…002X〔64 窗 0x20..0x5F〕/ 运行时 0x…0001_0000 正交），调用方
+//! CREATE 铸池（帧分配 +
 //! 清零 + 能力装表）+ MAP 映入自身任务根（[`SHM_VA_BASE`] 域——
 //! PDPT[1] 上半窗，与 LFB/stage/Surface 写窗同支域正交）直写像素；
 //! 池能力经 [`crate::unixsock`] SEND_FD/RECV_FD（SCM_RIGHTS 语义面）
@@ -21,10 +22,16 @@
 //! [`SHM_VA_BASE`]..[`SHM_VA_LIMIT`] 窗内 + 池尺寸预算（parse 层已闸
 //! 结构，此处复审池实长）。
 //!
-//! **生命周期 v0 = 注册表存续期**（[`crate::ipc`] 通道/socket 同款）：
-//! SYS_CLOSE 只回收句柄/能力槽，池对象/帧不回收（桌面链客户端短生命周期
-//! 域如实记档——帧池回收面随桌面链后续批次挂账）；`SHM_MAX_POOLS`
-//! 定容 8 槽（v0 单客户端工作集 + 余量）。
+//! **生命周期 v1 = 引用计数收敛面（M42-WAYCOMP11 卫生批次——v0
+//! 注册表存续期退役）**：SYS_CLOSE 池句柄关闭落点（引用归零即回收——
+//! `wl_shm.destroy` 语义面，[`crate::vfs`] 管道臂同款引用收敛纪律）+
+//! 任务终结清算窗补扫（[`reap_orphaned_pools`]——句柄/管道/Surface/
+//! 池四域同一清算点，[`crate::vfs::reap_orphaned_files`] 同构）。回收 =
+//! 注册表摘除 + 帧归还（`FrameAllocator::dealloc` LIFO 空闲表——
+//! [`Pool::frames`] 全谱返还；重铸新池即复用返还帧）。fd 传递存续池
+//! （SCM_RIGHTS dup——合成器持有引用）引用 > 0 延迟回收 fail-visible：
+//! 引用面消失的下一轮补扫即收口。`SHM_MAX_POOLS` 定容 8 槽（v0 单
+//! 客户端工作集 + 余量——回收面在环后满槽不再终态卡死）。
 //!
 //! 锁序契约：单取 POOLS 或 CAPS/句柄表，不嵌套持有多锁（unixsock 同款
 //! 纪律）；mint 序 = 帧分配 → POOLS 登记 → 能力/句柄安装（失败回滚
@@ -41,7 +48,14 @@ use vanguard::{Capability, Right};
 use bedrock::abi::{SHM_CREATE, SHM_MAP, SHM_VA_BASE, SHM_VA_LIMIT};
 
 /// 池域对象 id 段基（单调铸造——段位正交性 = 跨域能力不可达守门面）。
-pub const SHM_OBJECT_BASE: u64 = 0xC0DE_0000_0000_0030;
+/// M42-WAYCOMP11 揭雷①收口：原基 0x…0030 落在 socket 64 窗
+/// （0x…0020..0x…0060，main.rs t103 断言面同谱）内——unixsock 铸造
+/// 序越过 0x…0030 后活套接字与活池同 id，sys_close socket 臂先命中
+/// （臂序 file→channel→socket→pool→pipe）→ 池关不掉 + 真套接字误标
+/// 关闭（t112 C1 取证 sock31=true close_code=0 rel_after=0 实锤）。
+/// 基移至 socket 窗外 0x…0060（池段 0x…0060..0x…0001_0000 = 65504
+/// 槽），两域正交性恢复；旧 id 不存在跨 boot 持久化，零迁移面。
+pub const SHM_OBJECT_BASE: u64 = 0xC0DE_0000_0000_0060;
 /// 池注册表容量（v0 单客户端工作集 + 余量）。
 pub const SHM_MAX_POOLS: usize = 8;
 /// 池尺寸上界（bedrock::abi::SHM_SIZE_MAX 同源——2 MiB 单 PT 窗预算）。
@@ -70,7 +84,8 @@ impl ShmError {
     }
 }
 
-/// 共享内存池：对象 id + 字节域 + 物理帧阵列（每帧一页）。
+/// 共享内存池：对象 id + 字节域 + 物理帧阵列（每帧一页）+ 属主
+/// （铸造者任务号——取证面，v1 回收纪律 = 引用计数非属主面）。
 struct Pool {
     /// 对象 id（能力寻址域）。
     object: u64,
@@ -78,9 +93,12 @@ struct Pool {
     size: u64,
     /// 物理帧阵列（pages = size 上取整页）。
     frames: Vec<u64>,
+    /// 属主任务号（CREATE 调用方——t112 对账取证面；回收纪律走引用
+    /// 计数非属主面：fd 传递后合成器无属主仍可持有引用存续池）。
+    owner: usize,
 }
 
-/// 池注册表（v0 存续纪律——push 有增无删，存续期 = 内核生命周期）。
+/// 池注册表（v1 引用计数生命周期——引用归零即摘除，M42-WAYCOMP11）。
 static POOLS: SpinLock<Vec<Pool>> = SpinLock::new(Vec::new());
 /// 域内对象 id 铸造器（fetch_add 单调）。
 static NEXT_OBJECT: AtomicU64 = AtomicU64::new(SHM_OBJECT_BASE);
@@ -94,6 +112,11 @@ pub static SHM_MAPS: AtomicU64 = AtomicU64::new(0);
 pub static SHM_LAST_OBJECT: AtomicU64 = AtomicU64::new(0);
 /// 池像素读命中数（waycomp 消费域取证——客户端像素上屏计数）。
 pub static SHM_PX_READS: AtomicU64 = AtomicU64::new(0);
+/// 池回收数（M42-WAYCOMP11 卫生批次——引用归零摘除计数，t112 断言面）。
+pub static SHM_RELEASES: AtomicU64 = AtomicU64::new(0);
+/// 池帧归还数（FrameAllocator::dealloc LIFO 空闲表返还——帧生命周期
+/// 闭环取证，t112 断言面）。
+pub static SHM_FREES: AtomicU64 = AtomicU64::new(0);
 
 /// CREATE 成功数快照。
 pub fn creates() -> u64 {
@@ -110,6 +133,16 @@ pub fn px_reads() -> u64 {
     SHM_PX_READS.load(Ordering::Acquire)
 }
 
+/// 池回收数快照（M42-WAYCOMP11——t112 断言面）。
+pub fn releases() -> u64 {
+    SHM_RELEASES.load(Ordering::Acquire)
+}
+
+/// 池帧归还数快照（M42-WAYCOMP11——t112 断言面）。
+pub fn frame_frees() -> u64 {
+    SHM_FREES.load(Ordering::Acquire)
+}
+
 /// 最近铸造池对象 id 快照（段位正交断言面）。
 pub fn last_object() -> u64 {
     SHM_LAST_OBJECT.load(Ordering::Acquire)
@@ -119,6 +152,23 @@ pub fn last_object() -> u64 {
 pub fn pools_usage() -> (usize, usize) {
     let p = POOLS.lock();
     (p.len(), SHM_MAX_POOLS)
+}
+
+/// 池属主读面（M42-WAYCOMP11 t112 对账取证面——对象 id 寻址，[`last_object`]
+/// 同窗对账；回收纪律走引用计数非属主面，本读面仅取证消费）。
+pub fn pool_owner(object: u64) -> Option<usize> {
+    POOLS
+        .lock()
+        .iter()
+        .find(|p| p.object == object)
+        .map(|p| p.owner)
+}
+
+/// 在册池对象 id 全谱快照（t112 c1 取证面——段位碰撞对账：池段
+/// 0x…0030 起与 unixsock 铸造域 0x…002X 邻接，is_socket_object 为
+/// 注册表成员判读，碰撞即误臂——本快照随 T112-C1 行实录）。
+pub fn pool_objects() -> Vec<u64> {
+    POOLS.lock().iter().map(|p| p.object).collect()
 }
 
 /// 调用方句柄表单空闲位预检（unixsock [`free_one`] 同款先验）。
@@ -170,7 +220,12 @@ pub fn shm_create(caller: usize, size: u64) -> Result<usize, ShmError> {
     let mut frames = Vec::with_capacity(pages);
     for _ in 0..pages {
         let Some(p) = alloc.alloc() else {
-            return Err(ShmError::Nomem); // 已分配帧 v0 存续期语义不回收（先例纪律）
+            // 半程帧失败回滚（v1 回收面在环——已分配帧逐帧归还，
+            // 半池不留痕；v0 存续语义退役）。
+            for f in frames {
+                alloc.dealloc(f);
+            }
+            return Err(ShmError::Nomem);
         };
         if p == 0 || p >= 0x4000_0000 {
             // 恒等域断言 fail-closed（surf_register/stage_init 同款）
@@ -183,12 +238,19 @@ pub fn shm_create(caller: usize, size: u64) -> Result<usize, ShmError> {
     {
         let mut pools = POOLS.lock();
         if pools.len() >= SHM_MAX_POOLS {
-            return Err(ShmError::Nomem); // 帧泄漏（环泄漏先例纪律）；槽未占用零回滚
+            // 满槽域（v1 回收面在环——帧逐帧归还分配器零泄漏；
+            // v0 帧泄漏注记退役）。
+            drop(pools);
+            for f in frames {
+                alloc.dealloc(f);
+            }
+            return Err(ShmError::Nomem);
         }
         pools.push(Pool {
             object,
             size,
             frames,
+            owner: caller,
         });
     }
     // 能力铸造 + 句柄安装（unixsock install_cap 同款；失败回滚登记槽）
@@ -211,6 +273,73 @@ pub fn shm_create(caller: usize, size: u64) -> Result<usize, ShmError> {
     SHM_CREATES.fetch_add(1, Ordering::AcqRel);
     SHM_LAST_OBJECT.store(object, Ordering::Release);
     Ok(handle)
+}
+
+/// 对象 id 段判读（SYS_CLOSE 分型臂守门面——池域 id 段下界起至运行时
+/// 段 0x…0001_0000 止，单调铸造永不越段：回收不重置铸造器，id 随
+/// 创建数单调增长，上界 = 运行时对象段基）。
+pub fn is_pool_object(object: u64) -> bool {
+    (SHM_OBJECT_BASE..0xC0DE_0000_0001_0000).contains(&object)
+}
+
+/// 池对象引用计数（CAPS 全表扫描——[`crate::vfs::caps_refcount`] 同构
+/// 镜像；本模块自带守门面，锁序纪律单取 CAPS 不嵌套）。
+pub fn caps_object_refs(object: u64) -> usize {
+    let t = crate::caps::table().lock();
+    (0..vanguard::CAPACITY)
+        .filter(|&s| t.get(s).map(|c| c.object()) == Ok(object))
+        .count()
+}
+
+/// 引用归零池回收（M42-WAYCOMP11 域①核心——`wl_shm.destroy` 语义
+/// 面）：引用复核（CAPS 锁窗）→ 注册表摘除（POOLS 锁窗——两锁分离
+/// 不嵌套）→ 帧归还（LIFO 空闲表逐帧 `dealloc`）→ [`SHM_RELEASES`]/
+/// [`SHM_FREES`] 取证。TOCTOU 面：引用复核 = 0 后无句柄安装通路
+/// （CREATE 铸新对象 / RECV_FD 传递既有持有者引用——零持有者即零
+/// 传递源），摘除窗竞态不可达；[`pool_px_read`] 持 POOLS 锁读域与
+/// 摘除窗互斥，读后释放（read-after-release）不可能。
+/// 返回 true = 已回收（摘除 + 帧返还）；false = 引用 > 0（延迟回收
+/// fail-visible——下一轮补扫收口）或不在册。
+pub fn release_if_unreferenced(object: u64) -> bool {
+    if caps_object_refs(object) != 0 {
+        return false; // 存续引用（fd 传递域——合成器持有；延迟回收）
+    }
+    let removed = {
+        let mut pools = POOLS.lock();
+        pools
+            .iter()
+            .position(|p| p.object == object)
+            .map(|i| pools.remove(i))
+    };
+    let Some(pool) = removed else {
+        return false; // 不在册（重复回收纵深防御域——幂等零副作用）
+    };
+    let pages = pool.frames.len() as u64;
+    if let Some(alloc) = crate::vmm::global_frames() {
+        for f in pool.frames {
+            alloc.dealloc(f);
+        }
+        SHM_FREES.fetch_add(pages, Ordering::AcqRel);
+    }
+    SHM_RELEASES.fetch_add(1, Ordering::AcqRel);
+    true
+}
+
+/// 孤池补扫（M42-WAYCOMP11——[`crate::vfs::reap_orphaned_files`] 同构）：
+/// 全表逐池引用复核，归零条目就地回收。任务终结清算窗（句柄撤销后）
+/// 调用——创建者亡故 + 无 fd 存续引用的池即回收；返回回收池数。
+pub fn reap_orphaned_pools() -> usize {
+    let objects: Vec<u64> = {
+        let pools = POOLS.lock();
+        pools.iter().map(|p| p.object).collect()
+    };
+    let mut n = 0;
+    for o in objects {
+        if release_if_unreferenced(o) {
+            n += 1;
+        }
+    }
+    n
 }
 
 /// SYS_SHM MAP 臂：池映射入调用方任务根（[`SHM_VA_BASE`] 域——P|W|U
@@ -299,14 +428,19 @@ pub fn pool_px_read(object: u64, byte_off: u64) -> Option<u32> {
     if phys == 0 {
         return None;
     }
-    SHM_PX_READS.fetch_add(1, Ordering::AcqRel);
     let addr = (phys + (byte_off % FRAME_SIZE)) as usize;
+    SHM_PX_READS.fetch_add(1, Ordering::AcqRel);
     // SAFETY: 前置条件 —— phys 自帧分配器出且 < 0x4000_0000（恒等域
     //          断言在 CREATE 承担），addr = phys + 页内偏移 < 恒等域。
     // 不变式 —— read_volatile 防删除/合并；越域路径不可达（上界已滤）。
     // 并发 —— 客户端为唯一写者（ring3），合成器为唯一读者（会话环
-    //          单线程）；帧存续期 = 注册表存续期（v0 不回收）。
-    Some(unsafe { core::ptr::read_volatile(addr as *const u32) })
+    //          单线程）；M42-WAYCOMP11 v1 回收面：volatile 读持 POOLS
+    //          锁窗——与 [`release_if_unreferenced`] 摘除窗互斥，
+    //          读后释放（read-after-release）不可能（v0 存续期
+    //          注记随回收面退役）。
+    let px = unsafe { core::ptr::read_volatile(addr as *const u32) };
+    drop(pools);
+    Some(px)
 }
 
 /// 池字节域读面（t106 对账域；不在册 → None）。

@@ -391,6 +391,12 @@ impl Task {
         crate::vfs::reap_orphaned_files();
         #[allow(clippy::let_unit_value)]
         let _discard = crate::vfs::reap_orphaned_pipes(); // 实验期临时
+                                                          // M42-WAYCOMP11：shm 池域同窗收敛（句柄/管道/Surface/池 四域
+                                                          // 同一清算点）——创建者亡故 + 无 fd 存续引用的池即回收（帧
+                                                          // 归还 LIFO 空闲表 + 注册表摘除；fd 传递存续池延迟回收）。
+                                                          // SCHED → POOLS → CAPS 同向链（shm 锁序纪律单取不嵌套——
+                                                          // reap 内部逐对象分离锁窗）。
+        let _ = crate::shm::reap_orphaned_pools();
         Vec::new() // 实验期临时：管道域 pre-t87 恒空——死亡唤醒面本就零迭代
     }
 
@@ -3441,6 +3447,19 @@ pub fn task_alive(id: usize) -> bool {
     let _w = IntWindow::new();
     let s = sched_lock!();
     s.tasks.get(id).is_some_and(|slot| slot.is_some())
+}
+
+/// 任务终结读面（M42-WAYCOMP11 重启面消费）：槽位未占用或 Zombie
+/// 即已退场。[`task_alive`] 对 Zombie 仍为真（槽位存续——M10-C 僵尸
+/// 留证纪律），重启面须区分「已退场待重启」——本读面即分野域。
+pub fn task_finished(id: usize) -> bool {
+    let _w = IntWindow::new();
+    let s = sched_lock!();
+    match s.tasks.get(id) {
+        None => true,
+        Some(None) => true,
+        Some(Some(t)) => t.state == State::Zombie,
+    }
 }
 
 /// 孤儿链取证（M12-d t43 断言面）：累计 re-parent 孤儿数 / idle 自动

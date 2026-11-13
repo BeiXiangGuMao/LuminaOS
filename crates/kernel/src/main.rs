@@ -86,8 +86,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111）。
-const SELFTEST_TOTAL: usize = 111;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112）。
+const SELFTEST_TOTAL: usize = 112;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -345,7 +345,14 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     ostd::hw::gdt::install();
     task::set_user_entry_bridge(user::enter_user_bridge);
     // M12-d 僵尸收割运行时化：idle 附加工作第二槽挂孤儿收割面
-    task::set_idle_reap(|| task::reap_orphans() > 0);
+    //（M42-WAYCOMP11：boot 服务重启收割窗同闭包挂载——孤儿收割或
+    // 重启 tick 任一有产出即继续轮；服务退出 → Zombie 收割 → 重播种
+    // 生命周期闭环）
+    task::set_idle_reap(|| {
+        let worked = task::reap_orphans() > 0;
+        let restarted = procs::boot_restart_tick() > 0;
+        worked || restarted
+    });
     // SAFETY: GDT 已按配套布局装载（syscall::init 的选择子基址与之配套），
     //         且 ring3 代码尚不存在，LSTAR 生效不产生即时入口。
     unsafe { syscall::init() };
@@ -918,18 +925,15 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     }
 
     // M42-WAYCOMP10（笔⑩）boot 面切换（kmain spawn 换防）：WAYCOMP_SVC_ELF
-    // boot 常驻（ring3 合成器守备面 boot 化——spawn_elf_seed_resident 派生
-    // 面 × boot 单调用点交叉；名域 wayland-1 正交于内核 waycomp
-    // wayland-comp——**内核 waycomp 双轨回归锚保持**，t104/t106/t107/t109
-    // 断言面不变）。bind 时延吸收 = 名域登记只读探针有界轮询（零会话
-    // 扰动——不 connect 不 stamp）；fail-visible：名域未登记即证据行缺位
-    // （t110 (b) 相位 boot-face 对账必炸）。
-    let wcelf_pid = procs::spawn_elf_seed_resident(
-        "waycomp-svc-elf",
-        &user::WAYCOMP_SVC_ELF,
-        &["waycomp-svc-elf"],
-    )
-    .unwrap_or(usize::MAX);
+    // boot 常驻（ring3 合成器守备面 boot 化——M42-WAYCOMP11 起 boot
+    // 换防点承接重启面：boot_service_spawn = spawn_elf_seed_resident
+    // × 重启表登记，服务退出后 idle 收割窗自动重播种〔bounded-retry
+    // 有界——BOOT_RESTART_MAX 上限域〕；名域 wayland-1 正交于内核
+    // waycomp wayland-comp——**内核 waycomp 双轨回归锚保持**，t104/
+    // t106/t107/t109 断言面不变）。bind 时延吸收 = 名域登记只读探针
+    // 有界轮询（零会话扰动——不 connect 不 stamp）；fail-visible：
+    // 名域未登记即证据行缺位（t110 (b) 相位 boot-face 对账必炸）。
+    let wcelf_pid = procs::boot_service_spawn("waycomp-svc-elf", &user::WAYCOMP_SVC_ELF);
     procs::set_waycomp_svc_boot_pid(wcelf_pid);
     let dlw2 = ostd::time::now() + 480; // ELF 装载 + bind 时延吸收窗（t110 connect 重试窗同谱）
     while !unixsock::listener_name_registered(user::WC_SVC_SOCK_NAME) && ostd::time::now() < dlw2 {
@@ -7217,6 +7221,17 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t111 = t111_run(&mut log);
     report(&mut log, t111, "isr-contract-spec");
 
+    // t112) 卫生批次活体（M42-WAYCOMP11 三域——**shm 池/帧生命周期
+    //       回收面 + 服务退出后 boot 重启面 + argv 真消费面**）：ARGV_SEED
+    //       结构锚（gen 域⑧——编译进程链第八形）→ argv 栈直读消费
+    //       〔EXIT(argc) 对账 + LOG 取证行〕→ shm 池引用归零回收
+    //       〔SYS_CLOSE 落点 + 终结清算窗补扫 + fd 存续延迟回收〕→
+    //       boot 重启面〔RESIDENT_SEED 探针自退出 → 收割窗重播种
+    //       ×2 轮 → 注销停面〕→ waycomp boot face 在表对账。
+    //       LUMINA-T112-ARGV/T112-SHM/T112-RESTART/OK。
+    let t112 = t112_run(&mut log);
+    report(&mut log, t112, "hygiene-batch");
+
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
     //      pf_hook 入口扩判「U 位 或 CR2 落增长栈窗口域」——CPL0 用户
@@ -10959,6 +10974,299 @@ fn t111_run(log: &mut DualLog) -> bool {
     );
     if ok {
         let _ = writeln!(log, "LUMINA-T111-OK");
+    }
+    ok
+}
+
+/// t112 卫生批次活体执行体（M42-WAYCOMP11 三域——独立函数承载，t93
+/// 帧形态纪律同款）：**① argv 真消费面**（ARGV_SEED gen 域⑧——编译
+/// 进程链第八形：[rsp]=argc/[rsp+8]=argv[0] Linux 初始栈直读 +
+/// strlen + 数据段拷贝 + LOG 取证 + EXIT(argc) 对账 + 空 argv 防御
+/// bail）；**② shm 池/帧生命周期回收面**（引用归零回收三面：满槽 →
+/// SYS_CLOSE 落点释放 → 重铸 + 全量回收对账 + 授予存续延迟回收面
+/// 〔子终结清算窗补扫〕）；**③ 服务退出后 boot 重启面**（RESIDENT_SEED
+/// 探针 ×2 轮重播种 + 注销停面 + waycomp 换防点在表对账）。
+fn t112_run(log: &mut DualLog) -> bool {
+    let mut ok = true;
+    // (a) 结构锚：ARGV_SEED 真 ELF64 容器字段对账（gen 域⑧）
+    let struct_ok = (|| {
+        let img = bedrock::elf::parse(&user::ARGV_SEED).ok()?;
+        Some(
+            img.entry == user::ELF_LANE_ENTRY
+                && img.load_count == 2
+                && img.loads[0].vaddr == user::ELF_LANE_ENTRY
+                && img.loads[0].flags & bedrock::elf::PF_X != 0
+                && img.loads[1].vaddr == user::ELF_LANE_DATA_VA
+                && img.loads[1].flags & bedrock::elf::PF_W != 0,
+        )
+    })()
+    .unwrap_or(false);
+    ok &= struct_ok;
+    // 有界收割助手（t111 同款手法——per-pid Zombie 状态轮询）
+    let wait_zombie = |pid: usize, ticks: u64| -> bool {
+        let dl = ostd::time::now() + ticks;
+        while task::task_debug_state(pid) != 4 && ostd::time::now() < dl {
+            core::hint::spin_loop();
+        }
+        task::task_debug_state(pid) == 4
+    };
+    let reap_code = |pid: usize| -> i32 {
+        let r = procs::sys_wait_pid(pid as u64);
+        if r >> 32 == 1 {
+            (r & 0xFFFF) as i32
+        } else {
+            i32::MIN
+        }
+    };
+    // (b) argv 真消费：spawn argv=["lumina-argv-probe","hygiene"] →
+    //     EXIT(argc=2) 对账（LOG 取证行随串口流——双面板 T112-ARGV 标记）
+    let pid2 = match procs::spawn_elf_seed(
+        "argv-probe",
+        &user::ARGV_SEED,
+        &["lumina-argv-probe", "hygiene"],
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = writeln!(log, "t112: argv build failed ({e:?})");
+            return false;
+        }
+    };
+    let argv_ok = pid2 != usize::MAX && wait_zombie(pid2, 1200) && reap_code(pid2) == 2;
+    ok &= argv_ok;
+    // 防御域：空 argv → argc=0 → EXIT(0) bail（argv[0] NULL 闸随行）
+    let pid0 = match procs::spawn_elf_seed("argv-null", &user::ARGV_SEED, &[]) {
+        Ok(p) => p,
+        Err(_) => usize::MAX,
+    };
+    let argv_null_ok = pid0 != usize::MAX && wait_zombie(pid0, 1200) && reap_code(pid0) == 0;
+    ok &= argv_null_ok;
+    // (c) shm 池回收面三域
+    // c0 自检运行者表卫生面（M42-WAYCOMP11——满槽 face 前提修复）：
+    //     先前测试遗留句柄全谱排水（文件/通道/套接字五臂全可关——
+    //     DIAG 揭雷：task0 表 15/15 满载，c1 face 需 ≥10 空位前提不
+    //     成立）。排水记账 = 排前对象族快照 + 排后余量；套接字关闭
+    //     走 mark_closed_by_object（对端终结语义面——waycomp 会话
+    //     EOF 由 (e) 在表对账兜底）。
+    let occ: Vec<(usize, u64)> = {
+        // 段一：gslot 快照（SCHED 锁窗）→ 段二 CAPS 对象映射（零嵌套——
+        // waycomp release_session_pools 同款两段式纪律）
+        let slots: Vec<(usize, usize)> = task::with_task_handles(task::current_task_id(), |t| {
+            t.iter()
+                .enumerate()
+                .filter_map(|(i, s)| s.map(|g| (i, g)))
+                .collect()
+        })
+        .unwrap_or_default();
+        let caps = crate::caps::table().lock();
+        slots
+            .into_iter()
+            .map(|(i, g)| (i, caps.get(g).map(|c| c.object()).unwrap_or(u64::MAX)))
+            .collect()
+    };
+    let mut drained = 0usize;
+    for (h, _) in occ.iter() {
+        if crate::vfs::sys_close(*h as u64) == 0 {
+            drained += 1;
+        }
+    }
+    let occ_after = task::with_task_handles(task::current_task_id(), |t| {
+        t.iter()
+            .enumerate()
+            .skip(1)
+            .filter(|(_, s)| s.is_some())
+            .count()
+    })
+    .unwrap_or(usize::MAX);
+    let drain_ok = drained == occ.len() && occ_after == 0;
+    ok &= drain_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T112-DRAIN before={} drained={} after={} occ={occ:?} pools={:?}",
+        occ.len(),
+        drained,
+        occ_after,
+        shm::pool_objects()
+    );
+    // c1 满槽 → Nomem → SYS_CLOSE 落点释放 → 释放槽位重铸（回收面
+    //     在环——满槽不再终态卡死；wl_shm.destroy 语义面）。对账键 =
+    //     created（全程铸池数——满槽 8 + 重铸 1），首柄关闭后出列防
+    //     all_closed 双关。
+    let usage0 = shm::pools_usage().0;
+    let rel0 = shm::releases();
+    let frees0 = shm::frame_frees();
+    let mut handles: Vec<u64> = Vec::new();
+    let mut created = 0u64;
+    for _ in 0..=shm::SHM_MAX_POOLS {
+        let c = shm::sys_shm(bedrock::abi::SHM_CREATE, 4096, 0);
+        if c >> 32 == 1 {
+            handles.push(c & 0xFFFF_FFFF);
+            created += 1;
+        }
+    }
+    let extra_fail = shm::sys_shm(bedrock::abi::SHM_CREATE, 4096, 0) >> 32 != 1;
+    // 满槽对账键 = 可铸数（SHM_MAX_POOLS − usage0——外部持有池〔t110
+    // 会话池等〕占册不碍 face：满槽本质 = 注册表满 + 越额拒 + 关闭
+    // 让位重铸）
+    let full_ok = created == (shm::SHM_MAX_POOLS - usage0) as u64
+        && shm::pools_usage().0 == shm::SHM_MAX_POOLS
+        && extra_fail;
+    ok &= full_ok;
+    let mut close_ok = false;
+    if let Some(&h) = handles.first() {
+        let rel_a = shm::releases();
+        close_ok = crate::vfs::sys_close(h) == 0 && shm::releases() == rel_a + 1;
+        if close_ok {
+            // 已关柄出列（all_closed 不双关）+ 释放槽位重铸（回收面
+            //     在环显形）
+            handles.remove(0);
+            let c = shm::sys_shm(bedrock::abi::SHM_CREATE, 4096, 0);
+            if c >> 32 == 1 {
+                handles.push(c & 0xFFFF_FFFF);
+                created += 1;
+            }
+        }
+    }
+    ok &= close_ok;
+    // 属主取证面（pool_owner 读面真消费——CREATE 调用方对账：重铸池
+    // 属主 = 本任务；回收纪律走引用计数，属主仅取证消费）
+    let owner_ok = shm::pool_owner(shm::last_object()) == Some(task::current_task_id());
+    ok &= owner_ok;
+    let mut all_closed = true;
+    for h in handles.iter() {
+        all_closed &= crate::vfs::sys_close(*h) == 0;
+    }
+    let recycle_ok = all_closed
+        && shm::pools_usage().0 == usage0
+        && shm::releases() == rel0 + created
+        && shm::frame_frees() == frees0 + created;
+    ok &= recycle_ok;
+    // c2 授予存续延迟回收面：创建池 → 授予常驻子 → 关己柄（引用 >0
+    //     不回收 fail-visible）→ 子终结清算窗补扫回收（帧归还 + 摘除）。
+    //     等待窗 4800 拍（RESIDENT_SEED = YIELD×64——(d) 探针同谱预算）；
+    //     对账键 = usage_b2（授予池在册后池数——外部持有池〔如 t110
+    //     会话池〕存续不碍本面对账）。
+    let rel_b = shm::releases();
+    let gpid =
+        procs::spawn_elf_seed_resident("grant-probe", &user::RESIDENT_SEED, &["grant-probe"])
+            .unwrap_or(usize::MAX);
+    let gp_ok = gpid != usize::MAX && !task::task_is_lin_abi(gpid);
+    ok &= gp_ok;
+    let c2 = shm::sys_shm(bedrock::abi::SHM_CREATE, 8192, 0);
+    let gh = c2 & 0xFFFF_FFFF;
+    ok &= c2 >> 32 == 1;
+    let usage_b2 = shm::pools_usage().0;
+    let grant_code = procs::sys_grant(
+        gpid as u64,
+        gh,
+        u64::from(vanguard::Right::READ.bits() | vanguard::Right::WRITE.bits()),
+    );
+    ok &= grant_code >> 32 == 1;
+    let defer_ok = crate::vfs::sys_close(gh) == 0 && shm::releases() == rel_b;
+    ok &= defer_ok;
+    let g_zombie = gp_ok && wait_zombie(gpid, 4800);
+    let dl = ostd::time::now() + 600;
+    while shm::releases() == rel_b && ostd::time::now() < dl {
+        core::hint::spin_loop();
+    }
+    let granted_reap =
+        g_zombie && shm::releases() == rel_b + 1 && shm::pools_usage().0 == usage_b2 - 1;
+    ok &= granted_reap;
+    if gp_ok {
+        let _ = reap_code(gpid);
+    }
+    // (d) 服务退出后 boot 重启面：RESIDENT_SEED 探针 ×2 轮重播种 +
+    //     注销停面（bounded-retry 有界域——重启尝试计数含失败面）
+    let r0 = procs::boot_restarts();
+    let p1 = procs::boot_service_spawn("restart-probe", &user::RESIDENT_SEED);
+    let d_ok = p1 != usize::MAX && task::task_is_resident(p1) && !task::task_is_lin_abi(p1);
+    ok &= d_ok;
+    // 轮一：探针自退出 → 收割窗重播种（idle 生产闭包 + 测试直调双域）
+    let mut p2 = usize::MAX;
+    let mut cyc1_ok = false;
+    if d_ok {
+        let dl = ostd::time::now() + 4800;
+        loop {
+            let _ = procs::boot_restart_tick();
+            match procs::boot_svc_pid("restart-probe") {
+                Some(p) if p != usize::MAX && p != p1 => {
+                    p2 = p;
+                    break;
+                }
+                _ => {}
+            }
+            if ostd::time::now() >= dl {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        cyc1_ok = p2 != usize::MAX
+            && task::task_alive(p2)
+            && task::task_is_resident(p2)
+            && procs::boot_svc_restarts("restart-probe").unwrap_or(0) >= 1
+            && procs::boot_restarts() > r0;
+    }
+    ok &= cyc1_ok;
+    let _ = reap_code(p1); // 僵尸留证收割（槽位卫生）
+                           // 轮二：再自退出 → 重播种 p3（重启计数续增）
+    let mut p3 = usize::MAX;
+    let mut cyc2_ok = false;
+    if cyc1_ok {
+        let dl = ostd::time::now() + 4800;
+        loop {
+            let _ = procs::boot_restart_tick();
+            match procs::boot_svc_pid("restart-probe") {
+                Some(p) if p != usize::MAX && p != p2 => {
+                    p3 = p;
+                    break;
+                }
+                _ => {}
+            }
+            if ostd::time::now() >= dl {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        cyc2_ok = p3 != usize::MAX
+            && task::task_alive(p3)
+            && task::task_is_resident(p3)
+            && procs::boot_svc_restarts("restart-probe").unwrap_or(0) >= 2;
+    }
+    ok &= cyc2_ok;
+    // 停面：注销 → 现任 exit 后零重播种（测试卫生面——零无界繁殖）
+    let removed = procs::boot_service_remove("restart-probe");
+    let p3_gone = p3 == usize::MAX || wait_zombie(p3, 4800);
+    let stab0 = procs::boot_svc_restarts("restart-probe");
+    let dl = ostd::time::now() + 600;
+    while ostd::time::now() < dl {
+        let _ = procs::boot_restart_tick();
+        core::hint::spin_loop();
+    }
+    let stop_ok = removed && p3_gone && procs::boot_svc_restarts("restart-probe") == stab0;
+    ok &= stop_ok;
+    let _ = reap_code(p2);
+    let _ = reap_code(p3);
+    // (e) waycomp 换防点在表对账（kmain boot_service_spawn 承接面）
+    let wc_pid = procs::waycomp_svc_boot_pid();
+    let wc_ok = procs::boot_service_registered("waycomp-svc-elf")
+        && wc_pid != usize::MAX
+        && task::task_alive(wc_pid);
+    ok &= wc_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T112-SHM struct={struct_ok} argv={argv_ok} null={argv_null_ok} drain={drain_ok} \
+         full={full_ok} close={close_ok} recycle={recycle_ok} defer={defer_ok} gz={g_zombie} \
+         greap={granted_reap} rel={} frees={} usage={}",
+        shm::releases(),
+        shm::frame_frees(),
+        shm::pools_usage().0
+    );
+    let _ = writeln!(
+        log,
+        "LUMINA-T112-RESTART cyc1={cyc1_ok} cyc2={cyc2_ok} stop={stop_ok} restarts={} wcface={wc_ok}",
+        procs::boot_restarts()
+    );
+    if ok {
+        let _ = writeln!(log, "LUMINA-T112-OK");
     }
     ok
 }

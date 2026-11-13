@@ -235,6 +235,18 @@ SPEC_CAN_TABLE = (
 )
 SPEC_EXIT_OK = 128  # 0x80 = 全契约完好（侵蚀位掩码并入退出码——内核对账面）
 
+# ---- 域⑧常量（M42-WAYCOMP11——卫生批次：argv 真消费面。Linux 初始栈
+# 直读域——build_initial_stack ABI：[rsp] = argc / [rsp+8] = argv[0]
+# 指针（argv 域 native v0 口径「记账不消费」退役——栈直读 + strlen +
+# 数据段拷贝 + LOG 取证 + EXIT(argc) 对账；空 argv = argc 0 → EXIT(0)
+# 防御 bail）。t112 消费。）----
+ARGV_EVID = b"LUMINA-T112-ARGV "  # 取证前缀（argv[0] 拷贝域随行——串口行）
+ARGV_DATA_SIZE = 0x80
+ARGV_BUF_OFF = 0x11    # argv[0] 拷贝缓冲（= len(ARGV_EVID)——前缀后紧邻，
+                       # LOG 连续 slice 真连续；v0 0x20 面内缺陷退役：
+                       # 前缀尾与缓冲间 15 字节空洞致取证行断链）
+ARGV_BUF_CAP = 0x40    # 缓冲上界（strlen ≤ 64——spawn 传参域闸内核侧）
+
 
 OUT = Path(__file__).resolve().parent.parent / "crates/kernel/src/exec_images_gen_m42_elf.rs"
 
@@ -1343,6 +1355,50 @@ def build_spec_isr_code():
     return bytes(a.buf)
 
 
+# ---- 域⑧：ARGV_SEED 代码段（M42-WAYCOMP11——argv 真消费面） ----
+def build_argv_code():
+    a = Asm()
+    # 入口 ABI：[rsp] = argc / [rsp+8] = argv[0] 指针（build_initial_stack
+    # Linux 初始栈同源——spawn_elf_seed argv 全链透传，映像侧真消费）
+    a.db(0x44, 0x8B, 0x24, 0x24)       # mov r12d, [rsp] —— argc
+    a.db(0x45, 0x85, 0xE4)             # test r12d, r12d
+    a.jcc32(0x84, "bail")              # je bail（argc=0 → EXIT(0) 防御域）
+    a.db(0x4C, 0x8B, 0x6C, 0x24, 0x08)  # mov r13, [rsp+8] —— argv[0] 指针
+    a.db(0x4D, 0x85, 0xED)             # test r13, r13
+    a.jcc32(0x84, "bail")              # je bail（NULL 闸——纵深防御域）
+    # strlen：扫描 argv[0] NUL（r14d = 游标——工作寄存器域 caller-saved 全谱）
+    a.db(0x45, 0x31, 0xF6)             # xor r14d, r14d
+    a.label("strlen")
+    a.db(0x43, 0x80, 0x7C, 0x35, 0x00, 0x00)  # cmp byte [r13+r14*1], 0（REX = X|B + ModRM mod=01 + SIB base 101 + disp8=0——揭雷③收口：r13 基址编码域 index 101 在 mod=00 下被硬件读作 disp32 无基址〔r13 丢弃 + 后续字节被吞〕，必须 mod=01 + disp8=0 才是真 r13 基址；揭雷链①②③随 objdump 锚定捕获：0x46=X|R 误 [rbx+…] / 0x43+base 011 误 [r11+…] / mod=00 base 101 误 disp32 无基址）
+    a.jmp8(0x74, "scopy")              # je scopy（NUL 到达）
+    a.db(0x41, 0xFF, 0xC6)             # inc r14d
+    a.jmp8(0xEB, "strlen")             # jmp strlen
+    # argv[0] → 数据段拷贝（rep movsb——缓冲域 ARGV_BUF_OFF；拷贝后
+    # 缓冲 = LUMINA-T112-ARGV 前缀 + argv[0] 连续 slice——串口取证行）
+    a.label("scopy")
+    a.db(0x48, 0xBF); a.imm64(ELF_DATA_VA + ARGV_BUF_OFF)  # movabs rdi, buf
+    a.db(0x4C, 0x89, 0xEE)             # mov rsi, r13 —— argv[0] 栈上指针
+    a.db(0x44, 0x89, 0xF1)             # mov ecx, r14d —— strlen
+    a.db(0xF3, 0xA4)                   # rep movsb
+    # LOG(DATA_VA, 前缀长 + strlen)——取证行 = 前缀 + argv[0]
+    a.db(0x48, 0xBF); a.imm64(ELF_DATA_VA)  # movabs rdi, DATA_VA（前缀基址）
+    a.db(0xBE); a.imm32(len(ARGV_EVID))     # mov esi, 前缀长
+    a.db(0x44, 0x01, 0xF6)             # add esi, r14d —— 行长合成（REX.R——源 r14d reg 域 110，揭雷②随锚定捕获：44 01 CE 误码 add esi,r9d）
+    mov_eax_i(a, SYS_LOG)
+    syscall(a)
+    # EXIT(argc)——t112 对账面（argv=["a","b"] → exit=2）
+    a.db(0x44, 0x89, 0xE7)             # mov edi, r12d
+    mov_eax_i(a, SYS_EXIT)
+    syscall(a)
+    a.label("bail")
+    a.db(0x31, 0xFF)                   # xor edi, edi
+    mov_eax_i(a, SYS_EXIT)
+    syscall(a)
+    a.db(0xEB, 0xFE)                   # jmp $（EXIT 失效停机——native 同款）
+    a.resolve()
+    return bytes(a.buf)
+
+
 def main():
     native_code = build_native_code()
     client_code, wire = build_client_code()
@@ -1351,6 +1407,7 @@ def main():
     input_code, input_wire = build_input_client_code()
     wc_code = build_wc_svc_code()
     spec_code = build_spec_isr_code()
+    argv_code = build_argv_code()
     wc_globals = build_wc_globals_blob()
     wc_batch = build_wc_client_batch()
     wc_batch_ext = build_wc_client_batch_ext()
@@ -1381,6 +1438,9 @@ def main():
     struct.pack_into("<III", wc_data, WC_DONE_OFF, WC_CB, (12 << 16) | 0, 0)
     spec_data = bytearray(SPEC_DATA_SIZE)  # 域⑦：+0x00 取证串 / +0x20..0x3C 槽面 / +0x40 转存缓冲
     spec_data[0x00:0x00 + len(SPEC_EVID)] = SPEC_EVID
+    argv_data = bytearray(ARGV_DATA_SIZE)  # 域⑧：+0x00 取证前缀 / +0x20 argv[0] 拷贝缓冲（运行期 rep movsb 填装）
+    argv_data[0x00:0x00 + len(ARGV_EVID)] = ARGV_EVID
+    assert len(ARGV_EVID) <= ARGV_BUF_OFF
 
     elf_native = elf64(ELF_ENTRY, [
         (ELF_ENTRY, 5, native_code),            # PF_R|PF_X
@@ -1409,6 +1469,10 @@ def main():
     elf_spec = elf64(ELF_ENTRY, [
         (ELF_ENTRY, 5, spec_code),
         (ELF_DATA_VA, 6, bytes(spec_data)),
+    ])
+    elf_argv = elf64(ELF_ENTRY, [
+        (ELF_ENTRY, 5, argv_code),
+        (ELF_DATA_VA, 6, bytes(argv_data)),
     ])
 
     # objdump 反汇编锚定 + syscall 计数
@@ -1505,6 +1569,16 @@ def main():
         ("mov $0x24,%eax", "SYS_FB_SYNC"),
         ("mov $0x2,%eax", "SYS_YIELD"),
     ], n_sys=7)  # LOG 1 + REGISTER 1 + SYNC 2（记账/teardown）+ REMOVE 1 + YIELD 1 + EXIT 1（域⑦——B/C 相位运行期循环：×4 轮/×64 拍执行面，静态单出现；零 bail 臂确定性单道）
+    objdump_check(argv_code, [
+        ("mov (%rsp),%r12d", "argc 装载域（[rsp] Linux 初始栈直读）"),
+        ("mov 0x8(%rsp),%r13", "argv[0] 指针装载域（[rsp+8]）"),
+        ("cmpb $0x0,0x0(%r13,%r14,1)", "strlen 扫描域（NUL 终点——SIB base 101+REX.B+mod01disp0 揭雷③收口先例）"),
+        ("movabs $0x401011,%rdi", "argv 拷贝缓冲指针（ELF_DATA_VA+ARGV_BUF_OFF——前缀尾紧邻真连续）"),
+        ("rep movsb %ds:(%rsi),%es:(%rdi)", "argv[0] 栈→数据段拷贝域"),
+        ("movabs $0x401000,%rdi", "取证前缀指针（LOG 连续 slice 基址）"),
+        ("add %r14d,%esi", "取证行长合成域（前缀 + strlen——REX.R 揭雷②收口先例）"),
+        ("mov $0x11,%esi", "前缀长域"),
+    ], n_sys=3)  # LOG 1 + EXIT 1（主道 EXIT(argc)）+ bail EXIT 1（argc=0/NULL 防御域）
 
     # Rust 生成物
     out = f"""// 本文件由 scripts/gen_m42_elf_lane.py 生成——勿手改；重跑脚本再生成。
@@ -1775,13 +1849,27 @@ pub const SPEC_ISR_YIELDS_C: u32 = {SPEC_YIELDS_C};
 pub static SPEC_ISR: [u8; {len(elf_spec)}] = [
 {rs_hex(elf_spec)}
 ];
+
+/// 域⑧ 映像：ARGV_SEED（M42-WAYCOMP11——**argv 真消费面**，编译进程
+/// 链第八形——argv 消费形，播籽 lane `spawn_elf_seed` 消费）。车道：
+/// 入口 Linux 初始栈直读（[rsp] = argc / [rsp+8] = argv[0]——
+/// build_initial_stack ABI 同源；spawn_elf_seed argv 全链透传在环）
+/// → strlen 扫描（NUL 终点——r14d 游标）→ argv[0] 栈→数据段拷贝
+///（rep movsb——ARGV_BUF_OFF 缓冲）→ SYS_LOG 取证（行 = "LUMINA-
+/// T112-ARGV " 前缀 + argv[0]——串口双面板标记域）→ EXIT(argc)
+///（t112 对账面——argv 长度 2 → exit=2）。空 argv / NULL 指针 →
+/// EXIT(0) 防御 bail（纵深防御域）。objdump 锚定 8 目 + syscall 计数
+/// 锚 3。t112 消费（argv 真消费活体）。
+pub static ARGV_SEED: [u8; {len(elf_argv)}] = [
+{rs_hex(elf_argv)}
+];
 """
     OUT.write_text(out)
     print(
         f"[gen_m42_elf_lane] ELF_NATIVE={len(elf_native)}B SHM_CLIENT={len(elf_client)}B "
         f"FBDEV_SVC_ELF={len(elf_fbsvc)}B RESIDENT_SEED={len(elf_resident)}B "
         f"INPUT_CLIENT={len(elf_input)}B WAYCOMP_SVC_ELF={len(elf_wc)}B "
-        f"SPEC_ISR={len(elf_spec)}B "
+        f"SPEC_ISR={len(elf_spec)}B ARGV_SEED={len(elf_argv)}B "
         f"wire={len(wire)}B input_wire={len(input_wire)}B wc_batch={len(wc_batch)}B "
         f"wc_batch_ext={len(wc_batch_ext)}B wc_globals={len(wc_globals)}B → {OUT}"
     )

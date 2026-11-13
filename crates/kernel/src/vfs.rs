@@ -861,6 +861,17 @@ pub fn sys_close(handle: u64) -> u64 {
                         crate::unixsock::mark_closed_by_object(o);
                         0
                     }
+                    Ok(o) if crate::shm::is_pool_object(o) => {
+                        // M42-WAYCOMP11 池句柄关闭落点（wl_shm.destroy 语义
+                        // 面——句柄/能力回收 + 引用归零池回收）：撤销后引用
+                        // 计数收敛（管道臂同款纪律——fd 传递存续池引用 > 0
+                        // 延迟回收 fail-visible；引用归零即帧归还 + 注册表
+                        // 摘除，shm::release_if_unreferenced 同心出口）。
+                        let _ = crate::caps::table().lock().revoke(g);
+                        task::clear_hflag(caller, h);
+                        crate::shm::release_if_unreferenced(o);
+                        0
+                    }
                     Ok(o) if is_pipe_object(o) => {
                         // M35-BBa 管道端句柄关闭落点：撤销后引用归零才清
                         // PIPES 槽（EOF/EPIPE 键动态收敛——fork 继承副本
