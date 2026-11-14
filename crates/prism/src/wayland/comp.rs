@@ -57,12 +57,13 @@ use mirror::Rect;
 use super::{
     compositor, display, encode_callback_done_event, encode_keyboard_enter_event,
     encode_keyboard_key_event, encode_keyboard_keymap_event, encode_keyboard_leave_event,
-    encode_pointer_axis_event, encode_pointer_axis_source_event, encode_pointer_axis_stop_event,
-    encode_pointer_button_event, encode_pointer_enter_event, encode_pointer_frame_event,
-    encode_pointer_leave_event, encode_pointer_motion_event, encode_registry_global_event,
-    encode_seat_capabilities_event, iface_name, parse_args, parse_header, registry, seat, shm,
-    shm_pool, surface, WlArg, WlError, WlHeader, WlIface, WlObjectTable, HEADER,
-    KEYMAP_FORMAT_XKB_V1, SEAT_CAPS_KEYBOARD, SEAT_CAPS_POINTER, SIG_COMPOSITOR_CREATE_REGION,
+    encode_keyboard_modifiers_event, encode_pointer_axis_event, encode_pointer_axis_source_event,
+    encode_pointer_axis_stop_event, encode_pointer_button_event, encode_pointer_enter_event,
+    encode_pointer_frame_event, encode_pointer_leave_event, encode_pointer_motion_event,
+    encode_registry_global_event, encode_seat_capabilities_event, iface_name, parse_args,
+    parse_header, registry, seat, shm, shm_pool, surface, WlArg, WlError, WlHeader, WlIface,
+    WlObjectTable, HEADER, KEYMAP_FORMAT_XKB_V1, MOD_ALT, MOD_CAPS, MOD_CTRL, MOD_MOD4, MOD_NUM2,
+    MOD_SHIFT, SEAT_CAPS_KEYBOARD, SEAT_CAPS_POINTER, SIG_COMPOSITOR_CREATE_REGION,
     SIG_COMPOSITOR_CREATE_SURFACE, SIG_DISPLAY_GET_REGISTRY, SIG_DISPLAY_SYNC, SIG_REGISTRY_BIND,
     SIG_SEAT_GET_KEYBOARD, SIG_SEAT_GET_POINTER, SIG_SHM_CREATE_POOL, SIG_SHM_POOL_CREATE_BUFFER,
     SIG_SHM_POOL_DESTROY, SIG_SURFACE_ATTACH, SIG_SURFACE_COMMIT, SIG_SURFACE_DAMAGE,
@@ -200,6 +201,8 @@ pub enum KbKind {
     Leave,
     /// 击键（wl_keyboard.key）。
     Key,
+    /// 修饰键态事件（wl_keyboard.modifiers——M42-WAYCOMP15 语义核）。
+    Modifiers,
 }
 
 /// 键盘事件记录（feed 回执取证域——电气面对账 + t109 断言面）。
@@ -215,6 +218,14 @@ pub struct KeyRecord {
     pub key: u32,
     /// 键态。
     pub state: u32,
+    /// 修饰键掩码 depressed（Modifiers 有效——M42-WAYCOMP15）。
+    pub mods_d: u32,
+    /// 修饰键掩码 latched（Modifiers 有效——v0 恒零域挂账）。
+    pub mods_l: u32,
+    /// 修饰键掩码 locked（Modifiers 有效）。
+    pub mods_lk: u32,
+    /// 布局组（Modifiers 有效——v0 恒零域挂账）。
+    pub group: u32,
 }
 
 /// 单次 feed 的键盘事件记录批（定容零堆）。
@@ -514,6 +525,15 @@ pub struct CompSession {
     kb_focus: u32,
     /// 指针焦点 surface（0 = 无焦点）。
     ptr_focus: u32,
+    /// 修饰键态（M42-WAYCOMP15 语义核——XKB 掩码域：depressed/latched/
+    /// locked/group 四域快照；latched/group v0 恒零域挂账）。
+    mods_depressed: u32,
+    /// 修饰键 latched 掩码（v0 恒零域挂账）。
+    mods_latched: u32,
+    /// 修饰键 locked 掩码（Lock 键翻转域——CapsLock/NumLock）。
+    mods_locked: u32,
+    /// 布局组（v0 恒零域挂账）。
+    mods_group: u32,
     /// 键盘事件待发队列（feed 冲刷域——定容零堆）。
     key_q: [Option<KeyRecord>; INPUT_Q_MAX],
     /// 键盘队列在队数。
@@ -547,6 +567,10 @@ impl CompSession {
             keyboard_obj: 0,
             kb_focus: 0,
             ptr_focus: 0,
+            mods_depressed: 0,
+            mods_latched: 0,
+            mods_locked: 0,
+            mods_group: 0,
             key_q: [None; INPUT_Q_MAX],
             key_n: 0,
             ptr_q: [None; INPUT_Q_MAX],
@@ -599,6 +623,17 @@ impl CompSession {
         self.kb_focus
     }
 
+    /// 修饰键态快照（M42-WAYCOMP15——(depressed, latched, locked,
+    /// group) 四元组；waycomp 取证戳消费域 + 宿主/内核测试断言面）。
+    pub fn modifiers_snapshot(&self) -> (u32, u32, u32, u32) {
+        (
+            self.mods_depressed,
+            self.mods_latched,
+            self.mods_locked,
+            self.mods_group,
+        )
+    }
+
     /// 指针焦点 surface 快照（0 = 无焦点）。
     pub fn pointer_focus(&self) -> u32 {
         self.ptr_focus
@@ -618,7 +653,10 @@ impl CompSession {
         if wl_id != 0 && self.surface_slot(wl_id).is_none() {
             return Err(CompError::BadObject); // 目标面不在册
         }
-        let need = usize::from(self.kb_focus != 0) + usize::from(wl_id != 0);
+        // M42-WAYCOMP15：enter 域 modifiers 快照随行（官方语义——修饰
+        // 键态事件随后 enter 交付，weston 同谱）——容量前置闸 +1。
+        let need =
+            usize::from(self.kb_focus != 0) + usize::from(wl_id != 0) + usize::from(wl_id != 0);
         if self.key_n + need > INPUT_Q_MAX {
             return Err(CompError::InputQFull); // 容量前置闸——状态零扰动
         }
@@ -633,6 +671,10 @@ impl CompSession {
                 serial,
                 key: 0,
                 state: 0,
+                mods_d: 0,
+                mods_l: 0,
+                mods_lk: 0,
+                group: 0,
             });
             self.key_n += 1;
         }
@@ -643,6 +685,25 @@ impl CompSession {
                 serial,
                 key: 0,
                 state: 0,
+                mods_d: 0,
+                mods_l: 0,
+                mods_lk: 0,
+                group: 0,
+            });
+            self.key_n += 1;
+            // modifiers 快照随行（enter 后交付——当前修饰键态全谱）
+            self.input_serial = self.input_serial.wrapping_add(1);
+            let mserial = self.input_serial;
+            self.key_q[self.key_n] = Some(KeyRecord {
+                kind: KbKind::Modifiers,
+                surface: wl_id,
+                serial: mserial,
+                key: 0,
+                state: 0,
+                mods_d: self.mods_depressed,
+                mods_l: self.mods_latched,
+                mods_lk: self.mods_locked,
+                group: self.mods_group,
             });
             self.key_n += 1;
         }
@@ -651,13 +712,35 @@ impl CompSession {
 
     /// 击键注入（M42-INPUT7——输入链生产域）：设备未派生或焦点域空 =
     /// BadObject（官方语义：key 仅在键盘焦点在域时合法）；队列满 =
-    /// InputQFull。键码 v0 口径 = scancode set 1 原值。
+    /// InputQFull。键码 v0 口径 = scancode set 1 原值。**M42-WAYCOMP15
+    /// modifiers 语义核**：键态变更承载修饰键态机——按下/释放位域更新
+    /// 〔depressed 位域 ∪/∖ + Lock 键（CapsLock/NumLock）按下翻转
+    /// locked〕，掩码变更即随行 modifiers 事件入队（官方语义：修饰键
+    /// 态变更时发）；容量前置闸 = 1 + 变更域（状态零扰动纪律）。
     pub fn keyboard_inject(&mut self, key: u32, state: u32) -> Result<(), CompError> {
         if self.keyboard_obj == 0 || self.kb_focus == 0 {
             return Err(CompError::BadObject); // 无设备/无焦点——击键无承载
         }
-        if self.key_n >= INPUT_Q_MAX {
-            return Err(CompError::InputQFull);
+        // 修饰键位域预解（wl 键码 − 8 = evdev 域映射——morse 偏移事实
+        // 源同谱；非修饰键 = None 零变更域）
+        let mod_bit = modifier_bit_of_wl_key(key);
+        let pressed = state == super::KEY_STATE_PRESSED;
+        let (new_d, new_lk) = match mod_bit {
+            Some(bit) if pressed => {
+                let lk = if lock_key_of_wl_key(key) {
+                    self.mods_locked ^ bit // Lock 键按下翻转 locked
+                } else {
+                    self.mods_locked
+                };
+                (self.mods_depressed | bit, lk)
+            }
+            Some(bit) => (self.mods_depressed & !bit, self.mods_locked),
+            None => (self.mods_depressed, self.mods_locked),
+        };
+        let mods_changed = new_d != self.mods_depressed || new_lk != self.mods_locked;
+        let need = 1 + usize::from(mods_changed);
+        if self.key_n + need > INPUT_Q_MAX {
+            return Err(CompError::InputQFull); // 容量前置闸——状态零扰动
         }
         self.input_serial = self.input_serial.wrapping_add(1);
         let serial = self.input_serial;
@@ -668,8 +751,30 @@ impl CompSession {
             serial,
             key,
             state,
+            mods_d: 0,
+            mods_l: 0,
+            mods_lk: 0,
+            group: 0,
         });
         self.key_n += 1;
+        self.mods_depressed = new_d;
+        self.mods_locked = new_lk;
+        if mods_changed {
+            self.input_serial = self.input_serial.wrapping_add(1);
+            let mserial = self.input_serial;
+            self.key_q[self.key_n] = Some(KeyRecord {
+                kind: KbKind::Modifiers,
+                surface: focus,
+                serial: mserial,
+                key: 0,
+                state: 0,
+                mods_d: self.mods_depressed,
+                mods_l: self.mods_latched,
+                mods_lk: self.mods_locked,
+                group: self.mods_group,
+            });
+            self.key_n += 1;
+        }
         Ok(())
     }
 
@@ -1039,6 +1144,15 @@ impl CompSession {
                             r.serial, // time 域 v0 = 串号复用（毫秒时间源挂账）
                             r.key,
                             r.state,
+                        ),
+                        KbKind::Modifiers => encode_keyboard_modifiers_event(
+                            &mut out[*out_len..],
+                            self.keyboard_obj,
+                            r.serial,
+                            r.mods_d,
+                            r.mods_l,
+                            r.mods_lk,
+                            r.group,
                         ),
                     }
                     .map_err(CompError::Wire)?;
@@ -1575,6 +1689,10 @@ impl CompSession {
                     serial: self.input_serial,
                     key: 0,
                     state: 0,
+                    mods_d: 0,
+                    mods_l: 0,
+                    mods_lk: 0,
+                    group: 0,
                 });
                 self.key_n += 1;
             }
@@ -1702,6 +1820,30 @@ impl CompSession {
         });
         Ok(())
     }
+}
+
+/// wl 键码 → XKB 修饰键位域映射（M42-WAYCOMP15 语义核纯函数——wl
+/// 键码 − 8 = evdev 域：42/54 = Shift、58 = CapsLock〔Lock〕、29/97 =
+/// Ctrl、56/100 = Alt、69 = NumLock〔Lock〕、125/126 = Super/Mod4；
+/// 非修饰键 = None）。XKB 掩码事实源 = xkbcommon 语义域（MOD_*
+/// 常量同源）。
+fn modifier_bit_of_wl_key(key: u32) -> Option<u32> {
+    let ev = key.checked_sub(8)?;
+    match ev {
+        42 | 54 => Some(MOD_SHIFT),  // KEY_LEFTSHIFT / KEY_RIGHTSHIFT
+        58 => Some(MOD_CAPS),        // KEY_CAPSLOCK（Lock 域）
+        29 | 97 => Some(MOD_CTRL),   // KEY_LEFTCTRL / KEY_RIGHTCTRL
+        56 | 100 => Some(MOD_ALT),   // KEY_LEFTALT / KEY_RIGHTALT
+        69 => Some(MOD_NUM2),        // KEY_NUMLOCK（Lock 域）
+        125 | 126 => Some(MOD_MOD4), // KEY_LEFTMETA / KEY_RIGHTMETA
+        _ => None,
+    }
+}
+
+/// Lock 键判定（M42-WAYCOMP15——按下翻转 locked 域的键：CapsLock 58 /
+/// NumLock 69；evdev 域）。
+fn lock_key_of_wl_key(key: u32) -> bool {
+    matches!(key.checked_sub(8), Some(58) | Some(69))
 }
 
 // -------------------------------------------------------- 宿主测试谱
@@ -2623,32 +2765,151 @@ mod tests {
             .unwrap();
         s.keyboard_inject(0x02, crate::wayland::KEY_STATE_RELEASED)
             .unwrap();
-        let mut out = [0u8; 128];
+        let mut out = [0u8; 160];
         let rep = s.feed(&[], &mut out).unwrap();
         assert_eq!(rep.consumed, 0);
-        assert_eq!(rep.keys.n, 3, "enter + key ×2 记录批");
-        assert_eq!(rep.out_len, 20 + 24 + 24, "enter(20) + key(24) ×2 回执");
+        // M42-WAYCOMP15：enter 域 modifiers 快照随行（官方语义——修饰
+        // 键态事件随后 enter 交付）→ 记录批 = enter + modifiers + key ×2
+        assert_eq!(rep.keys.n, 4, "enter + modifiers + key ×2 记录批");
+        assert_eq!(
+            rep.out_len,
+            20 + 28 + 24 + 24,
+            "enter(20) + modifiers(28) + key(24) ×2 回执"
+        );
         let m = crate::wayland::parse_message(&out, SIG_KEYBOARD_ENTER).unwrap();
         assert_eq!(m.header.object_id, 0x32);
         assert_eq!(m.header.opcode, crate::wayland::keyboard::EV_ENTER);
         assert_eq!(m.args[0], Some(WlArg::Uint(1)), "串号 1 起步（单调域）");
         assert_eq!(m.args[1], Some(WlArg::Object(0x21)));
         assert_eq!(m.args[2], Some(WlArg::Array(&[])), "v0 空 keys 数组");
-        let m = crate::wayland::parse_message(&out[20..], SIG_KEYBOARD_KEY).unwrap();
+        let m = crate::wayland::parse_message(&out[20..], crate::wayland::SIG_KEYBOARD_MODIFIERS)
+            .unwrap();
+        assert_eq!(m.header.opcode, crate::wayland::keyboard::EV_MODIFIERS);
+        assert_eq!(m.args[0], Some(WlArg::Uint(2)), "快照串号随行");
+        assert_eq!(
+            m.args[1],
+            Some(WlArg::Uint(0)),
+            "初值域零掩码（v0 全零快照）"
+        );
+        let m = crate::wayland::parse_message(&out[48..], SIG_KEYBOARD_KEY).unwrap();
         assert_eq!(m.header.opcode, crate::wayland::keyboard::EV_KEY);
         assert_eq!(m.args[2], Some(WlArg::Uint(0x02)));
         assert_eq!(
             m.args[3],
             Some(WlArg::Uint(crate::wayland::KEY_STATE_PRESSED))
         );
-        let m = crate::wayland::parse_message(&out[20 + 24..], SIG_KEYBOARD_KEY).unwrap();
+        let m = crate::wayland::parse_message(&out[48 + 24..], SIG_KEYBOARD_KEY).unwrap();
         assert_eq!(
             m.args[3],
             Some(WlArg::Uint(crate::wayland::KEY_STATE_RELEASED))
         );
         assert_eq!(rep.keys.items[0].map(|r| r.kind), Some(KbKind::Enter));
-        assert_eq!(rep.keys.items[1].map(|r| (r.key, r.state)), Some((0x02, 1)));
-        assert_eq!(rep.keys.items[2].map(|r| (r.key, r.state)), Some((0x02, 0)));
+        assert_eq!(
+            rep.keys.items[1].map(|r| r.kind),
+            Some(KbKind::Modifiers),
+            "enter 域 modifiers 快照随行（M42-WAYCOMP15）"
+        );
+        assert_eq!(rep.keys.items[2].map(|r| (r.key, r.state)), Some((0x02, 1)));
+        assert_eq!(rep.keys.items[3].map(|r| (r.key, r.state)), Some((0x02, 0)));
+    }
+
+    /// 修饰键语义核链（M42-WAYCOMP15——Shift 位域 ∪/∖ + CapsLock
+    /// locked 翻转存续 + 非修饰键零变更域 + 组合键掩码累积）。
+    #[test]
+    fn modifiers_semantics_chain() {
+        let mut s = new_session();
+        setup_registry(&mut s);
+        let batch = {
+            let mut b = [0u8; 192];
+            let mut bl = 0usize;
+            bl += encode_registry_bind(&mut b[bl..], 2, 1, "wl_compositor", 4, 3).unwrap();
+            bl += encode_message(
+                &mut b[bl..],
+                3,
+                compositor::REQ_CREATE_SURFACE,
+                &[WlArg::NewId(0x21)],
+            )
+            .unwrap();
+            bl += encode_registry_bind(&mut b[bl..], 2, 2, "wl_seat", 1, 0x30).unwrap();
+            bl += encode_message(
+                &mut b[bl..],
+                0x30,
+                seat::REQ_GET_KEYBOARD,
+                &[WlArg::NewId(0x32)],
+            )
+            .unwrap();
+            b[..bl].to_vec()
+        };
+        s.feed(&batch, &mut [0u8; 256]).unwrap();
+        s.set_keyboard_focus(0x21).unwrap();
+
+        // Shift 按下（wl 50 = evdev 42）→ depressed = MOD_SHIFT
+        s.keyboard_inject(50, crate::wayland::KEY_STATE_PRESSED)
+            .unwrap();
+        let mut out = [0u8; 128];
+        let rep = s.feed(&[], &mut out).unwrap();
+        // 尾序 modifiers 记录（enter 快照随行在前——语义核记录取尾序）
+        let mrec = rep.keys.items[..rep.keys.n]
+            .iter()
+            .flatten()
+            .rev()
+            .find(|r| r.kind == KbKind::Modifiers);
+        assert_eq!(
+            mrec.map(|r| r.mods_d),
+            Some(crate::wayland::MOD_SHIFT),
+            "Shift 位域 ∪"
+        );
+        assert_eq!(s.modifiers_snapshot(), (crate::wayland::MOD_SHIFT, 0, 0, 0));
+        // 非修饰键（wl 54 = evdev 46 KEY_C）按下 → 零变更域（零
+        // modifiers 事件）
+        s.keyboard_inject(54, crate::wayland::KEY_STATE_PRESSED)
+            .unwrap();
+        let rep = s.feed(&[], &mut [0u8; 64]).unwrap();
+        assert!(
+            !rep.keys.items[..rep.keys.n]
+                .iter()
+                .flatten()
+                .any(|r| r.kind == KbKind::Modifiers),
+            "非修饰键零变更域"
+        );
+        // 组合键累积：Ctrl（wl 37 = evdev 29）按下 → depressed = CTRL|SHIFT
+        s.keyboard_inject(37, crate::wayland::KEY_STATE_PRESSED)
+            .unwrap();
+        assert_eq!(
+            s.modifiers_snapshot().0,
+            crate::wayland::MOD_CTRL | crate::wayland::MOD_SHIFT,
+            "组合键掩码累积"
+        );
+        // Shift 释放 → depressed = MOD_CTRL（Shift 位域 ∖）
+        s.keyboard_inject(50, crate::wayland::KEY_STATE_RELEASED)
+            .unwrap();
+        assert_eq!(s.modifiers_snapshot().0, crate::wayland::MOD_CTRL);
+        s.keyboard_inject(37, crate::wayland::KEY_STATE_RELEASED)
+            .unwrap();
+        assert_eq!(s.modifiers_snapshot().0, 0, "全谱清零");
+        let _ = s.feed(&[], &mut [0u8; 256]).unwrap(); // 队列冲刷（容量域）
+
+        // CapsLock（wl 66 = evdev 58）按下 → depressed = CAPS ∧ locked 翻转
+        s.keyboard_inject(66, crate::wayland::KEY_STATE_PRESSED)
+            .unwrap();
+        assert_eq!(
+            s.modifiers_snapshot(),
+            (crate::wayland::MOD_CAPS, 0, crate::wayland::MOD_CAPS, 0),
+            "Lock 键按下：depressed ∧ locked 双域"
+        );
+        // CapsLock 释放 → depressed 清零，locked 存续（官方语义——
+        // Lock 态持续至再翻转）
+        s.keyboard_inject(66, crate::wayland::KEY_STATE_RELEASED)
+            .unwrap();
+        assert_eq!(
+            s.modifiers_snapshot(),
+            (0, 0, crate::wayland::MOD_CAPS, 0),
+            "locked 存续域"
+        );
+        // CapsLock 再按下 → locked 翻转归零
+        s.keyboard_inject(66, crate::wayland::KEY_STATE_PRESSED)
+            .unwrap();
+        assert_eq!(s.modifiers_snapshot().2, 0, "locked 再翻转归零");
     }
 
     /// 指针焦点/移动/按键链。
@@ -2760,7 +3021,10 @@ mod tests {
         assert_eq!(rep.drops.n, 1);
         assert_eq!(s.keyboard_focus(), 0, "键盘焦点清零");
         assert_eq!(s.pointer_focus(), 0, "指针焦点清零");
-        assert_eq!(rep.keys.n, 1, "kb Enter（焦点 set 残队）");
+        assert_eq!(
+            rep.keys.n, 2,
+            "kb Enter + modifiers 快照（焦点 set 残队——M42-WAYCOMP15 enter 域随行）"
+        );
         assert_eq!(rep.ptrs.n, 1, "ptr Enter（焦点 set 残队）");
         let mut out2 = [0u8; 128];
         let rep2 = s.feed(&[], &mut out2).unwrap();

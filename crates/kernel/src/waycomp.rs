@@ -207,6 +207,12 @@ pub static WLCOMP_FRAMES: AtomicU64 = AtomicU64::new(0);
 /// 轴域越界拒收数（M42-WAYCOMP14——axis>1/source>3 生产域闸 fail-
 /// visible 取证，t115 断言面）。
 pub static WLCOMP_AXIS_BAD: AtomicU64 = AtomicU64::new(0);
+/// modifiers wire 发出数（M42-WAYCOMP15——feed 回执 Modifiers 记录批
+/// 计数：语义核变更域 + enter 快照域全谱，t116 断言面）。
+pub static WLCOMP_MODS: AtomicU64 = AtomicU64::new(0);
+/// 修饰键 depressed 掩码快照（M42-WAYCOMP15——排空域会话语义核末态
+/// 读出，t116 端到端断言面）。
+pub static WLCOMP_MODS_DEP: AtomicU32 = AtomicU32::new(0);
 
 /// 输入源队列深度（键盘/指针各一定容——定容零堆纪律，SPSC 单生产
 /// 者域 v0 如实记档：批跑环境事实单生产者，多产者域挂账）。
@@ -436,6 +442,7 @@ fn session_loop(conn: u64) {
     let mut keymap_pools: Vec<u64> = Vec::new(); // keymap 内容池（M42-WAYCOMP13 收场域）
     let mut stream: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 512];
+    let mut eof = false; // EOF 收场旗（终末冲刷域判定——M42-WAYCOMP15）
     loop {
         // 输入面排空（M42-INPUT7 输入链——队列 → 会话注入 + 焦点裁决）
         drain_input(&mut session, &windows);
@@ -444,7 +451,10 @@ fn session_loop(conn: u64) {
         let mut got = 0usize;
         if pending > 0 || dead {
             match unixsock::recv_by_object(conn, &mut chunk) {
-                Ok(0) => break, // EOF（对端终结——会话收场；USOCK_EOFS 计数域）
+                Ok(0) => {
+                    eof = true; // EOF（对端终结——会话收场；USOCK_EOFS 计数域）
+                    break;
+                }
                 Ok(n) => {
                     stream.extend_from_slice(&chunk[..n]);
                     got = n;
@@ -465,6 +475,12 @@ fn session_loop(conn: u64) {
                 // 输入事件 wire 发出数（M42-INPUT7——KeyLog/PtrLog 记录批对账）
                 WLCOMP_KEYS.fetch_add(rep.keys.n as u64, Ordering::AcqRel);
                 WLCOMP_PTRS.fetch_add(rep.ptrs.n as u64, Ordering::AcqRel);
+                // modifiers wire 发出数（M42-WAYCOMP15——Modifiers 记录批）
+                for r in rep.keys.items[..rep.keys.n].iter().flatten() {
+                    if prism::wayland::comp::KbKind::Modifiers == r.kind {
+                        WLCOMP_MODS.fetch_add(1, Ordering::AcqRel);
+                    }
+                }
                 if rep.out_len > 0 {
                     send_all(conn, &out[..rep.out_len]);
                 }
@@ -503,6 +519,27 @@ fn session_loop(conn: u64) {
             });
             if blocked {
                 WLCOMP_IN_WAKES.fetch_add(1, Ordering::AcqRel);
+            }
+        }
+    }
+    // M42-WAYCOMP15：EOF 收场域终末冲刷（**drained→delivered 契约**
+    // ——已受理输入事件〔会话待发队列余量〕出域后 teardown；客户端
+    // 字节计数车道提前收口域〔modifiers enter 快照随行 +28B〕的按钮
+    // 批交付保障——t109 客户端阈值在 ptr enter 域提前满足竞逐窗收
+    // 口）。空流 feed 冲刷待发队列（官方语义——输入事件异步于请求
+    // 流）；会话域错误断连路径不冲刷（fail-visible 原貌）。
+    if eof {
+        let mut out2 = [0u8; 2048];
+        if let Ok(rep2) = session.feed(&[], &mut out2) {
+            WLCOMP_KEYS.fetch_add(rep2.keys.n as u64, Ordering::AcqRel);
+            WLCOMP_PTRS.fetch_add(rep2.ptrs.n as u64, Ordering::AcqRel);
+            for r in rep2.keys.items[..rep2.keys.n].iter().flatten() {
+                if prism::wayland::comp::KbKind::Modifiers == r.kind {
+                    WLCOMP_MODS.fetch_add(1, Ordering::AcqRel);
+                }
+            }
+            if rep2.out_len > 0 {
+                send_all(conn, &out2[..rep2.out_len]);
             }
         }
     }
@@ -684,6 +721,9 @@ fn drain_input(session: &mut CompSession, windows: &[u64]) {
             WLCOMP_FRAMES.fetch_add(1, Ordering::AcqRel);
         }
     }
+    // 修饰键态快照读出（M42-WAYCOMP15——排空域语义核末态取证，t116
+    // 端到端断言面）
+    WLCOMP_MODS_DEP.store(session.modifiers_snapshot().0, Ordering::Release);
 }
 
 /// 策略同步（feed 后每轮执行——**仲裁策略面承接域**）：新建 surface

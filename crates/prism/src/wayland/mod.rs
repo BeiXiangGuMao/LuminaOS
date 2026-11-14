@@ -787,6 +787,22 @@ pub const KEYMAP_FORMAT_XKB_V1: u32 = 1;
 pub const KEY_STATE_RELEASED: u32 = 0;
 /// wl_keyboard.key state：pressed（1）。
 pub const KEY_STATE_PRESSED: u32 = 1;
+/// XKB 修饰键掩码：Shift（1<<0——xkbcommon 语义域，M42-WAYCOMP15）。
+pub const MOD_SHIFT: u32 = 1 << 0;
+/// XKB 修饰键掩码：Caps Lock（1<<1，Lock 域）。
+pub const MOD_CAPS: u32 = 1 << 1;
+/// XKB 修饰键掩码：Control（1<<2）。
+pub const MOD_CTRL: u32 = 1 << 2;
+/// XKB 修饰键掩码：Alt / Mod1（1<<3）。
+pub const MOD_ALT: u32 = 1 << 3;
+/// XKB 修饰键掩码：Num Lock / Mod2（1<<4，Lock 域）。
+pub const MOD_NUM2: u32 = 1 << 4;
+/// XKB 修饰键掩码：Mod3（1<<5）。
+pub const MOD_MOD3: u32 = 1 << 5;
+/// XKB 修饰键掩码：Super / Mod4（1<<6）。
+pub const MOD_MOD4: u32 = 1 << 6;
+/// XKB 修饰键掩码：Mod5（1<<7）。
+pub const MOD_MOD5: u32 = 1 << 7;
 /// wl_pointer.button state：released（0）。
 pub const BTN_STATE_RELEASED: u32 = 0;
 /// wl_pointer.button state：pressed（1）。
@@ -983,6 +999,31 @@ pub fn encode_keyboard_key_event(
             WlArg::Uint(time),
             WlArg::Uint(key),
             WlArg::Uint(state),
+        ],
+    )
+}
+
+/// wl_keyboard.modifiers 事件编组（M42-WAYCOMP15——官方五参语义域：
+/// serial + mods_depressed + mods_latched + mods_locked + group）。
+pub fn encode_keyboard_modifiers_event(
+    buf: &mut [u8],
+    keyboard_id: u32,
+    serial: u32,
+    mods_depressed: u32,
+    mods_latched: u32,
+    mods_locked: u32,
+    group: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        keyboard_id,
+        keyboard::EV_MODIFIERS,
+        &[
+            WlArg::Uint(serial),
+            WlArg::Uint(mods_depressed),
+            WlArg::Uint(mods_latched),
+            WlArg::Uint(mods_locked),
+            WlArg::Uint(group),
         ],
     )
 }
