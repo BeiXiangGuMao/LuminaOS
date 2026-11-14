@@ -355,12 +355,27 @@ pub fn surface_release_if_owner(pid: u64) -> bool {
 /// 帧级损伤计划。合成器消费面（M28 组合器服务化）就绪前，本累计器
 /// 以证据行 `rects=`/`full=` 字段实时显形（记账活体）。
 static SYNC_DAMAGE: SpinLock<DamageTracker> = SpinLock::new(DamageTracker::new());
+/// 损伤入账累计数（M42-DMG20 联合域取证——sys_fb_sync mark 域计数：
+/// 每块非空交盒入账 +1；联合域对账面〔t121 相邻联合域 marks 对账〕）。
+static DAMAGE_MARKS: AtomicU64 = AtomicU64::new(0);
 
 /// 帧损伤计划读出：(合并后矩形数, 全帧翻转标志)。t72 对账域 +
 /// 未来合成器 flush 前置询问面（M28）。
 pub fn fb_damage_plan() -> (usize, bool) {
     let acc = SYNC_DAMAGE.lock();
     (acc.rects().len(), acc.is_full())
+}
+
+/// 损伤入账累计读面（M42-DMG20 联合域取证——mark 域计数；联合域
+/// 对账面消费〔marks = 入账块数，rects = 合并后块数——联合显形域〕）。
+pub fn fb_damage_marks() -> u64 {
+    DAMAGE_MARKS.load(Ordering::Relaxed)
+}
+
+/// 合成节拍累计读面（M42-DMG20——改写域联合合成对账面：批尾单合成
+/// 与逐窗合成的 tick 差分对账域，t121 断言面）。
+pub fn fb_compose_ticks() -> u64 {
+    COMPOSE_TICKS.load(Ordering::Relaxed)
 }
 
 /// 帧损伤复位（合成器帧提交后清账；t72 相位隔离同用此口）。
@@ -505,6 +520,7 @@ pub fn sys_fb_sync(x: u64, y: u64, w: u64, h: u64) -> u64 {
         if let Some(c) = full.intersection(&req) {
             if c.w > 0 && c.h > 0 {
                 acc.mark(c);
+                DAMAGE_MARKS.fetch_add(1, Ordering::Relaxed); // 联合域取证（M42-DMG20）
             }
         }
         (acc.rects().len(), acc.is_full())

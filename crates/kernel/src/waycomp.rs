@@ -241,6 +241,18 @@ pub static WLCOMP_MPS: AtomicU64 = AtomicU64::new(0);
 /// sync 即时完成数（M42-WAYCOMP18 多注册表面——feed 回执 syncs 增量
 /// 计数：每 sync 恰一 done + delete_id 对，t119 断言面）。
 pub static WLCOMP_SYNCS: AtomicU64 = AtomicU64::new(0);
+/// SYNC 矩形调用数（M42-DMG20 damage 联合域——waycomp 侧 sys_fb_sync
+/// 调用计数〔commit 发布域 + 改写域 + teardown 收场域全谱〕：联合域
+/// 对账面——marks/rects 差分域，t121 断言面）。
+pub static WLCOMP_SYNC_RECTS: AtomicU64 = AtomicU64::new(0);
+
+/// SYNC 矩形承接（M42-DMG20——waycomp 侧 sys_fb_sync 单出口：取证戳
+/// 随行 + 机械面透传；联合域口径 = 块级入账，联合由 mirror tracker
+/// 并集合并承载）。
+fn sync_rect(x: i32, y: i32, w: u32, h: u32) {
+    WLCOMP_SYNC_RECTS.fetch_add(1, Ordering::AcqRel);
+    let _ = fb::sys_fb_sync(x.max(0) as u64, y.max(0) as u64, u64::from(w), u64::from(h));
+}
 /// ISR 臂内核语境旗路径放行数（M42-WAYCOMP17——[`IN_ISR_CTX`] 旗命
 /// 中即计：放行路径可辨——旗路径而非任务查询路径，旗面活体取证，
 /// t118 断言面）。
@@ -758,12 +770,7 @@ fn session_loop(conn: u64) {
         if fb::surf_remove(w.fb).is_err() {
             WLCOMP_REMOVE_ERR.fetch_add(1, Ordering::AcqRel);
         }
-        let _ = fb::sys_fb_sync(
-            w.rect.x as u64,
-            w.rect.y as u64,
-            u64::from(w.rect.w),
-            u64::from(w.rect.h),
-        );
+        sync_rect(w.rect.x, w.rect.y, w.rect.w, w.rect.h);
         let _ = fb::fb_compose_tick();
         windows.retain(|id| *id != u64::from(w.wl));
     }
@@ -967,12 +974,7 @@ fn drop_apply(rep: &FeedReport, windows: &mut Vec<u64>, slots: &mut Vec<Window>)
         if let Some(pos) = slots.iter().position(|w| w.wl == d.wl_id) {
             let w = slots.remove(pos);
             let _ = fb::surf_remove(w.fb);
-            let _ = fb::sys_fb_sync(
-                w.rect.x.max(0) as u64,
-                w.rect.y.max(0) as u64,
-                u64::from(w.rect.w),
-                u64::from(w.rect.h),
-            );
+            sync_rect(w.rect.x, w.rect.y, w.rect.w, w.rect.h);
             let _ = fb::fb_compose_tick();
         }
         WLCOMP_DROPS.fetch_add(1, Ordering::AcqRel);
@@ -992,6 +994,11 @@ fn policy_rewrite(windows: &[u64], slots: &mut [Window]) {
     let Ok(plan) = cascade::tiling::tiling_plan(windows, VIEWPORT) else {
         return; // 平面失败——台账维持上轮态，fail-visible
     };
+    // 联合域批尾合成（M42-DMG20——N 窗改写的损伤矩形全谱入账〔tracker
+    // 并集合并——相邻/相交域块联合〕+ 批尾单 fb_compose_tick：v0 逐窗
+    // 合成退役〔N 窗改写 = N 次合成 → 1 次联合合成——合成节拍对账域
+    // t121〕）
+    let mut rewrote = false;
     for (idx, (id, rect)) in plan.panes.iter().enumerate() {
         let wl = *id as u32;
         let z = POLICY_Z_BASE - idx as i32;
@@ -1019,21 +1026,15 @@ fn policy_rewrite(windows: &[u64], slots: &mut [Window]) {
                 _ => paint_damage(fb_id, slot, *rect, *rect),
             }
         }
-        // 旧/新矩形双域损伤量化（旧呈现域回退 + 新呈现域成像）+ 合成
-        let _ = fb::sys_fb_sync(
-            old.x.max(0) as u64,
-            old.y.max(0) as u64,
-            u64::from(old.w),
-            u64::from(old.h),
-        );
-        let _ = fb::sys_fb_sync(
-            rect.x.max(0) as u64,
-            rect.y.max(0) as u64,
-            u64::from(rect.w),
-            u64::from(rect.h),
-        );
-        let _ = fb::fb_compose_tick();
+        // 旧/新矩形双域损伤量化（旧呈现域回退 + 新呈现域成像——联合
+        // 域入账，批尾单合成〔M42-DMG20〕）
+        sync_rect(old.x, old.y, old.w, old.h);
+        sync_rect(rect.x, rect.y, rect.w, rect.h);
+        rewrote = true;
         WLCOMP_REWRITES.fetch_add(1, Ordering::AcqRel);
+    }
+    if rewrote {
+        let _ = fb::fb_compose_tick(); // 联合域批尾单合成（v0 逐窗合成退役）
     }
 }
 
@@ -1180,19 +1181,10 @@ fn apply_commits(
                         _ => paint_damage(row_fb, row_slot, rect, rect),
                     }
                 }
-                // 旧/新矩形双域损伤量化 + 合成（重排改写执行器同款）
-                let _ = fb::sys_fb_sync(
-                    old.x.max(0) as u64,
-                    old.y.max(0) as u64,
-                    u64::from(old.w),
-                    u64::from(old.h),
-                );
-                let _ = fb::sys_fb_sync(
-                    rect.x.max(0) as u64,
-                    rect.y.max(0) as u64,
-                    u64::from(rect.w),
-                    u64::from(rect.h),
-                );
+                // 旧/新矩形双域损伤量化 + 合成（重排改写执行器同款——
+                // 联合域单出口承接〔M42-DMG20〕）
+                sync_rect(old.x, old.y, old.w, old.h);
+                sync_rect(rect.x, rect.y, rect.w, rect.h);
                 let _ = fb::fb_compose_tick();
                 WLCOMP_REWRITES.fetch_add(1, Ordering::AcqRel);
             }
@@ -1239,12 +1231,13 @@ fn apply_commits(
             }
             _ => paint_damage(fb_id, slot, rect, paint_dmg),
         }
-        // 合流电气面：损伤量化 + 合成执行（SYS_FB_SYNC → fb_compose_tick）
-        let _ = fb::sys_fb_sync(
-            paint_dmg.x.max(0) as u64,
-            paint_dmg.y.max(0) as u64,
-            u64::from(paint_dmg.w),
-            u64::from(paint_dmg.h),
+        // 合流电气面：损伤量化 + 合成执行（SYS_FB_SYNC → fb_compose_tick
+        //——联合域单出口承接〔M42-DMG20〕）
+        sync_rect(
+            paint_dmg.x.max(0),
+            paint_dmg.y.max(0),
+            paint_dmg.w,
+            paint_dmg.h,
         );
         let _ = fb::fb_compose_tick();
         WLCOMP_COMMITS.fetch_add(1, Ordering::AcqRel);
