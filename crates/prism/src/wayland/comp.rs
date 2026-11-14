@@ -57,14 +57,16 @@ use mirror::Rect;
 use super::{
     compositor, display, encode_callback_done_event, encode_keyboard_enter_event,
     encode_keyboard_key_event, encode_keyboard_keymap_event, encode_keyboard_leave_event,
-    encode_pointer_button_event, encode_pointer_enter_event, encode_pointer_leave_event,
-    encode_pointer_motion_event, encode_registry_global_event, encode_seat_capabilities_event,
-    iface_name, parse_args, parse_header, registry, seat, shm, shm_pool, surface, WlArg, WlError,
-    WlHeader, WlIface, WlObjectTable, HEADER, KEYMAP_FORMAT_XKB_V1, SEAT_CAPS_KEYBOARD,
-    SEAT_CAPS_POINTER, SIG_COMPOSITOR_CREATE_REGION, SIG_COMPOSITOR_CREATE_SURFACE,
-    SIG_DISPLAY_GET_REGISTRY, SIG_DISPLAY_SYNC, SIG_REGISTRY_BIND, SIG_SEAT_GET_KEYBOARD,
-    SIG_SEAT_GET_POINTER, SIG_SHM_CREATE_POOL, SIG_SHM_POOL_CREATE_BUFFER, SIG_SHM_POOL_DESTROY,
-    SIG_SURFACE_ATTACH, SIG_SURFACE_COMMIT, SIG_SURFACE_DAMAGE, SIG_SURFACE_FRAME, WIRE_MAX,
+    encode_pointer_axis_event, encode_pointer_axis_source_event, encode_pointer_axis_stop_event,
+    encode_pointer_button_event, encode_pointer_enter_event, encode_pointer_frame_event,
+    encode_pointer_leave_event, encode_pointer_motion_event, encode_registry_global_event,
+    encode_seat_capabilities_event, iface_name, parse_args, parse_header, registry, seat, shm,
+    shm_pool, surface, WlArg, WlError, WlHeader, WlIface, WlObjectTable, HEADER,
+    KEYMAP_FORMAT_XKB_V1, SEAT_CAPS_KEYBOARD, SEAT_CAPS_POINTER, SIG_COMPOSITOR_CREATE_REGION,
+    SIG_COMPOSITOR_CREATE_SURFACE, SIG_DISPLAY_GET_REGISTRY, SIG_DISPLAY_SYNC, SIG_REGISTRY_BIND,
+    SIG_SEAT_GET_KEYBOARD, SIG_SEAT_GET_POINTER, SIG_SHM_CREATE_POOL, SIG_SHM_POOL_CREATE_BUFFER,
+    SIG_SHM_POOL_DESTROY, SIG_SURFACE_ATTACH, SIG_SURFACE_COMMIT, SIG_SURFACE_DAMAGE,
+    SIG_SURFACE_FRAME, WIRE_MAX,
 };
 
 /// 单会话 surface 槽容量（定容零堆——SurfaceTable 同量级先例）。
@@ -85,6 +87,12 @@ pub const SESSION_BUFFERS: usize = 8;
 pub const INPUT_Q_MAX: usize = 8;
 /// 单次 feed 的输入事件记录上限（定容零堆——INPUT_Q_MAX 同量级）。
 pub const MAX_INPUTS_PER_FEED: usize = 8;
+/// enum axis 值域上界（官方声明序 vertical_scroll=0 / horizontal_scroll=
+/// 1——M42-WAYCOMP14 注入面域闸）。
+pub const AXIS_AXIS_MAX: u32 = 1;
+/// enum axis_source 值域上界（官方声明序 wheel=0 / finger=1 /
+/// continuous=2 / wheel_tilt=3——注入面域闸）。
+pub const AXIS_SOURCE_MAX: u32 = 3;
 
 /// keymap 内容面（M42-WAYCOMP13 笔⑬——「keymap 内容面」挂账域兑现）：
 /// wl_keyboard.keymap 承载的 XKB keymap 内容事实源（xkb v1 文本域——
@@ -234,7 +242,8 @@ impl KeyLog {
     }
 }
 
-/// 指针事件类别（M42-INPUT7——焦点域/移动域/按键域三分）。
+/// 指针事件类别（M42-INPUT7——焦点域/移动域/按键域三分；M42-WAYCOMP14
+/// axis 族/frame 扩族——官方声明序事件域七分）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PtrKind {
     /// 指针焦点入域（wl_pointer.enter）。
@@ -245,6 +254,14 @@ pub enum PtrKind {
     Motion,
     /// 指针按键（wl_pointer.button）。
     Button,
+    /// 轴滚动（wl_pointer.axis——value fixed 24.8 原字）。
+    Axis,
+    /// 分组终结逻辑事件（wl_pointer.frame——axis 族批出域定界）。
+    Frame,
+    /// 轴源声明（wl_pointer.axis_source——frame 域前置）。
+    AxisSource,
+    /// 滚动手势终结（wl_pointer.axis_stop）。
+    AxisStop,
 }
 
 /// 指针事件记录（feed 回执取证域——电气面对账 + t109 断言面）。
@@ -264,6 +281,12 @@ pub struct PtrRecord {
     pub button: u32,
     /// 按钮态（Button 有效）。
     pub state: u32,
+    /// 轴域（Axis/AxisStop 有效——官方 enum axis 值域）。
+    pub axis: u32,
+    /// 轴位移增量（Axis 有效——fixed 24.8 原字，可负）。
+    pub value: i32,
+    /// 轴源（AxisSource 有效——官方 enum axis_source 值域）。
+    pub source: u32,
 }
 
 /// 单次 feed 的指针事件记录批（定容零堆）。
@@ -680,6 +703,9 @@ impl CompSession {
                 y: 0,
                 button: 0,
                 state: 0,
+                axis: 0,
+                value: 0,
+                source: 0,
             });
             self.ptr_n += 1;
         }
@@ -692,6 +718,9 @@ impl CompSession {
                 y,
                 button: 0,
                 state: 0,
+                axis: 0,
+                value: 0,
+                source: 0,
             });
             self.ptr_n += 1;
         }
@@ -718,6 +747,9 @@ impl CompSession {
             y,
             button: 0,
             state: 0,
+            axis: 0,
+            value: 0,
+            source: 0,
         });
         self.ptr_n += 1;
         Ok(())
@@ -743,6 +775,132 @@ impl CompSession {
             y: 0,
             button,
             state,
+            axis: 0,
+            value: 0,
+            source: 0,
+        });
+        self.ptr_n += 1;
+        Ok(())
+    }
+
+    /// 轴滚动注入（M42-WAYCOMP14 axis 族——value fixed 24.8 原字，可
+    /// 负〔反向滚动〕）：无焦点域零事件（官方语义——静默丢弃，Ok 返
+    /// 回，motion 同谱）；队列满 = InputQFull。axis 值域越界 = BadObject
+    /// （官方 enum axis 声明序 0..=1，fail-visible）。
+    pub fn pointer_axis(&mut self, axis: u32, value: i32) -> Result<(), CompError> {
+        if axis > AXIS_AXIS_MAX {
+            return Err(CompError::BadObject); // 轴域越界（enum axis 声明序）
+        }
+        if self.pointer_obj == 0 || self.ptr_focus == 0 {
+            return Ok(()); // 无焦点域滚动零事件（官方语义——静默丢弃）
+        }
+        if self.ptr_n >= INPUT_Q_MAX {
+            return Err(CompError::InputQFull);
+        }
+        self.input_serial = self.input_serial.wrapping_add(1);
+        let serial = self.input_serial;
+        let focus = self.ptr_focus;
+        self.ptr_q[self.ptr_n] = Some(PtrRecord {
+            kind: PtrKind::Axis,
+            surface: focus,
+            serial,
+            x: 0,
+            y: 0,
+            button: 0,
+            state: 0,
+            axis,
+            value,
+            source: 0,
+        });
+        self.ptr_n += 1;
+        Ok(())
+    }
+
+    /// 分组终结注入（M42-WAYCOMP14——官方语义：axis/axis_source/
+    /// axis_stop 批由 frame 定界出域；注入面显式 frame 注入 = 组装
+    /// 面交由电气面〔waycomp 排空域每扫掠一 frame〕，本 API 直通域
+    /// 面向单事件粒度消费方）。设备未派生 = BadObject。
+    pub fn pointer_frame(&mut self) -> Result<(), CompError> {
+        if self.pointer_obj == 0 {
+            return Err(CompError::BadObject); // 设备未派生——frame 无承载
+        }
+        if self.ptr_n >= INPUT_Q_MAX {
+            return Err(CompError::InputQFull);
+        }
+        self.input_serial = self.input_serial.wrapping_add(1);
+        let serial = self.input_serial;
+        self.ptr_q[self.ptr_n] = Some(PtrRecord {
+            kind: PtrKind::Frame,
+            surface: self.ptr_focus,
+            serial,
+            x: 0,
+            y: 0,
+            button: 0,
+            state: 0,
+            axis: 0,
+            value: 0,
+            source: 0,
+        });
+        self.ptr_n += 1;
+        Ok(())
+    }
+
+    /// 轴源声明注入（M42-WAYCOMP14——frame 域前置声明，官方 enum
+    /// axis_source 值域 0..=3 越界 = BadObject fail-visible）。
+    pub fn pointer_axis_source(&mut self, axis_source: u32) -> Result<(), CompError> {
+        if axis_source > AXIS_SOURCE_MAX {
+            return Err(CompError::BadObject); // 轴源域越界
+        }
+        if self.pointer_obj == 0 {
+            return Err(CompError::BadObject); // 设备未派生
+        }
+        if self.ptr_n >= INPUT_Q_MAX {
+            return Err(CompError::InputQFull);
+        }
+        self.input_serial = self.input_serial.wrapping_add(1);
+        let serial = self.input_serial;
+        self.ptr_q[self.ptr_n] = Some(PtrRecord {
+            kind: PtrKind::AxisSource,
+            surface: self.ptr_focus,
+            serial,
+            x: 0,
+            y: 0,
+            button: 0,
+            state: 0,
+            axis: 0,
+            value: 0,
+            source: axis_source,
+        });
+        self.ptr_n += 1;
+        Ok(())
+    }
+
+    /// 滚动手势终结注入（M42-WAYCOMP14——axis_stop(time, axis) 官方
+    /// 语义：手势终结后该轴不再有 axis 事件直至新手势）。
+    pub fn pointer_axis_stop(&mut self, axis: u32) -> Result<(), CompError> {
+        if axis > AXIS_AXIS_MAX {
+            return Err(CompError::BadObject); // 轴域越界
+        }
+        if self.pointer_obj == 0 || self.ptr_focus == 0 {
+            return Ok(()); // 无焦点域手势终结零事件（官方语义——静默丢弃）
+        }
+        if self.ptr_n >= INPUT_Q_MAX {
+            return Err(CompError::InputQFull);
+        }
+        self.input_serial = self.input_serial.wrapping_add(1);
+        let serial = self.input_serial;
+        let focus = self.ptr_focus;
+        self.ptr_q[self.ptr_n] = Some(PtrRecord {
+            kind: PtrKind::AxisStop,
+            surface: focus,
+            serial,
+            x: 0,
+            y: 0,
+            button: 0,
+            state: 0,
+            axis,
+            value: 0,
+            source: 0,
         });
         self.ptr_n += 1;
         Ok(())
@@ -922,6 +1080,27 @@ impl CompSession {
                             r.serial,
                             r.button,
                             r.state,
+                        ),
+                        PtrKind::Axis => encode_pointer_axis_event(
+                            &mut out[*out_len..],
+                            self.pointer_obj,
+                            r.serial, // time 域 v0 = 串号复用（毫秒时间源挂账）
+                            r.axis,
+                            r.value,
+                        ),
+                        PtrKind::Frame => {
+                            encode_pointer_frame_event(&mut out[*out_len..], self.pointer_obj)
+                        }
+                        PtrKind::AxisSource => encode_pointer_axis_source_event(
+                            &mut out[*out_len..],
+                            self.pointer_obj,
+                            r.source,
+                        ),
+                        PtrKind::AxisStop => encode_pointer_axis_stop_event(
+                            &mut out[*out_len..],
+                            self.pointer_obj,
+                            r.serial, // time 域 v0 = 串号复用
+                            r.axis,
                         ),
                     }
                     .map_err(CompError::Wire)?;
@@ -1412,6 +1591,9 @@ impl CompSession {
                     y: 0,
                     button: 0,
                     state: 0,
+                    axis: 0,
+                    value: 0,
+                    source: 0,
                 });
                 self.ptr_n += 1;
             }

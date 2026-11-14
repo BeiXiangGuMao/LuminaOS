@@ -51,15 +51,20 @@
 //! （真实合成器语义：重排不依赖客户端重绘）。
 //!
 //! **输入链**（M42-INPUT7——waycomp 主体迁移前置，wl_seat +
-//! wl_keyboard 输入链；**M42-WAYCOMP12 笔⑫ 双域落域**）：全局输入源
+//! wl_keyboard 输入链；**M42-WAYCOMP12 笔⑫ 双域落域**；**M42-WAYCOMP13
+//! 笔⑬ evdev 键码映射 + keymap 内容面落域**；**M42-WAYCOMP14 笔⑭
+//! wl_pointer axis 族/frame 落域**）：全局输入源
 //! （[`input_key`] / [`input_pointer_motion`] / [`input_pointer_button`]
+//! / [`input_pointer_axis`] / [`input_pointer_axis_stop`]
 //! 生产面——v0 内核态注入域，**ring3 输入守护门禁在环**〔域①——
 //! Kind::User 语境拒绝 fail-visible，ABI 负空间纪律：SYS 号域零注入
-//! 臂〕）→ 会话环排空（[`drain_input`]——键盘直注入；指针 hit-test
-//! 焦点裁决〔z 序顶窗优先——cascade 平面逆序首个含点窗〕+
-//! click-to-focus〔按下域指针焦点面 = 键盘焦点迁移域〕）→ 会话待发
-//! 队列（prism CompSession 焦点/注入钩子）→ feed 冲刷
-//! wl_keyboard/wl_pointer 事件出域 → 客户端。会话环 = **阻塞输入等
+//! 臂〕）→ 会话环排空（[`drain_input`]——键盘 evdev 映射直注入；
+//! 指针 hit-test 焦点裁决〔z 序顶窗优先——cascade 平面逆序首个含点
+//! 窗〕+ click-to-focus〔按下域指针焦点面 = 键盘焦点迁移域〕+ 轴域
+//! 扫掠〔AXIS_Q 排空 → axis_source 前置 + axis/axis_stop 批 + 扫掠
+//! 终结 frame——官方分组语义〕）→ 会话待发队列（prism CompSession
+//! 焦点/注入钩子）→ feed 冲刷 wl_keyboard/wl_pointer 事件出域 → 客
+//! 户端。会话环 = **阻塞输入等
 //! 待面**（域②——WaitWhat::CompIn 扩域：三静域〔输入队列空 + 会话
 //! 流空 + 非终结〕登记阻塞，v0 探针轮询 + 让步口径退役；唤醒源三向
 //! = 输入生产 wake 全域 + send 落环 conn 匹配域 + shutdown 双向；
@@ -187,6 +192,21 @@ pub static WLCOMP_KEYMAPS: AtomicU64 = AtomicU64::new(0);
 /// keymap 承接失败数（M42-WAYCOMP13——铸池/填充/SEND_FD 任一域失败
 /// fail-visible 取证：内容面零交付）。
 pub static WLCOMP_KEYMAP_FD_ERR: AtomicU64 = AtomicU64::new(0);
+/// 轴事件 wire 发出数（M42-WAYCOMP14——drain 轴域扫掠受理计数，t115
+/// 断言面）。
+pub static WLCOMP_AXES: AtomicU64 = AtomicU64::new(0);
+/// 手势终结 wire 发出数（M42-WAYCOMP14——axis_stop 扫掠受理计数，
+/// t115 断言面）。
+pub static WLCOMP_AXIS_STOPS: AtomicU64 = AtomicU64::new(0);
+/// 轴源声明 wire 发出数（M42-WAYCOMP14——扫掠内轴源变化域计数，t115
+/// 断言面）。
+pub static WLCOMP_AXSRC: AtomicU64 = AtomicU64::new(0);
+/// 分组终结 wire 发出数（M42-WAYCOMP14——每扫掠一 frame 出域计数，
+/// t115 断言面）。
+pub static WLCOMP_FRAMES: AtomicU64 = AtomicU64::new(0);
+/// 轴域越界拒收数（M42-WAYCOMP14——axis>1/source>3 生产域闸 fail-
+/// visible 取证，t115 断言面）。
+pub static WLCOMP_AXIS_BAD: AtomicU64 = AtomicU64::new(0);
 
 /// 输入源队列深度（键盘/指针各一定容——定容零堆纪律，SPSC 单生产
 /// 者域 v0 如实记档：批跑环境事实单生产者，多产者域挂账）。
@@ -195,6 +215,10 @@ const INPUT_CAP: usize = 16;
 static KEY_Q: SpscRing<u64, INPUT_CAP> = SpscRing::new();
 /// 指针输入队列（元素 = bit63=按钮旗 | (button/x << 32) | state/y）。
 static PTR_Q: SpscRing<u64, INPUT_CAP> = SpscRing::new();
+/// 轴输入队列（M42-WAYCOMP14——独立定容环与 PTR_Q 分域：元素 =
+/// bit36=手势终结旗 | bit37=轴源有效旗 | source << 34 | axis << 32 |
+/// value i32 原字；位域正交性 = 独立环承载，无 bit63/62 冲突窗）。
+static AXIS_Q: SpscRing<u64, INPUT_CAP> = SpscRing::new();
 
 /// 输入注入域门禁（M42-WAYCOMP12 域①——ring3 输入守护）：当前语境
 /// = ring3（Kind::User 任务——syscall 派发器执行域同源）→ 拒绝（违规
@@ -259,10 +283,62 @@ pub fn input_pointer_button(button: u32, state: u32) -> bool {
     }
 }
 
+/// 输入链生产面：轴滚动（M42-WAYCOMP14 axis 族——axis 值域官方
+/// enum axis 0..=1，value fixed 24.8 原字可负〔反向滚动〕，source
+/// 官方 enum axis_source 0..=3；独立 AXIS_Q 承载与 PTR_Q 分域）。守
+/// 护门禁 + 受理入环唤醒链同 [`input_key`]。返回受理（入环成功）。
+pub fn input_pointer_axis(axis: u32, value: i32, source: u32) -> bool {
+    if !input_guard() {
+        return false;
+    }
+    if axis > prism::wayland::comp::AXIS_AXIS_MAX || source > prism::wayland::comp::AXIS_SOURCE_MAX
+    {
+        WLCOMP_AXIS_BAD.fetch_add(1, Ordering::AcqRel);
+        return false; // 轴/轴源域越界（生产域闸——fail-visible）
+    }
+    let raw = (1u64 << 37) // 轴源有效旗（扫掠域 axis_source 前置声明）
+        | ((u64::from(source) & 0x3) << 34)
+        | ((u64::from(axis) & 0x3) << 32)
+        | ((value as u32) as u64 & 0xFFFF_FFFF);
+    if AXIS_Q.send(raw).is_ok() {
+        task::wake_tasks(|w| matches!(w, task::WaitWhat::CompIn { .. }));
+        true
+    } else {
+        false // 队满丢弃（SPSC 环纪律——KBD_DROP 同谱）
+    }
+}
+
+/// 输入链生产面：滚动手势终结（M42-WAYCOMP14——axis_stop(time, axis)
+/// 官方语义：手势终结后该轴不再有 axis 事件直至新手势）。守护门禁
+/// + 受理入环唤醒链同 [`input_key`]。
+pub fn input_pointer_axis_stop(axis: u32) -> bool {
+    if !input_guard() {
+        return false;
+    }
+    if axis > prism::wayland::comp::AXIS_AXIS_MAX {
+        WLCOMP_AXIS_BAD.fetch_add(1, Ordering::AcqRel);
+        return false; // 轴域越界（生产域闸——fail-visible）
+    }
+    let raw = (1u64 << 36) // 手势终结旗
+        | ((u64::from(axis) & 0x3) << 32);
+    if AXIS_Q.send(raw).is_ok() {
+        task::wake_tasks(|w| matches!(w, task::WaitWhat::CompIn { .. }));
+        true
+    } else {
+        false
+    }
+}
+
 /// 输入队列深度取证读面（M42-WAYCOMP12 域①——t113 守护受理对账
 /// 域）：(键盘队列, 指针队列) 各自可消费元素数。零变更只读。
 pub fn input_queue_depth() -> (usize, usize) {
     (KEY_Q.len(), PTR_Q.len())
+}
+
+/// 轴队列深度取证读面（M42-WAYCOMP14——t115 扫掠排空对账域）。零变
+/// 更只读。
+pub fn input_axis_depth() -> usize {
+    AXIS_Q.len()
 }
 
 /// 输入队列排水装置面（M42-WAYCOMP12——t113 相位间卫生域：守护受理
@@ -271,6 +347,7 @@ pub fn input_queue_depth() -> (usize, usize) {
 pub fn input_queue_flush() {
     while KEY_Q.recv().is_some() {}
     while PTR_Q.recv().is_some() {}
+    while AXIS_Q.recv().is_some() {}
 }
 
 /// 取证戳快照：(listener, bound, sessions, commits, composes, last_z,
@@ -571,6 +648,40 @@ fn drain_input(session: &mut CompSession, windows: &[u64]) {
             if target != 0 {
                 WLCOMP_INPUT_PTRS.fetch_add(1, Ordering::AcqRel);
             }
+        }
+    }
+    // 轴域扫掠（M42-WAYCOMP14 axis 族——AXIS_Q 排空 → 会话注入；扫
+    // 掠分组语义 = 官方 frame 定界：轴源变化域 axis_source 前置声明
+    // + axis/axis_stop 事件批 + 扫掠终结 pointer_frame 出域〔每扫掠
+    // 一 frame——组装面 = 电气面单点，与注入面直通域 pointer_frame
+    // 解耦〕）。
+    let mut sweep = 0usize;
+    let mut src_pending = None::<u32>;
+    while let Some(raw) = AXIS_Q.recv() {
+        let value = ((raw & 0xFFFF_FFFF) as u32) as i32;
+        let axis = ((raw >> 32) & 0x3) as u32;
+        let source = ((raw >> 34) & 0x3) as u32;
+        let stop = (raw >> 36) & 1 == 1;
+        let src_valid = (raw >> 37) & 1 == 1;
+        if src_valid && src_pending != Some(source) {
+            if session.pointer_axis_source(source).is_ok() {
+                WLCOMP_AXSRC.fetch_add(1, Ordering::AcqRel);
+            }
+            src_pending = Some(source);
+        }
+        if stop {
+            if session.pointer_axis_stop(axis).is_ok() {
+                WLCOMP_AXIS_STOPS.fetch_add(1, Ordering::AcqRel);
+            }
+        } else if session.pointer_axis(axis, value).is_ok() {
+            WLCOMP_AXES.fetch_add(1, Ordering::AcqRel);
+        }
+        sweep += 1;
+    }
+    if sweep > 0 {
+        // 扫掠终结 frame（官方分组语义——axis 族批出域定界）
+        if session.pointer_frame().is_ok() {
+            WLCOMP_FRAMES.fetch_add(1, Ordering::AcqRel);
         }
     }
 }

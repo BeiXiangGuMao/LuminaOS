@@ -86,8 +86,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114）。
-const SELFTEST_TOTAL: usize = 114;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115）。
+const SELFTEST_TOTAL: usize = 115;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7260,6 +7260,19 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t114 = t114_run(&mut log);
     report(&mut log, t114, "evdev-keymap-content");
 
+    // t115) wl_pointer axis 族/frame 活体（M42-WAYCOMP14 笔⑭）：〔wire
+    //       编组锚——axis 20B/frame 8B/axis_source 12B/axis_stop 16B +
+    //       官方声明序 opcode 对账〕→〔指针链会话——bind wl_seat +
+    //       get_pointer + bind compositor + create_surface + damage +
+    //       commit → motion hit-test 命中 0x41 焦点域〕→〔axis 扫掠活
+    //       体——axis_source 前置 + axis 批 + axis_stop + 扫掠终结
+    //       frame 出域（AXES/AXSRC/AXIS_STOPS/FRAMES 全谱对账 + 客户
+    //       端字节计数 ≥116）〕→〔域闸负例——axis=2/source=4 生产域
+    //       拒收 AXIS_BAD +1 零出域 + SHUT EOF 收场复原〕。
+    //       LUMINA-T115-AXIS/T115-FRAME/OK。
+    let t115 = t115_run(&mut log);
+    report(&mut log, t115, "pointer-axis-frame");
+
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
     //      pf_hook 入口扩判「U 位 或 CR2 落增长栈窗口域」——CPL0 用户
@@ -11758,6 +11771,12 @@ fn t114_run(log: &mut DualLog) -> bool {
         }
         task::yield_now();
     };
+    // UNMAPPED 计数门控等待（drain 时序域——拒收码与 wire 事件不同
+    // 冲刷窗，计数稳定后对账；deadline 保险）
+    let dl = ostd::time::now() + 240;
+    while waycomp::WLCOMP_KEY_UNMAPPED.load(Ordering::Acquire) < um0 + 1 && ostd::time::now() < dl {
+        task::yield_now();
+    }
     let um1 = waycomp::WLCOMP_KEY_UNMAPPED.load(Ordering::Acquire);
     let ik1 = waycomp::WLCOMP_INPUT_KEYS.load(Ordering::Acquire);
     let out_ok = acc1 && acc2 && acc3
@@ -11793,6 +11812,260 @@ fn t114_run(log: &mut DualLog) -> bool {
 
     if ok {
         let _ = writeln!(log, "LUMINA-T114-OK");
+    }
+    ok
+}
+
+/// t115 wl_pointer axis 族/frame 活体执行体（M42-WAYCOMP14 笔⑭）：
+/// 独立函数承载（t93/t113/t114 帧形态纪律）。相位序：
+/// (a) wire 编组锚：axis 族四编组器内核对位（axis = 8+4+4+4 = 20B /
+///     frame = 8B / axis_source = 12B / axis_stop = 16B——官方声明序
+///     opcode 4/5/6/7 对账 + AXIS_* 枚举值域锚）。
+/// (b) 指针链会话：get_registry 124 B 回执 → bind wl_seat + get_pointer
+///     + bind compositor + create_surface 0x41 + damage + commit →
+///     REGISTER 增量 → input_pointer_motion(64,64) hit-test 命中
+///     （enter 事件 = 指针焦点域 0x41）。
+/// (c) axis 扫掠活体：扫掠一（wheel 垂直——axis_source + axis ×2 +
+///     axis_stop + 扫掠终结 frame = 12+2×20+16+8 = 76B）+ 扫掠二
+///     （finger 水平——axis_source + axis + frame = 12+20+8 = 40B）
+///     → 客户端字节计数 ≥116 + WLCOMP_AXES +2/AXSRC +2/AXIS_STOPS
+///     +1/FRAMES +2 全谱对账。
+/// (d) 域闸负例 + 收场：axis=2 / source=4 生产域拒收（false + AXIS_BAD
+///     +1 零出域）→ SHUT EOF 收场（SESSION_DONE + surf_count=1 复原 +
+///     全戳恒定 + 客户端句柄收口）。
+/// LUMINA-T115-AXIS/T115-FRAME/OK 三面板标记。
+fn t115_run(log: &mut DualLog) -> bool {
+    use prism::wayland as wl;
+    let mut ok = true;
+    let me = task::current_task_id();
+
+    // (a) wire 编组锚（官方声明序 opcode + 字节域对账）
+    let mut buf = [0u8; 64];
+    let n_axis =
+        wl::encode_pointer_axis_event(&mut buf, 6, 1, wl::AXIS_VERTICAL_SCROLL, -120).unwrap_or(0);
+    let n_frame = wl::encode_pointer_frame_event(&mut buf, 6).unwrap_or(0);
+    let n_src =
+        wl::encode_pointer_axis_source_event(&mut buf, 6, wl::AXIS_SOURCE_WHEEL).unwrap_or(0);
+    let n_stop =
+        wl::encode_pointer_axis_stop_event(&mut buf, 6, 1, wl::AXIS_HORIZONTAL_SCROLL).unwrap_or(0);
+    let anchor_ok = n_axis == 20
+        && n_frame == 8
+        && n_src == 12
+        && n_stop == 16
+        && wl::pointer::EV_AXIS == 4
+        && wl::pointer::EV_FRAME == 5
+        && wl::pointer::EV_AXIS_SOURCE == 6
+        && wl::pointer::EV_AXIS_STOP == 7;
+    ok &= anchor_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T115-AXIS wire=(axis={n_axis},frame={n_frame},source={n_src},stop={n_stop}) opcodes=({},{},{},{})",
+        wl::pointer::EV_AXIS,
+        wl::pointer::EV_FRAME,
+        wl::pointer::EV_AXIS_SOURCE,
+        wl::pointer::EV_AXIS_STOP,
+    );
+
+    // (b) 指针链会话（t113 (d) 同谱——指针域）
+    waycomp::input_queue_flush(); // 相位间卫生域（AXIS_Q 随行排空）
+    ok &= waycomp::input_axis_depth() == 0; // 轴队列深度取证读面消费
+    let c0 = waycomp::waycomp_stamps();
+    let ax0 = (
+        waycomp::WLCOMP_AXES.load(Ordering::Acquire),
+        waycomp::WLCOMP_AXSRC.load(Ordering::Acquire),
+        waycomp::WLCOMP_AXIS_STOPS.load(Ordering::Acquire),
+        waycomp::WLCOMP_FRAMES.load(Ordering::Acquire),
+        waycomp::WLCOMP_AXIS_BAD.load(Ordering::Acquire),
+    );
+    let ip0 = waycomp::WLCOMP_INPUT_PTRS.load(Ordering::Acquire);
+    let g0 = waycomp::WLCOMP_GUARD_ERR.load(Ordering::Acquire);
+    let hc = match unixsock::sock_connect(me, waycomp::WAYCOMP_SOCK_NAME) {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = writeln!(log, "t115: connect failed ({e:?})");
+            return false;
+        }
+    };
+    let mut req = [0u8; 64];
+    let n_req = wl::encode_display_get_registry(&mut req, 1, 2).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &req[..n_req]).unwrap_or(0);
+    ok &= sent == n_req;
+    let mut gbuf = [0u8; 512];
+    let mut got = 0usize;
+    let dl = ostd::time::now() + 480;
+    while got < 124 && ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            task::yield_now();
+            continue;
+        }
+        let n = unixsock::sock_recv(me, hc as u64, &mut gbuf[got..]).unwrap_or(0);
+        if n > 0 {
+            got += n;
+        }
+    }
+    let wire_ok = got == 124;
+    ok &= wire_ok;
+    // 指针链全谱（wl id 域：registry=2/comp=3/seat=4/ptr=5/surf=0x41）
+    let mut batch = [0u8; 512];
+    let mut bl = 0usize;
+    bl += wl::encode_registry_bind(&mut batch[bl..], 2, 2, "wl_seat", 1, 4).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        4,
+        wl::seat::REQ_GET_POINTER,
+        &[wl::WlArg::NewId(5)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_registry_bind(&mut batch[bl..], 2, 1, "wl_compositor", 4, 3).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        3,
+        wl::compositor::REQ_CREATE_SURFACE,
+        &[wl::WlArg::NewId(0x41)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        0x41,
+        wl::surface::REQ_DAMAGE,
+        &[
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(320),
+            wl::WlArg::Int(200),
+        ],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_surface_commit(&mut batch[bl..], 0x41).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &batch[..bl]).unwrap_or(0);
+    ok &= sent == bl;
+    let dl = ostd::time::now() + 480;
+    loop {
+        let c = waycomp::waycomp_stamps();
+        if c.3 > c0.3 || ostd::time::now() >= dl {
+            break;
+        }
+        task::yield_now();
+    }
+    let commit_ok = waycomp::waycomp_stamps().3 > c0.3;
+    ok &= commit_ok;
+    // motion hit-test 命中（指针焦点域 0x41——enter 事件出域）
+    let acc = waycomp::input_pointer_motion(64, 64);
+    ok &= acc;
+    let dl = ostd::time::now() + 480;
+    loop {
+        if waycomp::WLCOMP_INPUT_PTRS.load(Ordering::Acquire) > ip0 || ostd::time::now() >= dl {
+            break;
+        }
+        task::yield_now();
+    }
+    let focus_ok = waycomp::WLCOMP_INPUT_PTRS.load(Ordering::Acquire) > ip0;
+    ok &= focus_ok;
+    // 回执排空（capabilities/keymap 无〔指针链〕/enter/done——探针门控有界排水）
+    let dl = ostd::time::now() + 120;
+    while ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            break;
+        }
+        let mut sink = [0u8; 512];
+        let n = unixsock::sock_recv(me, hc as u64, &mut sink).unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+    }
+
+    // (c) axis 扫掠活体（扫掠一 wheel 垂直 ×2 + stop；扫掠二 finger 水平）
+    // ——wire 戳门控（WLCOMP_PTRS = feed 冲刷后 wire 事件计数——
+    // drain 域戳〔AXES/FRAMES 等〕先于冲刷置位，字节对账须以 wire 戳
+    // 门控 + 收口排水双域承接）
+    let ptrs0 = waycomp::WLCOMP_PTRS.load(Ordering::Acquire);
+    let acc1 = waycomp::input_pointer_axis(wl::AXIS_VERTICAL_SCROLL, -120, wl::AXIS_SOURCE_WHEEL);
+    let acc2 = waycomp::input_pointer_axis(wl::AXIS_VERTICAL_SCROLL, -240, wl::AXIS_SOURCE_WHEEL);
+    let acc3 = waycomp::input_pointer_axis_stop(wl::AXIS_VERTICAL_SCROLL);
+    // 扫掠一：source + axis ×2 + stop + frame = 5 笔 wire 事件
+    let dl = ostd::time::now() + 480;
+    while waycomp::WLCOMP_PTRS.load(Ordering::Acquire) < ptrs0 + 5 && ostd::time::now() < dl {
+        task::yield_now();
+    }
+    let acc4 = waycomp::input_pointer_axis(wl::AXIS_HORIZONTAL_SCROLL, 60, wl::AXIS_SOURCE_FINGER);
+    // 扫掠二：source + axis + frame = 3 笔 wire 事件（累计 +8）
+    let dl = ostd::time::now() + 480;
+    while waycomp::WLCOMP_PTRS.load(Ordering::Acquire) < ptrs0 + 8 && ostd::time::now() < dl {
+        task::yield_now();
+    }
+    // 收口排水（wire 戳到位后逐笔到齐——字节计数全谱采集）
+    let mut sweep_bytes = 0usize;
+    let dl = ostd::time::now() + 240;
+    while ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            break;
+        }
+        let mut sink = [0u8; 512];
+        let n = unixsock::sock_recv(me, hc as u64, &mut sink).unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+        sweep_bytes += n;
+    }
+    let ax1 = (
+        waycomp::WLCOMP_AXES.load(Ordering::Acquire),
+        waycomp::WLCOMP_AXSRC.load(Ordering::Acquire),
+        waycomp::WLCOMP_AXIS_STOPS.load(Ordering::Acquire),
+        waycomp::WLCOMP_FRAMES.load(Ordering::Acquire),
+    );
+    // 扫掠分组对账：axes +3（扫掠一 ×2 + 扫掠二 ×1）/ axsrc +2（双扫
+    // 掠轴源前置）/ stops +1 / frames +2 / 客户端字节 ≥ 116（76 + 40）
+    let sweep_ok = acc1
+        && acc2
+        && acc3
+        && acc4
+        && ax1.0 == ax0.0 + 3
+        && ax1.1 == ax0.1 + 2
+        && ax1.2 == ax0.2 + 1
+        && ax1.3 == ax0.3 + 2
+        && sweep_bytes >= 116;
+    ok &= sweep_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T115-FRAME accept=({},{},{},{}) axes=+{} axsrc=+{} stops=+{} frames=+{} bytes>={sweep_bytes}",
+        u8::from(acc1),
+        u8::from(acc2),
+        u8::from(acc3),
+        u8::from(acc4),
+        ax1.0 - ax0.0,
+        ax1.1 - ax0.1,
+        ax1.2 - ax0.2,
+        ax1.3 - ax0.3,
+    );
+
+    // (d) 域闸负例 + SHUT EOF 收场复原
+    let neg1 = waycomp::input_pointer_axis(2, 0, 0); // axis 域越界
+    let neg2 = waycomp::input_pointer_axis(0, 0, 4); // 轴源域越界
+    let bad1 = waycomp::WLCOMP_AXIS_BAD.load(Ordering::Acquire);
+    let neg_ok = !neg1 && !neg2 && bad1 == ax0.4 + 2;
+    ok &= neg_ok;
+    let _ = unixsock::sock_shutdown(me, hc as u64);
+    let dl = ostd::time::now() + 480;
+    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+        core::hint::spin_loop();
+    }
+    let eof_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
+    ok &= eof_ok;
+    let stable = waycomp::WLCOMP_AXES.load(Ordering::Acquire) == ax1.0
+        && waycomp::WLCOMP_FRAMES.load(Ordering::Acquire) == ax1.3
+        && waycomp::WLCOMP_GUARD_ERR.load(Ordering::Acquire) == g0;
+    ok &= stable;
+    let _ = crate::vfs::sys_close(hc as u64);
+    let _ = writeln!(
+        log,
+        "LUMINA-T115-EOF neg=({},{}) bad=+{} eof_ok={eof_ok} stable={stable}",
+        u8::from(neg1),
+        u8::from(neg2),
+        bad1 - ax0.4,
+    );
+
+    if ok {
+        let _ = writeln!(log, "LUMINA-T115-OK");
     }
     ok
 }

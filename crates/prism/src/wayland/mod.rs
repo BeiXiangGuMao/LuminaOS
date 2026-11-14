@@ -618,6 +618,14 @@ pub mod pointer {
     /// event button（uint serial + uint time + uint button + uint
     /// state）。
     pub const EV_BUTTON: u16 = 3;
+    /// event axis（uint time + uint axis + fixed value）。
+    pub const EV_AXIS: u16 = 4;
+    /// event frame（——axis 族分组终结，v5+ 声明序）。
+    pub const EV_FRAME: u16 = 5;
+    /// event axis_source（uint axis_source——frame 域前置声明）。
+    pub const EV_AXIS_SOURCE: u16 = 6;
+    /// event axis_stop（uint time + uint axis——滚动手势终结）。
+    pub const EV_AXIS_STOP: u16 = 7;
 }
 
 /// wl_output 请求/事件 opcode。
@@ -739,6 +747,16 @@ pub const SIG_POINTER_MOTION: &[WlType] = &[WlType::Uint, WlType::Fixed, WlType:
 /// wl_pointer.button 事件：`(uint serial, uint time, uint button,
 /// uint state)`。
 pub const SIG_POINTER_BUTTON: &[WlType] = &[WlType::Uint, WlType::Uint, WlType::Uint, WlType::Uint];
+/// wl_pointer.axis 事件：`(uint time, uint axis, fixed value)`——value
+/// 为 fixed 24.8 位移增量（M42-WAYCOMP14 axis 族）。
+pub const SIG_POINTER_AXIS: &[WlType] = &[WlType::Uint, WlType::Uint, WlType::Fixed];
+/// wl_pointer.frame 事件：`()`——axis/axis_source/axis_stop 分组终结
+/// 逻辑事件（M42-WAYCOMP14 axis 族）。
+pub const SIG_POINTER_FRAME: &[WlType] = &[];
+/// wl_pointer.axis_source 事件：`(uint axis_source)`。
+pub const SIG_POINTER_AXIS_SOURCE: &[WlType] = &[WlType::Uint];
+/// wl_pointer.axis_stop 事件：`(uint time, uint axis)`。
+pub const SIG_POINTER_AXIS_STOP: &[WlType] = &[WlType::Uint, WlType::Uint];
 /// wl_shm.create_pool：`(new_id, fd, int)`。
 pub const SIG_SHM_CREATE_POOL: &[WlType] = &[WlType::NewId, WlType::Fd, WlType::Int];
 /// wl_shm_pool.create_buffer：`(new_id, int offset, int width, int
@@ -773,6 +791,18 @@ pub const KEY_STATE_PRESSED: u32 = 1;
 pub const BTN_STATE_RELEASED: u32 = 0;
 /// wl_pointer.button state：pressed（1）。
 pub const BTN_STATE_PRESSED: u32 = 1;
+/// wl_pointer axis：vertical scroll（0——官方 enum axis）。
+pub const AXIS_VERTICAL_SCROLL: u32 = 0;
+/// wl_pointer axis：horizontal scroll（1——官方 enum axis）。
+pub const AXIS_HORIZONTAL_SCROLL: u32 = 1;
+/// wl_pointer axis_source：wheel（0——物理滚轮）。
+pub const AXIS_SOURCE_WHEEL: u32 = 0;
+/// wl_pointer axis_source：finger（1——触摸板手势）。
+pub const AXIS_SOURCE_FINGER: u32 = 1;
+/// wl_pointer axis_source：continuous（2——高精度滚动）。
+pub const AXIS_SOURCE_CONTINUOUS: u32 = 2;
+/// wl_pointer axis_source：wheel_tilt（3——滚轮倾斜）。
+pub const AXIS_SOURCE_WHEEL_TILT: u32 = 3;
 /// evdev 按钮码：BTN_LEFT（0x110——官方 XML 枚举域）。
 pub const BTN_LEFT: u32 = 0x110;
 
@@ -1029,6 +1059,59 @@ pub fn encode_pointer_button_event(
             WlArg::Uint(button),
             WlArg::Uint(state),
         ],
+    )
+}
+
+/// wl_pointer.axis 事件编组（M42-WAYCOMP14——axis 族：value 为 fixed
+/// 24.8 原字）。
+pub fn encode_pointer_axis_event(
+    buf: &mut [u8],
+    pointer_id: u32,
+    time: u32,
+    axis: u32,
+    value: i32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        pointer_id,
+        pointer::EV_AXIS,
+        &[WlArg::Uint(time), WlArg::Uint(axis), WlArg::Fixed(value)],
+    )
+}
+
+/// wl_pointer.frame 事件编组（M42-WAYCOMP14——axis 族分组终结逻辑事
+/// 件，零载荷）。
+pub fn encode_pointer_frame_event(buf: &mut [u8], pointer_id: u32) -> Result<usize, WlError> {
+    encode_message(buf, pointer_id, pointer::EV_FRAME, &[])
+}
+
+/// wl_pointer.axis_source 事件编组（M42-WAYCOMP14——frame 域轴源前置
+/// 声明）。
+pub fn encode_pointer_axis_source_event(
+    buf: &mut [u8],
+    pointer_id: u32,
+    axis_source: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        pointer_id,
+        pointer::EV_AXIS_SOURCE,
+        &[WlArg::Uint(axis_source)],
+    )
+}
+
+/// wl_pointer.axis_stop 事件编组（M42-WAYCOMP14——滚动手势终结）。
+pub fn encode_pointer_axis_stop_event(
+    buf: &mut [u8],
+    pointer_id: u32,
+    time: u32,
+    axis: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        pointer_id,
+        pointer::EV_AXIS_STOP,
+        &[WlArg::Uint(time), WlArg::Uint(axis)],
     )
 }
 
@@ -1428,6 +1511,34 @@ mod tests {
         assert_eq!(m.header.opcode, pointer::EV_BUTTON);
         assert_eq!(m.args[2], Some(WlArg::Uint(BTN_LEFT)));
         assert_eq!(m.args[3], Some(WlArg::Uint(BTN_STATE_PRESSED)));
+        assert_eq!(m.wire_size(), n);
+        // M42-WAYCOMP14 axis 族四编组器全谱（官方声明序 opcode 对账）。
+        let n =
+            encode_pointer_axis_event(&mut buf, 6, 16, AXIS_VERTICAL_SCROLL, -120).expect("encode");
+        let m = parse_message(&buf, SIG_POINTER_AXIS).expect("parse");
+        assert_eq!(m.header.opcode, pointer::EV_AXIS);
+        assert_eq!(m.args[0], Some(WlArg::Uint(16)));
+        assert_eq!(m.args[1], Some(WlArg::Uint(AXIS_VERTICAL_SCROLL)));
+        assert_eq!(m.args[2], Some(WlArg::Fixed(-120)), "fixed 原字透传");
+        assert_eq!(m.wire_size(), n);
+        let n = encode_pointer_frame_event(&mut buf, 6).expect("encode");
+        let m = parse_message(&buf, SIG_POINTER_FRAME).expect("parse");
+        assert_eq!(m.header.opcode, pointer::EV_FRAME);
+        assert!(
+            m.args[0].is_none(),
+            "frame 零载荷（签名零参——args 首位 None）"
+        );
+        assert_eq!(m.wire_size(), n);
+        let n = encode_pointer_axis_source_event(&mut buf, 6, AXIS_SOURCE_WHEEL).expect("encode");
+        let m = parse_message(&buf, SIG_POINTER_AXIS_SOURCE).expect("parse");
+        assert_eq!(m.header.opcode, pointer::EV_AXIS_SOURCE);
+        assert_eq!(m.args[0], Some(WlArg::Uint(AXIS_SOURCE_WHEEL)));
+        assert_eq!(m.wire_size(), n);
+        let n = encode_pointer_axis_stop_event(&mut buf, 6, 17, AXIS_HORIZONTAL_SCROLL)
+            .expect("encode");
+        let m = parse_message(&buf, SIG_POINTER_AXIS_STOP).expect("parse");
+        assert_eq!(m.header.opcode, pointer::EV_AXIS_STOP);
+        assert_eq!(m.args[1], Some(WlArg::Uint(AXIS_HORIZONTAL_SCROLL)));
         assert_eq!(m.wire_size(), n);
     }
 }
