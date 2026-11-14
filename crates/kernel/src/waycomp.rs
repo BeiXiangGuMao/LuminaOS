@@ -76,9 +76,15 @@
 //! `LUMINA-WAYCOMP-BOOT` 缺位即 S8 显形）；**服务退出后 boot 重启
 //! 面挂账**（M42-FBSVC2 既录口径不变）。
 //!
-//! 锁序契约：无自持锁（全部域内锁单取即放——unixsock/fb 单锁纪律
-//! 同谱）；阻塞点 = accept_wait（WaitWhat::UnixAccept）+ 会话环三静
-//! 域（WaitWhat::CompIn——M42-WAYCOMP12 扩域，探针零锁读）。
+//! **多产者域**（M42-WAYCOMP16 笔⑯——v0 事实单生产者域退役）：内核
+//! 任务语境多产者并发注入经 [`IN_MU`] SpinLock 串行化窗承接（SPSC
+//! 环 SPSC 契约以生产侧互斥保持——消费侧单线程不变；锁窗 send 即放
+//! 零嵌套，唤醒链锁外域）。
+//!
+//! 锁序契约：[`IN_MU`] 自持锁（生产域串行化——单锁窗即放，零嵌套，
+//! 唤醒链锁外域）；域内锁全部单取即放（unixsock/fb 单锁纪律同谱）；
+//! 阻塞点 = accept_wait（WaitWhat::UnixAccept）+ 会话环三静域
+//! （WaitWhat::CompIn——M42-WAYCOMP12 扩域，探针零锁读）。
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
@@ -86,6 +92,7 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use mirror::Rect;
 use morse::KEYCODE_WL_OFFSET;
 use ostd::sync::spsc::SpscRing;
+use ostd::sync::SpinLock;
 use prism::wayland::comp::{
     BufferRec, CommitRecord, CompSession, FeedReport, GlobalDef, GLOBALS_MAX, KEYMAP_XKB_V1,
 };
@@ -213,9 +220,12 @@ pub static WLCOMP_MODS: AtomicU64 = AtomicU64::new(0);
 /// 修饰键 depressed 掩码快照（M42-WAYCOMP15——排空域会话语义核末态
 /// 读出，t116 端到端断言面）。
 pub static WLCOMP_MODS_DEP: AtomicU32 = AtomicU32::new(0);
+/// 生产域串行化计数（M42-WAYCOMP16——IN_MU 锁窗受理次数 = 多产者域
+/// 取证戳，t117 断言面）。
+pub static WLCOMP_MPS: AtomicU64 = AtomicU64::new(0);
 
-/// 输入源队列深度（键盘/指针各一定容——定容零堆纪律，SPSC 单生产
-/// 者域 v0 如实记档：批跑环境事实单生产者，多产者域挂账）。
+/// 输入源队列深度（键盘/指针/轴各一定容——定容零堆纪律；M42-WAYCOMP16
+/// 多产者域在环——SPSC 契约以 IN_MU 生产侧互斥保持）。
 const INPUT_CAP: usize = 16;
 /// 键盘输入队列（元素 = (key << 32) | state 打包）。
 static KEY_Q: SpscRing<u64, INPUT_CAP> = SpscRing::new();
@@ -225,6 +235,12 @@ static PTR_Q: SpscRing<u64, INPUT_CAP> = SpscRing::new();
 /// bit36=手势终结旗 | bit37=轴源有效旗 | source << 34 | axis << 32 |
 /// value i32 原字；位域正交性 = 独立环承载，无 bit63/62 冲突窗）。
 static AXIS_Q: SpscRing<u64, INPUT_CAP> = SpscRing::new();
+/// 输入生产域互斥（M42-WAYCOMP16 笔⑯——**多产者域**：内核任务语境
+/// 多产者并发注入经 SpinLock 串行化窗承接——SpscRing SPSC 契约以生
+/// 产侧互斥保持，消费侧单线程不变；锁窗 = send 即放零嵌套，唤醒链
+/// 锁外域〔IN_MU → SCHED 锁序单向〕；ISR 臂挂账：未来 kbd→waycomp
+/// ISR 转接需 try_lock + 有界退避随批——内核语境旗随批既录）。
+static IN_MU: SpinLock<u32> = SpinLock::new(0);
 
 /// 输入注入域门禁（M42-WAYCOMP12 域①——ring3 输入守护）：当前语境
 /// = ring3（Kind::User 任务——syscall 派发器执行域同源）→ 拒绝（违规
@@ -249,7 +265,14 @@ pub fn input_key(key: u32, state: u32) -> bool {
         return false;
     }
     let raw = ((key as u64) << 32) | (state as u64 & 0xFFFF_FFFF);
-    if KEY_Q.send(raw).is_ok() {
+    // 多产者串行化窗（M42-WAYCOMP16——IN_MU 锁窗 send 即放；唤醒链
+    // 锁外域〔IN_MU → SCHED 锁序单向〕）
+    let accepted = {
+        let _g = IN_MU.lock();
+        WLCOMP_MPS.fetch_add(1, Ordering::AcqRel);
+        KEY_Q.send(raw).is_ok()
+    };
+    if accepted {
         task::wake_tasks(|w| matches!(w, task::WaitWhat::CompIn { .. }));
         true
     } else {
@@ -264,8 +287,13 @@ pub fn input_pointer_motion(x: i32, y: i32) -> bool {
         return false;
     }
     let raw = (((x as u32) as u64) << 32) | ((y as u32) as u64 & 0xFFFF_FFFF);
-    if PTR_Q.send(raw & !(1u64 << 63)).is_ok() {
-        // bit63 = 0（移动域）
+    // 多产者串行化窗（M42-WAYCOMP16——input_key 同谱）
+    let accepted = {
+        let _g = IN_MU.lock();
+        WLCOMP_MPS.fetch_add(1, Ordering::AcqRel);
+        PTR_Q.send(raw & !(1u64 << 63)).is_ok() // bit63 = 0（移动域）
+    };
+    if accepted {
         task::wake_tasks(|w| matches!(w, task::WaitWhat::CompIn { .. }));
         true
     } else {
@@ -280,8 +308,13 @@ pub fn input_pointer_button(button: u32, state: u32) -> bool {
         return false;
     }
     let raw = (1u64 << 63) | ((button as u64) << 32) | (state as u64 & 0xFFFF_FFFF);
-    if PTR_Q.send(raw).is_ok() {
-        // bit63 = 1（按钮域）
+    // 多产者串行化窗（M42-WAYCOMP16——input_key 同谱）
+    let accepted = {
+        let _g = IN_MU.lock();
+        WLCOMP_MPS.fetch_add(1, Ordering::AcqRel);
+        PTR_Q.send(raw).is_ok() // bit63 = 1（按钮域）
+    };
+    if accepted {
         task::wake_tasks(|w| matches!(w, task::WaitWhat::CompIn { .. }));
         true
     } else {
@@ -306,7 +339,13 @@ pub fn input_pointer_axis(axis: u32, value: i32, source: u32) -> bool {
         | ((u64::from(source) & 0x3) << 34)
         | ((u64::from(axis) & 0x3) << 32)
         | ((value as u32) as u64 & 0xFFFF_FFFF);
-    if AXIS_Q.send(raw).is_ok() {
+    // 多产者串行化窗（M42-WAYCOMP16——input_key 同谱）
+    let accepted = {
+        let _g = IN_MU.lock();
+        WLCOMP_MPS.fetch_add(1, Ordering::AcqRel);
+        AXIS_Q.send(raw).is_ok()
+    };
+    if accepted {
         task::wake_tasks(|w| matches!(w, task::WaitWhat::CompIn { .. }));
         true
     } else {
@@ -327,7 +366,13 @@ pub fn input_pointer_axis_stop(axis: u32) -> bool {
     }
     let raw = (1u64 << 36) // 手势终结旗
         | ((u64::from(axis) & 0x3) << 32);
-    if AXIS_Q.send(raw).is_ok() {
+    // 多产者串行化窗（M42-WAYCOMP16——input_key 同谱）
+    let accepted = {
+        let _g = IN_MU.lock();
+        WLCOMP_MPS.fetch_add(1, Ordering::AcqRel);
+        AXIS_Q.send(raw).is_ok()
+    };
+    if accepted {
         task::wake_tasks(|w| matches!(w, task::WaitWhat::CompIn { .. }));
         true
     } else {
