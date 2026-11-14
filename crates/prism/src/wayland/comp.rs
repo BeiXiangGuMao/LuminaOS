@@ -212,7 +212,7 @@ pub struct KeyRecord {
     pub kind: KbKind,
     /// 焦点 surface 对象 id（击键域 = 注入时焦点面）。
     pub surface: u32,
-    /// 输入串号（单调——官方 serial 域；time 域 v0 = 串号复用）。
+    /// 输入串号（单调——官方 serial 域；time 域 = 冲刷批时刻 ms——M42-WAYCOMP19）。
     pub serial: u32,
     /// 键码（v0 口径 = scancode set 1 原值——evdev 键码映射挂账）。
     pub key: u32,
@@ -282,7 +282,7 @@ pub struct PtrRecord {
     pub kind: PtrKind,
     /// 焦点 surface 对象 id（0 = 无焦点——Leave 记录保留旧面）。
     pub surface: u32,
-    /// 输入串号（单调——time 域 v0 = 串号复用）。
+    /// 输入串号（单调——time 域 = 冲刷批时刻 ms——M42-WAYCOMP19）。
     pub serial: u32,
     /// surface 局部坐标 x（fixed 24.8 原字——Enter/Motion 有效）。
     pub x: i32,
@@ -517,6 +517,10 @@ pub struct CompSession {
     buf_n: usize,
     /// commit 串号（帧回调 done 事件 callback_data 事实源）。
     commit_serial: u32,
+    /// 冲刷批时刻毫秒域（M42-WAYCOMP19 毫秒时间源——官方 Wayland 事
+    /// 件 time 域事实源：电气面每 feed 前置 set_time_ms 承接，冲刷域
+    /// 批粒度口径〔同批事件同刻〕——v0 串号复用口径退役）。
+    time_ms: u64,
     /// sync 即时完成累计（M42-WAYCOMP18 多注册表面——feed 报告 syncs
     /// 增量事实源；每 sync 恰一 done + delete_id 随行）。
     syncs_total: usize,
@@ -568,6 +572,7 @@ impl CompSession {
             buffers: [None; SESSION_BUFFERS],
             buf_n: 0,
             commit_serial: 0,
+            time_ms: 0,
             syncs_total: 0,
             input_serial: 0,
             pointer_obj: 0,
@@ -608,6 +613,13 @@ impl CompSession {
     /// sync 即时完成累计读面（M42-WAYCOMP18 多注册表面——会话域取证）。
     pub fn syncs_snapshot(&self) -> usize {
         self.syncs_total
+    }
+
+    /// 冲刷批时刻毫秒域承接（M42-WAYCOMP19 毫秒时间源——电气面每
+    /// feed 前置调用：ostd::time::now_ms() 单调毫秒，事件 time 域事
+    /// 实源；批粒度口径——同批 flush 事件同刻如实记档）。
+    pub fn set_time_ms(&mut self, ms: u64) {
+        self.time_ms = ms;
     }
 
     /// 会话 surface 在账数。
@@ -1155,7 +1167,7 @@ impl CompSession {
                             &mut out[*out_len..],
                             self.keyboard_obj,
                             r.serial,
-                            r.serial, // time 域 v0 = 串号复用（毫秒时间源挂账）
+                            self.time_ms as u32, // time 域 = 冲刷批时刻 ms（官方 32 位回绕口径——M42-WAYCOMP19）
                             r.key,
                             r.state,
                         ),
@@ -1197,7 +1209,7 @@ impl CompSession {
                         PtrKind::Motion => encode_pointer_motion_event(
                             &mut out[*out_len..],
                             self.pointer_obj,
-                            r.serial, // time 域 v0 = 串号复用
+                            self.time_ms as u32, // time 域 = 冲刷批时刻 ms（官方 32 位回绕——M42-WAYCOMP19）
                             r.x,
                             r.y,
                         ),
@@ -1205,14 +1217,14 @@ impl CompSession {
                             &mut out[*out_len..],
                             self.pointer_obj,
                             r.serial,
-                            r.serial,
+                            self.time_ms as u32, // time 域 = 冲刷批时刻 ms（官方 32 位回绕——M42-WAYCOMP19）
                             r.button,
                             r.state,
                         ),
                         PtrKind::Axis => encode_pointer_axis_event(
                             &mut out[*out_len..],
                             self.pointer_obj,
-                            r.serial, // time 域 v0 = 串号复用（毫秒时间源挂账）
+                            self.time_ms as u32, // time 域 = 冲刷批时刻 ms（官方 32 位回绕——M42-WAYCOMP19）
                             r.axis,
                             r.value,
                         ),
@@ -1227,7 +1239,7 @@ impl CompSession {
                         PtrKind::AxisStop => encode_pointer_axis_stop_event(
                             &mut out[*out_len..],
                             self.pointer_obj,
-                            r.serial, // time 域 v0 = 串号复用
+                            self.time_ms as u32, // time 域 = 冲刷批时刻 ms（官方 32 位回绕——M42-WAYCOMP19）
                             r.axis,
                         ),
                     }

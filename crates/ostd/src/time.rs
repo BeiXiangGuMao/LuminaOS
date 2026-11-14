@@ -18,6 +18,17 @@ pub fn now() -> u64 {
     TICKS.load(Ordering::Relaxed)
 }
 
+/// 当前毫秒时间戳（单调递增——M42-WAYCOMP19 毫秒时间源）：TSC 校准
+/// 路径为主（[`tsc_clock::now_ns`]/1_000_000——高分辨率），未校准回
+/// 退 PIT 节拍换算（100 Hz → 10 ms/拍——[`crate::hw::pit`] TIMER_HZ
+/// 口径）。官方 Wayland 事件 time 域 = 毫秒纪元事实源。
+pub fn now_ms() -> u64 {
+    if let Some(ns) = tsc_clock::now_ns() {
+        return ns / 1_000_000;
+    }
+    now() * 10 // PIT 100 Hz 回退域（校准前窗口）
+}
+
 /// 低功耗等待 `n` 个节拍：hlt 直至计数达标。
 ///
 /// # PANIC（防挂死）

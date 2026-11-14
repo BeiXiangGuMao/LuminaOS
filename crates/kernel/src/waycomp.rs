@@ -652,6 +652,9 @@ fn session_loop(conn: u64) {
             }
         }
         let mut out = [0u8; 2048];
+        // 毫秒时间源承接（M42-WAYCOMP19——官方 Wayland 事件 time 域事
+        // 实源：冲刷批时刻 now_ms()，同批事件同刻批粒度口径）
+        session.set_time_ms(ostd::time::now_ms());
         match session.feed(&stream, &mut out) {
             Ok(rep) => {
                 drop_apply(&rep, &mut windows, &mut slots);
@@ -735,6 +738,7 @@ fn session_loop(conn: u64) {
         // t109 ptr 相位 TCG 实录 ptrs=+1/+2 漂移域〕）。
         drain_input(&mut session, &windows);
         let mut out2 = [0u8; 2048];
+        session.set_time_ms(ostd::time::now_ms()); // 毫秒时间源承接（笔⑲）
         if let Ok(rep2) = session.feed(&[], &mut out2) {
             WLCOMP_KEYS.fetch_add(rep2.keys.n as u64, Ordering::AcqRel);
             WLCOMP_PTRS.fetch_add(rep2.ptrs.n as u64, Ordering::AcqRel);
