@@ -86,8 +86,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117）。
-const SELFTEST_TOTAL: usize = 117;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118）。
+const SELFTEST_TOTAL: usize = 118;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7294,6 +7294,20 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t117 = t117_run(&mut log);
     report(&mut log, t117, "input-multiproducer");
 
+    // t118) kbd→waycomp ISR 转接臂活体（M42-WAYCOMP17 笔⑰）：〔ISR 臂
+    //       活体投递——kbd::inject_isr 全谱同路径（IRQ1 触发源替身）：
+    //       内核语境旗随批（IN_ISR_CTX 旗快路径放行 ISR_PASS 取证）+
+    //       try_lock 有界退避随批 + 键态语义直传（shift/Q/X 按下释放
+    //       六批——modifiers 端到端出域 MODS+2/DEP=0 回环）〕→〔evdev
+    //       域外拒收负例（0x59 → UNMAPPED +1 零出域）〕→〔try_lock 有
+    //       界退避随批争用域——in_mu_hold 外持窗 × 臂同核交叠：退避耗
+    //       尽丢弃 ISR_DROP +1 fail-visible + 双车道分域对账（tty ASCII
+    //       车道 Q/x/w 独立消费——scancode 0x11 = KEY_W）〕→〔卫生收场
+    //       ——队列排空 + SHUT EOF + 全戳恒定〕。LUMINA-T118-ISR/
+    //       T118-BACKOFF/OK。
+    let t118 = t118_run(&mut log);
+    report(&mut log, t118, "input-isr-arm");
+
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
     //      pf_hook 入口扩判「U 位 或 CR2 落增长栈窗口域」——CPL0 用户
@@ -10459,12 +10473,14 @@ fn t109_run(log: &mut DualLog) -> bool {
         .and_then(|p| p.panes.first().map(|(_, r)| *r));
     let p0 = c3.9;
     if let Some(pane) = pane {
+        // 背靠背注入（M42-WAYCOMP17 揭雷②收口随行——motion→press→
+        // release 三连发：排空域 FIFO 保序〔enter 域面切换 → click-to-
+        // focus → release〕，中间 wire 门控退役——v0 motion wire 门控
+        // 窗 = 客户端字节门控 SHUT 的 EOF 竞速结构窗〔门控出口晚于
+        // SHUT wake 即 press/release 永滞队列，TCG 实录 ptrs=+1 恒现〕；
+        // EOF 收场域内核侧队列扫入随行兜底交付）
         waycomp::input_pointer_motion(pane.x + 32, pane.y + 32); // enter 域（面切换）
-        let dl = ostd::time::now() + 480;
-        while waycomp::waycomp_stamps().9 <= p0 && ostd::time::now() < dl {
-            core::hint::spin_loop();
-        }
-        // click-to-focus + button press/release（BTN_LEFT 0x110）
+                                                                 // click-to-focus + button press/release（BTN_LEFT 0x110）
         waycomp::input_pointer_button(0x110, 1);
         waycomp::input_pointer_button(0x110, 0);
     }
@@ -12009,12 +12025,17 @@ fn t115_run(log: &mut DualLog) -> bool {
     let acc1 = waycomp::input_pointer_axis(wl::AXIS_VERTICAL_SCROLL, -120, wl::AXIS_SOURCE_WHEEL);
     let acc2 = waycomp::input_pointer_axis(wl::AXIS_VERTICAL_SCROLL, -240, wl::AXIS_SOURCE_WHEEL);
     let acc3 = waycomp::input_pointer_axis_stop(wl::AXIS_VERTICAL_SCROLL);
+    // 帧界标记（M42-WAYCOMP17 揭雷③收口——扫掠边界生产者标记承载：
+    // 标记即 frame 出域，帧计数 = 标记数确定性对账——v0 每 drain 调
+    // 用一 frame 发射退役，SMP 部分排空窗帧多计域收口）
+    let accf1 = waycomp::input_pointer_frame();
     // 扫掠一：source + axis ×2 + stop + frame = 5 笔 wire 事件
     let dl = ostd::time::now() + 480;
     while waycomp::WLCOMP_PTRS.load(Ordering::Acquire) < ptrs0 + 5 && ostd::time::now() < dl {
         task::yield_now();
     }
     let acc4 = waycomp::input_pointer_axis(wl::AXIS_HORIZONTAL_SCROLL, 60, wl::AXIS_SOURCE_FINGER);
+    let accf2 = waycomp::input_pointer_frame();
     // 扫掠二：source + axis + frame = 3 笔 wire 事件（累计 +8）
     let dl = ostd::time::now() + 480;
     while waycomp::WLCOMP_PTRS.load(Ordering::Acquire) < ptrs0 + 8 && ostd::time::now() < dl {
@@ -12041,11 +12062,14 @@ fn t115_run(log: &mut DualLog) -> bool {
         waycomp::WLCOMP_FRAMES.load(Ordering::Acquire),
     );
     // 扫掠分组对账：axes +3（扫掠一 ×2 + 扫掠二 ×1）/ axsrc +2（双扫
-    // 掠轴源前置）/ stops +1 / frames +2 / 客户端字节 ≥ 116（76 + 40）
+    // 掠轴源前置）/ stops +1 / frames +2（帧界标记计数）/ 客户端字节 ≥ 116
+    // （76 + 40）
     let sweep_ok = acc1
         && acc2
         && acc3
+        && accf1
         && acc4
+        && accf2
         && ax1.0 == ax0.0 + 3
         && ax1.1 == ax0.1 + 2
         && ax1.2 == ax0.2 + 1
@@ -12054,11 +12078,13 @@ fn t115_run(log: &mut DualLog) -> bool {
     ok &= sweep_ok;
     let _ = writeln!(
         log,
-        "LUMINA-T115-FRAME accept=({},{},{},{}) axes=+{} axsrc=+{} stops=+{} frames=+{} bytes>={sweep_bytes}",
+        "LUMINA-T115-FRAME accept=({},{},{},{},{},{}) axes=+{} axsrc=+{} stops=+{} frames=+{} bytes>={sweep_bytes}",
         u8::from(acc1),
         u8::from(acc2),
         u8::from(acc3),
+        u8::from(accf1),
         u8::from(acc4),
+        u8::from(accf2),
         ax1.0 - ax0.0,
         ax1.1 - ax0.1,
         ax1.2 - ax0.2,
@@ -12640,6 +12666,245 @@ fn t117_run(log: &mut DualLog) -> bool {
 
     if ok {
         let _ = writeln!(log, "LUMINA-T117-OK");
+    }
+    ok
+}
+
+/// t118 kbd→waycomp ISR 转接臂活体（M42-WAYCOMP17 笔⑰）——四相位
+/// 描述见 kmain 调度注记（t117 同款纪律：活体描述随调度块，函数体
+/// 免长文档）。
+fn t118_run(log: &mut DualLog) -> bool {
+    use prism::wayland as wl;
+    let mut ok = true;
+    let me = task::current_task_id();
+
+    // (a) 会话键盘链全谱（t117(a) 同谱——基线读取 = 链域收口后）
+    waycomp::input_queue_flush(); // 相位间卫生域（三环排空）
+    let c0 = waycomp::waycomp_stamps();
+    let g0 = waycomp::WLCOMP_GUARD_ERR.load(Ordering::Acquire);
+    let hc = match unixsock::sock_connect(me, waycomp::WAYCOMP_SOCK_NAME) {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = writeln!(log, "t118: connect failed ({e:?})");
+            return false;
+        }
+    };
+    let mut req = [0u8; 64];
+    let n_req = wl::encode_display_get_registry(&mut req, 1, 2).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &req[..n_req]).unwrap_or(0);
+    ok &= sent == n_req;
+    let mut gbuf = [0u8; 512];
+    let mut got = 0usize;
+    let dl = ostd::time::now() + 480;
+    while got < 124 && ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            task::yield_now();
+            continue;
+        }
+        let n = unixsock::sock_recv(me, hc as u64, &mut gbuf[got..]).unwrap_or(0);
+        if n > 0 {
+            got += n;
+        }
+    }
+    ok &= got == 124;
+    let mut batch = [0u8; 512];
+    let mut bl = 0usize;
+    bl += wl::encode_registry_bind(&mut batch[bl..], 2, 2, "wl_seat", 1, 4).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        4,
+        wl::seat::REQ_GET_KEYBOARD,
+        &[wl::WlArg::NewId(5)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_registry_bind(&mut batch[bl..], 2, 1, "wl_compositor", 4, 3).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        3,
+        wl::compositor::REQ_CREATE_SURFACE,
+        &[wl::WlArg::NewId(0x41)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        0x41,
+        wl::surface::REQ_DAMAGE,
+        &[
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(320),
+            wl::WlArg::Int(200),
+        ],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_surface_commit(&mut batch[bl..], 0x41).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &batch[..bl]).unwrap_or(0);
+    ok &= sent == bl;
+    let dl = ostd::time::now() + 480;
+    loop {
+        let c = waycomp::waycomp_stamps();
+        if (c.3 > c0.3 && waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire) == 0x41)
+            || ostd::time::now() >= dl
+        {
+            break;
+        }
+        task::yield_now();
+    }
+    ok &= waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire) == 0x41;
+    // 链域键记录出域确定性门控（enter + modifiers 快照 = +2 记录——t117
+    // 基线纪律同谱承接）
+    let keys_base = waycomp::waycomp_stamps().8;
+    let dl = ostd::time::now() + 480;
+    while waycomp::waycomp_stamps().8 < keys_base + 2 && ostd::time::now() < dl {
+        task::yield_now();
+    }
+    let dl = ostd::time::now() + 120;
+    while ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            break;
+        }
+        let mut sink = [0u8; 512];
+        let n = unixsock::sock_recv(me, hc as u64, &mut sink).unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+    }
+    // 基线读取（链域收口后——全戳原值；m0 基线纪律 t116/t117 同谱）
+    let k0 = waycomp::waycomp_stamps().8;
+    let ik0 = waycomp::WLCOMP_INPUT_KEYS.load(Ordering::Acquire);
+    let mps0 = waycomp::WLCOMP_MPS.load(Ordering::Acquire);
+    let pass0 = waycomp::WLCOMP_ISR_PASS.load(Ordering::Acquire);
+    let drop0 = waycomp::WLCOMP_ISR_DROP.load(Ordering::Acquire);
+    let full0 = waycomp::WLCOMP_ISR_FULL.load(Ordering::Acquire);
+    let unm0 = waycomp::WLCOMP_KEY_UNMAPPED.load(Ordering::Acquire);
+    let mods0 = waycomp::WLCOMP_MODS.load(Ordering::Acquire);
+
+    // (b) ISR 臂活体投递（kbd::inject_isr 全谱同路径——IRQ1 触发源替
+    //     身；tty 车道同批投递独立消费——双车道分域）：shift 按下/释放
+    //     + Q 按下/释放 + X 按下/释放 六批（0x2A/0x90 = shift 释放位、
+    //     0x10/0x90→0x10、0x2D/0xAD→0x2D——释放位剥离由 kbd 车道承载）
+    for sc in [0x2Au8, 0x10, 0x90, 0xAA, 0x2D, 0xAD] {
+        kbd::inject_isr(sc);
+    }
+    // 消费对账（双戳门控——受理 INPUT_KEYS + wire KEYS 增量域并断，
+    // t115 揭雷① wire 戳门控口径同谱；**KEYS 戳计全谱 KeyLog 记录批
+    // ——含 Modifiers 记录**〔笔⑯揭雷① wire=+21 口径同源〕：六批 = 6
+    // 键记录 + 2 修饰键记录 = +8）
+    let dl = ostd::time::now() + 960;
+    while (waycomp::WLCOMP_INPUT_KEYS.load(Ordering::Acquire) < ik0 + 6
+        || waycomp::waycomp_stamps().8 < k0 + 8)
+        && ostd::time::now() < dl
+    {
+        task::yield_now();
+    }
+    let ik1 = waycomp::WLCOMP_INPUT_KEYS.load(Ordering::Acquire);
+    let k1 = waycomp::waycomp_stamps().8;
+    let mps1 = waycomp::WLCOMP_MPS.load(Ordering::Acquire);
+    let pass1 = waycomp::WLCOMP_ISR_PASS.load(Ordering::Acquire);
+    let mods1 = waycomp::WLCOMP_MODS.load(Ordering::Acquire);
+    let dep1 = waycomp::WLCOMP_MODS_DEP.load(Ordering::Acquire);
+    let isr_ok = ik1 == ik0 + 6
+        && k1 == k0 + 8
+        && mps1 == mps0 + 6
+        && pass1 == pass0 + 6
+        && mods1 == mods0 + 2
+        && dep1 == 0
+        && waycomp::WLCOMP_ISR_DROP.load(Ordering::Acquire) == drop0
+        && waycomp::WLCOMP_ISR_FULL.load(Ordering::Acquire) == full0
+        && waycomp::WLCOMP_GUARD_ERR.load(Ordering::Acquire) == g0;
+    ok &= isr_ok;
+
+    // (b2) evdev 域外拒收负例（0x59 杂域——UNMAPPED +1 零出域，t115
+    //      揭雷② UNMAPPED 计数门控等待口径同谱）
+    kbd::inject_isr(0x59);
+    let dl = ostd::time::now() + 480;
+    while waycomp::WLCOMP_KEY_UNMAPPED.load(Ordering::Acquire) < unm0 + 1 && ostd::time::now() < dl
+    {
+        task::yield_now();
+    }
+    let unm1 = waycomp::WLCOMP_KEY_UNMAPPED.load(Ordering::Acquire);
+    let unm_ok = unm1 == unm0 + 1
+        && waycomp::WLCOMP_INPUT_KEYS.load(Ordering::Acquire) == ik1
+        && waycomp::waycomp_stamps().8 == k1;
+    ok &= unm_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T118-ISR arm=+6 wire=+{} unm=+{} mods=+{} dep={dep1} pass=+{} drop=+{} full=+{} guard=+{}",
+        k1 - k0,
+        unm1 - unm0,
+        mods1 - mods0,
+        pass1 - pass0,
+        waycomp::WLCOMP_ISR_DROP.load(Ordering::Acquire) - drop0,
+        waycomp::WLCOMP_ISR_FULL.load(Ordering::Acquire) - full0,
+        waycomp::WLCOMP_GUARD_ERR.load(Ordering::Acquire) - g0,
+    );
+
+    // (c) try_lock 有界退避随批（in_mu_hold 外持窗 × 臂同核交叠——ISR
+    //     语境禁自旋纪律的确定性证据窗）：受理=false + ISR_DROP+1（退
+    //     避耗尽 fail-visible）+ ISR_PASS+1（旗路径先行放行）+ MPS 零
+    //     增量（无锁窗受理）
+    let (acc_c, drop_c, pass_c, mps_c) = waycomp::in_mu_hold(|| {
+        let d0 = waycomp::WLCOMP_ISR_DROP.load(Ordering::Acquire);
+        let p0 = waycomp::WLCOMP_ISR_PASS.load(Ordering::Acquire);
+        let m0 = waycomp::WLCOMP_MPS.load(Ordering::Acquire);
+        let acc = kbd::inject_isr(0x11);
+        (
+            acc,
+            waycomp::WLCOMP_ISR_DROP.load(Ordering::Acquire) - d0,
+            waycomp::WLCOMP_ISR_PASS.load(Ordering::Acquire) - p0,
+            waycomp::WLCOMP_MPS.load(Ordering::Acquire) - m0,
+        )
+    });
+    let backoff_ok = !acc_c && drop_c == 1 && pass_c == 1 && mps_c == 0;
+    ok &= backoff_ok;
+    // 双车道分域对账（tty ASCII 车道独立消费——0x10 Shift 大写 'Q' /
+    // 0x2D 'x' / 0x11 'w'〔scancode 0x11 = KEY_W——0x10 才是 Q，t118
+    // 首割 'q' 断言错位揭雷收口〕三字节序对账；kbd SHIFT 寄存面 = tty
+    // 车道域——0x2A/0xAA shift 批随行寄存不跨车道）
+    let mut lane = [0u8; 8];
+    let mut lane_n = 0usize;
+    while let Some(b) = kbd::pop() {
+        if lane_n < 8 {
+            lane[lane_n] = b;
+        }
+        lane_n += 1;
+    }
+    let lane_ok = lane_n == 3 && lane[0] == b'Q' && lane[1] == b'x' && lane[2] == b'w';
+    ok &= lane_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T118-BACKOFF accepted={acc_c} drop=+{drop_c} pass=+{pass_c} mps=+{mps_c} lane={lane_n} lane_ok={lane_ok}"
+    );
+
+    // (d) 卫生收场（队列三环排空 + SHUT EOF + 全戳恒定）
+    let (kq1, pq1) = waycomp::input_queue_depth();
+    let axq1 = waycomp::input_axis_depth();
+    let drain_ok = kq1 == 0 && pq1 == 0 && axq1 == 0;
+    ok &= drain_ok;
+    let _ = unixsock::sock_shutdown(me, hc as u64);
+    let dl = ostd::time::now() + 480;
+    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+        core::hint::spin_loop();
+    }
+    let eof_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
+    ok &= eof_ok;
+    // 全戳恒定（ISR_PASS = (b) +6 + (b2) 域外负例臂放行 +1 + (c) 争用
+    // 窗 +1 = +8——域外拒收发生在 evdev 映射域，臂面旗路径照常放行；
+    // DROP = (c) 退避耗尽 +1；FULL/GUARD_ERR/INPUT_KEYS 恒定）
+    let stable = waycomp::WLCOMP_ISR_PASS.load(Ordering::Acquire) == pass0 + 8
+        && waycomp::WLCOMP_ISR_DROP.load(Ordering::Acquire) == drop0 + 1
+        && waycomp::WLCOMP_ISR_FULL.load(Ordering::Acquire) == full0
+        && waycomp::WLCOMP_GUARD_ERR.load(Ordering::Acquire) == g0
+        && waycomp::WLCOMP_INPUT_KEYS.load(Ordering::Acquire) == ik1;
+    ok &= stable;
+    let _ = crate::vfs::sys_close(hc as u64);
+    let _ = writeln!(
+        log,
+        "LUMINA-T118-STABLE drain=({kq1},{pq1},{axq1}) eof_ok={eof_ok} stable={stable}"
+    );
+
+    if ok {
+        let _ = writeln!(log, "LUMINA-T118-OK");
     }
     ok
 }

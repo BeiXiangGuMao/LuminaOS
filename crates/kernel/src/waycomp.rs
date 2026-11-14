@@ -81,10 +81,25 @@
 //! 环 SPSC 契约以生产侧互斥保持——消费侧单线程不变；锁窗 send 即放
 //! 零嵌套，唤醒链锁外域）。
 //!
+//! **ISR 臂**（M42-WAYCOMP17 笔⑰——kbd→waycomp 转接臂落域）：kbd
+//! IRQ1 桩体（[`crate::kbd`] `on_scancode` 转接臂车道）scancode 键
+//! 态语义直传 [`input_key_isr`]——**内核语境旗** [`IN_ISR_CTX`] 随
+//! 批（per-cpu 置位/复位：ISR 语境 = 内核语境定义域，被打断任务的
+//! 用户性与本批无关——[`input_guard`] 旗快路径放行，current_is_user
+//! 的 SCHED 锁窗任务查询免除〔M40-ASH2 ISR 快路径纪律同谱——
+//! PERCPU_IS_USER 零锁旗先例〕）+ **[`IN_MU`] try_lock 有界退避随
+//! 批**（ISR 语境禁自旋——持锁者可能为被打断任务，同核自旋永不推
+//! 进死锁窗；退避耗尽即丢弃 + [`WLCOMP_ISR_DROP`] fail-visible）。
+//! tty 车道（KBD_RING ASCII 控制面）与 waycomp 车道（KEY_Q 键态语
+//! 义直传）双车道分域——同批 scancode 双投递独立消费（tty 消费者 =
+//! 行规程读侧，waycomp 消费者 = 会话环 drain，互不相扰）。
+//!
 //! 锁序契约：[`IN_MU`] 自持锁（生产域串行化——单锁窗即放，零嵌套，
-//! 唤醒链锁外域）；域内锁全部单取即放（unixsock/fb 单锁纪律同谱）；
-//! 阻塞点 = accept_wait（WaitWhat::UnixAccept）+ 会话环三静域
-//! （WaitWhat::CompIn——M42-WAYCOMP12 扩域，探针零锁读）。
+//! 唤醒链锁外域；ISR 臂 try_lock 窗同谱——try_lock 零等待无自旋
+//! 窗）；[`IN_ISR_CTX`] 零锁旗（per-cpu 随批自持——PERCPU_IS_USER
+//! 同谱纪律，非锁零嵌套）；域内锁全部单取即放（unixsock/fb 单锁纪
+//! 律同谱）；阻塞点 = accept_wait（WaitWhat::UnixAccept）+ 会话环
+//! 三静域（WaitWhat::CompIn——M42-WAYCOMP12 扩域，探针零锁读）。
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
@@ -221,8 +236,19 @@ pub static WLCOMP_MODS: AtomicU64 = AtomicU64::new(0);
 /// 读出，t116 端到端断言面）。
 pub static WLCOMP_MODS_DEP: AtomicU32 = AtomicU32::new(0);
 /// 生产域串行化计数（M42-WAYCOMP16——IN_MU 锁窗受理次数 = 多产者域
-/// 取证戳，t117 断言面）。
+/// 取证戳，t117 断言面；ISR 臂锁窗同谱计入，t118 断言面）。
 pub static WLCOMP_MPS: AtomicU64 = AtomicU64::new(0);
+/// ISR 臂内核语境旗路径放行数（M42-WAYCOMP17——[`IN_ISR_CTX`] 旗命
+/// 中即计：放行路径可辨——旗路径而非任务查询路径，旗面活体取证，
+/// t118 断言面）。
+pub static WLCOMP_ISR_PASS: AtomicU64 = AtomicU64::new(0);
+/// ISR 臂 try_lock 有界退避耗尽丢弃数（M42-WAYCOMP17——[`IN_MU`]
+/// 争用窗退避耗尽 fail-visible 取证：ISR 语境零静默丢弃，t118 断言
+/// 面）。
+pub static WLCOMP_ISR_DROP: AtomicU64 = AtomicU64::new(0);
+/// ISR 臂队满丢弃数（M42-WAYCOMP17——KEY_Q 容量域 fail-visible 取
+/// 证：消费域停滞窗〔会话缺席/阻塞〕溢出显形，t118 断言面）。
+pub static WLCOMP_ISR_FULL: AtomicU64 = AtomicU64::new(0);
 
 /// 输入源队列深度（键盘/指针/轴各一定容——定容零堆纪律；M42-WAYCOMP16
 /// 多产者域在环——SPSC 契约以 IN_MU 生产侧互斥保持）。
@@ -232,23 +258,52 @@ static KEY_Q: SpscRing<u64, INPUT_CAP> = SpscRing::new();
 /// 指针输入队列（元素 = bit63=按钮旗 | (button/x << 32) | state/y）。
 static PTR_Q: SpscRing<u64, INPUT_CAP> = SpscRing::new();
 /// 轴输入队列（M42-WAYCOMP14——独立定容环与 PTR_Q 分域：元素 =
-/// bit36=手势终结旗 | bit37=轴源有效旗 | source << 34 | axis << 32 |
-/// value i32 原字；位域正交性 = 独立环承载，无 bit63/62 冲突窗）。
+/// bit36=手势终结旗 | bit37=轴源有效旗 | **bit38=帧界标记旗**
+/// 〔M42-WAYCOMP17 揭雷③收口——生产者标记帧界〕 | source << 34 |
+/// axis << 32 | value i32 原字；位域正交性 = 独立环承载，无 bit63/62
+/// 冲突窗）。
 static AXIS_Q: SpscRing<u64, INPUT_CAP> = SpscRing::new();
 /// 输入生产域互斥（M42-WAYCOMP16 笔⑯——**多产者域**：内核任务语境
 /// 多产者并发注入经 SpinLock 串行化窗承接——SpscRing SPSC 契约以生
 /// 产侧互斥保持，消费侧单线程不变；锁窗 = send 即放零嵌套，唤醒链
-/// 锁外域〔IN_MU → SCHED 锁序单向〕；ISR 臂挂账：未来 kbd→waycomp
-/// ISR 转接需 try_lock + 有界退避随批——内核语境旗随批既录）。
+/// 锁外域〔IN_MU → SCHED 锁序单向〕；ISR 臂在环（M42-WAYCOMP17——
+/// `input_key_isr`：try_lock 有界退避随批 + IN_ISR_CTX 内核语境旗
+/// 随批，try_lock 零等待无自旋窗——ISR 语境纪律在环）。
 static IN_MU: SpinLock<u32> = SpinLock::new(0);
+
+/// 内核语境旗（M42-WAYCOMP17 笔⑰——ISR 臂随批携带）：per-cpu ISR
+/// 语境旗——kbd IRQ1 转接臂入批前置位、出批复位（swap/restore 嵌套
+/// 安全）。[`input_guard`] 旗命中即放行（ISR 语境 = 内核语境定义域：
+/// 被打断任务的用户性与本批无关——current_is_user 的 SCHED 锁窗权
+/// 威读在 ISR 语境免除，M40-ASH2 ISR 快路径纪律同谱〔PERCPU_IS_USER
+/// 零锁旗先例——ISR 语境零 SCHED 查询〕）。
+static IN_ISR_CTX: [AtomicBool; task::MAX_CPUS] = [AtomicBool::new(false), AtomicBool::new(false)];
+
+/// ISR 臂锁窗退避上界（M42-WAYCOMP17——try_lock 有界退避随批：ISR
+/// 语境禁自旋〔持锁者可能为被打断任务——同核自旋永不推进死锁窗〕，
+/// 退避耗尽即丢弃 + [`WLCOMP_ISR_DROP`] fail-visible；4 次有界窗 ≈
+/// 微秒级——持锁窗 μs 量级纪律下充裕）。
+const ISR_LOCK_TRIES: u32 = 4;
 
 /// 输入注入域门禁（M42-WAYCOMP12 域①——ring3 输入守护）：当前语境
 /// = ring3（Kind::User 任务——syscall 派发器执行域同源）→ 拒绝（违规
 /// 计数 + false——fail-visible 零静默）；内核任务 / IDLE 语境 → 放行
 /// （true）。判定面 = [`task::current_is_user`]（SCHED 锁窗权威读）。
+/// M42-WAYCOMP17 前置扩域：ISR 语境旗快路径（[`IN_ISR_CTX`] 随批置
+/// 位——ISR 语境 = 内核语境定义域，任务查询免除；旗命中即计
+/// [`WLCOMP_ISR_PASS`] 放行路径可辨）。
 /// ABI 负空间纪律：SYS 号域零输入注入臂——ring3 可达内核面仅 syscall
 /// 派发器，门禁使任何未来误接线 fail-visible 显形（t113 对账）。
 fn input_guard() -> bool {
+    // ISR 语境旗快路径（M42-WAYCOMP17——kbd→waycomp 转接臂随批置位）：
+    // ISR 语境 = 内核语境定义域，current_is_user 的 SCHED 锁窗权威读
+    // 免除（M40-ASH2 ISR 快路径纪律同谱——PERCPU_IS_USER 零锁旗先
+    // 例）；旗命中即计 ISR_PASS（放行路径可辨——旗面活体取证，t118
+    // 对账面）。
+    if IN_ISR_CTX[task::current_cpu_slot()].load(Ordering::Acquire) {
+        WLCOMP_ISR_PASS.fetch_add(1, Ordering::AcqRel);
+        return true;
+    }
     if task::current_is_user() {
         WLCOMP_GUARD_ERR.fetch_add(1, Ordering::AcqRel);
         return false;
@@ -367,6 +422,92 @@ pub fn input_pointer_axis_stop(axis: u32) -> bool {
     let raw = (1u64 << 36) // 手势终结旗
         | ((u64::from(axis) & 0x3) << 32);
     // 多产者串行化窗（M42-WAYCOMP16——input_key 同谱）
+    let accepted = {
+        let _g = IN_MU.lock();
+        WLCOMP_MPS.fetch_add(1, Ordering::AcqRel);
+        AXIS_Q.send(raw).is_ok()
+    };
+    if accepted {
+        task::wake_tasks(|w| matches!(w, task::WaitWhat::CompIn { .. }));
+        true
+    } else {
+        false
+    }
+}
+
+/// 输入链 ISR 臂（M42-WAYCOMP17 笔⑰——kbd→waycomp 转接臂落域）：
+/// kbd IRQ1 桩体 scancode 键态语义直传（释放位剥离与 state 0/1 编码
+/// 由 kbd 转接臂车道承载——臂面收键态语义原字）。**内核语境旗随批**
+/// （[`IN_ISR_CTX`] per-cpu 置位/复位——守护门禁旗快路径放行，任务
+/// 查询免除）+ **[`IN_MU`] try_lock 有界退避随批**（ISR 语境禁自旋
+/// ——持锁者可能为被打断任务，同核自旋永不推进死锁窗；退避耗尽即
+/// 丢弃 + [`WLCOMP_ISR_DROP`] fail-visible；锁窗受理同谱计
+/// [`WLCOMP_MPS`]，队满 [`WLCOMP_ISR_FULL`] 显形）。受理入环唤醒链
+/// 同任务语境面（锁外域——wake_tasks 自带 IntWindow，wall_hook
+/// SCHED 慢路径同谱先例；ISR 语境可达）。返回受理（入环成功）。
+pub fn input_key_isr(sc: u8, state: u32) -> bool {
+    let cpu = task::current_cpu_slot();
+    let prev = IN_ISR_CTX[cpu].swap(true, Ordering::AcqRel);
+    let ok = if input_guard() {
+        let raw = ((u64::from(sc)) << 32) | (u64::from(state) & 0xFFFF_FFFF);
+        // ISR 臂锁窗：try_lock 有界退避随批（M42-WAYCOMP17——禁自旋；
+        // 退避窗 = PAUSE 提示重试，非等锁自旋——零挂起重试窗微秒级）
+        let mut tries = 0u32;
+        let accepted = loop {
+            match IN_MU.try_lock() {
+                Some(g) => {
+                    WLCOMP_MPS.fetch_add(1, Ordering::AcqRel);
+                    let ok = KEY_Q.send(raw).is_ok();
+                    if !ok {
+                        WLCOMP_ISR_FULL.fetch_add(1, Ordering::AcqRel);
+                    }
+                    drop(g);
+                    break ok;
+                }
+                None => {
+                    tries += 1;
+                    if tries >= ISR_LOCK_TRIES {
+                        WLCOMP_ISR_DROP.fetch_add(1, Ordering::AcqRel);
+                        break false; // 退避耗尽丢弃（fail-visible——零静默）
+                    }
+                    core::hint::spin_loop();
+                }
+            }
+        };
+        if accepted {
+            // 唤醒链锁外域（IN_MU → SCHED 锁序单向——任务语境面同谱；
+            // wake_tasks 自带 IntWindow，ISR 语境可达——wall_hook
+            // SCHED 慢路径同谱先例）
+            task::wake_tasks(|w| matches!(w, task::WaitWhat::CompIn { .. }));
+        }
+        accepted
+    } else {
+        false
+    };
+    IN_ISR_CTX[cpu].store(prev, Ordering::Release);
+    ok
+}
+
+/// ISR 臂争用装置面（M42-WAYCOMP17——t118 (c) 争用域承载）：闭包运
+/// 行期持 [`IN_MU`]——臂 try_lock 有界退避耗尽域活体（任务语境持锁
+/// × 臂语境 try_lock 同核交叠窗——ISR 语境禁自旋纪律的确定性证据
+/// 窗）。仅自检装置使用。
+pub fn in_mu_hold<R>(f: impl FnOnce() -> R) -> R {
+    let _g = IN_MU.lock();
+    f()
+}
+
+/// 输入链生产面：帧界标记（M42-WAYCOMP17 揭雷③收口——官方 frame
+/// 分组「同源批单 frame」细化落域：扫掠边界由生产者标记承载——SMP
+/// 域部分排空窗〔生产者逐元素入队 × 消费者并发 drain——v0 每 drain
+/// 调用一 frame 发射，同批元素跨 drain 分割即帧多计，t115 TCG 实录
+/// frames=+3〕退役，帧计数 = 标记数确定性对账）。守护门禁 + 受理入
+/// 环唤醒链同 [`input_pointer_axis_stop`]。返回受理（入环成功）。
+pub fn input_pointer_frame() -> bool {
+    if !input_guard() {
+        return false;
+    }
+    let raw = 1u64 << 38; // 帧界标记旗（零 axis/stop/source 载荷）
     let accepted = {
         let _g = IN_MU.lock();
         WLCOMP_MPS.fetch_add(1, Ordering::AcqRel);
@@ -536,11 +677,15 @@ fn session_loop(conn: u64) {
         if pending == 0 && got == 0 {
             // M42-WAYCOMP12 域②阻塞输入等待面（WaitWhat::CompIn 扩域
             // ——v0 探针轮询 + 让步口径退役）：三静域（输入队列空 +
-            // 会话流空 + 非终结）登记阻塞。探针 = 预捕获静态视图零锁
-            // 读（rx 环 len + 终结旗对 + 输入队列 is_empty）——SCHED
-            // 锁窗内零 SOCKETS 取锁（锁序 SOCKETS→SCHED 单向保持，
-            // recv_by_object 探针同款纪律）。唤醒源三向：输入生产
-            // （wake 全域）+ 会话流到达（send 落环 conn 匹配域）+
+            // 会话流空 + 非终结）登记阻塞。**M42-WAYCOMP17 揭雷④收口
+            // ——静域扩 AXIS_Q**（笔⑭轴环在环时停靠谓词漏列——SMP 域
+            // 轴元素/帧界标记滞留停靠窗：元素入队前谓词已判静 → 停靠，
+            // 入队 wake 落于 block 注册前 = 丢失唤醒域——t115 TCG 实录
+            // frames=+1 帧界标记滞留至 EOF 才扫出域）。探针 = 预捕获静
+            // 态视图零锁读（rx 环 len + 终结旗对 + 输入队列 is_empty）
+            // ——SCHED 锁窗内零 SOCKETS 取锁（锁序 SOCKETS→SCHED 单向
+            // 保持，recv_by_object 探针同款纪律）。唤醒源三向：输入生
+            // 产（wake 全域）+ 会话流到达（send 落环 conn 匹配域）+
             // 对端终结（shutdown 双向）。miss → 零阻塞回环（顶层探
             // 针 dead 收场——fail-visible）。fd 附带数据域维持 feed
             // 报告驱动（v0 协议时序域不变——pool_admit 触发源 = feed
@@ -549,12 +694,14 @@ fn session_loop(conn: u64) {
             WLCOMP_IN_WAITS.fetch_add(1, Ordering::AcqRel); // 登记前计数（t39 口径）
             let blocked = task::block_current_unless(task::WaitWhat::CompIn { conn }, true, || {
                 // still_pending 契约（recv_by_object 探针同款）：true = 三
-                // 静域持续（输入队列空 ∧ 会话流空 ∧ 非终结）——继续阻塞；
-                // 任一唤醒源就绪 = false → 探针命中回滚，调用方重试消费。
+                // 静域持续（输入队列空〔键盘/指针/轴——M42-WAYCOMP17 扩
+                // AXIS_Q〕∧ 会话流空 ∧ 非终结）——继续阻塞；任一唤醒源
+                // 就绪 = false → 探针命中回滚，调用方重试消费。
                 match views {
                     Some((rx, dead, peer_dead)) => {
                         KEY_Q.is_empty()
                             && PTR_Q.is_empty()
+                            && AXIS_Q.is_empty()
                             && rx.is_empty()
                             && !dead.load(Ordering::Acquire)
                             && !peer_dead.load(Ordering::Acquire)
@@ -574,6 +721,14 @@ fn session_loop(conn: u64) {
     // 口）。空流 feed 冲刷待发队列（官方语义——输入事件异步于请求
     // 流）；会话域错误断连路径不冲刷（fail-visible 原貌）。
     if eof {
+        // M42-WAYCOMP17 揭雷②收口：EOF 收场域内核侧输入队列扫入
+        // （drained→delivered 契约内核侧扩展——会话存续窗产出的输入事
+        // 件〔仍在 KEY_Q/PTR_Q/AXIS_Q 排队者〕于 teardown 前扫入会话，
+        // 终末冲刷随行出域——press/release 批 vs 客户端字节门控 SHUT
+        // 的 EOF 竞速域确定性收口〔生产域 enqueue 晚于客户端 SHUT wake
+        // 到达窗：v0 EOF break 直落 teardown，排队事件永滞队列——
+        // t109 ptr 相位 TCG 实录 ptrs=+1/+2 漂移域〕）。
+        drain_input(&mut session, &windows);
         let mut out2 = [0u8; 2048];
         if let Ok(rep2) = session.feed(&[], &mut out2) {
             WLCOMP_KEYS.fetch_add(rep2.keys.n as u64, Ordering::AcqRel);
@@ -732,14 +887,22 @@ fn drain_input(session: &mut CompSession, windows: &[u64]) {
             }
         }
     }
-    // 轴域扫掠（M42-WAYCOMP14 axis 族——AXIS_Q 排空 → 会话注入；扫
+    // 轴域排空（M42-WAYCOMP14 axis 族——AXIS_Q 排空 → 会话注入；扫
     // 掠分组语义 = 官方 frame 定界：轴源变化域 axis_source 前置声明
-    // + axis/axis_stop 事件批 + 扫掠终结 pointer_frame 出域〔每扫掠
-    // 一 frame——组装面 = 电气面单点，与注入面直通域 pointer_frame
-    // 解耦〕）。
-    let mut sweep = 0usize;
+    // + axis/axis_stop 事件批 + **帧界标记出域**〔M42-WAYCOMP17 揭雷③
+    // 收口——生产者标记帧界：v0「每 drain 调用一 frame」发射退役——
+    // SMP 域部分排空窗同批元素跨 drain 分割即帧多计（t115 TCG 实录
+    // frames=+3），帧计数 = 标记数确定性对账，与注入面直通域
+    // pointer_frame 解耦〕）。
     let mut src_pending = None::<u32>;
     while let Some(raw) = AXIS_Q.recv() {
+        if (raw >> 38) & 1 == 1 {
+            // 帧界标记：标记即 frame 出域（零 axis/stop/轴源计数）
+            if session.pointer_frame().is_ok() {
+                WLCOMP_FRAMES.fetch_add(1, Ordering::AcqRel);
+            }
+            continue;
+        }
         let value = ((raw & 0xFFFF_FFFF) as u32) as i32;
         let axis = ((raw >> 32) & 0x3) as u32;
         let source = ((raw >> 34) & 0x3) as u32;
@@ -757,13 +920,6 @@ fn drain_input(session: &mut CompSession, windows: &[u64]) {
             }
         } else if session.pointer_axis(axis, value).is_ok() {
             WLCOMP_AXES.fetch_add(1, Ordering::AcqRel);
-        }
-        sweep += 1;
-    }
-    if sweep > 0 {
-        // 扫掠终结 frame（官方分组语义——axis 族批出域定界）
-        if session.pointer_frame().is_ok() {
-            WLCOMP_FRAMES.fetch_add(1, Ordering::AcqRel);
         }
     }
     // 修饰键态快照读出（M42-WAYCOMP15——排空域语义核末态取证，t116
