@@ -395,6 +395,9 @@ pub fn iface_name(iface: WlIface) -> &'static str {
 
 /// 对象表：id → 接口语义（定容槽 + 客户端/服务端双分配器单调铸造；
 /// v0 无复用——id 退役即废弃，delete_id 复用面电气挂账如实登记）。
+/// M42-WAYCOMP18：**sync callback 域摘牌在环**——done 后服务端销毁 +
+/// delete_id 随行 + 对象表摘除（同 id 多轮 sync 复用在环面）；frame
+/// callback 域维持 commit 冲刷后不回收（v0 口径，复用面随批挂账）。
 #[derive(Debug, Clone, Copy)]
 pub struct WlObjectTable {
     slots: [Option<(u32, WlIface)>; TABLE_CAP],
@@ -908,6 +911,22 @@ pub fn encode_callback_done_event(
         callback_id,
         callback::EV_DONE,
         &[WlArg::Uint(callback_data)],
+    )
+}
+
+/// wl_display.delete_id 事件编组（M42-WAYCOMP18 多注册表面——callback
+/// 对象 done 后服务端销毁随行宣告：官方生命周期语义——客户端据
+/// delete_id 回收 id 复用域，服务端对象表同步摘除）。
+pub fn encode_display_delete_id_event(
+    buf: &mut [u8],
+    display_id: u32,
+    destroyed_id: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        display_id,
+        display::EV_DELETE_ID,
+        &[WlArg::Uint(destroyed_id)],
     )
 }
 

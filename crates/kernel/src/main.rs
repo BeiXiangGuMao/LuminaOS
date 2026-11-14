@@ -86,8 +86,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118）。
-const SELFTEST_TOTAL: usize = 118;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119）。
+const SELFTEST_TOTAL: usize = 119;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7308,6 +7308,18 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t118 = t118_run(&mut log);
     report(&mut log, t118, "input-isr-arm");
 
+    // t119) display.sync/wl_callback 多注册表面活体（M42-WAYCOMP18 笔
+    //       ⑱）：〔多轮 sync 同 id 复用——sync(0x51) → done+delete_id
+    //       对 24B 逐目对读 → 同 id 重装第二轮（delete_id 回收域事实
+    //       源——对象表摘除 + 官方生命周期在环）〕→〔多 registry 多公
+    //       告——get_registry(0x52) 124B 公告（首 global 承新 registry
+    //       id）+ 经第二 registry bind wl_seat（capabilities 随行）〕
+    //       →〔多 sync 并发批——三 sync 单批 72B + SYNCS 计数对账〕→
+    //       〔卫生收场——SHUT EOF + 全戳恒定〕。
+    //       LUMINA-T119-SYNC/T119-REG/T119-OK。
+    let t119 = t119_run(&mut log);
+    report(&mut log, t119, "display-sync-callbacks");
+
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
     //      pf_hook 入口扩判「U 位 或 CR2 落增长栈窗口域」——CPL0 用户
@@ -12905,6 +12917,276 @@ fn t118_run(log: &mut DualLog) -> bool {
 
     if ok {
         let _ = writeln!(log, "LUMINA-T118-OK");
+    }
+    ok
+}
+
+/// t119 display.sync/wl_callback 多注册表面活体（M42-WAYCOMP18 笔⑱）——
+/// 四相位描述见 kmain 调度注记（t117/t118 同款纪律：活体描述随调度
+/// 块，函数体免长文档）。
+fn t119_run(log: &mut DualLog) -> bool {
+    use prism::wayland as wl;
+    let mut ok = true;
+    let me = task::current_task_id();
+
+    // 客户端流逐事件对读（walk 帮手——(object_id, opcode, size) 头裁决
+    // + uint 参数域；t110 walk 裁决口径同谱）
+    fn walk_events(buf: &[u8]) -> usize {
+        let mut n = 0usize;
+        let mut off = 0usize;
+        while off + 8 <= buf.len() {
+            let Ok(h) = wl::parse_header(&buf[off..]) else {
+                break;
+            };
+            n += 1;
+            off += h.size as usize;
+        }
+        n
+    }
+
+    // (a) 会话键盘链全谱（t118(a) 同谱——基线读取 = 链域收口后）
+    waycomp::input_queue_flush(); // 相位间卫生域（三环排空）
+    let c0 = waycomp::waycomp_stamps();
+    let g0 = waycomp::WLCOMP_GUARD_ERR.load(Ordering::Acquire);
+    let hc = match unixsock::sock_connect(me, waycomp::WAYCOMP_SOCK_NAME) {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = writeln!(log, "t119: connect failed ({e:?})");
+            return false;
+        }
+    };
+    let mut req = [0u8; 64];
+    let n_req = wl::encode_display_get_registry(&mut req, 1, 2).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &req[..n_req]).unwrap_or(0);
+    ok &= sent == n_req;
+    let mut gbuf = [0u8; 512];
+    let mut got = 0usize;
+    let dl = ostd::time::now() + 480;
+    while got < 124 && ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            task::yield_now();
+            continue;
+        }
+        let n = unixsock::sock_recv(me, hc as u64, &mut gbuf[got..]).unwrap_or(0);
+        if n > 0 {
+            got += n;
+        }
+    }
+    ok &= got == 124;
+    let mut batch = [0u8; 512];
+    let mut bl = 0usize;
+    bl += wl::encode_registry_bind(&mut batch[bl..], 2, 2, "wl_seat", 1, 4).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        4,
+        wl::seat::REQ_GET_KEYBOARD,
+        &[wl::WlArg::NewId(5)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_registry_bind(&mut batch[bl..], 2, 1, "wl_compositor", 4, 3).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        3,
+        wl::compositor::REQ_CREATE_SURFACE,
+        &[wl::WlArg::NewId(0x41)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        0x41,
+        wl::surface::REQ_DAMAGE,
+        &[
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(320),
+            wl::WlArg::Int(200),
+        ],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_surface_commit(&mut batch[bl..], 0x41).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &batch[..bl]).unwrap_or(0);
+    ok &= sent == bl;
+    let dl = ostd::time::now() + 480;
+    loop {
+        let c = waycomp::waycomp_stamps();
+        if (c.3 > c0.3 && waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire) == 0x41)
+            || ostd::time::now() >= dl
+        {
+            break;
+        }
+        task::yield_now();
+    }
+    ok &= waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire) == 0x41;
+    // 链域键记录出域确定性门控（enter + modifiers 快照 = +2——t117/t118
+    // 基线纪律同谱）
+    let keys_base = waycomp::waycomp_stamps().8;
+    let dl = ostd::time::now() + 480;
+    while waycomp::waycomp_stamps().8 < keys_base + 2 && ostd::time::now() < dl {
+        task::yield_now();
+    }
+    let dl = ostd::time::now() + 120;
+    while ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            break;
+        }
+        let mut sink = [0u8; 512];
+        let n = unixsock::sock_recv(me, hc as u64, &mut sink).unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+    }
+    let syn0 = waycomp::WLCOMP_SYNCS.load(Ordering::Acquire); // 链域收口后基线
+
+    // (b) 多轮 sync 同 id 复用（M42-WAYCOMP18 多注册表面——done +
+    //     delete_id 对逐目对读 + 同 id 重装第二轮）
+    let mut rbuf = [0u8; 256];
+    got = 0; // 游标复位（链域排水后重计——门控不满足陈旧计数）
+    for round in 0..2u32 {
+        let n_req = wl::encode_display_sync(&mut req, 1, 0x51).unwrap_or(0);
+        let sent = unixsock::sock_send(me, hc as u64, &req[..n_req]).unwrap_or(0);
+        ok &= sent == n_req;
+        let dl = ostd::time::now() + 480;
+        while got < 24 && ostd::time::now() < dl {
+            if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+                task::yield_now();
+                continue;
+            }
+            let n = unixsock::sock_recv(me, hc as u64, &mut rbuf[got..]).unwrap_or(0);
+            if n > 0 {
+                got += n;
+            }
+        }
+        ok &= got == 24;
+        // 逐目对读：done(0x51, data 0) + delete_id(display 1 → 0x51)
+        let done_ok = wl::parse_message(&rbuf[..12], wl::SIG_CALLBACK_DONE)
+            .map(|m| {
+                m.header.object_id == 0x51
+                    && m.header.opcode == wl::callback::EV_DONE
+                    && m.args[0] == Some(wl::WlArg::Uint(0))
+            })
+            .unwrap_or(false);
+        ok &= done_ok;
+        let del_ok = wl::parse_message(&rbuf[12..24], wl::SIG_DISPLAY_DELETE_ID)
+            .map(|m| {
+                m.header.object_id == 1
+                    && m.header.opcode == wl::display::EV_DELETE_ID
+                    && m.args[0] == Some(wl::WlArg::Uint(0x51))
+            })
+            .unwrap_or(false);
+        ok &= del_ok;
+        got = 0; // 下一轮重计
+        let _ = round;
+    }
+    let syn1 = waycomp::WLCOMP_SYNCS.load(Ordering::Acquire);
+    let sync_ok = syn1 == syn0 + 2 && walk_events(&rbuf[..24]) == 2;
+    ok &= sync_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T119-SYNC rounds=2 done+del=+2 syn=+{} reuse=id-0x51",
+        syn1 - syn0
+    );
+
+    // (c) 多 registry 多公告（同会话第二 get_registry——公告承新 id +
+    //     经第二 registry bind wl_seat 可用域）
+    let n_req = wl::encode_display_get_registry(&mut req, 1, 0x52).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &req[..n_req]).unwrap_or(0);
+    ok &= sent == n_req;
+    let dl = ostd::time::now() + 480;
+    while got < 124 && ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            task::yield_now();
+            continue;
+        }
+        let n = unixsock::sock_recv(me, hc as u64, &mut rbuf[got..]).unwrap_or(0);
+        if n > 0 {
+            got += n;
+        }
+    }
+    ok &= got == 124;
+    let reg_ok = wl::parse_message(&rbuf[..36], wl::SIG_REGISTRY_GLOBAL)
+        .map(|m| m.header.object_id == 0x52 && m.header.opcode == wl::registry::EV_GLOBAL)
+        .unwrap_or(false)
+        && walk_events(&rbuf[..124]) == 4;
+    ok &= reg_ok;
+    got = 0;
+    // 经第二 registry bind wl_seat（new_id 0x53——capabilities 随行）
+    let n_req = wl::encode_registry_bind(&mut req, 0x52, 2, "wl_seat", 1, 0x53).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &req[..n_req]).unwrap_or(0);
+    ok &= sent == n_req;
+    let dl = ostd::time::now() + 480;
+    while got < 12 && ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            task::yield_now();
+            continue;
+        }
+        let n = unixsock::sock_recv(me, hc as u64, &mut rbuf[got..]).unwrap_or(0);
+        if n > 0 {
+            got += n;
+        }
+    }
+    ok &= got == 12;
+    let caps_ok = wl::parse_message(&rbuf[..12], wl::SIG_SEAT_CAPABILITIES)
+        .map(|m| {
+            m.header.object_id == 0x53
+                && m.header.opcode == wl::seat::EV_CAPABILITIES
+                && m.args[0]
+                    == Some(wl::WlArg::Uint(
+                        wl::SEAT_CAPS_POINTER | wl::SEAT_CAPS_KEYBOARD,
+                    ))
+        })
+        .unwrap_or(false);
+    ok &= caps_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T119-REG reg=0x52 announce=124 bind=0x53 caps=(ptr|kbd) events=4"
+    );
+
+    // (d) 多 sync 并发批（三 sync 单批——done+delete_id ×3 = 72B）
+    got = 0; // 游标复位（(c) capabilities 12B 后重计）
+    let mut batch = [0u8; 96];
+    let mut bl = 0usize;
+    for cb in [0x61u32, 0x62, 0x63] {
+        bl += wl::encode_display_sync(&mut batch[bl..], 1, cb).unwrap_or(0);
+    }
+    let sent = unixsock::sock_send(me, hc as u64, &batch[..bl]).unwrap_or(0);
+    ok &= sent == bl;
+    let dl = ostd::time::now() + 480;
+    while got < 72 && ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            task::yield_now();
+            continue;
+        }
+        let n = unixsock::sock_recv(me, hc as u64, &mut rbuf[got..]).unwrap_or(0);
+        if n > 0 {
+            got += n;
+        }
+    }
+    ok &= got == 72;
+    let ev_n = walk_events(&rbuf[..72]);
+    ok &= ev_n == 6; // done ×3 + delete_id ×3
+    let syn2 = waycomp::WLCOMP_SYNCS.load(Ordering::Acquire);
+    ok &= syn2 == syn1 + 3;
+
+    // (e) 卫生收场（SHUT EOF + 全戳恒定 + 句柄收口）
+    let _ = unixsock::sock_shutdown(me, hc as u64);
+    let dl = ostd::time::now() + 480;
+    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+        core::hint::spin_loop();
+    }
+    let eof_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
+    ok &= eof_ok;
+    let stable = waycomp::WLCOMP_SYNCS.load(Ordering::Acquire) == syn1 + 3
+        && waycomp::WLCOMP_GUARD_ERR.load(Ordering::Acquire) == g0;
+    ok &= stable;
+    let _ = crate::vfs::sys_close(hc as u64);
+    let _ = writeln!(
+        log,
+        "LUMINA-T119-BATCH batch=3 events={ev_n} syn=+{} eof_ok={eof_ok} stable={stable}",
+        syn2 - syn1
+    );
+
+    if ok {
+        let _ = writeln!(log, "LUMINA-T119-OK");
     }
     ok
 }

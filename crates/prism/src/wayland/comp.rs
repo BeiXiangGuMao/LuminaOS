@@ -55,19 +55,19 @@
 use mirror::Rect;
 
 use super::{
-    compositor, display, encode_callback_done_event, encode_keyboard_enter_event,
-    encode_keyboard_key_event, encode_keyboard_keymap_event, encode_keyboard_leave_event,
-    encode_keyboard_modifiers_event, encode_pointer_axis_event, encode_pointer_axis_source_event,
-    encode_pointer_axis_stop_event, encode_pointer_button_event, encode_pointer_enter_event,
-    encode_pointer_frame_event, encode_pointer_leave_event, encode_pointer_motion_event,
-    encode_registry_global_event, encode_seat_capabilities_event, iface_name, parse_args,
-    parse_header, registry, seat, shm, shm_pool, surface, WlArg, WlError, WlHeader, WlIface,
-    WlObjectTable, HEADER, KEYMAP_FORMAT_XKB_V1, MOD_ALT, MOD_CAPS, MOD_CTRL, MOD_MOD4, MOD_NUM2,
-    MOD_SHIFT, SEAT_CAPS_KEYBOARD, SEAT_CAPS_POINTER, SIG_COMPOSITOR_CREATE_REGION,
-    SIG_COMPOSITOR_CREATE_SURFACE, SIG_DISPLAY_GET_REGISTRY, SIG_DISPLAY_SYNC, SIG_REGISTRY_BIND,
-    SIG_SEAT_GET_KEYBOARD, SIG_SEAT_GET_POINTER, SIG_SHM_CREATE_POOL, SIG_SHM_POOL_CREATE_BUFFER,
-    SIG_SHM_POOL_DESTROY, SIG_SURFACE_ATTACH, SIG_SURFACE_COMMIT, SIG_SURFACE_DAMAGE,
-    SIG_SURFACE_FRAME, WIRE_MAX,
+    compositor, display, encode_callback_done_event, encode_display_delete_id_event,
+    encode_keyboard_enter_event, encode_keyboard_key_event, encode_keyboard_keymap_event,
+    encode_keyboard_leave_event, encode_keyboard_modifiers_event, encode_pointer_axis_event,
+    encode_pointer_axis_source_event, encode_pointer_axis_stop_event, encode_pointer_button_event,
+    encode_pointer_enter_event, encode_pointer_frame_event, encode_pointer_leave_event,
+    encode_pointer_motion_event, encode_registry_global_event, encode_seat_capabilities_event,
+    iface_name, parse_args, parse_header, registry, seat, shm, shm_pool, surface, WlArg, WlError,
+    WlHeader, WlIface, WlObjectTable, HEADER, KEYMAP_FORMAT_XKB_V1, MOD_ALT, MOD_CAPS, MOD_CTRL,
+    MOD_MOD4, MOD_NUM2, MOD_SHIFT, SEAT_CAPS_KEYBOARD, SEAT_CAPS_POINTER,
+    SIG_COMPOSITOR_CREATE_REGION, SIG_COMPOSITOR_CREATE_SURFACE, SIG_DISPLAY_GET_REGISTRY,
+    SIG_DISPLAY_SYNC, SIG_REGISTRY_BIND, SIG_SEAT_GET_KEYBOARD, SIG_SEAT_GET_POINTER,
+    SIG_SHM_CREATE_POOL, SIG_SHM_POOL_CREATE_BUFFER, SIG_SHM_POOL_DESTROY, SIG_SURFACE_ATTACH,
+    SIG_SURFACE_COMMIT, SIG_SURFACE_DAMAGE, SIG_SURFACE_FRAME, WIRE_MAX,
 };
 
 /// 单会话 surface 槽容量（定容零堆——SurfaceTable 同量级先例）。
@@ -466,6 +466,9 @@ pub struct FeedReport {
     /// 铸池 + SEND_FD 承接内容面。v0 单 keymap 会话域 last-wins 如实
     /// 记档——每 get_keyboard 公告覆盖前次）。
     pub keymaps: Option<KeymapRecord>,
+    /// sync 即时完成数（M42-WAYCOMP18 多注册表面——本 feed 增量；
+    /// 每 sync 恰一 done + delete_id 对，客户端 id 复用域对账）。
+    pub syncs: usize,
 }
 
 impl FeedReport {
@@ -514,6 +517,9 @@ pub struct CompSession {
     buf_n: usize,
     /// commit 串号（帧回调 done 事件 callback_data 事实源）。
     commit_serial: u32,
+    /// sync 即时完成累计（M42-WAYCOMP18 多注册表面——feed 报告 syncs
+    /// 增量事实源；每 sync 恰一 done + delete_id 随行）。
+    syncs_total: usize,
     /// 输入串号（M42-INPUT7——wl_keyboard/wl_pointer 事件 serial 事实
     /// 源，单调）。
     input_serial: u32,
@@ -562,6 +568,7 @@ impl CompSession {
             buffers: [None; SESSION_BUFFERS],
             buf_n: 0,
             commit_serial: 0,
+            syncs_total: 0,
             input_serial: 0,
             pointer_obj: 0,
             keyboard_obj: 0,
@@ -596,6 +603,11 @@ impl CompSession {
     /// 对象表只读视图（取证面——t104 对账消费）。
     pub fn table(&self) -> &WlObjectTable {
         &self.table
+    }
+
+    /// sync 即时完成累计读面（M42-WAYCOMP18 多注册表面——会话域取证）。
+    pub fn syncs_snapshot(&self) -> usize {
+        self.syncs_total
     }
 
     /// 会话 surface 在账数。
@@ -1067,6 +1079,7 @@ impl CompSession {
     /// 载产出字节数。畸形头（尺寸域越界）即时 fail-visible（Err 透
     /// 传）；部分消息（尺寸域完整但残段不足）干净断流。
     pub fn feed(&mut self, stream: &[u8], out: &mut [u8]) -> Result<FeedReport, CompError> {
+        let syncs0 = self.syncs_total; // sync 增量基（M42-WAYCOMP18）
         let mut log = CommitLog::EMPTY;
         let mut pools = PoolLog::EMPTY;
         let mut drops = DropLog::EMPTY;
@@ -1106,6 +1119,7 @@ impl CompSession {
             keys,
             ptrs,
             keymaps: self.keymap_out.take(),
+            syncs: self.syncs_total - syncs0,
         })
     }
 
@@ -1263,7 +1277,10 @@ impl CompSession {
         Ok(header.size as usize)
     }
 
-    /// wl_display 请求域（sync 即时 done / get_registry 公告面）。
+    /// wl_display 请求域（sync 即时 done + **delete_id 随行销毁**
+    /// 〔M42-WAYCOMP18 多注册表面——官方生命周期：callback done 后服
+    /// 务端销毁对象 + delete_id 宣告随行，客户端据以回收 id 复用域；
+    /// 对象表同步摘除——v0 永驻表膨胀域退役〕/ get_registry 公告面）。
     fn dispatch_display(
         &mut self,
         header: &WlHeader,
@@ -1281,9 +1298,18 @@ impl CompSession {
                     .install(cb_id, WlIface::Callback)
                     .map_err(CompError::Table)?;
                 // 官方语义：sync callback 即时完成（callback_data 无官
-                // 方约束域——v0 记 0）。
+                // 方约束域——v0 记 0）。**M42-WAYCOMP18 多注册表面**：
+                // done 后服务端销毁 callback + delete_id 随行（客户端 id
+                // 复用域事实源——同 id 多轮 sync 在环面），对象表同步摘
+                // 除（v0 永驻表膨胀域退役——表容量回收域）。
                 let n = encode_callback_done_event(&mut out[*out_len..], cb_id, 0)
                     .map_err(CompError::Wire)?;
+                *out_len += n;
+                self.syncs_total += 1;
+                self.table.remove(cb_id);
+                let n =
+                    encode_display_delete_id_event(&mut out[*out_len..], header.object_id, cb_id)
+                        .map_err(CompError::Wire)?;
                 *out_len += n;
                 Ok(())
             }
@@ -1857,10 +1883,11 @@ mod tests {
 
     use super::*;
     use crate::wayland::{
-        callback, encode_display_get_registry, encode_display_sync, encode_message,
+        callback, display, encode_display_get_registry, encode_display_sync, encode_message,
         encode_registry_bind, encode_surface_commit, surface as surf_ops, SIG_CALLBACK_DONE,
-        SIG_KEYBOARD_ENTER, SIG_KEYBOARD_KEY, SIG_KEYBOARD_KEYMAP, SIG_POINTER_BUTTON,
-        SIG_POINTER_ENTER, SIG_POINTER_MOTION, SIG_REGISTRY_GLOBAL, SIG_SEAT_CAPABILITIES,
+        SIG_DISPLAY_DELETE_ID, SIG_KEYBOARD_ENTER, SIG_KEYBOARD_KEY, SIG_KEYBOARD_KEYMAP,
+        SIG_POINTER_BUTTON, SIG_POINTER_ENTER, SIG_POINTER_MOTION, SIG_REGISTRY_GLOBAL,
+        SIG_SEAT_CAPABILITIES,
     };
 
     /// 测试用公告名单：核心子集四 global（compositor v4 / seat v1 /
@@ -2187,7 +2214,8 @@ mod tests {
         );
     }
 
-    /// sync 即时 done 回执（官方语义——callback_data = 0 域）。
+    /// sync 即时 done + delete_id 随行销毁（官方生命周期——M42-WAYCOMP18
+    /// 多注册表面：done + delete_id 对 + 对象表摘除）。
     #[test]
     fn sync_callback_immediate() {
         let mut s = new_session();
@@ -2196,12 +2224,70 @@ mod tests {
         let mut out = [0u8; 64];
         let rep = s.feed(&req[..n], &mut out).unwrap();
         assert_eq!(rep.consumed, n);
-        assert_eq!(rep.out_len, 8 + 4, "done 事件 = 头 + uint");
-        let m = crate::wayland::parse_message(&out[..rep.out_len], SIG_CALLBACK_DONE).unwrap();
+        assert_eq!(rep.out_len, 8 + 4 + 8 + 4, "done + delete_id 双事件");
+        assert_eq!(rep.syncs, 1);
+        // done 事件（头 + uint）
+        let m = crate::wayland::parse_message(&out[..12], SIG_CALLBACK_DONE).unwrap();
         assert_eq!(m.header.object_id, 9);
         assert_eq!(m.header.opcode, callback::EV_DONE);
         assert_eq!(m.args[0], Some(WlArg::Uint(0)));
-        assert_eq!(s.table().lookup(9), Some(WlIface::Callback));
+        // delete_id 事件（display 域 + 销毁 id）
+        let m =
+            crate::wayland::parse_message(&out[12..rep.out_len], SIG_DISPLAY_DELETE_ID).unwrap();
+        assert_eq!(m.header.object_id, 1);
+        assert_eq!(m.header.opcode, display::EV_DELETE_ID);
+        assert_eq!(m.args[0], Some(WlArg::Uint(9)));
+        // 对象表摘除（v0 永驻域退役——同 id 可复用事实源）
+        assert_eq!(s.table().lookup(9), None);
+    }
+
+    /// 多轮 sync 同 id 复用（M42-WAYCOMP18 多注册表面——delete_id 回收
+    /// 后同 id 重装域：两轮 done + delete_id 对 + syncs 累计 + 表终态
+    /// 摘除）。
+    #[test]
+    fn sync_multi_round_same_id_reuse() {
+        let mut s = new_session();
+        let mut out = [0u8; 128];
+        for round in 0..2u32 {
+            let mut req = [0u8; 64];
+            let n = encode_display_sync(&mut req, 1, 0x51).unwrap(); // 同 id 两轮
+            let rep = s.feed(&req[..n], &mut out).unwrap();
+            assert_eq!(rep.consumed, n);
+            assert_eq!(rep.out_len, 24, "done + delete_id 对");
+            assert_eq!(rep.syncs, 1);
+            let m = crate::wayland::parse_message(&out[..12], SIG_CALLBACK_DONE).unwrap();
+            assert_eq!(m.header.object_id, 0x51);
+            let m = crate::wayland::parse_message(&out[12..24], SIG_DISPLAY_DELETE_ID).unwrap();
+            assert_eq!(m.args[0], Some(WlArg::Uint(0x51)));
+            assert_eq!(s.table().lookup(0x51), None, "轮 {} 后摘除", round);
+        }
+        assert_eq!(s.syncs_snapshot(), 2);
+    }
+
+    /// 多 registry 多公告（M42-WAYCOMP18 多注册表面——同会话第二
+    /// get_registry：双公告域 + 经第二 registry bind 可用域）。
+    #[test]
+    fn multi_registry_announce_and_bind() {
+        let mut s = new_session();
+        let mut out = [0u8; 512];
+        // 第一 registry（id 2）公告
+        let mut req = [0u8; 64];
+        let n = encode_display_get_registry(&mut req, 1, 2).unwrap();
+        let rep = s.feed(&req[..n], &mut out).unwrap();
+        assert_eq!(rep.out_len, 124, "首公告四 global");
+        // 第二 registry（id 0x52）公告——多注册面在环
+        let n = encode_display_get_registry(&mut req, 1, 0x52).unwrap();
+        let rep = s.feed(&req[..n], &mut out).unwrap();
+        assert_eq!(rep.out_len, 124, "次公告四 global（reg_id 0x52）");
+        let m = crate::wayland::parse_message(&out[..rep.out_len], SIG_REGISTRY_GLOBAL).unwrap();
+        assert_eq!(m.header.object_id, 0x52, "次公告首 global 承新 registry id");
+        assert_eq!(s.table().lookup(2), Some(WlIface::Registry));
+        assert_eq!(s.table().lookup(0x52), Some(WlIface::Registry));
+        // 经第二 registry bind wl_seat——多 registry 可用域
+        let n = encode_registry_bind(&mut req, 0x52, 2, "wl_seat", 1, 0x53).unwrap();
+        let rep = s.feed(&req[..n], &mut out).unwrap();
+        assert!(rep.out_len >= 12, "capabilities 随行");
+        assert_eq!(s.table().lookup(0x53), Some(WlIface::Seat));
     }
 
     /// 负例域全谱：未登记对象 / 域外 opcode / 名单外 bind / 版本越上
@@ -2281,10 +2367,10 @@ mod tests {
         let rep = s.feed(&req[..n - 2], &mut out).unwrap();
         assert_eq!(rep.consumed, 0);
         assert!(rep.is_skip());
-        // 全量续喂——推进 + done 回执
+        // 全量续喂——推进 + done 回执 + delete_id 随行（M42-WAYCOMP18）
         let rep2 = s.feed(&req[..n], &mut out).unwrap();
         assert_eq!(rep2.consumed, n);
-        assert_eq!(rep2.out_len, 12);
+        assert_eq!(rep2.out_len, 24);
     }
 
     /// 多消息单流推进：sync + get_registry 双消息同批——consumed =
@@ -2306,9 +2392,11 @@ mod tests {
         let mut out = [0u8; 512];
         let rep = s.feed(&stream, &mut out).unwrap();
         assert_eq!(rep.consumed, stream.len());
-        // 回执 = sync done(12) + globals(36+28+28+32)
-        assert_eq!(rep.out_len, 12 + 124);
-        assert_eq!(s.table().lookup(9), Some(WlIface::Callback));
+        // 回执 = sync done(12) + delete_id(12)〔M42-WAYCOMP18 生命周期随
+        // 行〕 + globals(36+28+28+32)
+        assert_eq!(rep.out_len, 12 + 12 + 124);
+        assert_eq!(rep.syncs, 1);
+        assert_eq!(s.table().lookup(9), None, "callback done 后销毁摘除");
         assert_eq!(s.table().lookup(2), Some(WlIface::Registry));
     }
 

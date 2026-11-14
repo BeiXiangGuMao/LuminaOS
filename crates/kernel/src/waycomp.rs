@@ -238,6 +238,9 @@ pub static WLCOMP_MODS_DEP: AtomicU32 = AtomicU32::new(0);
 /// 生产域串行化计数（M42-WAYCOMP16——IN_MU 锁窗受理次数 = 多产者域
 /// 取证戳，t117 断言面；ISR 臂锁窗同谱计入，t118 断言面）。
 pub static WLCOMP_MPS: AtomicU64 = AtomicU64::new(0);
+/// sync 即时完成数（M42-WAYCOMP18 多注册表面——feed 回执 syncs 增量
+/// 计数：每 sync 恰一 done + delete_id 对，t119 断言面）。
+pub static WLCOMP_SYNCS: AtomicU64 = AtomicU64::new(0);
 /// ISR 臂内核语境旗路径放行数（M42-WAYCOMP17——[`IN_ISR_CTX`] 旗命
 /// 中即计：放行路径可辨——旗路径而非任务查询路径，旗面活体取证，
 /// t118 断言面）。
@@ -661,6 +664,8 @@ fn session_loop(conn: u64) {
                 // 输入事件 wire 发出数（M42-INPUT7——KeyLog/PtrLog 记录批对账）
                 WLCOMP_KEYS.fetch_add(rep.keys.n as u64, Ordering::AcqRel);
                 WLCOMP_PTRS.fetch_add(rep.ptrs.n as u64, Ordering::AcqRel);
+                // sync 即时完成数（M42-WAYCOMP18——done + delete_id 对计数）
+                WLCOMP_SYNCS.fetch_add(rep.syncs as u64, Ordering::AcqRel);
                 // modifiers wire 发出数（M42-WAYCOMP15——Modifiers 记录批）
                 for r in rep.keys.items[..rep.keys.n].iter().flatten() {
                     if prism::wayland::comp::KbKind::Modifiers == r.kind {
@@ -733,6 +738,7 @@ fn session_loop(conn: u64) {
         if let Ok(rep2) = session.feed(&[], &mut out2) {
             WLCOMP_KEYS.fetch_add(rep2.keys.n as u64, Ordering::AcqRel);
             WLCOMP_PTRS.fetch_add(rep2.ptrs.n as u64, Ordering::AcqRel);
+            WLCOMP_SYNCS.fetch_add(rep2.syncs as u64, Ordering::AcqRel);
             for r in rep2.keys.items[..rep2.keys.n].iter().flatten() {
                 if prism::wayland::comp::KbKind::Modifiers == r.kind {
                     WLCOMP_MODS.fetch_add(1, Ordering::AcqRel);
