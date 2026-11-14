@@ -86,6 +86,33 @@ pub const INPUT_Q_MAX: usize = 8;
 /// 单次 feed 的输入事件记录上限（定容零堆——INPUT_Q_MAX 同量级）。
 pub const MAX_INPUTS_PER_FEED: usize = 8;
 
+/// keymap 内容面（M42-WAYCOMP13 笔⑬——「keymap 内容面」挂账域兑现）：
+/// wl_keyboard.keymap 承载的 XKB keymap 内容事实源（xkb v1 文本域——
+/// 官方语义：合成器将 keymap 内容放入 shm 池、keymap 事件携带 fd +
+/// 字节长度；客户端经 libxkbcommon 编译消费）。v0 内容 = 最小合法
+/// keymap 壳（evdev 键码域 + complete types/compat + pc+us 符号域
+/// ——与 wlroots/weston 产出形同构；include 展开由客户端 xkb 数据
+/// 域承接）。`.rodata` 静态零堆——电气面（shm 池铸造 + fd 传递）由
+/// 消费方（waycomp keymap 承接域）执行。
+pub const KEYMAP_XKB_V1: &[u8] = b"xkb_keymap {\n\
+\x20   xkb_keycodes { include \"evdev\" };\n\
+\x20   xkb_types { include \"complete\" };\n\
+\x20   xkb_compat { include \"complete\" };\n\
+\x20   xkb_symbols { include \"pc+us\" };\n\
+};\n";
+
+/// keymap 公告记录（M42-WAYCOMP13——feed 回执域：电气面据 size 铸池
+/// + SEND_FD 承接内容面）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeymapRecord {
+    /// wl_keyboard 对象 id（客户端域——get_keyboard new_id）。
+    pub keyboard_id: u32,
+    /// keymap 内容字节长度（官方语义：size = fd 内容字节域——prism
+    /// 事实源 [`KEYMAP_XKB_V1`] 长度，v0 单 keymap 会话域 last-wins
+    /// 如实记档）。
+    pub size: u32,
+}
+
 /// registry global 名单项（合成器策略面输入——公告名单与版本域）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GlobalDef {
@@ -400,6 +427,11 @@ pub struct FeedReport {
     pub keys: KeyLog,
     /// 指针事件记录批（M42-INPUT7——`ptrs.items[..ptrs.n]` 有效）。
     pub ptrs: PtrLog,
+    /// keymap 公告记录（M42-WAYCOMP13——本 feed 内 get_keyboard 派生
+    /// 域公告；None = 无公告。电气面（waycomp keymap 承接域）据 size
+    /// 铸池 + SEND_FD 承接内容面。v0 单 keymap 会话域 last-wins 如实
+    /// 记档——每 get_keyboard 公告覆盖前次）。
+    pub keymaps: Option<KeymapRecord>,
 }
 
 impl FeedReport {
@@ -467,6 +499,9 @@ pub struct CompSession {
     ptr_q: [Option<PtrRecord>; INPUT_Q_MAX],
     /// 指针队列在队数。
     ptr_n: usize,
+    /// keymap 公告待提记录（M42-WAYCOMP13——dispatch_seat 公告域
+    /// 登记，feed 回执提走 take）。None = 无待提。
+    keymap_out: Option<KeymapRecord>,
 }
 
 impl CompSession {
@@ -493,6 +528,7 @@ impl CompSession {
             key_n: 0,
             ptr_q: [None; INPUT_Q_MAX],
             ptr_n: 0,
+            keymap_out: None,
         }
     }
 
@@ -806,6 +842,7 @@ impl CompSession {
             fd_need,
             keys,
             ptrs,
+            keymaps: self.keymap_out.take(),
         })
     }
 
@@ -1067,17 +1104,23 @@ impl CompSession {
                     .install(kbd_id, WlIface::Keyboard)
                     .map_err(CompError::Table)?;
                 self.keyboard_obj = kbd_id;
-                // keymap 公告（官方语义：keyboard 派生即发——fd 占位
-                // 字 0 + xkb v1 格式 + 零尺寸域，keymap 内容面挂账）。
+                // keymap 公告（官方语义：keyboard 派生即发——fd 占位字
+                // 0 + xkb v1 格式 + **真实内容长度**〔M42-WAYCOMP13 内
+                // 容面——零尺寸域退役：size = KEYMAP_XKB_V1 字节域，
+                // 电气面据回执铸池 + SEND_FD 承接〕）。
                 let n = encode_keyboard_keymap_event(
                     &mut out[*out_len..],
                     kbd_id,
                     0,
                     KEYMAP_FORMAT_XKB_V1,
-                    0,
+                    KEYMAP_XKB_V1.len() as u32,
                 )
                 .map_err(CompError::Wire)?;
                 *out_len += n;
+                self.keymap_out = Some(KeymapRecord {
+                    keyboard_id: kbd_id,
+                    size: KEYMAP_XKB_V1.len() as u32,
+                });
                 Ok(())
             }
             _ => Err(CompError::UnknownRequest),
@@ -2343,6 +2386,21 @@ mod tests {
             m.args[1],
             Some(WlArg::Uint(crate::wayland::KEYMAP_FORMAT_XKB_V1))
         );
+        // M42-WAYCOMP13 内容面：size = KEYMAP_XKB_V1 真实字节域 +
+        // feed 回执 keymap 记录对账（电气面铸池承接域事实源）。
+        assert_eq!(
+            m.args[2],
+            Some(WlArg::Uint(KEYMAP_XKB_V1.len() as u32)),
+            "keymap size = 内容真实长度"
+        );
+        assert_eq!(
+            rep.keymaps,
+            Some(KeymapRecord {
+                keyboard_id: 0x32,
+                size: KEYMAP_XKB_V1.len() as u32
+            })
+        );
+        assert!(KEYMAP_XKB_V1.starts_with(b"xkb_keymap {"), "xkb v1 内容壳");
         assert_eq!(s.table().lookup(0x30), Some(WlIface::Seat));
         assert_eq!(s.table().lookup(0x31), Some(WlIface::Pointer));
         assert_eq!(s.table().lookup(0x32), Some(WlIface::Keyboard));

@@ -112,6 +112,10 @@ pub static SHM_MAPS: AtomicU64 = AtomicU64::new(0);
 pub static SHM_LAST_OBJECT: AtomicU64 = AtomicU64::new(0);
 /// 池像素读命中数（waycomp 消费域取证——客户端像素上屏计数）。
 pub static SHM_PX_READS: AtomicU64 = AtomicU64::new(0);
+/// 池像素写命中数（M42-WAYCOMP13——keymap 内容面铸池填充计数：内
+/// 核侧服务写域〔waycomp keymap 承接〕，与客户端写域〔ring3 MAP 直
+/// 写〕分域取证）。
+pub static SHM_PX_WRITES: AtomicU64 = AtomicU64::new(0);
 /// 池回收数（M42-WAYCOMP11 卫生批次——引用归零摘除计数，t112 断言面）。
 pub static SHM_RELEASES: AtomicU64 = AtomicU64::new(0);
 /// 池帧归还数（FrameAllocator::dealloc LIFO 空闲表返还——帧生命周期
@@ -131,6 +135,11 @@ pub fn maps() -> u64 {
 /// 池像素读命中数快照。
 pub fn px_reads() -> u64 {
     SHM_PX_READS.load(Ordering::Acquire)
+}
+
+/// 池像素写命中数快照（M42-WAYCOMP13——t114 断言面）。
+pub fn px_writes() -> u64 {
+    SHM_PX_WRITES.load(Ordering::Acquire)
 }
 
 /// 池回收数快照（M42-WAYCOMP11——t112 断言面）。
@@ -441,6 +450,38 @@ pub fn pool_px_read(object: u64, byte_off: u64) -> Option<u32> {
     let px = unsafe { core::ptr::read_volatile(addr as *const u32) };
     drop(pools);
     Some(px)
+}
+
+/// 池像素写（M42-WAYCOMP13 keymap 内容面——内核侧服务写域同心出口，
+/// [`pool_px_read`] 对位）：`byte_off` 须 4 字节对齐且 `byte_off + 4 ≤
+/// 池字节域`；越域 false = fail-soft（调用方终止填充——内容面截断
+/// 取证）。消费者 = keymap 承接域（waycomp 服务任务——池属主本尊，
+/// 客户端 RECV_FD 交付后客户端为读者）；并发契约与读面同谱（POOLS
+/// 锁窗与回收窗互斥，写后释放不可能）。
+pub fn pool_px_write(object: u64, byte_off: u64, word: u32) -> bool {
+    if !byte_off.is_multiple_of(4) {
+        return false;
+    }
+    let mut ok = false;
+    let mut pools = POOLS.lock();
+    if let Some(p) = pools.iter_mut().find(|p| p.object == object) {
+        if byte_off + 4 <= p.size {
+            let phys = p.frames[(byte_off / FRAME_SIZE) as usize];
+            if phys != 0 {
+                let addr = (phys + (byte_off % FRAME_SIZE)) as usize;
+                // SAFETY: 前置条件 —— phys 自帧分配器出且 < 0x4000_0000
+                //          （恒等域断言在 CREATE 承担），addr < 恒等域。
+                // 不变式 —— write_volatile 防删除/合并；越域路径不可达
+                //          （上界已滤）；属主单写者（keymap 承接域）。
+                // 并发 —— 写持 POOLS 锁窗——与 release 摘除窗互斥。
+                unsafe { core::ptr::write_volatile(addr as *mut u32, word) };
+                SHM_PX_WRITES.fetch_add(1, Ordering::AcqRel);
+                ok = true;
+            }
+        }
+    }
+    drop(pools);
+    ok
 }
 
 /// 池字节域读面（t106 对账域；不在册 → None）。

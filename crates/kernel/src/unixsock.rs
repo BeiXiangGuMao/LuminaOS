@@ -50,15 +50,14 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use crate::task;
 use bedrock::abi::{
     USOCK_ACCEPT, USOCK_ACCEPT_B, USOCK_BIND, USOCK_CONNECT, USOCK_PAIR, USOCK_RECV, USOCK_RECV_FD,
     USOCK_SEND, USOCK_SEND_FD, USOCK_SHUT,
 };
 use ostd::sync::spsc::SpscRing;
 use ostd::sync::SpinLock;
-use vanguard::{Capability, Right};
-
-use crate::task;
+use vanguard::{Capability, Right, CAPACITY};
 
 /// 套接字域对象 id 段基（端点 + 监听者共用单调铸造；段位正交性 =
 /// 通道能力跨域不可达的守门面）。
@@ -200,6 +199,9 @@ pub static USOCK_FD_SENDS: AtomicU64 = AtomicU64::new(0);
 /// fd 附带数据传递接收数（M42-ELF5——弹队装表计数；内核侧双生面同
 /// 口径计入）。
 pub static USOCK_FD_RECVS: AtomicU64 = AtomicU64::new(0);
+/// fd 附带队列遗留槽撤销数（M42-WAYCOMP13——流终结域未交付 SCM_RIGHTS
+/// 语义对齐：SHUT 时本端未弹出 fd 随行 revoke，t114 断言面）。
+pub static USOCK_FD_REVOKES: AtomicU64 = AtomicU64::new(0);
 
 // ---- t103 (e) 相位 echo worker 契约 ----
 /// echo worker 服务端点对象（spawn 前由 t103 武装；0 = 未武装即退）。
@@ -743,6 +745,11 @@ pub fn shutdown_by_object(object: u64) -> Result<(), UsockError> {
         if let Some(e) = socks.iter().find(|e| e.object == object) {
             e.dead.store(true, Ordering::Release);
         }
+        drop(socks);
+        // M42-WAYCOMP13：流终结域未交付 fd 随行 revoke（SCM_RIGHTS
+        // 未交付 fd 于套接字终结时关闭语义对齐——POSIX close(socket)
+        // 同款；本端队列遗留槽逐槽撤销——半装不留痕）。
+        fdq_revoke_all(object);
         task::wake_tasks(|w| {
             matches!(w, task::WaitWhat::UnixRecv { object: o } if *o == object || *o == peer_object)
                 || matches!(w,
@@ -1012,6 +1019,58 @@ pub fn recvfd_object_by_object(object: u64) -> Result<u64, UsockError> {
         .map_err(|_| UsockError::Cap)?;
     USOCK_FD_RECVS.fetch_add(1, Ordering::AcqRel);
     Ok(cap.object())
+}
+
+/// 对象寻址 fd 发送（M42-WAYCOMP13 keymap 内容面——内核侧双生面，
+/// [`sock_send_fd`] 同心出口）：把 `src_object` 能力铸成同对象同权限
+/// **新全局槽**，入 `object` 端点**对端**附带队列（SCM_RIGHTS dup 铸
+/// 槽纪律同谱——发送方无句柄需求：内核任务对象域直呼，消费面
+/// recvfd_object_by_object 同心域）。不在册端点/铸造失败 → Cap/Nomem。
+pub fn sendfd_object_by_object(object: u64, src_object: u64) -> Result<(), UsockError> {
+    // 对端定向（SCM_RIGHTS 交付语义——fd 入对端队列）
+    let peer = {
+        let socks = SOCKETS.lock();
+        socks
+            .iter()
+            .find(|e| e.object == object)
+            .map(|e| e.peer_object)
+            .ok_or(UsockError::Cap)?
+    };
+    let cap = {
+        let t = crate::caps::table().lock();
+        (0..CAPACITY)
+            .find_map(|s| t.get(s).ok().filter(|c| c.object() == src_object))
+            .ok_or(UsockError::Cap)?
+    };
+    let new_gslot = crate::caps::alloc_slot(cap).ok_or(UsockError::Nomem)?;
+    fdq_push(peer, new_gslot);
+    USOCK_FD_SENDS.fetch_add(1, Ordering::AcqRel);
+    Ok(())
+}
+
+/// fd 附带队列遗留槽撤销（M42-WAYCOMP13——流终结域：本端未弹出 fd
+/// 随 SHUT revoke——SCM_RIGHTS 未交付 fd 于套接字终结时关闭语义对齐
+/// 〔POSIX close(socket) 同款〕；槽槽独立撤销——半装不留痕；返回撤
+/// 销数）。回滚域：无（revoke 幂等收敛面）。
+fn fdq_revoke_all(object: u64) -> usize {
+    let mut q = FD_QUEUES.lock();
+    let Some(pos) = q.iter().position(|(o, _)| *o == object) else {
+        return 0;
+    };
+    let slots = core::mem::take(&mut q[pos].1);
+    let n = slots.len();
+    if q[pos].1.is_empty() {
+        q.remove(pos);
+    }
+    drop(q);
+    let caps = crate::caps::table();
+    for g in slots {
+        let _ = caps.lock().revoke(g);
+    }
+    if n > 0 {
+        USOCK_FD_REVOKES.fetch_add(n as u64, Ordering::AcqRel);
+    }
+    n
 }
 
 /// SYS_UNIXSOCK 多路复用派发（syscall.rs 慢路径承接）：op 面 → 域内

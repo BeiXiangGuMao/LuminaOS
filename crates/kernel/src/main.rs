@@ -86,8 +86,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113）。
-const SELFTEST_TOTAL: usize = 113;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114）。
+const SELFTEST_TOTAL: usize = 114;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7248,6 +7248,18 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t113 = t113_run(&mut log);
     report(&mut log, t113, "input-guard-blockwait");
 
+    // t114) evdev 键码映射 + keymap 内容面活体（M42-WAYCOMP13 笔⑬）：
+    //       〔evdev 映射锚——morse 纯函数面对位（Enter/Space/Shift/
+    //       Ctrl + Wayland 偏移 +8 两级换算 + 拒收域）〕→〔内核 waycomp
+    //       新会话键盘链全谱——get_keyboard 派生即 keymap 公告〕→
+    //       〔keymap 内容面活体——RECV_FD 交付对账 + 池字节域 + 内容
+    //       词域 LE 逐字对读 + SYS_CLOSE 引用归零回收〕→〔evdev 出域
+    //       活体——scancode 注入出域 = wl 键码 wire 事件 + 域外码拒收
+    //       UNMAPPED 取证 + SHUT EOF 收场复原〕。
+    //       LUMINA-T114-EVDEV/T114-KEYMAP/OK。
+    let t114 = t114_run(&mut log);
+    report(&mut log, t114, "evdev-keymap-content");
+
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
     //      pf_hook 入口扩判「U 位 或 CR2 落增长栈窗口域」——CPL0 用户
@@ -11528,6 +11540,259 @@ fn t113_run(log: &mut DualLog) -> bool {
 
     if ok {
         let _ = writeln!(log, "LUMINA-T113-OK");
+    }
+    ok
+}
+
+/// t114 evdev 键码映射 + keymap 内容面活体执行体（M42-WAYCOMP13 笔⑬）：
+/// 独立函数承载（t93/t113 帧形态纪律）。相位序：
+/// (a) evdev 映射锚（morse 纯函数面内核对位）：恒等域锚（0x1C→28
+///     KEY_ENTER / 0x39→57 KEY_SPACE / 0x2A→42 KEY_LEFTSHIFT /
+///     0x1D→29 KEY_LEFTCTRL）+ Wayland 偏移 +8 两级换算（官方
+///     wl_keyboard 域声明）+ 拒收域（0x7F 杂域 / 0x9C 释放码）。
+/// (b) 内核 waycomp 新会话键盘链全谱：get_registry 124 B 回执 →
+///     bind wl_seat + get_keyboard（keymap 公告域——真实内容长度）
+///     + bind compositor + create_surface + damage + commit → 首窗
+///     焦点（KBFOCUS=0x41）。
+/// (c) keymap 内容面活体：RECV_FD 交付对账（fdq 交付序）→ 池字节域
+///     （4 字节对齐域）→ 内容词域 LE 逐字对读（首词/中词/尾词——
+///     prism KEYMAP_XKB_V1 事实源同源）→ SYS_CLOSE 引用归零回收
+///     （pool_objects 摘除——dup 铸槽纪律闭环）。KEYMAPS +1。
+/// (d) evdev 出域活体：scancode 注入（0x1C Enter press/release）出
+///     域 = wl 键码 wire 事件（KEYS +2/INPUT_KEYS +2）；域外码拒收
+///     （0x7F 杂域）UNMAPPED +1 零出域；SHUT EOF 收场（SESSION_DONE
+///     + surf_count 复原 + KEYMAPS 恒定 + FD_ERR 零 + GUARD_ERR 零）。
+/// LUMINA-T114-EVDEV/T114-KEYMAP/OK 三面板标记。
+fn t114_run(log: &mut DualLog) -> bool {
+    use prism::wayland as wl;
+    let mut ok = true;
+    let me = task::current_task_id();
+
+    // (a) evdev 映射锚（morse 纯函数面——内核对位取证）
+    let a_ok = morse::evdev(0x1C) == Some(28)
+        && morse::evdev(0x39) == Some(57)
+        && morse::evdev(0x2A) == Some(42)
+        && morse::evdev(0x1D) == Some(29)
+        && morse::evdev(0x02) == Some(2)
+        && morse::evdev(0x1C).map(|e| e + morse::KEYCODE_WL_OFFSET) == Some(36)
+        && morse::evdev(0x2A).map(|e| e + morse::KEYCODE_WL_OFFSET) == Some(50)
+        && morse::evdev(0x7F).is_none()
+        && morse::evdev(0x9C).is_none()
+        && morse::evdev(0x59).is_none()
+        && morse::evdev(0xE0).is_none();
+    ok &= a_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T114-EVDEV anchors=({},{},{},{}) wl=({},{}) reject=(0x7F,0x9C,0x59,0xE0)=({},{},{},{})",
+        morse::evdev(0x1C).unwrap_or(0),
+        morse::evdev(0x39).unwrap_or(0),
+        morse::evdev(0x2A).unwrap_or(0),
+        morse::evdev(0x1D).unwrap_or(0),
+        morse::evdev(0x1C).map(|e| e + morse::KEYCODE_WL_OFFSET).unwrap_or(0),
+        morse::evdev(0x2A).map(|e| e + morse::KEYCODE_WL_OFFSET).unwrap_or(0),
+        u8::from(morse::evdev(0x7F).is_none()),
+        u8::from(morse::evdev(0x9C).is_none()),
+        u8::from(morse::evdev(0x59).is_none()),
+        u8::from(morse::evdev(0xE0).is_none()),
+    );
+
+    // (b) 内核 waycomp 新会话键盘链全谱（t113 (d) 同谱——keymap 公告域随行）
+    let c0 = waycomp::waycomp_stamps();
+    let km0 = waycomp::WLCOMP_KEYMAPS.load(Ordering::Acquire);
+    let kfde0 = waycomp::WLCOMP_KEYMAP_FD_ERR.load(Ordering::Acquire);
+    let hc = match unixsock::sock_connect(me, waycomp::WAYCOMP_SOCK_NAME) {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = writeln!(log, "t114: connect failed ({e:?})");
+            return false;
+        }
+    };
+    let mut req = [0u8; 64];
+    let n_req = wl::encode_display_get_registry(&mut req, 1, 2).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &req[..n_req]).unwrap_or(0);
+    ok &= sent == n_req;
+    let mut gbuf = [0u8; 512];
+    let mut got = 0usize;
+    let dl = ostd::time::now() + 480;
+    while got < 124 && ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            task::yield_now();
+            continue;
+        }
+        let n = unixsock::sock_recv(me, hc as u64, &mut gbuf[got..]).unwrap_or(0);
+        if n > 0 {
+            got += n;
+        }
+    }
+    let wire_ok = got == 124;
+    ok &= wire_ok;
+    // 键盘链全谱（wl id 域：registry=2/comp=3/seat=4/kb=5/surf=0x41）
+    let mut batch = [0u8; 512];
+    let mut bl = 0usize;
+    bl += wl::encode_registry_bind(&mut batch[bl..], 2, 2, "wl_seat", 1, 4).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        4,
+        wl::seat::REQ_GET_KEYBOARD,
+        &[wl::WlArg::NewId(5)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_registry_bind(&mut batch[bl..], 2, 1, "wl_compositor", 4, 3).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        3,
+        wl::compositor::REQ_CREATE_SURFACE,
+        &[wl::WlArg::NewId(0x41)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        0x41,
+        wl::surface::REQ_DAMAGE,
+        &[
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(320),
+            wl::WlArg::Int(200),
+        ],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_surface_commit(&mut batch[bl..], 0x41).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &batch[..bl]).unwrap_or(0);
+    ok &= sent == bl;
+    let dl = ostd::time::now() + 480;
+    loop {
+        let c = waycomp::waycomp_stamps();
+        if (c.3 > c0.3 && waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire) == 0x41)
+            || ostd::time::now() >= dl
+        {
+            break;
+        }
+        task::yield_now();
+    }
+    let focus_ok = waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire) == 0x41;
+    ok &= focus_ok;
+    // 回执排空（capabilities/keymap/enter/done——探针门控有界排水）
+    let dl = ostd::time::now() + 120;
+    while ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            break;
+        }
+        let mut sink = [0u8; 512];
+        let n = unixsock::sock_recv(me, hc as u64, &mut sink).unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+    }
+
+    // (c) keymap 内容面活体：RECV_FD 交付 → 池字节域 → 内容词域对读
+    //     → SYS_CLOSE 引用归零回收
+    let fd = unixsock::sock_recv_fd(me, hc as u64);
+    let recv_ok = fd.is_ok();
+    ok &= recv_ok;
+    let mut content_ok = false;
+    let mut release_ok = false;
+    let mut size_ok = false;
+    let mut words = (0u32, 0u32, 0u32);
+    if let Ok(h) = fd {
+        // 句柄 → 能力 → 对象（keymap_serve 解析域镜像）
+        if let Some(obj) = task::with_task_handles(me, |t| t[h])
+            .flatten()
+            .and_then(|g| crate::caps::table().lock().get(g).ok().map(|c| c.object()))
+        {
+            let want_size = ((prism::wayland::comp::KEYMAP_XKB_V1.len() as u64) + 3) & !3;
+            size_ok = shm::pool_size(obj) == Some(want_size);
+            let word_at = |off: usize| -> u32 {
+                let mut b = [0u8; 4];
+                let end = (off + 4).min(prism::wayland::comp::KEYMAP_XKB_V1.len());
+                b[..end - off].copy_from_slice(&prism::wayland::comp::KEYMAP_XKB_V1[off..end]);
+                u32::from_le_bytes(b)
+            };
+            let len = prism::wayland::comp::KEYMAP_XKB_V1.len();
+            let mid_off = (len / 2) & !3; // 词域对齐中点探针
+            let tail_off = ((len + 3) & !3) - 4; // 词域对齐尾点探针
+            let w0 = shm::pool_px_read(obj, 0).unwrap_or(0);
+            let wm = shm::pool_px_read(obj, mid_off as u64).unwrap_or(0);
+            let wt = shm::pool_px_read(obj, tail_off as u64).unwrap_or(0);
+            words = (w0, wm, wt);
+            content_ok = w0 == word_at(0) && wm == word_at(mid_off) && wt == word_at(tail_off);
+            // 引用归零回收（dup 铸槽纪律闭环——客户端槽收口）
+            let _ = crate::vfs::sys_close(h as u64);
+            release_ok = !shm::pool_objects().contains(&obj);
+        } else {
+            let _ = crate::vfs::sys_close(h as u64);
+        }
+    }
+    let km1 = waycomp::WLCOMP_KEYMAPS.load(Ordering::Acquire);
+    let kfde1 = waycomp::WLCOMP_KEYMAP_FD_ERR.load(Ordering::Acquire);
+    let keymap_ok = km1 == km0 + 1
+        && kfde1 == kfde0
+        && size_ok
+        && content_ok
+        && release_ok
+        && shm::px_writes() > 0; // 内核服务写域取证（keymap 内容填充）
+    ok &= keymap_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T114-KEYMAP recv={recv_ok} size_ok={size_ok} content_ok={content_ok} words=({:#x},{:#x},{:#x}) release_ok={release_ok} keymaps=+{} fd_err={}",
+        words.0,
+        words.1,
+        words.2,
+        km1 - km0,
+        kfde1 - kfde0,
+    );
+
+    // (d) evdev 出域活体：scancode 注入出域 = wl 键码 wire 事件 + 域外
+    //     码拒收取证 + SHUT EOF 收场复原
+    let k0 = waycomp::waycomp_stamps().8;
+    let um0 = waycomp::WLCOMP_KEY_UNMAPPED.load(Ordering::Acquire);
+    let ik0 = waycomp::WLCOMP_INPUT_KEYS.load(Ordering::Acquire);
+    let acc1 = waycomp::input_key(0x1C, 1); // KEY_ENTER press
+    let acc2 = waycomp::input_key(0x1C, 0); // KEY_ENTER release
+    let acc3 = waycomp::input_key(0x7F, 1); // 杂域拒收（UNMAPPED 域）
+    let dl = ostd::time::now() + 480;
+    let c3 = loop {
+        let c = waycomp::waycomp_stamps();
+        if c.8 > k0 + 1 || ostd::time::now() >= dl {
+            break c;
+        }
+        task::yield_now();
+    };
+    let um1 = waycomp::WLCOMP_KEY_UNMAPPED.load(Ordering::Acquire);
+    let ik1 = waycomp::WLCOMP_INPUT_KEYS.load(Ordering::Acquire);
+    let out_ok = acc1 && acc2 && acc3
+        && c3.8 == k0 + 2 // press + release 两笔 wire 事件（拒收码零出域）
+        && ik1 == ik0 + 2
+        && um1 == um0 + 1;
+    ok &= out_ok;
+    // SHUT EOF 收场（keymap 池已由 (c) 收口——遗留 fdq 零槽）
+    let frev0 = unixsock::USOCK_FD_REVOKES.load(Ordering::Acquire);
+    let _ = unixsock::sock_shutdown(me, hc as u64);
+    let dl = ostd::time::now() + 480;
+    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+        core::hint::spin_loop();
+    }
+    let eof_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
+    ok &= eof_ok;
+    let km_stable = waycomp::WLCOMP_KEYMAPS.load(Ordering::Acquire) == km1
+        && waycomp::WLCOMP_KEYMAP_FD_ERR.load(Ordering::Acquire) == kfde1
+        && unixsock::USOCK_FD_REVOKES.load(Ordering::Acquire) == frev0;
+    ok &= km_stable;
+    // 客户端句柄收口（SYS_CLOSE——t110 同谱卫生域）
+    let _ = crate::vfs::sys_close(hc as u64);
+    let _ = writeln!(
+        log,
+        "LUMINA-T114-EOF accept=({},{},{}) keys=+{} input_keys=+{} unmapped=+{} eof_ok={eof_ok} km_stable={km_stable}",
+        u8::from(acc1),
+        u8::from(acc2),
+        u8::from(acc3),
+        c3.8 - k0,
+        ik1 - ik0,
+        um1 - um0,
+    );
+
+    if ok {
+        let _ = writeln!(log, "LUMINA-T114-OK");
     }
     ok
 }

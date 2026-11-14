@@ -79,9 +79,10 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 use mirror::Rect;
+use morse::KEYCODE_WL_OFFSET;
 use ostd::sync::spsc::SpscRing;
 use prism::wayland::comp::{
-    BufferRec, CommitRecord, CompSession, FeedReport, GlobalDef, GLOBALS_MAX,
+    BufferRec, CommitRecord, CompSession, FeedReport, GlobalDef, GLOBALS_MAX, KEYMAP_XKB_V1,
 };
 
 use crate::{fb, shm, task, unixsock};
@@ -177,6 +178,15 @@ pub static WLCOMP_IN_WAITS: AtomicU64 = AtomicU64::new(0);
 /// 计数：唤醒源三向〔输入生产/send 落环/shutdown〕全谱对账，t113
 /// 断言面）。
 pub static WLCOMP_IN_WAKES: AtomicU64 = AtomicU64::new(0);
+/// evdev 映射拒收数（M42-WAYCOMP13——键码域外 scancode 排空丢弃取
+/// 证：0x59..=0x7F 杂域/0xE0 前缀扩展域挂账随批，t114 断言面）。
+pub static WLCOMP_KEY_UNMAPPED: AtomicU64 = AtomicU64::new(0);
+/// keymap 内容面承接成功数（M42-WAYCOMP13——铸池+填充+SEND_FD 全链
+/// 落账，t114 断言面）。
+pub static WLCOMP_KEYMAPS: AtomicU64 = AtomicU64::new(0);
+/// keymap 承接失败数（M42-WAYCOMP13——铸池/填充/SEND_FD 任一域失败
+/// fail-visible 取证：内容面零交付）。
+pub static WLCOMP_KEYMAP_FD_ERR: AtomicU64 = AtomicU64::new(0);
 
 /// 输入源队列深度（键盘/指针各一定容——定容零堆纪律，SPSC 单生产
 /// 者域 v0 如实记档：批跑环境事实单生产者，多产者域挂账）。
@@ -340,11 +350,13 @@ pub fn service_body() {
 /// 损伤量化回退 + 回 accept）。
 fn session_loop(conn: u64) {
     let seq = SESSION_SEQ.fetch_add(1, Ordering::AcqRel) + 1;
+    let me = task::current_task_id(); // keymap 内容池铸域属主（M42-WAYCOMP13）
     let base = ((seq - 1) as u32) * FB_ID_SESSION_STRIDE;
     let mut session = CompSession::new(GLOBALS);
     let mut windows: Vec<u64> = Vec::new(); // 创建序 = 焦点序（策略面输入）
     let mut slots: Vec<Window> = Vec::new();
     let mut pools: Vec<(u32, u64)> = Vec::new(); // pool_wl → shm 对象 id（池承接域）
+    let mut keymap_pools: Vec<u64> = Vec::new(); // keymap 内容池（M42-WAYCOMP13 收场域）
     let mut stream: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 512];
     loop {
@@ -371,6 +383,7 @@ fn session_loop(conn: u64) {
                 policy_focus(&mut session, &windows);
                 policy_rewrite(&windows, &mut slots);
                 pool_admit(conn, &rep, &mut pools);
+                keymap_serve(conn, &rep, me, &mut keymap_pools);
                 apply_commits(&rep, &windows, &mut slots, base, &pools);
                 // 输入事件 wire 发出数（M42-INPUT7——KeyLog/PtrLog 记录批对账）
                 WLCOMP_KEYS.fetch_add(rep.keys.n as u64, Ordering::AcqRel);
@@ -435,6 +448,12 @@ fn session_loop(conn: u64) {
     // 引用 > 0 延迟回收 fail-visible）。surface 摘除后执行——合成
     // 像素读域先行收口，池帧归还无读后释放窗。
     release_session_pools(&pools);
+    // M42-WAYCOMP13：keymap 内容池收场清扫（客户端已弹出+关闭 → 引
+    // 用归零就地回收；未弹出域由 SHUT 遗留槽 revoke 随行——引用归零
+    // 后本清扫窗承接回收。引用 > 0 延迟回收 fail-visible）。
+    for obj in keymap_pools.iter() {
+        let _ = shm::release_if_unreferenced(*obj);
+    }
     WLCOMP_END_COUNT.store(fb::surf_count() as u64, Ordering::Release);
     WLCOMP_SESSION_DONE.store(true, Ordering::Release);
     let _ = unixsock::shutdown_by_object(conn);
@@ -494,7 +513,15 @@ fn policy_focus(session: &mut CompSession, windows: &[u64]) {
 fn drain_input(session: &mut CompSession, windows: &[u64]) {
     while let Some(raw) = KEY_Q.recv() {
         let state = (raw & 0xFFFF_FFFF) as u32;
-        let key = (raw >> 32) as u32;
+        let sc = (raw >> 32) as u32;
+        // M42-WAYCOMP13 evdev 键码映射出域（morse 纯函数面）：scancode
+        // → evdev → wl 键码（+8）。域外 scancode（0x59..=0x7F 杂域/
+        // 0xE0 扩展域挂账）拒收丢弃 + UNMAPPED 取证（fail-visible）。
+        let Some(ev) = morse::evdev(sc as u8) else {
+            WLCOMP_KEY_UNMAPPED.fetch_add(1, Ordering::AcqRel);
+            continue;
+        };
+        let key = u32::from(ev) + u32::from(KEYCODE_WL_OFFSET);
         if session.keyboard_inject(key, state).is_ok() {
             WLCOMP_INPUT_KEYS.fetch_add(1, Ordering::AcqRel);
         }
@@ -666,6 +693,63 @@ fn pool_admit(conn: u64, rep: &FeedReport, pools: &mut Vec<(u32, u64)>) {
             }
         }
     }
+}
+
+/// keymap 内容面承接（M42-WAYCOMP13 笔⑬——「keymap 内容面」挂账域
+/// 电气面）：feed 回执 keymap 公告记录逐条——铸池（内容域 4 字节对
+/// 齐）→ 内容填充（[`KEYMAP_XKB_V1`] 词域 LE 写入，[`shm::pool_px_write`]
+/// 内核服务写域）→ **SEND_FD 对端交付**（[`unixsock::sendfd_object_by_object`]
+/// ——SCM_RIGHTS dup 铸槽纪律：客户端槽独立于自有句柄）→ 自有句柄
+/// 收口（SYS_CLOSE 池臂——dup 纪律发送方自槽即时撤销，客户端槽持
+/// 引用）。任一域失败 = [`WLCOMP_KEYMAP_FD_ERR`] fail-visible（内容
+/// 面零交付——客户端 keymap 事件已出域但 fd 缺席，如实显形）；成功
+/// 域 [`WLCOMP_KEYMAPS`] 落账 + 池对象入收场清扫表（会话终了域
+/// release_if_unreferenced 承接——引用归零回收）。
+fn keymap_serve(conn: u64, rep: &FeedReport, me: usize, pools_out: &mut Vec<u64>) {
+    let Some(km) = rep.keymaps else {
+        return; // 无公告——零动作快径
+    };
+    if km.size as usize != KEYMAP_XKB_V1.len() {
+        WLCOMP_KEYMAP_FD_ERR.fetch_add(1, Ordering::AcqRel);
+        return; // 记录与事实源长度域背离（prism 面漂移）——fail-visible
+    }
+    let size = ((km.size as u64) + 3) & !3; // 内容域 4 字节对齐（tail 零填充）
+    let h = match shm::shm_create(me, size) {
+        Ok(h) => h,
+        Err(_) => {
+            WLCOMP_KEYMAP_FD_ERR.fetch_add(1, Ordering::AcqRel);
+            return;
+        }
+    };
+    // 句柄 → 能力 → 对象 id（release_session_pools 同款解析域）
+    let obj = task::with_task_handles(me, |t| t[h])
+        .flatten()
+        .and_then(|g| crate::caps::table().lock().get(g).ok().map(|c| c.object()));
+    let Some(obj) = obj else {
+        let _ = crate::vfs::sys_close(h as u64);
+        WLCOMP_KEYMAP_FD_ERR.fetch_add(1, Ordering::AcqRel);
+        return;
+    };
+    // 内容填充（词域 LE——tail 域零填充；pool_px_write 越域 false =
+    // fail-soft 截断取证）
+    let mut filled = true;
+    for off in (0..km.size as usize).step_by(4) {
+        let end = (off + 4).min(KEYMAP_XKB_V1.len());
+        let mut b = [0u8; 4];
+        b[..end - off].copy_from_slice(&KEYMAP_XKB_V1[off..end]);
+        if !shm::pool_px_write(obj, off as u64, u32::from_le_bytes(b)) {
+            filled = false;
+            break;
+        }
+    }
+    // SEND_FD 对端交付 + 自有句柄收口（dup 铸槽纪律）
+    if filled && unixsock::sendfd_object_by_object(conn, obj).is_ok() {
+        pools_out.push(obj);
+        WLCOMP_KEYMAPS.fetch_add(1, Ordering::AcqRel);
+    } else {
+        WLCOMP_KEYMAP_FD_ERR.fetch_add(1, Ordering::AcqRel);
+    }
+    let _ = crate::vfs::sys_close(h as u64);
 }
 
 /// commit 发布应用（仲裁策略面承接域——cascade tiling 几何/z 注入

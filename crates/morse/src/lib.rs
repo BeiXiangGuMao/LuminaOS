@@ -12,8 +12,23 @@
 //! 翻译表与事件分类判定——驱动用户态化批次的第一块可移动物。
 //! 命名登记：细则 PDF 介质失联（ROADMAP §七 5），命名按在库意象序列
 //! 自定（Morse 电键），重取后对账。
+//!
+//! **evdev 键码映射面**（M42-WAYCOMP13 笔⑬——「evdev 键码映射」挂账
+//! 域兑现）：scancode set 1 按下码 → Linux evdev 键码的纯映射（atkbd
+//! 电气翻译语义——set1 按下码值 1..=0x58 与 evdev 键码恒等对位：
+//! 0x1C Enter = 28 = KEY_ENTER、0x39 Space = 57 = KEY_SPACE、0x2A 左
+//! Shift = 42 = KEY_LEFTCTRL 行同族）。Wayland 键码 = evdev + 8（官
+//! 方 wl_keyboard 域声明——`KEYCODE_WL_OFFSET` 事实源），合成器消费
+//! 面（waycomp 输入链排空域）按「scancode → evdev → +8」两级换算出
+//! 域。0x59..=0x7F 域（atkbd 未定义/杂域）与释放码拒收（None——消
+//! 费方面可裁量）；0xE0 前缀扩展域（双字节序列状态机——多媒体键族）
+//! 挂账随批如实登记。
 #![no_std]
 #![forbid(unsafe_code)]
+
+/// Wayland 键码偏移（官方 wl_keyboard 域：keycode = evdev + 8——
+/// morse 事实源，合成器与客户端测试面同源消费）。
+pub const KEYCODE_WL_OFFSET: u16 = 8;
 
 /// 释放事件判定（scancode set 1 纪律：bit7=1 为释放码）。
 #[inline]
@@ -211,6 +226,21 @@ pub fn translate(sc: u8, shift: bool) -> Option<u8> {
     Some(c)
 }
 
+/// scancode set 1 按下码 → evdev 键码（M42-WAYCOMP13 映射面——atkbd
+/// 电气翻译语义纯函数）：恒等域 0x01..=0x58 → 键码 = 码值（1..=88，
+/// Linux atkbd 同谱——0x1C=28 KEY_ENTER / 0x39=57 KEY_SPACE / 0x2A=42
+/// KEY_LEFTSHIFT / 0x1D=29 KEY_LEFTCTRL 对位锚）；释放码（bit7=1）与
+/// 0x59..=0x7F 杂域 / 0x00 拒收（None——消费方面可裁量，静默忽略语
+/// 义由消费方持有）；0xE0 前缀扩展域挂账（双字节序列状态机随批——
+/// 本面输入域 = 单字节按下码）。
+#[inline]
+pub fn evdev(sc: u8) -> Option<u16> {
+    if is_release(sc) || sc == 0 || sc > 0x58 {
+        return None;
+    }
+    Some(u16::from(sc))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,6 +342,43 @@ mod tests {
         }
         for sc in [0x02u8, 0x2A, 0x36, 0x39, 0x1C] {
             assert!(!is_release(sc), "sc={sc:#04x}");
+        }
+    }
+
+    /// evdev 映射恒等域锚（M42-WAYCOMP13——atkbd 对位事实源）：
+    /// Enter/Space/左Shift/左Ctrl/数字 1 全谱 + Wayland 偏移 +8 两级
+    /// 换算对账（官方 wl_keyboard 域声明）。
+    #[test]
+    fn evdev_identity_domain_anchors() {
+        const ANCHORS: [(u8, u16); 5] = [
+            (0x1C, 28), // KEY_ENTER
+            (0x39, 57), // KEY_SPACE
+            (0x2A, 42), // KEY_LEFTSHIFT
+            (0x1D, 29), // KEY_LEFTCTRL
+            (0x02, 2),  // KEY_1
+        ];
+        for (sc, ev) in ANCHORS {
+            assert_eq!(evdev(sc), Some(ev), "sc={sc:#04x}");
+            assert_eq!(
+                evdev(sc).map(|e| e + KEYCODE_WL_OFFSET),
+                Some(ev + KEYCODE_WL_OFFSET),
+                "wl 键码 = evdev + 8"
+            );
+        }
+        // 恒等域全谱：0x01..=0x58 → 码值逐一对位。
+        for sc in 0x01..=0x58u8 {
+            assert_eq!(evdev(sc), Some(u16::from(sc)), "sc={sc:#04x}");
+        }
+    }
+
+    /// evdev 映射拒收域：释放码 / 零码 / 0x59..=0x7F 杂域 / 0xE0 前缀
+    /// 扩展字节全 None（fail-soft——消费方面可裁量）。
+    #[test]
+    fn evdev_reject_domains() {
+        for sc in [
+            0x00u8, 0x59, 0x5A, 0x6B, 0x77, 0x7F, 0x82, 0x9C, 0xAA, 0xE0, 0xE1, 0xFF,
+        ] {
+            assert_eq!(evdev(sc), None, "sc={sc:#04x}");
         }
     }
 }
