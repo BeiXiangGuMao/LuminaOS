@@ -741,6 +741,11 @@ pub const SIG_KEYBOARD_MODIFIERS: &[WlType] = &[
     WlType::Uint,
     WlType::Uint,
 ];
+/// wl_keyboard.repeat_info 事件（M42-KBREP34 笔㉞）：`(uint rate,
+/// uint delay)`——键重复公告面（rate = 每秒重复数，delay = 首重复前
+/// 毫秒；v0 内核无键重复机制——rate=0/delay=0 重复关闭声明口径，
+/// 客户端侧 repeat 生产域挂账远线）。
+pub const SIG_KEYBOARD_REPEAT_INFO: &[WlType] = &[WlType::Uint, WlType::Uint];
 /// wl_pointer.enter 事件：`(uint serial, object surface, fixed x,
 /// fixed y)`——surface 局部坐标域（fixed 24.8 原字透传）。
 pub const SIG_POINTER_ENTER: &[WlType] =
@@ -1046,6 +1051,23 @@ pub fn encode_keyboard_modifiers_event(
             WlArg::Uint(mods_locked),
             WlArg::Uint(group),
         ],
+    )
+}
+
+/// wl_keyboard.repeat_info 事件编组（M42-KBREP34 笔㉞——键盘派生
+/// 域 keymap 后随行公告：rate/delay 双 uint，v0 重复关闭声明口径
+/// 0/0）。返回编组字节数（8 头 + 8 体 = 16）。
+pub fn encode_keyboard_repeat_info_event(
+    buf: &mut [u8],
+    keyboard_id: u32,
+    rate: u32,
+    delay: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        keyboard_id,
+        keyboard::EV_REPEAT_INFO,
+        &[WlArg::Uint(rate), WlArg::Uint(delay)],
     )
 }
 
@@ -1556,6 +1578,14 @@ mod tests {
         assert_eq!(m.args[2], Some(WlArg::Uint(0x02)));
         assert_eq!(m.args[3], Some(WlArg::Uint(KEY_STATE_PRESSED)));
         assert_eq!(m.wire_size(), n);
+        let n = encode_keyboard_repeat_info_event(&mut buf, 7, 0, 0).expect("encode");
+        assert_eq!(keyboard::EV_REPEAT_INFO, 5);
+        let m = parse_message(&buf, SIG_KEYBOARD_REPEAT_INFO).expect("parse");
+        assert_eq!(m.header.opcode, keyboard::EV_REPEAT_INFO);
+        assert_eq!(m.args[0], Some(WlArg::Uint(0)));
+        assert_eq!(m.args[1], Some(WlArg::Uint(0)));
+        assert_eq!(m.wire_size(), n);
+        assert_eq!(n, 16);
         let n = encode_pointer_enter_event(&mut buf, 6, 14, 5, 32 << 8, 64 << 8).expect("encode");
         let m = parse_message(&buf, SIG_POINTER_ENTER).expect("parse");
         assert_eq!(m.header.opcode, pointer::EV_ENTER);

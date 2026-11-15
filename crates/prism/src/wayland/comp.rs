@@ -57,17 +57,18 @@ use mirror::Rect;
 use super::{
     compositor, display, encode_callback_done_event, encode_display_delete_id_event,
     encode_keyboard_enter_event, encode_keyboard_key_event, encode_keyboard_keymap_event,
-    encode_keyboard_leave_event, encode_keyboard_modifiers_event, encode_pointer_axis_event,
-    encode_pointer_axis_source_event, encode_pointer_axis_stop_event, encode_pointer_button_event,
-    encode_pointer_enter_event, encode_pointer_frame_event, encode_pointer_leave_event,
-    encode_pointer_motion_event, encode_registry_global_event, encode_seat_capabilities_event,
-    iface_name, parse_args, parse_header, registry, seat, shm, shm_pool, surface, WlArg, WlError,
-    WlHeader, WlIface, WlObjectTable, HEADER, KEYMAP_FORMAT_XKB_V1, MOD_ALT, MOD_CAPS, MOD_CTRL,
-    MOD_MOD4, MOD_NUM2, MOD_SHIFT, SEAT_CAPS_KEYBOARD, SEAT_CAPS_POINTER,
-    SIG_COMPOSITOR_CREATE_REGION, SIG_COMPOSITOR_CREATE_SURFACE, SIG_DISPLAY_GET_REGISTRY,
-    SIG_DISPLAY_SYNC, SIG_REGISTRY_BIND, SIG_SEAT_GET_KEYBOARD, SIG_SEAT_GET_POINTER,
-    SIG_SHM_CREATE_POOL, SIG_SHM_POOL_CREATE_BUFFER, SIG_SHM_POOL_DESTROY, SIG_SURFACE_ATTACH,
-    SIG_SURFACE_COMMIT, SIG_SURFACE_DAMAGE, SIG_SURFACE_FRAME, WIRE_MAX,
+    encode_keyboard_leave_event, encode_keyboard_modifiers_event,
+    encode_keyboard_repeat_info_event, encode_pointer_axis_event, encode_pointer_axis_source_event,
+    encode_pointer_axis_stop_event, encode_pointer_button_event, encode_pointer_enter_event,
+    encode_pointer_frame_event, encode_pointer_leave_event, encode_pointer_motion_event,
+    encode_registry_global_event, encode_seat_capabilities_event, iface_name, parse_args,
+    parse_header, registry, seat, shm, shm_pool, surface, WlArg, WlError, WlHeader, WlIface,
+    WlObjectTable, HEADER, KEYMAP_FORMAT_XKB_V1, MOD_ALT, MOD_CAPS, MOD_CTRL, MOD_MOD4, MOD_NUM2,
+    MOD_SHIFT, SEAT_CAPS_KEYBOARD, SEAT_CAPS_POINTER, SIG_COMPOSITOR_CREATE_REGION,
+    SIG_COMPOSITOR_CREATE_SURFACE, SIG_DISPLAY_GET_REGISTRY, SIG_DISPLAY_SYNC, SIG_REGISTRY_BIND,
+    SIG_SEAT_GET_KEYBOARD, SIG_SEAT_GET_POINTER, SIG_SHM_CREATE_POOL, SIG_SHM_POOL_CREATE_BUFFER,
+    SIG_SHM_POOL_DESTROY, SIG_SURFACE_ATTACH, SIG_SURFACE_COMMIT, SIG_SURFACE_DAMAGE,
+    SIG_SURFACE_FRAME, WIRE_MAX,
 };
 
 /// 单会话 surface 槽容量（定容零堆——SurfaceTable 同量级先例）。
@@ -1469,6 +1470,12 @@ impl CompSession {
                     keyboard_id: kbd_id,
                     size: KEYMAP_XKB_V1.len() as u32,
                 });
+                // repeat_info 公告（M42-KBREP34 笔㉞——官方语义：键盘派生
+                // 域 keymap 后随行；v0 内核无键重复机制——rate=0/delay=0
+                // 重复关闭声明口径，客户端侧 repeat 生产域挂账远线）。
+                let n = encode_keyboard_repeat_info_event(&mut out[*out_len..], kbd_id, 0, 0)
+                    .map_err(CompError::Wire)?;
+                *out_len += n;
                 Ok(())
             }
             _ => Err(CompError::UnknownRequest),
@@ -2927,7 +2934,13 @@ mod tests {
         let mut out = [0u8; 256];
         let rep = s.feed(&batch, &mut out).unwrap();
         assert_eq!(rep.consumed, batch.len());
-        assert_eq!(rep.out_len, 12 + 20, "capabilities(12) + keymap(20)");
+        // M42-KBREP34 笔㉞判据随行升级（官方语义：repeat_info 随键盘
+        // 派生公告——keymap 后随行 +16B，t131 判据升级先例同谱）
+        assert_eq!(
+            rep.out_len,
+            12 + 20 + 16,
+            "capabilities(12) + keymap(20) + repeat_info(16)"
+        );
         let m = crate::wayland::parse_message(&out, SIG_SEAT_CAPABILITIES).unwrap();
         assert_eq!(m.header.object_id, 0x30);
         assert_eq!(m.header.opcode, crate::wayland::seat::EV_CAPABILITIES);

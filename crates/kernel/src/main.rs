@@ -86,8 +86,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126；M42-DMG27 t127（联合域上限细化活体）起 127；M42-DMG28 t128（指针 16px 粗粒度域联动活体）起 128；M42-SPRITE29 笔㉙ t129（光标 sprite 渲染面活体：compose 执行器顶层 sprite 平面 + 热点对位联动）起 129；M42-AUXR3 笔㉚ t130（ring3 aux 驱动进程活体：SYS_AUX_READ/SYS_PTR_INJECT 车道 + 接管态仲裁）起 130；M42-PTRLINK 笔㉛ t131（Enter/Leave 域联动活体：焦点切换取证计数 + 光标格直标强制入账）起 131；M42-WHEEL32 笔㉜ t132（IntelliMouse 轮询命令链 + wl_pointer axis 电气源活体）起 132；M42-CLICKF33 笔㉝ t133（click-to-focus 焦点迁移联动面活体：纯针直迁 + 键盘迁移取证戳 + 幂等/release 闸）起 133）。
-const SELFTEST_TOTAL: usize = 133;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126；M42-DMG27 t127（联合域上限细化活体）起 127；M42-DMG28 t128（指针 16px 粗粒度域联动活体）起 128；M42-SPRITE29 笔㉙ t129（光标 sprite 渲染面活体：compose 执行器顶层 sprite 平面 + 热点对位联动）起 129；M42-AUXR3 笔㉚ t130（ring3 aux 驱动进程活体：SYS_AUX_READ/SYS_PTR_INJECT 车道 + 接管态仲裁）起 130；M42-PTRLINK 笔㉛ t131（Enter/Leave 域联动活体：焦点切换取证计数 + 光标格直标强制入账）起 131；M42-WHEEL32 笔㉜ t132（IntelliMouse 轮询命令链 + wl_pointer axis 电气源活体）起 132；M42-CLICKF33 笔㉝ t133（click-to-focus 焦点迁移联动面活体：纯针直迁 + 键盘迁移取证戳 + 幂等/release 闸）起 133；M42-KBREP34 笔㉞ t134（wl_keyboard.repeat_info 键重复公告面活体：键盘派生域 keymap 后随行 + v0 关闭声明口径 + 域闸负例）起 134）。
+const SELFTEST_TOTAL: usize = 134;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7468,6 +7468,14 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     //       LUMINA-T133-BASE/CLICK/MIGRATE/IDEMP/OK。
     let t133 = t133_run(&mut log);
     report(&mut log, t133, "click-to-focus");
+
+    // t134) wl_keyboard.repeat_info 键重复公告面活体（M42-KBREP34
+    //       笔㉞）：〔wire 编组锚〕→〔键盘链会话——流走查 repeat_info
+    //       恰一笔 + keymap 先行序锚 + 0/0 声明〕→〔纯指针链负例——
+    //       零公告〕→〔SHUT 收场〕。
+    //       LUMINA-T134-ANCHOR/REPEAT/NEG/OK。
+    let t134 = t134_run(&mut log);
+    report(&mut log, t134, "keyboard-repeat-info");
 
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
@@ -15767,19 +15775,25 @@ fn t132_run(log: &mut DualLog) -> bool {
     while waycomp::WLCOMP_PTRS.load(Ordering::Acquire) < ptrs0 + 3 && ostd::time::now() < dl {
         task::yield_now();
     }
-    // 收口排水（wire 戳到位后逐笔到齐——字节计数全谱采集）
+    // 收口排水（wire 戳到位后逐笔到齐——字节计数全谱采集；
+    // M42-KBREP34 笔㉞揭雷收口：probe 早退域——PTRS 戳先于传输粒度
+    // 尾包可见性置位〔SMP 部分排空窗同族〕，36/60 字节早退实录——
+    // 静默窗确认排水收口：连续 64 笔零信才判流止，截止期 240 拍兜底）
     let mut wheel_bytes = 0usize;
+    let mut quiet = 0usize;
     let dl = ostd::time::now() + 240;
-    while ostd::time::now() < dl {
+    while ostd::time::now() < dl && quiet < 64 {
+        // probe 门控域（M42-KBREP34 笔㉞揭雷收口——recv_by_object 环
+        // 空阻塞语义：无门 recv 挂死实录——probe 零信仅计数不读）
         if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
-            break;
+            quiet += 1;
+        } else {
+            quiet = 0;
+            let mut sink = [0u8; 512];
+            let n = unixsock::sock_recv(me, hc as u64, &mut sink).unwrap_or(0);
+            wheel_bytes += n;
         }
-        let mut sink = [0u8; 512];
-        let n = unixsock::sock_recv(me, hc as u64, &mut sink).unwrap_or(0);
-        if n == 0 {
-            break;
-        }
-        wheel_bytes += n;
+        task::yield_now();
     }
     let ax1 = (
         waycomp::WLCOMP_AXES.load(Ordering::Acquire),
@@ -16147,6 +16161,237 @@ fn t133_run(log: &mut DualLog) -> bool {
     let _ = crate::vfs::sys_close(hc as u64);
     if ok {
         let _ = writeln!(log, "LUMINA-T133-OK");
+    }
+    ok
+}
+
+/// t134 wl_keyboard.repeat_info 键重复公告面活体（M42-KBREP34 笔㉞）
+/// ——四相位：
+/// 〔(a) wire 编组锚——repeat_info 编组器内核对位（16B = 8 头 + 4
+///     rate + 4 delay + 官方声明序 EV_REPEAT_INFO=5 对账 + v0 关闭
+///     声明口径 0/0〕→〔(b) 键盘链会话活体——t133_session_open 复用
+///     （kbd id 6 键盘链）+ 客户端流全谱走查（parse_header 逐笔推进）
+///     ：repeat_info 恰一笔（每键盘对象恰一笔官方语义）+ keymap 先行
+///     序锚（官方声明序 keymap→repeat_info）+ rate/delay 内容级 0/0
+///     对账〕→〔(c) 域闸负例——纯指针链会话（零 get_keyboard）流走
+///     查零 repeat_info（键盘派生域唯一公告闸）〕→〔(d) SHUT EOF 收
+///     场复原〕。LUMINA-T134-ANCHOR/REPEAT/NEG/OK。
+fn t134_run(log: &mut DualLog) -> bool {
+    use prism::wayland as wl;
+    let mut ok = true;
+    let me = task::current_task_id();
+
+    // (a) wire 编组锚（编组器对位 + 官方声明序 + 关闭声明口径）
+    let mut buf = [0u8; 64];
+    let n_rep = wl::encode_keyboard_repeat_info_event(&mut buf, 6, 0, 0).unwrap_or(0);
+    let anchor_ok =
+        n_rep == 16 && wl::keyboard::EV_REPEAT_INFO == 5 && wl::SIG_KEYBOARD_REPEAT_INFO.len() == 2;
+    ok &= anchor_ok;
+    if let Ok(m) = wl::parse_message(&buf, wl::SIG_KEYBOARD_REPEAT_INFO) {
+        ok &= m.header.opcode == wl::keyboard::EV_REPEAT_INFO
+            && m.args[0] == Some(wl::WlArg::Uint(0))
+            && m.args[1] == Some(wl::WlArg::Uint(0));
+    } else {
+        ok = false;
+    }
+    let _ = writeln!(log, "LUMINA-T134-ANCHOR wire={n_rep} opcode=5 decl=0/0");
+
+    // (b) 键盘链会话活体（t133_session_open 复用——kbd id 6）
+    waycomp::input_queue_flush();
+    let Some((hc, _fb_a, _fb_b)) = t133_session_open(log) else {
+        let _ = writeln!(log, "t134: session open failed");
+        return false;
+    };
+    // 客户端流全谱采集（M42-KBREP34 笔㉞——三段式：①等首信（probe
+    // 轮询——层域可见先于 out 批 socket 落地的时序窗，零信即退实录
+    // bytes=0 收口）；②静默窗排空（probe 门控——环空阻塞语义收口；
+    // ③截止期兜底））
+    let mut sbuf = [0u8; 1024];
+    let mut got = 0usize;
+    let dl0 = ostd::time::now() + 480;
+    while ostd::time::now() < dl0 {
+        if unixsock::sock_probe(me, hc as u64).is_some_and(|(p, _)| p > 0) {
+            break;
+        }
+        task::yield_now();
+    }
+    let mut quiet = 0usize;
+    let dl = ostd::time::now() + 240;
+    while got < sbuf.len() && ostd::time::now() < dl && quiet < 64 {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            quiet += 1;
+        } else {
+            quiet = 0;
+            let n = unixsock::sock_recv(me, hc as u64, &mut sbuf[got..]).unwrap_or(0);
+            got += n;
+        }
+        task::yield_now();
+    }
+    // wire 逐笔走查（parse_header 头推进——repeat_info 恰一笔 +
+    // keymap 先行序锚 + rate/delay 内容级 0/0）
+    let mut off = 0usize;
+    let mut reps = 0usize;
+    let mut km_seen = false;
+    let mut km_before_rep = false;
+    let mut decl_ok = false;
+    while off + 8 <= got {
+        let Ok(h) = wl::parse_header(&sbuf[off..]) else {
+            break;
+        };
+        let sz = h.size as usize;
+        if sz < 8 || off + sz > got {
+            break;
+        }
+        if h.object_id == 6 && h.opcode == wl::keyboard::EV_KEYMAP {
+            km_seen = true;
+        }
+        if h.object_id == 6 && h.opcode == wl::keyboard::EV_REPEAT_INFO {
+            reps += 1;
+            km_before_rep |= km_seen;
+            if off + sz >= off + 16 {
+                let rate = u32::from_le_bytes(sbuf[off + 8..off + 12].try_into().unwrap_or([0; 4]));
+                let delay =
+                    u32::from_le_bytes(sbuf[off + 12..off + 16].try_into().unwrap_or([0; 4]));
+                decl_ok = rate == 0 && delay == 0;
+            }
+        }
+        off += sz;
+    }
+    let repeat_ok = got > 0 && reps == 1 && km_before_rep && decl_ok;
+    ok &= repeat_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T134-REPEAT bytes={got} reps={reps} keymap_first={km_before_rep} decl0={decl_ok}"
+    );
+    let _ = unixsock::sock_shutdown(me, hc as u64);
+    let dl = ostd::time::now() + 4800;
+    while (!waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) || fb::surf_count() != 1)
+        && ostd::time::now() < dl
+    {
+        core::hint::spin_loop();
+    }
+    ok &= waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
+    let _ = crate::vfs::sys_close(hc as u64);
+
+    // (c) 域闸负例（纯指针链——零 get_keyboard → 流零 repeat_info）
+    waycomp::input_queue_flush();
+    let c0 = waycomp::waycomp_stamps();
+    let fb_a = ((c0.2 as u32) * waycomp::FB_ID_SESSION_STRIDE) | 0x48;
+    let hc2 = match unixsock::sock_connect(me, waycomp::WAYCOMP_SOCK_NAME) {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
+    let mut req = [0u8; 64];
+    let n_req = wl::encode_display_get_registry(&mut req, 1, 2).unwrap_or(0);
+    let _ = unixsock::sock_send(me, hc2 as u64, &req[..n_req]);
+    let mut gbuf = [0u8; 512];
+    let mut got2 = 0usize;
+    let dl = ostd::time::now() + 480;
+    while got2 < 124 && ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc2 as u64).is_none_or(|(p, _)| p == 0) {
+            task::yield_now();
+            continue;
+        }
+        let n = unixsock::sock_recv(me, hc2 as u64, &mut gbuf[got2..]).unwrap_or(0);
+        if n > 0 {
+            got2 += n;
+        }
+    }
+    ok &= got2 >= 124;
+    let mut batch = [0u8; 512];
+    let mut bl = 0usize;
+    bl += wl::encode_registry_bind(&mut batch[bl..], 2, 2, "wl_seat", 1, 4).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        4,
+        wl::seat::REQ_GET_POINTER,
+        &[wl::WlArg::NewId(5)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_registry_bind(&mut batch[bl..], 2, 1, "wl_compositor", 4, 3).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        3,
+        wl::compositor::REQ_CREATE_SURFACE,
+        &[wl::WlArg::NewId(0x48)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        0x48,
+        wl::surface::REQ_DAMAGE,
+        &[
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(320),
+            wl::WlArg::Int(200),
+        ],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_surface_commit(&mut batch[bl..], 0x48).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc2 as u64, &batch[..bl]).unwrap_or(0);
+    ok &= sent == bl;
+    let dl = ostd::time::now() + 480;
+    while fb::surf_layer_of(fb_a).is_none() && ostd::time::now() < dl {
+        core::hint::spin_loop();
+    }
+    ok &= fb::surf_layer_of(fb_a).is_some();
+    // 流采集 + 走查（指针链零 repeat_info——键盘派生域唯一公告闸）
+    // 三段式采集（笔㉞揭雷同族收口——等首信 + probe 门控静默窗 +
+    // 截止期兜底；负例域字节计数对账）
+    let mut sbuf2 = [0u8; 1024];
+    let mut got3 = 0usize;
+    let dl0 = ostd::time::now() + 480;
+    while ostd::time::now() < dl0 {
+        if unixsock::sock_probe(me, hc2 as u64).is_some_and(|(p, _)| p > 0) {
+            break;
+        }
+        task::yield_now();
+    }
+    let mut quiet3 = 0usize;
+    let dl = ostd::time::now() + 240;
+    while got3 < sbuf2.len() && ostd::time::now() < dl && quiet3 < 64 {
+        if unixsock::sock_probe(me, hc2 as u64).is_none_or(|(p, _)| p == 0) {
+            quiet3 += 1;
+        } else {
+            quiet3 = 0;
+            let n = unixsock::sock_recv(me, hc2 as u64, &mut sbuf2[got3..]).unwrap_or(0);
+            got3 += n;
+        }
+        task::yield_now();
+    }
+    let mut off2 = 0usize;
+    let mut reps2 = 0usize;
+    while off2 + 8 <= got3 {
+        let Ok(h) = wl::parse_header(&sbuf2[off2..]) else {
+            break;
+        };
+        let sz = h.size as usize;
+        if sz < 8 || off2 + sz > got3 {
+            break;
+        }
+        if h.opcode == wl::keyboard::EV_REPEAT_INFO {
+            reps2 += 1;
+        }
+        off2 += sz;
+    }
+    let neg_ok = reps2 == 0;
+    ok &= neg_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T134-NEG bytes={got3} reps={reps2}（纯指针链零公告——域闸在环）"
+    );
+    let _ = unixsock::sock_shutdown(me, hc2 as u64);
+    let dl = ostd::time::now() + 4800;
+    while (!waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) || fb::surf_count() != 1)
+        && ostd::time::now() < dl
+    {
+        core::hint::spin_loop();
+    }
+    ok &= waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
+    let _ = crate::vfs::sys_close(hc2 as u64);
+    if ok {
+        let _ = writeln!(log, "LUMINA-T134-OK");
     }
     ok
 }
