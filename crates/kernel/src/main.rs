@@ -86,8 +86,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122）。
-const SELFTEST_TOTAL: usize = 122;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123）。
+const SELFTEST_TOTAL: usize = 123;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7349,6 +7349,16 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t122 = t122_run(&mut log);
     report(&mut log, t122, "commit-publish-batching");
 
+    // t123) frame callback delete_id 复用面活体（M42-DMGC22 笔㉒）：
+    //       〔链域基线——registry 前置 + create 0x54 + 排水〕→〔frame
+    //       (0x55)+commit——done+delete_id 对 24B 逐目对读 + 表摘除
+    //       （FRAME_DELS +1）〕→〔同 id 重装第二轮——done 串号递增对
+    //       读 + FRAME_DELS 再 +1（v0 install 拒收域退役显形）〕→
+    //       〔SHUT EOF 收场复原〕。
+    //       LUMINA-T123-FRAME/T123-REUSE/T123-OK。
+    let t123 = t123_run(&mut log);
+    report(&mut log, t123, "frame-callback-delete-id-reuse");
+
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
     //      pf_hook 入口扩判「U 位 或 CR2 落增长栈窗口域」——CPL0 用户
@@ -9416,31 +9426,38 @@ fn t104_run(log: &mut DualLog) -> bool {
         core::hint::spin_loop();
     };
     let commits_ok = c2.3 >= c0.3 + 2;
-    // 帧回调 done 回执（2 × 12 B——done(0x22, s1) + done(0x26, s2)）
+    // 帧回调 done 回执（M42-DMGC22 后 = 2 × (done 12B + delete_id 12B)
+    // = 48B——done(0x22,s1) + delete_id(0x22) + done(0x26,s2) +
+    // delete_id(0x26) 交错布局；v0 纯 done 2×12B 口径退役）
     let mut done_buf = [0u8; 64];
     let mut dgot = 0usize;
     let dl = ostd::time::now() + 240;
-    while dgot < 24 && ostd::time::now() < dl {
+    while dgot < 48 && ostd::time::now() < dl {
         let n = unixsock::sock_recv(me, hc as u64, &mut done_buf[dgot..]).unwrap_or(0);
         if n > 0 {
             dgot += n;
         }
     }
-    let mut dones_ok = dgot == 24;
+    let mut dones_ok = dgot == 48;
     let mut dserials = [0u32; 2];
     if dones_ok {
-        for k in 0..2 {
-            match wl::parse_message(&done_buf[k * 12..dgot], wl::SIG_CALLBACK_DONE) {
+        for (k, serial) in dserials.iter_mut().enumerate() {
+            let off = k * 24;
+            let expect_id: u32 = if k == 0 { 0x22 } else { 0x26 };
+            match wl::parse_message(&done_buf[off..off + 12], wl::SIG_CALLBACK_DONE) {
                 Ok(m) => {
-                    let expect_id = if k == 0 { 0x22 } else { 0x26 };
                     dones_ok &=
                         m.header.object_id == expect_id && m.header.opcode == wl::callback::EV_DONE;
                     if let Some(wl::WlArg::Uint(v)) = m.args[0] {
-                        dserials[k] = v;
+                        *serial = v;
                     }
                 }
                 Err(_) => dones_ok = false,
             }
+            // delete_id 随行对读（M42-DMGC22——done 后销毁面，同 id 复用域）
+            dones_ok &= wl::parse_message(&done_buf[off + 12..off + 24], wl::SIG_DISPLAY_DELETE_ID)
+                .map(|m| m.args[0] == Some(wl::WlArg::Uint(expect_id)))
+                .unwrap_or(false);
         }
     }
     // 策略/登记同源对账：cascade tiling 平面 z 序 + 矩形 = prism
@@ -9499,7 +9516,14 @@ fn t104_run(log: &mut DualLog) -> bool {
     // surf_count ≤1 早跳域：remove 后收场 sync+compose 尚在途，客户端
     // 读到陈旧 VRAM/初始戳——旗 wait 免竞态，t102 应答先行时序同谱）
     let dl = ostd::time::now() + 480;
-    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+    // 收场等待（SESSION_DONE = teardown 循环完成旗——accept 时重置无
+    // 承值域；surf_count 双判强化。**收场 compose 后于旗置位前完成**
+    // ——v0 语义：旗 store 于收场循环末，等待即含 compose 全完；v0 口
+    // 径维持〔M42-DMGC22 首割 surf 单判竞窗揭雷收口——remove 先于收
+    // 场 compose 达标，探针早于空表回写〕）
+    while (!waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) || fb::surf_count() != 1)
+        && ostd::time::now() < dl
+    {
         core::hint::spin_loop();
     }
     let teardown_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
@@ -9762,7 +9786,14 @@ fn t106_run(log: &mut DualLog) -> bool {
     }
     // 会话收场完成旗（t104 早跳竞态收口先例——旗 wait 免竞态）
     let dl = ostd::time::now() + 480;
-    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+    // 收场等待（SESSION_DONE = teardown 循环完成旗——accept 时重置无
+    // 承值域；surf_count 双判强化。**收场 compose 后于旗置位前完成**
+    // ——v0 语义：旗 store 于收场循环末，等待即含 compose 全完；v0 口
+    // 径维持〔M42-DMGC22 首割 surf 单判竞窗揭雷收口——remove 先于收
+    // 场 compose 达标，探针早于空表回写〕）
+    while (!waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) || fb::surf_count() != 1)
+        && ostd::time::now() < dl
+    {
         core::hint::spin_loop();
     }
     let teardown_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
@@ -10068,7 +10099,14 @@ fn t107_run(log: &mut DualLog) -> bool {
     let shut = unixsock::sock_shutdown(me, hc as u64);
     ok &= shut.is_ok();
     let dl = ostd::time::now() + 480;
-    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+    // 收场等待（SESSION_DONE = teardown 循环完成旗——accept 时重置无
+    // 承值域；surf_count 双判强化。**收场 compose 后于旗置位前完成**
+    // ——v0 语义：旗 store 于收场循环末，等待即含 compose 全完；v0 口
+    // 径维持〔M42-DMGC22 首割 surf 单判竞窗揭雷收口——remove 先于收
+    // 场 compose 达标，探针早于空表回写〕）
+    while (!waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) || fb::surf_count() != 1)
+        && ostd::time::now() < dl
+    {
         core::hint::spin_loop();
     }
     let teardown_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
@@ -10567,7 +10605,14 @@ fn t109_run(log: &mut DualLog) -> bool {
     }
     // 会话收场完成旗（t104 早跳竞态收口先例——旗 wait 免竞态）
     let dl = ostd::time::now() + 480;
-    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+    // 收场等待（SESSION_DONE = teardown 循环完成旗——accept 时重置无
+    // 承值域；surf_count 双判强化。**收场 compose 后于旗置位前完成**
+    // ——v0 语义：旗 store 于收场循环末，等待即含 compose 全完；v0 口
+    // 径维持〔M42-DMGC22 首割 surf 单判竞窗揭雷收口——remove 先于收
+    // 场 compose 达标，探针早于空表回写〕）
+    while (!waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) || fb::surf_count() != 1)
+        && ostd::time::now() < dl
+    {
         core::hint::spin_loop();
     }
     let teardown_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
@@ -11624,7 +11669,14 @@ fn t113_run(log: &mut DualLog) -> bool {
     // (d-4) SHUT EOF 收场（shutdown 双向唤醒——EOF 收场域）+ 复原对账
     let _ = unixsock::sock_shutdown(me, hc as u64);
     let dl = ostd::time::now() + 480;
-    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+    // 收场等待（SESSION_DONE = teardown 循环完成旗——accept 时重置无
+    // 承值域；surf_count 双判强化。**收场 compose 后于旗置位前完成**
+    // ——v0 语义：旗 store 于收场循环末，等待即含 compose 全完；v0 口
+    // 径维持〔M42-DMGC22 首割 surf 单判竞窗揭雷收口——remove 先于收
+    // 场 compose 达标，探针早于空表回写〕）
+    while (!waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) || fb::surf_count() != 1)
+        && ostd::time::now() < dl
+    {
         core::hint::spin_loop();
     }
     let eof_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
@@ -11877,7 +11929,14 @@ fn t114_run(log: &mut DualLog) -> bool {
     let frev0 = unixsock::USOCK_FD_REVOKES.load(Ordering::Acquire);
     let _ = unixsock::sock_shutdown(me, hc as u64);
     let dl = ostd::time::now() + 480;
-    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+    // 收场等待（SESSION_DONE = teardown 循环完成旗——accept 时重置无
+    // 承值域；surf_count 双判强化。**收场 compose 后于旗置位前完成**
+    // ——v0 语义：旗 store 于收场循环末，等待即含 compose 全完；v0 口
+    // 径维持〔M42-DMGC22 首割 surf 单判竞窗揭雷收口——remove 先于收
+    // 场 compose 达标，探针早于空表回写〕）
+    while (!waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) || fb::surf_count() != 1)
+        && ostd::time::now() < dl
+    {
         core::hint::spin_loop();
     }
     let eof_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
@@ -12145,7 +12204,14 @@ fn t115_run(log: &mut DualLog) -> bool {
     ok &= neg_ok;
     let _ = unixsock::sock_shutdown(me, hc as u64);
     let dl = ostd::time::now() + 480;
-    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+    // 收场等待（SESSION_DONE = teardown 循环完成旗——accept 时重置无
+    // 承值域；surf_count 双判强化。**收场 compose 后于旗置位前完成**
+    // ——v0 语义：旗 store 于收场循环末，等待即含 compose 全完；v0 口
+    // 径维持〔M42-DMGC22 首割 surf 单判竞窗揭雷收口——remove 先于收
+    // 场 compose 达标，探针早于空表回写〕）
+    while (!waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) || fb::surf_count() != 1)
+        && ostd::time::now() < dl
+    {
         core::hint::spin_loop();
     }
     let eof_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
@@ -12319,6 +12385,11 @@ fn t116_run(log: &mut DualLog) -> bool {
         }
     }
     ok &= got == 124;
+    let _ = writeln!(
+        log,
+        "t120: chain got={got} kb={}",
+        waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire)
+    );
     let mut batch = [0u8; 512];
     let mut bl = 0usize;
     bl += wl::encode_registry_bind(&mut batch[bl..], 2, 2, "wl_seat", 1, 4).unwrap_or(0);
@@ -12444,7 +12515,14 @@ fn t116_run(log: &mut DualLog) -> bool {
     // (d) SHUT EOF 收场复原
     let _ = unixsock::sock_shutdown(me, hc as u64);
     let dl = ostd::time::now() + 480;
-    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+    // 收场等待（SESSION_DONE = teardown 循环完成旗——accept 时重置无
+    // 承值域；surf_count 双判强化。**收场 compose 后于旗置位前完成**
+    // ——v0 语义：旗 store 于收场循环末，等待即含 compose 全完；v0 口
+    // 径维持〔M42-DMGC22 首割 surf 单判竞窗揭雷收口——remove 先于收
+    // 场 compose 达标，探针早于空表回写〕）
+    while (!waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) || fb::surf_count() != 1)
+        && ostd::time::now() < dl
+    {
         core::hint::spin_loop();
     }
     let eof_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
@@ -12559,6 +12637,11 @@ fn t117_run(log: &mut DualLog) -> bool {
         }
     }
     ok &= got == 124;
+    let _ = writeln!(
+        log,
+        "t120: chain got={got} kb={}",
+        waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire)
+    );
     let mut batch = [0u8; 512];
     let mut bl = 0usize;
     bl += wl::encode_registry_bind(&mut batch[bl..], 2, 2, "wl_seat", 1, 4).unwrap_or(0);
@@ -12695,7 +12778,14 @@ fn t117_run(log: &mut DualLog) -> bool {
     ok &= drain_ok;
     let _ = unixsock::sock_shutdown(me, hc as u64);
     let dl = ostd::time::now() + 480;
-    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+    // 收场等待（SESSION_DONE = teardown 循环完成旗——accept 时重置无
+    // 承值域；surf_count 双判强化。**收场 compose 后于旗置位前完成**
+    // ——v0 语义：旗 store 于收场循环末，等待即含 compose 全完；v0 口
+    // 径维持〔M42-DMGC22 首割 surf 单判竞窗揭雷收口——remove 先于收
+    // 场 compose 达标，探针早于空表回写〕）
+    while (!waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) || fb::surf_count() != 1)
+        && ostd::time::now() < dl
+    {
         core::hint::spin_loop();
     }
     let eof_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
@@ -12753,6 +12843,11 @@ fn t118_run(log: &mut DualLog) -> bool {
         }
     }
     ok &= got == 124;
+    let _ = writeln!(
+        log,
+        "t120: chain got={got} kb={}",
+        waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire)
+    );
     let mut batch = [0u8; 512];
     let mut bl = 0usize;
     bl += wl::encode_registry_bind(&mut batch[bl..], 2, 2, "wl_seat", 1, 4).unwrap_or(0);
@@ -12929,7 +13024,14 @@ fn t118_run(log: &mut DualLog) -> bool {
     ok &= drain_ok;
     let _ = unixsock::sock_shutdown(me, hc as u64);
     let dl = ostd::time::now() + 480;
-    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+    // 收场等待（SESSION_DONE = teardown 循环完成旗——accept 时重置无
+    // 承值域；surf_count 双判强化。**收场 compose 后于旗置位前完成**
+    // ——v0 语义：旗 store 于收场循环末，等待即含 compose 全完；v0 口
+    // 径维持〔M42-DMGC22 首割 surf 单判竞窗揭雷收口——remove 先于收
+    // 场 compose 达标，探针早于空表回写〕）
+    while (!waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) || fb::surf_count() != 1)
+        && ostd::time::now() < dl
+    {
         core::hint::spin_loop();
     }
     let eof_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
@@ -13007,6 +13109,11 @@ fn t119_run(log: &mut DualLog) -> bool {
         }
     }
     ok &= got == 124;
+    let _ = writeln!(
+        log,
+        "t120: chain got={got} kb={}",
+        waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire)
+    );
     let mut batch = [0u8; 512];
     let mut bl = 0usize;
     bl += wl::encode_registry_bind(&mut batch[bl..], 2, 2, "wl_seat", 1, 4).unwrap_or(0);
@@ -13204,7 +13311,14 @@ fn t119_run(log: &mut DualLog) -> bool {
     // (e) 卫生收场（SHUT EOF + 全戳恒定 + 句柄收口）
     let _ = unixsock::sock_shutdown(me, hc as u64);
     let dl = ostd::time::now() + 480;
-    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+    // 收场等待（SESSION_DONE = teardown 循环完成旗——accept 时重置无
+    // 承值域；surf_count 双判强化。**收场 compose 后于旗置位前完成**
+    // ——v0 语义：旗 store 于收场循环末，等待即含 compose 全完；v0 口
+    // 径维持〔M42-DMGC22 首割 surf 单判竞窗揭雷收口——remove 先于收
+    // 场 compose 达标，探针早于空表回写〕）
+    while (!waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) || fb::surf_count() != 1)
+        && ostd::time::now() < dl
+    {
         core::hint::spin_loop();
     }
     let eof_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
@@ -13241,9 +13355,13 @@ fn t120_run(log: &mut DualLog) -> bool {
     });
     ok &= mono_ok && ms0 > 0;
     // TSC 校准路径对账（t13 boot 校准在环——hz>0 + ns/ms 换算一致域）
+    // 校准换算一致性对账容差 = PIT 节拍步进域（≤10ms——now_ns/now_ms
+    // 双读采样间隙 PIT tick 翻转合法域〔100Hz → 10ms/拍〕；M42-DMGC22
+    // 揭雷收口：v0 ≤1ms 容差在双读跨 tick 窗偶发假败——校准面本身无
+    // 瑕，判据口径修正）
     let calib_ok = ostd::time::tsc_clock::hz() > 0
         && ostd::time::tsc_clock::now_ns()
-            .map(|ns| (ns / 1_000_000).abs_diff(ostd::time::now_ms()) <= 1)
+            .map(|ns| (ns / 1_000_000).abs_diff(ostd::time::now_ms()) <= 10)
             .unwrap_or(false);
     ok &= calib_ok;
     // sleep 增量窗（30 拍 = 300ms @100Hz——TSC 路径毫秒域 ≥ 280 容差）
@@ -13286,6 +13404,11 @@ fn t120_run(log: &mut DualLog) -> bool {
         }
     }
     ok &= got == 124;
+    let _ = writeln!(
+        log,
+        "t120: chain got={got} kb={}",
+        waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire)
+    );
     let mut batch = [0u8; 512];
     let mut bl = 0usize;
     bl += wl::encode_registry_bind(&mut batch[bl..], 2, 2, "wl_seat", 1, 4).unwrap_or(0);
@@ -13442,15 +13565,33 @@ fn t120_run(log: &mut DualLog) -> bool {
         axis_times[0], axis_times[1]
     );
 
-    // (c) 卫生收场（SHUT EOF + 守护恒定 + 句柄收口）
+    // (c) 卫生收场（SHUT EOF + 守护恒定 + 句柄收口；等待窗 4800 拍
+    //     ——t112 先例口径，TCG 宿主负载漂移下 teardown 全链时序窗
+    //     鲁棒化〔M42-DMGC22 随行〕）
     let _ = unixsock::sock_shutdown(me, hc as u64);
-    let dl = ostd::time::now() + 480;
-    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+    let dl = ostd::time::now() + 4800;
+    // 收场等待（SESSION_DONE = teardown 循环完成旗——accept 时重置无
+    // 承值域；surf_count 双判强化。**收场 compose 后于旗置位前完成**
+    // ——v0 语义：旗 store 于收场循环末，等待即含 compose 全完；v0 口
+    // 径维持〔M42-DMGC22 首割 surf 单判竞窗揭雷收口——remove 先于收
+    // 场 compose 达标，探针早于空表回写〕）
+    while (!waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) || fb::surf_count() != 1)
+        && ostd::time::now() < dl
+    {
         core::hint::spin_loop();
     }
     let eof_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
     ok &= eof_ok;
-    ok &= waycomp::WLCOMP_GUARD_ERR.load(Ordering::Acquire) == g0;
+    let guard_ok = waycomp::WLCOMP_GUARD_ERR.load(Ordering::Acquire) == g0;
+    ok &= guard_ok;
+    let _ = writeln!(
+        log,
+        "t120: eof-ok={eof_ok} done={} surf={} guard-ok={guard_ok} gerr={} endc={}",
+        waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire),
+        fb::surf_count(),
+        waycomp::WLCOMP_GUARD_ERR.load(Ordering::Acquire) - g0,
+        waycomp::WLCOMP_END_COUNT.load(Ordering::Acquire)
+    );
     let _ = crate::vfs::sys_close(hc as u64);
 
     if ok {
@@ -13687,7 +13828,14 @@ fn t121_run(log: &mut DualLog) -> bool {
     let shut = unixsock::sock_shutdown(me, hc as u64);
     ok &= shut.is_ok();
     let dl = ostd::time::now() + 480;
-    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+    // 收场等待（SESSION_DONE = teardown 循环完成旗——accept 时重置无
+    // 承值域；surf_count 双判强化。**收场 compose 后于旗置位前完成**
+    // ——v0 语义：旗 store 于收场循环末，等待即含 compose 全完；v0 口
+    // 径维持〔M42-DMGC22 首割 surf 单判竞窗揭雷收口——remove 先于收
+    // 场 compose 达标，探针早于空表回写〕）
+    while (!waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) || fb::surf_count() != 1)
+        && ostd::time::now() < dl
+    {
         core::hint::spin_loop();
     }
     let teardown_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
@@ -13873,7 +14021,14 @@ fn t122_run(log: &mut DualLog) -> bool {
     let shut = unixsock::sock_shutdown(me, hc as u64);
     ok &= shut.is_ok();
     let dl = ostd::time::now() + 480;
-    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+    // 收场等待（SESSION_DONE = teardown 循环完成旗——accept 时重置无
+    // 承值域；surf_count 双判强化。**收场 compose 后于旗置位前完成**
+    // ——v0 语义：旗 store 于收场循环末，等待即含 compose 全完；v0 口
+    // 径维持〔M42-DMGC22 首割 surf 单判竞窗揭雷收口——remove 先于收
+    // 场 compose 达标，探针早于空表回写〕）
+    while (!waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) || fb::surf_count() != 1)
+        && ostd::time::now() < dl
+    {
         core::hint::spin_loop();
     }
     let teardown_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
@@ -13896,6 +14051,212 @@ fn t122_run(log: &mut DualLog) -> bool {
     let _ = crate::vfs::sys_close(hc as u64);
     if ok {
         let _ = writeln!(log, "LUMINA-T122-OK");
+    }
+    ok
+}
+
+/// t123 frame callback delete_id 复用面活体（M42-DMGC22 笔㉒）——
+/// 四相位描述见 kmain 调度注记。
+fn t123_run(log: &mut DualLog) -> bool {
+    use prism::wayland as wl;
+    let mut ok = true;
+    let me = task::current_task_id();
+    let c0 = waycomp::waycomp_stamps();
+    let base = (c0.2 as u32) * waycomp::FB_ID_SESSION_STRIDE;
+    let fb_a = base | 0x54;
+
+    // (a) 链域基线（registry 前置批 + create 0x54——t121 (a) 同款纪律）
+    let hc = match unixsock::sock_connect(me, waycomp::WAYCOMP_SOCK_NAME) {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = writeln!(log, "t123: connect failed ({e:?})");
+            return false;
+        }
+    };
+    let mut batch = [0u8; 128];
+    let mut bl = 0usize;
+    bl += wl::encode_display_get_registry(&mut batch[bl..], 1, 2).unwrap_or(0);
+    bl += wl::encode_registry_bind(&mut batch[bl..], 2, 1, "wl_compositor", 4, 3).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        3,
+        wl::compositor::REQ_CREATE_SURFACE,
+        &[wl::WlArg::NewId(0x54)],
+    )
+    .unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &batch[..bl]).unwrap_or(0);
+    ok &= sent == bl;
+    // 链域回执排干（确定性 124B 门控——probe 提前 break 窗收口：公告
+    // 迟到窗残留致 (b) 回执读错位〔t123 首割揭雷实录〕）
+    let mut sink = [0u8; 256];
+    let mut got0 = 0usize;
+    let dl = ostd::time::now() + 480;
+    while got0 < 124 && ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            task::yield_now();
+            continue;
+        }
+        let n = unixsock::sock_recv(me, hc as u64, &mut sink[got0..]).unwrap_or(0);
+        if n > 0 {
+            got0 += n;
+        }
+    }
+    ok &= got0 == 124;
+
+    // (b) frame(0x55) + commit——done+delete_id 对 24B 逐目对读 + 表摘
+    //     除域对账（FRAME_DELS +1；v0 单 done 12B 口径退役）
+    let fd_a = waycomp::WLCOMP_FRAME_DELS.load(Ordering::Acquire);
+    let mut b2 = [0u8; 96];
+    let mut bl2 = 0usize;
+    bl2 += wl::encode_message(
+        &mut b2[bl2..],
+        0x54,
+        wl::surface::REQ_DAMAGE,
+        &[
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(320),
+            wl::WlArg::Int(200),
+        ],
+    )
+    .unwrap_or(0);
+    bl2 += wl::encode_message(
+        &mut b2[bl2..],
+        0x54,
+        wl::surface::REQ_FRAME,
+        &[wl::WlArg::NewId(0x55)],
+    )
+    .unwrap_or(0);
+    bl2 += wl::encode_surface_commit(&mut b2[bl2..], 0x54).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &b2[..bl2]).unwrap_or(0);
+    ok &= sent == bl2;
+    let mut rbuf = [0u8; 256];
+    let mut got = 0usize;
+    let dl = ostd::time::now() + 480;
+    while got < 24 && ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            task::yield_now();
+            continue;
+        }
+        let n = unixsock::sock_recv(me, hc as u64, &mut rbuf[got..]).unwrap_or(0);
+        if n > 0 {
+            got += n;
+        }
+    }
+    ok &= got == 24;
+    let data1 = match wl::parse_message(&rbuf[..12], wl::SIG_CALLBACK_DONE) {
+        Ok(m) => {
+            ok &= m.header.object_id == 0x55 && m.header.opcode == wl::callback::EV_DONE;
+            match m.args[0] {
+                Some(wl::WlArg::Uint(d)) => d,
+                _ => {
+                    ok = false;
+                    0
+                }
+            }
+        }
+        Err(_) => {
+            ok = false;
+            0
+        }
+    };
+    ok &= wl::parse_message(&rbuf[12..24], wl::SIG_DISPLAY_DELETE_ID)
+        .map(|m| {
+            m.header.object_id == 1
+                && m.header.opcode == wl::display::EV_DELETE_ID
+                && m.args[0] == Some(wl::WlArg::Uint(0x55))
+        })
+        .unwrap_or(false);
+    let fd_b = waycomp::WLCOMP_FRAME_DELS.load(Ordering::Acquire);
+    let frame_ok = fd_b == fd_a + 1 && fb::surf_count() == 2 && fb::surf_layer_of(fb_a).is_some();
+    ok &= frame_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T123-FRAME done+del=24B serial={} fdels=+{} surf=2",
+        data1,
+        fd_b - fd_a
+    );
+
+    // (c) 同 id 重装第二轮（delete_id 回收域在环——v0 install 拒收域
+    //     退役显形；done 串号递增对读）
+    let mut b3 = [0u8; 64];
+    let mut bl3 = 0usize;
+    bl3 += wl::encode_message(
+        &mut b3[bl3..],
+        0x54,
+        wl::surface::REQ_FRAME,
+        &[wl::WlArg::NewId(0x55)], // 同 id 0x55 重装
+    )
+    .unwrap_or(0);
+    bl3 += wl::encode_surface_commit(&mut b3[bl3..], 0x54).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &b3[..bl3]).unwrap_or(0);
+    ok &= sent == bl3;
+    let mut got = 0usize; // 游标复位（t119 揭雷①纪律）
+    let dl = ostd::time::now() + 480;
+    while got < 24 && ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            task::yield_now();
+            continue;
+        }
+        let n = unixsock::sock_recv(me, hc as u64, &mut rbuf[got..]).unwrap_or(0);
+        if n > 0 {
+            got += n;
+        }
+    }
+    ok &= got == 24;
+    let data2 = match wl::parse_message(&rbuf[..12], wl::SIG_CALLBACK_DONE) {
+        Ok(m) => {
+            ok &= m.header.object_id == 0x55 && m.header.opcode == wl::callback::EV_DONE;
+            match m.args[0] {
+                Some(wl::WlArg::Uint(d)) => d,
+                _ => {
+                    ok = false;
+                    0
+                }
+            }
+        }
+        Err(_) => {
+            ok = false;
+            0
+        }
+    };
+    ok &= wl::parse_message(&rbuf[12..24], wl::SIG_DISPLAY_DELETE_ID)
+        .map(|m| {
+            m.header.object_id == 1
+                && m.header.opcode == wl::display::EV_DELETE_ID
+                && m.args[0] == Some(wl::WlArg::Uint(0x55))
+        })
+        .unwrap_or(false);
+    let fd_c = waycomp::WLCOMP_FRAME_DELS.load(Ordering::Acquire);
+    let reuse_ok = fd_c == fd_b + 1 && data2 > data1; // commit 串号递增
+    ok &= reuse_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T123-REUSE serial=({}→{}) fdels=+{}（同 id 0x55 重装在环）",
+        data1,
+        data2,
+        fd_c - fd_b
+    );
+
+    // (d) SHUT EOF 收场复原
+    let shut = unixsock::sock_shutdown(me, hc as u64);
+    ok &= shut.is_ok();
+    let dl = ostd::time::now() + 480;
+    // 收场等待（SESSION_DONE = teardown 循环完成旗——accept 时重置无
+    // 承值域；surf_count 双判强化。**收场 compose 后于旗置位前完成**
+    // ——v0 语义：旗 store 于收场循环末，等待即含 compose 全完；v0 口
+    // 径维持〔M42-DMGC22 首割 surf 单判竞窗揭雷收口——remove 先于收
+    // 场 compose 达标，探针早于空表回写〕）
+    while (!waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) || fb::surf_count() != 1)
+        && ostd::time::now() < dl
+    {
+        core::hint::spin_loop();
+    }
+    let teardown_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
+    ok &= teardown_ok;
+    let _ = crate::vfs::sys_close(hc as u64);
+    if ok {
+        let _ = writeln!(log, "LUMINA-T123-OK");
     }
     ok
 }

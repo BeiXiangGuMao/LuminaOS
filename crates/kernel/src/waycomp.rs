@@ -242,6 +242,10 @@ pub static WLCOMP_MPS: AtomicU64 = AtomicU64::new(0);
 /// sync 即时完成数（M42-WAYCOMP18 多注册表面——feed 回执 syncs 增量
 /// 计数：每 sync 恰一 done + delete_id 对，t119 断言面）。
 pub static WLCOMP_SYNCS: AtomicU64 = AtomicU64::new(0);
+/// frame callback done+delete_id 对数（M42-DMGC22 笔㉒——feed 回执
+/// frame_dels 增量计数：commit 冲刷域每 frame callback 恰一
+/// done + delete_id 对，t123 断言面）。
+pub static WLCOMP_FRAME_DELS: AtomicU64 = AtomicU64::new(0);
 /// SYNC 矩形调用数（M42-DMG20 damage 联合域——waycomp 侧 sys_fb_sync
 /// 调用计数〔commit 发布域 + 改写域 + teardown 收场域全谱〕：联合域
 /// 对账面——marks/rects 差分域，t121 断言面）。
@@ -682,6 +686,9 @@ fn session_loop(conn: u64) {
                 WLCOMP_PTRS.fetch_add(rep.ptrs.n as u64, Ordering::AcqRel);
                 // sync 即时完成数（M42-WAYCOMP18——done + delete_id 对计数）
                 WLCOMP_SYNCS.fetch_add(rep.syncs as u64, Ordering::AcqRel);
+                // frame callback done+delete_id 对数（M42-DMGC22——commit
+                // 冲刷域 frame callback 销毁面计数）
+                WLCOMP_FRAME_DELS.fetch_add(rep.frame_dels as u64, Ordering::AcqRel);
                 // modifiers wire 发出数（M42-WAYCOMP15——Modifiers 记录批）
                 for r in rep.keys.items[..rep.keys.n].iter().flatten() {
                     if prism::wayland::comp::KbKind::Modifiers == r.kind {

@@ -469,6 +469,10 @@ pub struct FeedReport {
     /// sync 即时完成数（M42-WAYCOMP18 多注册表面——本 feed 增量；
     /// 每 sync 恰一 done + delete_id 对，客户端 id 复用域对账）。
     pub syncs: usize,
+    /// frame callback done+delete_id 对数（M42-DMGC22 笔㉒——本 feed
+    /// 增量；每 commit 冲刷域 frame callback 恰一 done + delete_id 对，
+    /// 客户端 id 复用域对账）。
+    pub frame_dels: usize,
 }
 
 impl FeedReport {
@@ -524,6 +528,10 @@ pub struct CompSession {
     /// sync 即时完成累计（M42-WAYCOMP18 多注册表面——feed 报告 syncs
     /// 增量事实源；每 sync 恰一 done + delete_id 随行）。
     syncs_total: usize,
+    /// frame callback done+delete_id 累计（M42-DMGC22 笔㉒——feed 报
+    /// 告 frame_dels 增量事实源；commit 冲刷域每 frame callback 恰一
+    /// done + delete_id 随行）。
+    frame_dels_total: usize,
     /// 输入串号（M42-INPUT7——wl_keyboard/wl_pointer 事件 serial 事实
     /// 源，单调）。
     input_serial: u32,
@@ -574,6 +582,7 @@ impl CompSession {
             commit_serial: 0,
             time_ms: 0,
             syncs_total: 0,
+            frame_dels_total: 0,
             input_serial: 0,
             pointer_obj: 0,
             keyboard_obj: 0,
@@ -613,6 +622,12 @@ impl CompSession {
     /// sync 即时完成累计读面（M42-WAYCOMP18 多注册表面——会话域取证）。
     pub fn syncs_snapshot(&self) -> usize {
         self.syncs_total
+    }
+
+    /// frame callback done+delete_id 累计读面（M42-DMGC22 笔㉒——会话
+    /// 域取证，t123 断言面）。
+    pub fn frame_dels_snapshot(&self) -> usize {
+        self.frame_dels_total
     }
 
     /// 冲刷批时刻毫秒域承接（M42-WAYCOMP19 毫秒时间源——电气面每
@@ -1092,6 +1107,7 @@ impl CompSession {
     /// 传）；部分消息（尺寸域完整但残段不足）干净断流。
     pub fn feed(&mut self, stream: &[u8], out: &mut [u8]) -> Result<FeedReport, CompError> {
         let syncs0 = self.syncs_total; // sync 增量基（M42-WAYCOMP18）
+        let fdels0 = self.frame_dels_total; // frame dels 增量基（M42-DMGC22）
         let mut log = CommitLog::EMPTY;
         let mut pools = PoolLog::EMPTY;
         let mut drops = DropLog::EMPTY;
@@ -1132,6 +1148,7 @@ impl CompSession {
             ptrs,
             keymaps: self.keymap_out.take(),
             syncs: self.syncs_total - syncs0,
+            frame_dels: self.frame_dels_total - fdels0,
         })
     }
 
@@ -1842,11 +1859,21 @@ impl CompSession {
         };
         self.commit_serial = self.commit_serial.wrapping_add(1);
         // 帧回调 done 事件冲刷（官方语义——callback_data = commit 串
-        // 号；callback 对象不回收——delete_id 挂账）。
+        // 号）。**M42-DMGC22 笔㉒ delete_id 复用面**：done 后服务端销毁
+        // frame callback + wl_display.delete_id 随行（客户端 id 复用域
+        // 事实源——同 id 多轮 frame 在环面），对象表同步摘除（v0 「不
+        // 回收」口径退役——表容量回收域；sync 域同款语义
+        // M42-WAYCOMP18）。display id = 1（wire 首对象约定——t119
+        // 对读同谱）。
         for cb in frame_ids.iter().take(frames_fired) {
             let n = encode_callback_done_event(&mut out[*out_len..], *cb, self.commit_serial)
                 .map_err(CompError::Wire)?;
             *out_len += n;
+            self.table.remove(*cb);
+            let n = encode_display_delete_id_event(&mut out[*out_len..], 1, *cb)
+                .map_err(CompError::Wire)?;
+            *out_len += n;
+            self.frame_dels_total += 1;
         }
         log.push(CommitRecord {
             wl_id,
@@ -2090,8 +2117,9 @@ mod tests {
         assert!(rec.first_map);
         assert_eq!(rec.frames_fired, 1);
         assert_eq!(rep.commits.n, 1);
-        // 帧回调 done 事件回执解析（callback_data = commit 串号 1）
-        let m = crate::wayland::parse_message(&out[..rep.out_len], SIG_CALLBACK_DONE).unwrap();
+        // 帧回调 done 事件回执解析（callback_data = commit 串号 1；
+        // M42-DMGC22 后随 delete_id——out_len = 24，首消息域精确切片）
+        let m = crate::wayland::parse_message(&out[..12], SIG_CALLBACK_DONE).unwrap();
         assert_eq!(m.header.object_id, 0x22);
         assert_eq!(m.header.opcode, callback::EV_DONE);
         assert_eq!(m.args[0], Some(WlArg::Uint(1)));
@@ -2151,6 +2179,113 @@ mod tests {
         );
         assert_eq!(r2.frames_fired, 0);
         assert_eq!(rep2.out_len, 0);
+    }
+
+    /// frame done + delete_id 对 + 表摘除（M42-DMGC22 笔㉒——delete_id
+    /// 复用面：frame callback commit 冲刷后销毁 + wl_display.delete_id
+    /// 随行 + 对象表同步摘除——v0「不回收」口径退役；sync 域同款语义
+    /// M42-WAYCOMP18）。
+    #[test]
+    fn frame_commit_done_delete_id_pair() {
+        let mut s = new_session();
+        setup_registry(&mut s);
+        let bind = {
+            let mut b = [0u8; 64];
+            let n = encode_registry_bind(&mut b, 2, 1, "wl_compositor", 4, 3).unwrap();
+            b[..n].to_vec()
+        };
+        let cs = {
+            let mut b = [0u8; 64];
+            let n = encode_message(
+                &mut b,
+                3,
+                compositor::REQ_CREATE_SURFACE,
+                &[WlArg::NewId(0x21)],
+            )
+            .unwrap();
+            b[..n].to_vec()
+        };
+        s.feed(&stream_of(&[&bind, &cs]), &mut [0u8; 16]).unwrap();
+        s.set_geometry(0x21, PANE).unwrap();
+        let frame = {
+            let mut b = [0u8; 64];
+            let n =
+                encode_message(&mut b, 0x21, surf_ops::REQ_FRAME, &[WlArg::NewId(0x22)]).unwrap();
+            b[..n].to_vec()
+        };
+        let commit = {
+            let mut b = [0u8; 64];
+            let n = encode_surface_commit(&mut b, 0x21).unwrap();
+            b[..n].to_vec()
+        };
+        let mut out = [0u8; 128];
+        let rep = s.feed(&stream_of(&[&frame, &commit]), &mut out).unwrap();
+        assert_eq!(
+            rep.out_len, 24,
+            "done + delete_id 对（v0 单 done 12B 退役）"
+        );
+        // done(0x22, serial 1) + delete_id(display 1 → 0x22) 逐目对读
+        let m = crate::wayland::parse_message(&out[..12], SIG_CALLBACK_DONE).unwrap();
+        assert_eq!(m.header.object_id, 0x22);
+        assert_eq!(m.args[0], Some(WlArg::Uint(1)));
+        let m = crate::wayland::parse_message(&out[12..24], SIG_DISPLAY_DELETE_ID).unwrap();
+        assert_eq!(m.header.object_id, 1);
+        assert_eq!(m.args[0], Some(WlArg::Uint(0x22)));
+        // 对象表摘除（v0 永驻表膨胀域退役——同 id 复用域前提）
+        assert_eq!(s.table().lookup(0x22), None);
+        assert_eq!(rep.frame_dels, 1);
+        assert_eq!(s.frame_dels_snapshot(), 1);
+    }
+
+    /// 同 id 多轮 frame 复用（M42-DMGC22——delete_id 回收后同 id 重装
+    /// 在环面；第二轮 commit 串号推进 2——done callback_data 对账）。
+    #[test]
+    fn frame_same_id_multi_round_reuse() {
+        let mut s = new_session();
+        setup_registry(&mut s);
+        let bind = {
+            let mut b = [0u8; 64];
+            let n = encode_registry_bind(&mut b, 2, 1, "wl_compositor", 4, 3).unwrap();
+            b[..n].to_vec()
+        };
+        let cs = {
+            let mut b = [0u8; 64];
+            let n = encode_message(
+                &mut b,
+                3,
+                compositor::REQ_CREATE_SURFACE,
+                &[WlArg::NewId(0x21)],
+            )
+            .unwrap();
+            b[..n].to_vec()
+        };
+        s.feed(&stream_of(&[&bind, &cs]), &mut [0u8; 16]).unwrap();
+        s.set_geometry(0x21, PANE).unwrap();
+        let mut out = [0u8; 128];
+        for round in 1..3u32 {
+            let frame = {
+                let mut b = [0u8; 64];
+                // 同 id 0x22 两轮（delete_id 回收域在环——v0 install 拒
+                // 收域退役）
+                let n = encode_message(&mut b, 0x21, surf_ops::REQ_FRAME, &[WlArg::NewId(0x22)])
+                    .unwrap();
+                b[..n].to_vec()
+            };
+            let commit = {
+                let mut b = [0u8; 64];
+                let n = encode_surface_commit(&mut b, 0x21).unwrap();
+                b[..n].to_vec()
+            };
+            let rep = s.feed(&stream_of(&[&frame, &commit]), &mut out).unwrap();
+            assert_eq!(rep.out_len, 24, "轮 {} done + delete_id 对", round);
+            let m = crate::wayland::parse_message(&out[..12], SIG_CALLBACK_DONE).unwrap();
+            assert_eq!(m.header.object_id, 0x22);
+            assert_eq!(m.args[0], Some(WlArg::Uint(round)), "commit 串号推进");
+            let m = crate::wayland::parse_message(&out[12..24], SIG_DISPLAY_DELETE_ID).unwrap();
+            assert_eq!(m.args[0], Some(WlArg::Uint(0x22)));
+            assert_eq!(s.table().lookup(0x22), None, "轮 {} 后摘除", round);
+        }
+        assert_eq!(s.frame_dels_snapshot(), 2);
     }
 
     /// 损伤并集 + 屏域交集裁剪：两次 damage 积累 + 越几何域裁剪。
