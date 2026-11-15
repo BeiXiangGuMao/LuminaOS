@@ -10,16 +10,16 @@ SMP、抢占式调度、ring3 用户进程、SYSCALL/SYSRET、能力化 IPC、sw
 
 | 指标 | 现值 |
 |---|---|
-| 裸机自检 | **131 项全绿**（QEMU 退出码 33 自动验收） |
+| 裸机自检 | **134 项全绿**（QEMU 退出码 33 自动验收） |
 | CI 门禁 | CI-OK 11 阶段（宿主七阶段 + IDL/lint + 内核构建 + 冒烟 + 报告） |
 | syscall ABI | v0.23（SYS_AUX_READ/SYS_PTR_INJECT 新收录） |
 | 编译进程链 | 九形（协议/shm/服务环/常驻/合成器/契约标本/argv/解析/驱动） |
-| 双面板标记 | 130（S8 required + longrun 双面同步） |
+| 双面板标记 | 144（S8 required + longrun 双面同步） |
 
 ## 当前状态
 
-已定版 **v0.27.0**（M41 收官）。之后进入 **M42「用户态桌面进程/Wayland 合成
-器」里程碑**，已逐笔落账 **31 笔**：
+已定版 **v0.36.0**（M42 收官定版）。**M42「用户态桌面进程/Wayland 合成
+器」里程碑**，已逐笔落账 **35 笔**（四笔收官：滚轮/扩展包 + click-to-focus + repeat_info + 收尾对账）：
 
 - **阶段一**：用户态 fb 驱动进程移交链（SYS_DEV_PIO 端口裁量 + 常驻 fbdev 服务化）；
 - **阶段二**：unix socket 域 + Wayland 协议语义面（AF_UNIX 流套接字 + wire 解析壳
@@ -37,7 +37,7 @@ SMP、抢占式调度、ring3 用户进程、SYSCALL/SYSRET、能力化 IPC、sw
   号 + WaitWhat::AuxRead 阻塞读 + 接管态仲裁）、Enter/Leave 域联动（焦点切换
   取证计数 + 光标格直标强制入账）。
 
-每笔带活体自检（t1-t131 续编）、双面板标记与 CI-OK 11 阶段门禁；取证证据链
+每笔带活体自检（t1-t134 续编）、双面板标记与 CI-OK 11 阶段门禁；取证证据链
 全程落账，ADR 八项裁决在库（docs/adr/），五维成熟度 v4 = 6.7/10
 （docs/MATURITY.md，v5 复评随 M42 收口）。
 
@@ -55,7 +55,7 @@ SMP、抢占式调度、ring3 用户进程、SYSCALL/SYSRET、能力化 IPC、sw
 │  调度（per-CPU 四级队列） · 进程/能力（CAP_GRANT/REVOKE） · VFS         │
 │  fb stage 合成执行器（damage 联合域 + sprite 平面） · unixsock 域       │
 │  kbd/aux 双源输入（IRQ1/IRQ12 + ISR 转接臂 + 阻塞等待） · vnet UDP/TCP │
-│  crystal 文件系统装配 · census 败点名 · 131 项裸机自检                  │
+│  crystal 文件系统装配 · census 败点名 · 134 项裸机自检                  │
 └──────────────▲────────────────────────────────────────────────────────┘
                │ unsafe 基元（SAFETY 四行模板，全仓唯一白名单层）
 ┌──────────────┴────────────────────────────────────────────────────────┐
@@ -88,11 +88,12 @@ unsafe 全仓仅四层白名单（ostd / harbor 分配器契约 / kernel::boot /
 - busybox Linux 兼容：ELF64 静态直载 + fork/execve/wait4 进程族 + syscall
   转换层首批硬需集 + multiboot module 制备（t82 活体全链）
 
-**用户态桌面链（M42，31 笔）**
+**用户态桌面链（M42，35 笔）**
 - unix socket 域：AF_UNIX 流套接字 + 阻塞 accept/EOF 终结 + SCM_RIGHTS fd 传递
-- Wayland 语义面：wire 解析壳 + wl_seat 键盘/指针/轴族 + keymap/modifiers
+- Wayland 语义面：wire 解析壳 + wl_seat 键盘/指针/轴族 + keymap/modifiers/repeat_info 公告
 - 常驻合成器：WAYCOMP_SVC_ELF ring3 承接会话环 + boot 换防 + 重启面（bounded-retry）
 - 输入链：多产者队列 + ring3 守护 + ISR 转接臂五臂全谱 + PS/2 aux IRQ12 双源
+- 滚轮/焦点批次：IntelliMouse 击键命令链（ACK 预算过滤——电气源首实证）+ click-to-focus 焦点迁移联动（按钮域）
 - ring3 aux 驱动：AUX_SVC_ELF（编译进程链第九形驱动形）+ SYS_AUX_READ 阻塞读
   + SYS_PTR_INJECT 授权生产 + 接管态仲裁（boot 双轨回归锚）
 - 光标渲染：compose 执行器顶层 sprite 平面（16×16 箭头 + 热点对位 + 屏域钳制）
@@ -154,7 +155,7 @@ cargo run -p xtask -- ci                   # 完整 11 阶段门禁（推荐提�
 ```
 [PASS] S8-smoke (≈55 s)
 CI-OK：全部 11 阶段通过（含 S9 报告）
-LUMINA-SELFTEST-PASS 131/131
+LUMINA-SELFTEST-PASS 134/134
 ```
 
 ### 5. 裸机启动（手动复现冒烟链路）
@@ -168,7 +169,7 @@ objcopy -O binary \
 qemu-system-x86_64 -L <seabios> -L <qemu-data> \
   -kernel lumina-kernel.bin -m 256M -display none -no-reboot \
   -serial file:boot.log -device isa-debug-exit,iobase=0xf4,iosize=0x04
-# 退出码 33 = 131 项自检全过；boot.log 末行 LUMINA-SELFTEST-PASS 131/131
+# 退出码 33 = 134 项自检全过；boot.log 末行 LUMINA-SELFTEST-PASS 134/134
 ```
 
 ### 6. 环境核对单（开窗前置）
@@ -219,7 +220,7 @@ lumina-build/              ← 编译产物 + 日志 + 报告（源码树外，�
 | crate | 定位 | 关键词 |
 |---|---|---|
 | ostd | unsafe 基元层（全仓唯一白名单层） | hw · mm · sync · time · task |
-| kernel | 内核映像（framekernel 本体） | 调度 · VFS · fb 合成 · 输入 · 131 项自检 |
+| kernel | 内核映像（framekernel 本体） | 调度 · VFS · fb 合成 · 输入 · 134 项自检 |
 | bedrock | 磐基契约层 | syscall ABI · TLV · LXE1 · 同步原语 |
 | quill | 终端文本规程纯函数 | console 翻译核 · tty 行分类 |
 | harbor | libc 符号面（forbid unsafe） | errno · string · ctype · stdlib |
@@ -270,11 +271,11 @@ lumina-build/              ← 编译产物 + 日志 + 报告（源码树外，�
 | v0.25.0 | M25–M27 | Conduit 20 结构双闸 → Crystal FS 首割 → 网络栈收口（UDP/TCP） |
 | v0.26.0 | M29–M31 | Harbor libc 首版 → 桌面骨架（Loom/Cascade/Glyph）→ 自举预备 |
 | v0.27.0 | M32–M41 | 九里程碑连发（Aurora SDK → busybox 兼容 → 服务化 → TCP → fb 电气化 → 竞态根治）+ M41 收官 + 八步发布流水线闭环 |
-| 开发线 | M42 用户态桌面链 | **31 笔逐笔落账**（三阶段 + 卫生/损伤/光标/驱动批次）；自检 100→131，ABI v0.23，双面板 130 标记 |
+| 开发线 | M42 用户态桌面链 | **35 笔逐笔落账**（三阶段 + 卫生/损伤/光标/驱动/滚轮/焦点/键盘语义批次）；自检 100→134，ABI v0.23，双面板 130 标记 |
 
 最新发布：**[Release v0.27.0](../../releases)**——src / artifacts / RELEASE_NOTES /
 SHA256SUMS 四资产。M42 桌面链进度随里程碑收口定版（当前 31 笔落账，HEAD 门禁
-CI-OK 全绿，冒烟 131/131）。
+CI-OK 全绿，冒烟 134/134）。
 
 ## 工程纪律
 

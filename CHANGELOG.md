@@ -26,6 +26,34 @@
 - **v0.13.0（M13）**：VFS 骨架移植入真链。
 - **v0.14.0–v0.15.0（真链定版）**：云盘包（打包时刻 2026-10-10）。
 
+## v0.36.0（2026-11-15）—— M42 用户态桌面链三阶段 35 笔收官
+
+> M42「用户态桌面进程/Wayland 合成器」全谱落账（v0.27.0 后连发三阶段 35 笔 +
+> 本收尾对账批；workspace 升版 0.27.0 → 0.36.0）。裸机自检 96 → **134** 项
+> （t101…t134 续编）；syscall ABI v0.20 → **v0.23**（SYS_DEV_PIO/SYS_FB_SURFACE/
+> SYS_UNIXSOCK/SYS_SHM/SYS_AUX_READ/SYS_PTR_INJECT 收录）；五维成熟度 v5 6.8 →
+> **v6 6.9**（docs/MATURITY.md 复评链）。
+
+- **阶段一（fb 驱动进程）**：SYS_DEV_PIO 端口裁量代执车道 + fbdev 映像移交链
+  （SYS_MMAP_ANON LFB 映射）+ 常驻 fbdev 服务化（t101/t108）。
+- **阶段二（unix socket 域）**：SYS_UNIXSOCK(42) 多路复用 op 面（AF_UNIX
+  socketpair/bind/connect/accept/流 I/O + 阻塞 accept/EOF 终结）+ Wayland wire
+  解析壳（签名驱动解析 + 官方 opcode 事实源对账）+ SCM_RIGHTS fd 传递
+  （SEND_FD/RECV_FD）+ SYS_SHM(43) wl_shm 池域（t103/t105/t106）。
+- **阶段三（合成器进程面）**：常驻 waycomp 合成器 ring3 化迁移（WAYCOMP_SVC_ELF
+  编译进程链九形 + boot 换防 + 重启面 bounded-retry）+ prism::wayland::comp 会话
+  语义面全谱（surface 生命周期/damage-commit 发布/帧回调 delete_id 复用/display.
+  sync 多注册/几何 UPDATE 演进）+ 输入链全谱（evdev 键码/keymap 内容面/modifiers
+  态机/axis 族 frame/多产者队列/ring3 守护/ISR 转接臂五臂/毫秒时间源）+ PS/2 双源
+  （IRQ1 键盘 + IRQ12 aux 三字节包态机）+ ring3 aux 驱动进程（AUX_SVC_ELF 第九形
+  驱动形 + SYS_AUX_READ 阻塞读 + SYS_PTR_INJECT 生产闸）+ Enter/Leave 域联动
+  （焦点切换光标格直标）+ 损伤联合域（SYNC 矩形/合并上限细化/16px 粗粒度联动/
+  光标 sprite 渲染面）+ rdtsc lfence 序列化读（t101-t131）。
+- **四笔收官**：IntelliMouse 击键命令链 + wl_pointer axis 电气源（ACK 预算过滤
+  ——电气源首实证）+ click-to-focus 焦点迁移联动面（按钮域 hit-test + 键盘焦点
+  迁移取证戳）+ wl_keyboard.repeat_info 键重复公告面（keymap 后随行官方序 + v0
+  关闭声明口径）+ 本收尾对账批（挂账九项复核翻账 M43 候选池——t132/t133/t134）。
+
 ## v0.27.0（2026-11-08）—— M32–M40 九里程碑连发：SDK/权限中心 + busybox 全链 + 服务化纵深 + 多用户 + 桌面电气化 + 网络收口
 
 > 九里程碑（M32 七笔 / M33 九笔 / M34 七笔 / M35 八笔 / M36 八笔 / M37 五笔 /
