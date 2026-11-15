@@ -170,12 +170,16 @@ WC_ST_COMP = 0x340   # compositor id（bind new_id 承接——dispatch 域）
 WC_ST_SURF = 0x344   # surface id（create_surface new_id 承接——REGISTER/REMOVE 域）
 WC_ST_MSGC = 0x348   # 消息计数（解析面活体——v0 无计数域扩容）
 WC_ST_DMGC = 0x34C   # damage 计数（域闸活体）
-WC_ST_FLAGS = 0x350  # bit0 = globals 已发（公告单发门控——v0 rbx 旗标槽面化）
+WC_ST_FLAGS = 0x350  # bit0 = globals 已发（首公告取证旗——M42-DMGL23 多注册
+                     # 表面在环后单发门控退役：重复 get_registry 放行，旗
+                     # 保留为「至少一次公告」取证面）
 WC_ST_REG = 0x354    # registry id（get_registry new_id 承接——bind dispatch 域）
 WC_ST_NEXT = 0x358   # walk_next 暂存（commit 臂 paint 域 rbp 让位）
 WC_ST_FILL = 0x35C   # 填充游标（域⑥——r15 高 32 位打包退役为内存槽）
 WC_ST_SER = 0x360    # done 串号（域⑥——r15 低 32 位退役；跨会话存续不复位）
-WC_DATA_SIZE = 0x380  # 数据段（v0 0x340 扩容——+域⑥ 解析槽面）
+WC_ST_REG2 = 0x380   # 第二 registry id（M42-DMGL23 多注册表面——重复
+                     # get_registry new_id 承接；bind dispatch 双槽匹配域）
+WC_DATA_SIZE = 0x384  # 数据段（v0 0x380 扩容——+REG2 槽）
 # walk 裁决批（120 B——标准批 + 第二 damage，commit 步进 88→112）
 WC_BATCH_EXT_LEN = 120
 WC_BATCH_EXT_COMMIT_OFF = 112
@@ -889,14 +893,16 @@ def build_fbdev_svc_code():
 # ("wayland-1") → LOG boot 取证 → 真常驻环〔ACCEPT_B 阻塞收连接 → 会
 # 话环：RECV 填充环 → **walk 裁决解析器（v0 定形匹配器 A@0/C@88 固定
 # 偏移退役）**：逐消息头 walk〔obj id + (size<<16|opcode)〕+ 签名域闸
-# 〔get_registry(1,1) 12B → registry id 槽承接 + globals 124B 公告单发
-# 门控；bind(reg,0) 40B → 接口名 string walk〔len=14 + "wl_c"/"ompo"/
+# 〔get_registry(1,1) 12B → registry id 槽承接 + globals 124B 公告多发
+# （M42-DMGL23 多注册表面——单发门控退役：重复 get_registry 分域承接
+# 第二槽 + 批头 4 处 obj id 改写承新 id；bind(reg,0) 40B → 接口名
+# string walk〔len=14 + "wl_c"/"ompo"/
 # "sito"/"r" 四 dword 内容域闸〕→ compositor id 槽承接；
 # create_surface(comp,0) 12B → surface id 槽承接；damage(surf,2) 24B
 # → 计数槽；commit(surf,6) 8B → SYS_FB_SURFACE op0 REGISTER（surface
 # id 解析槽直读——协议驱动，v0 常量域退役）→ pane_pattern 320×200 直
 # 写 → SYS_FB_SYNC 损伤记账 → done 事件 12B（串号槽面递增）；dispatch
-# default（未知 obj/op/null 对象/重复 get_registry）→ 畸形拒收 →
+# default（未知 obj/op/null 对象）→ 畸形拒收 →
 # teardown〕→ RECV 0 = EOF / 畸形拒收 → teardown〔op2 REMOVE（surface
 # id 解析槽直读）+ SYNC〕→ 回 ACCEPT_B——真常驻不退出形〕。寄存器契
 # 约：r12d = 监听者 / r13d = 连接 / r14 = 接收窗基址 / rbx = walk 游标
@@ -950,7 +956,7 @@ def build_wc_svc_code():
     a.jcc32(0x87, "bail_accept")               # ja bail_accept
 
     # 5) 会话状态复位（域⑥ 解析槽面——fill 入复位清单；串号槽跨会话存续）
-    for slot in (WC_ST_COMP, WC_ST_SURF, WC_ST_MSGC, WC_ST_DMGC, WC_ST_FLAGS, WC_ST_REG, WC_ST_FILL):
+    for slot in (WC_ST_COMP, WC_ST_SURF, WC_ST_MSGC, WC_ST_DMGC, WC_ST_FLAGS, WC_ST_REG, WC_ST_REG2, WC_ST_FILL):
         a.db(0x41, 0xC7, 0x86); a.imm32(st(slot)); a.imm32(0)   # mov dword [r14+disp], 0
     a.db(0x31, 0xDB)                           # xor ebx, ebx（walk = 0）
 
@@ -994,10 +1000,18 @@ def build_wc_svc_code():
     a.jcc32(0x85, "bind_chk")                  # jne bind_chk
     a.db(0x41, 0x81, 0xF8); a.imm32(0x000C_0001)  # cmp r8d, (12<<16)|1
     a.jcc32(0x85, "bad_msg")                   # jne bad_msg（display 域定形外拒收——sync 挂账）
-    a.db(0x41, 0xF7, 0x86); a.imm32(st(WC_ST_FLAGS)); a.imm32(1)  # test dword [r14+flags], 1
-    a.jcc32(0x85, "bad_msg")                   # jnz bad_msg（重复 get_registry 拒收——公告单发纪律）
+    # M42-DMGL23 多注册表面：单发门控退役——重复 get_registry 放行，
+    # 分域承接（首次 → ST_REG；重复 → ST_REG2）+ globals 批 4 处 obj
+    # id 域改写（任意 new_id 承批头——多公告承新 id）
     a.db(0x41, 0x8B, 0x44, 0x1E, 0x08)         # mov eax, [r14+rbx+8]（new_id = registry）
-    a.db(0x41, 0x89, 0x86); a.imm32(st(WC_ST_REG))            # mov [r14+reg], eax（registry id 槽承接）
+    a.db(0x41, 0x8B, 0x8E); a.imm32(st(WC_ST_REG))            # mov ecx, [r14+reg]（首次判定域）
+    a.db(0x41, 0x89, 0x86); a.imm32(st(WC_ST_REG2))           # mov [r14+reg2], eax（默认第二槽承接）
+    a.db(0x85, 0xC9)                           # test ecx, ecx
+    a.jcc32(0x85, "reg1_done")                 # jnz reg1_done（非首次——reg2 承接完成）
+    a.db(0x41, 0x89, 0x86); a.imm32(st(WC_ST_REG))            # mov [r14+reg], eax（首次——第一槽承接）
+    a.label("reg1_done")
+    for _off in (0, 36, 64, 92):               # globals 批 4 事件头 obj id 改写
+        a.db(0x41, 0x89, 0x86); a.imm32(st(WC_GLOB_OFF + _off))  # mov dword [r14+disp], eax
     mov_edi_i(a, USOCK_SEND)
     a.db(0x44, 0x89, 0xEE)                     # mov esi, r13d
     mov_edx_i(a, ELF_DATA_VA + WC_GLOB_OFF)    # mov edx, globals 批指针
@@ -1009,9 +1023,14 @@ def build_wc_svc_code():
     a.jmp32u("advance")
 
     # —— B) registry.bind(reg,0) 40B：接口名 string walk + 内容域闸
+    #（M42-DMGL23——registry 对象域闸双槽匹配：第一/第二 registry 均
+    # 可 bind——经第二 registry bind 全谱可用）
     a.label("bind_chk")
     a.db(0x41, 0x3B, 0x86); a.imm32(st(WC_ST_REG))            # cmp eax, [r14+reg]
-    a.jcc32(0x85, "comp_chk")                  # jne comp_chk
+    a.jcc32(0x84, "bind_sig")                  # je bind_sig（第一 registry 命中）
+    a.db(0x41, 0x3B, 0x86); a.imm32(st(WC_ST_REG2))           # cmp eax, [r14+reg2]
+    a.jcc32(0x85, "comp_chk")                  # jne comp_chk（双 miss）
+    a.label("bind_sig")
     a.db(0x41, 0x81, 0xF8); a.imm32(0x0028_0000)  # cmp r8d, (40<<16)|0
     a.jcc32(0x85, "bad_msg")                   # jne bad_msg
     a.db(0x41, 0x81, 0x7C, 0x1E, 0x0C); a.imm32(WC_IFACE_LEN)    # cmp dword [r14+rbx+12], 14（len 含 NUL）
@@ -1534,8 +1553,12 @@ def main():
         ("0x21c(%r14)", "填充游标槽域（FILL 槽——r15 打包退役）"),
         ("0x220(%r14)", "done 串号槽域（SER 槽——跨会话存续）"),
         ("mov %ecx,0x8(%r11)", "done blob 串号域改写"),
-        ("mov %eax,0x214(%r14)", "registry id 槽写域（get_registry new_id 承接）"),
-        ("cmp 0x214(%r14),%eax", "registry id dispatch 域（bind 对象域闸）"),
+        ("mov %eax,0x214(%r14)", "registry id 槽写域（get_registry new_id 承接——首域）"),
+        ("mov %eax,0x240(%r14)", "第二 registry id 槽写域（M42-DMGL23 多注册——重复 get_registry 承接）"),
+        ("mov %eax,-0x100(%r14)", "globals 批头 obj id 改写域（多公告承新 id——4 处首锚，负 disp = r14 基址下方 globals 批）"),
+        ("mov %eax,-0xa4(%r14)", "globals 批尾事件头 obj id 改写域（@92——4 处尾锚）"),
+        ("cmp 0x214(%r14),%eax", "registry id dispatch 域（bind 对象域闸——第一槽）"),
+        ("cmp 0x240(%r14),%eax", "第二 registry id dispatch 域（bind 双槽匹配——M42-DMGL23）"),
         ("mov %eax,0x200(%r14)", "compositor id 槽写域（bind new_id 承接）"),
         ("cmp 0x200(%r14),%eax", "compositor id dispatch 域"),
         ("mov %eax,0x204(%r14)", "surface id 槽写域（create_surface new_id 承接）"),

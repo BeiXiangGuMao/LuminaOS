@@ -10662,7 +10662,8 @@ fn t109_run(log: &mut DualLog) -> bool {
 ///     kmain spawn 换防落账，v0 in-test 播种退役）→ boot pid 槽 +
 ///     resident 旗标 × 原生 ABI 复合显形 + 名域登记对账（内核 waycomp
 ///     双轨回归锚保持——wayland-comp 断言面不变）；
-/// (c) 会话环合流电气面 ×2 轮同构（真常驻回环显形域）：connect（
+/// (c) 会话环合流电气面 ×3 轮同构（真常驻回环显形域；M42-DMGL23
+///     round2 多 registry 批升级）：connect（
 ///     NoEnt 重试窗——ELF bind 时延吸收，t108 dispi 重试同谱）→ wire
 ///     批单发〔round0 = 标准批 96 B（A@0/C@88 锚域回归锚——gen 域⑤
 ///     客户端批逐字节对账）；round1 = walk 裁决批 120 B（标准批 + 第二
@@ -10675,13 +10676,17 @@ fn t109_run(log: &mut DualLog) -> bool {
 ///     walk == got 严格闭合，事件流零尾字〕→ 合成执行 + VRAM
 ///     pane_pattern 四探针（ELF REGISTER 槽写窗直写 + SYS_FB_SYNC 记
 ///     账——ring3 合流电气面显形）→ SHUT → surface 摘除有界等 → EOF
-///     排空对账 → 客户端句柄收口；
+///     排空对账 → 客户端句柄收口。**round2 多 registry 批（
+///     M42-DMGL23）**：标准批 + 第二 get_registry(1,5) + 经第二
+///     registry bind——148 B 批 → 回执双公告 248 B（批头承新 id 5
+///     @124 对读）+ done 12 = 260 B 字节域；walk 全谱 8 公告（4+4
+///     双公告）+ ser=3——v0 公告单发门控退役显形；
 /// (c-neg) 域⑥ 畸形拒收探针：未知 (obj=9, op=3) 定形外消息单发——
 ///     ELF dispatch default 拒收 → teardown 收场回环（fail-visible）；
-///     客户端零事件到达（公告单发门控在 dispatch 域内）+ surface 表
-///     零扰动 + ELF 存续（真常驻回环第三 accept 阻塞域）；
-/// (d) 收束：usock 对账〔ACCEPT_WAKES ≥ +1 / EOFS ≥ +2 / SENDS ≥ +4 /
-///     收字节 ≥ 2×136〕+ ELF 存续（alive × resident——真常驻不退出）
+///     客户端零事件到达（定形外拒收在 dispatch 域内）+ surface 表
+///     零扰动 + ELF 存续（真常驻回环第四 accept 阻塞域）；
+/// (d) 收束：usock 对账〔ACCEPT_WAKES ≥ +1 / EOFS ≥ +3 / SENDS ≥ +5 /
+///     收字节 ≥ 2×136 + 260〕+ ELF 存续（alive × resident——真常驻不退出）
 ///     + surface 表复原 + VRAM pane 域回 stage 基线。
 /// LUMINA-T110-WAYCOMPELF/WIRE/OK 面板标记。
 fn t110_run(log: &mut DualLog) -> bool {
@@ -10718,10 +10723,10 @@ fn t110_run(log: &mut DualLog) -> bool {
     ok &= res_ok;
     // (c) 会话环合流电气面 ×2 轮同构（真常驻回环——第二轮 connect 复
     //     用同服务进程；connect NoEnt 重试窗吸收 ELF bind 时延）
-    let mut round_ok = [false; 2];
-    let mut sers = [0u32; 2];
-    let mut walk_ok_r = [false; 2]; // 域⑥ 客户端全谱 walk 轮账（WIRE 标记取证面）
-    for round in 0..2usize {
+    let mut round_ok = [false; 3];
+    let mut sers = [0u32; 3];
+    let mut walk_ok_r = [false; 3]; // 域⑥ 客户端全谱 walk 轮账（WIRE 标记取证面）
+    for round in 0..3usize {
         let hc = {
             let mut found = None;
             let dl = ostd::time::now() + 480;
@@ -10746,7 +10751,7 @@ fn t110_run(log: &mut DualLog) -> bool {
         // wire 批单发（prism 编码器同源构建——gen 域⑤⑥客户端批逐字节
         // 对账：round0 = 标准批 96 B；round1 = walk 裁决批 120 B〔第二
         // damage 入批——commit 步进 88→112，定形匹配器必失域〕）
-        let mut batch = [0u8; 160];
+        let mut batch = [0u8; 256];
         let mut bl = 0usize;
         bl += wl::encode_display_get_registry(&mut batch[bl..], 1, user::WC_SVC_REGISTRY_ID)
             .unwrap_or(0);
@@ -10793,9 +10798,27 @@ fn t110_run(log: &mut DualLog) -> bool {
             )
             .unwrap_or(0);
         }
+        // M42-DMGL23 多 registry 批（round2——第二 get_registry + 经第二
+        // registry bind：公告承新 id 5 + comp 槽承接同谱——v0 公告单发
+        // 门控退役显形）
+        let multi = round == 2;
+        if multi {
+            bl += wl::encode_display_get_registry(&mut batch[bl..], 1, 5).unwrap_or(0);
+            bl += wl::encode_registry_bind(
+                &mut batch[bl..],
+                5,
+                1,
+                "wl_compositor",
+                4,
+                user::WC_SVC_COMP_ID,
+            )
+            .unwrap_or(0);
+        }
         bl += wl::encode_surface_commit(&mut batch[bl..], user::WC_SVC_SURF).unwrap_or(0);
         let batch_ok = bl
-            == if ext {
+            == if multi {
+                148 // 标准批 96 + 第二 get_registry 12 + 第二 bind 40
+            } else if ext {
                 user::WC_SVC_WIRE_LEN_EXT
             } else {
                 user::WC_SVC_WIRE_LEN
@@ -10807,14 +10830,15 @@ fn t110_run(log: &mut DualLog) -> bool {
         let mut acc = [0u8; 512];
         let mut got = 0usize;
         let dl = ostd::time::now() + 960;
-        while got < user::WC_SVC_EV_TARGET && ostd::time::now() < dl {
+        let ev_target = if multi { 260 } else { user::WC_SVC_EV_TARGET };
+        while got < ev_target && ostd::time::now() < dl {
             match unixsock::sock_recv(me, hc as u64, &mut acc[got..]) {
                 Ok(0) => break,
                 Ok(n) => got += n,
                 Err(_) => break,
             }
         }
-        let recv_ok = got >= user::WC_SVC_EV_TARGET;
+        let recv_ok = got >= ev_target;
         // globals 头对账（registry=2 global 事件——36 B 头打包域）
         let ghdr = |a: &[u8]| -> (u32, u32) {
             (
@@ -10823,6 +10847,9 @@ fn t110_run(log: &mut DualLog) -> bool {
             )
         };
         let glob_ok = got >= 12 && ghdr(&acc) == (user::WC_SVC_REGISTRY_ID, (36u32) << 16);
+        // 第二公告头对读（multi 域——公告承新 id 5 @124——v0 单发门控
+        // 退役显形：重复 get_registry 全谱公告批头改写域）
+        let glob2_ok = !multi || (got >= 136 && ghdr(&acc[124..132]) == (5u32, (36u32) << 16));
         // done 尾解析（obj=0x31 / header (12<<16)|0 / 串号 = round+1）
         let tail = &acc[got.saturating_sub(12)..got.max(12)];
         let (dobj, dhdr) = ghdr(tail);
@@ -10839,6 +10866,7 @@ fn t110_run(log: &mut DualLog) -> bool {
         let mut done_pos_ok = false;
         let ann_expect = [36u32, 28, 28, 32];
         let ann_names = ["wl_compositor", "wl_seat", "wl_shm", "wl_output"];
+        let ann_n = if multi { 8 } else { 4 }; // multi = 双公告全谱（4+4）
         while walk < got {
             if got - walk < wl::HEADER {
                 ann_ok = false;
@@ -10856,16 +10884,20 @@ fn t110_run(log: &mut DualLog) -> bool {
                 ann_ok = false;
                 break;
             }
-            if hdr.object_id == user::WC_SVC_REGISTRY_ID && hdr.opcode == wl::registry::EV_GLOBAL {
+            // multi 域第二公告事件 obj = 5（公告承新 id——双 registry
+            // 事件域全谱 walk 对账）
+            let reg_match =
+                hdr.object_id == user::WC_SVC_REGISTRY_ID || (multi && hdr.object_id == 5);
+            if reg_match && hdr.opcode == wl::registry::EV_GLOBAL {
                 match wl::parse_message(
                     &acc[walk..got],
                     &[wl::WlType::Uint, wl::WlType::Str, wl::WlType::Uint],
                 ) {
                     Ok(m) => {
-                        ann_ok &= if ann < 4 {
-                            m.header.size as u32 == ann_expect[ann]
+                        ann_ok &= if ann < ann_n {
+                            m.header.size as u32 == ann_expect[ann % 4]
                                 && matches!(&m.args[1], Some(wl::WlArg::Str(s))
-                                    if *s == ann_names[ann].as_bytes())
+                                    if *s == ann_names[ann % 4].as_bytes())
                         } else {
                             false
                         };
@@ -10881,9 +10913,9 @@ fn t110_run(log: &mut DualLog) -> bool {
             }
             walk += size;
         }
-        let walk_ok = ann_ok && ann == 4 && done_pos_ok && walk == got;
+        let walk_ok = ann_ok && ann == ann_n && done_pos_ok && walk == got;
         walk_ok_r[round] = walk_ok;
-        ok &= recv_ok && glob_ok && done_ok && walk_ok;
+        ok &= recv_ok && glob_ok && glob2_ok && done_ok && walk_ok;
         // 合成执行 + VRAM pane_pattern 四探针（ELF REGISTER 槽写窗直写
         // + SYS_FB_SYNC 记账——ring3 合流电气面显形；掩码域 t107 同款）。
         // 合成快照「登记次拍生效」一帧滞后语义——有界多拍合成重试
@@ -10951,8 +10983,15 @@ fn t110_run(log: &mut DualLog) -> bool {
         // 客户端句柄收口（SYS_CLOSE socket 分支终结旗标随行置位——
         // 15 槽定容句柄表跨轮/跨测试耗尽免疫；对象存续纪律不变）
         let closed = vfs::sys_close(hc as u64) == 0;
-        round_ok[round] =
-            removed && eof == 0 && recv_ok && glob_ok && done_ok && walk_ok && send_ok && closed;
+        round_ok[round] = removed
+            && eof == 0
+            && recv_ok
+            && glob_ok
+            && glob2_ok
+            && done_ok
+            && walk_ok
+            && send_ok
+            && closed;
         ok &= round_ok[round];
         let _ = writeln!(
             log,
@@ -10960,7 +10999,7 @@ fn t110_run(log: &mut DualLog) -> bool {
             round, send_ok, recv_ok, glob_ok, walk_ok, layer_ok, px_ok, removed
         );
     }
-    let rounds_ok = round_ok[0] && round_ok[1] && sers == [1, 2];
+    let rounds_ok = round_ok[0] && round_ok[1] && round_ok[2] && sers == [1, 2, 3];
     ok &= rounds_ok;
     // (c-neg) 域⑥ 畸形拒收探针：未知 (obj=9, op=3) 定形外消息单发——
     // dispatch default 拒收 → teardown 收场回环（fail-visible）；客户
@@ -11014,10 +11053,10 @@ fn t110_run(log: &mut DualLog) -> bool {
     ok &= neg_ok;
     // (d) 收束：usock 对账 + ELF 存续 + surface 表复原 + VRAM 复原
     let ust = unixsock::usock_stamps();
-    let stamps_ok = ust.6 > us0.6 // ACCEPT_WAKES ≥ +1（阻塞 accept 唤醒链——round0 定向唤醒；round1 拾取已排队连接视 ELF teardown 时序可免唤醒，双形态合法域）
-        && ust.7 >= us0.7 + 2 // EOFS ≥ +2（两轮 ELF EOF——客户端排空另行计数）
-        && ust.0 >= us0.0 + 4 // SENDS：客户端 2 批 + ELF globals/done ×2
-        && ust.2 - us0.2 >= 2 * user::WC_SVC_EV_TARGET as u64; // 客户端收字节
+    let stamps_ok = ust.6 > us0.6 // ACCEPT_WAKES ≥ +1（阻塞 accept 唤醒链——round0 定向唤醒；round1/2 拾取已排队连接视 ELF teardown 时序可免唤醒，双形态合法域）
+        && ust.7 >= us0.7 + 3 // EOFS ≥ +3（三轮 ELF EOF——客户端排空另行计数）
+        && ust.0 >= us0.0 + 5 // SENDS：客户端 3 批 + ELF globals/done ×3（round2 双公告随行）
+        && ust.2 - us0.2 >= 2 * user::WC_SVC_EV_TARGET as u64 + 260; // 客户端收字节（round2 双公告 260B 随行）
     ok &= stamps_ok;
     // 真常驻不退出形：ELF 存续 × resident 旗标（t110 终态——服务回环
     // 第三次 accept 阻塞域）
@@ -11045,9 +11084,10 @@ fn t110_run(log: &mut DualLog) -> bool {
     ok &= restore_ok;
     let _ = writeln!(
         log,
-        "t110: rounds={rounds_ok} sers=({},{}) alive={alive_ok} count={}=={} stamps=(wakes=+{},eofs=+{},sends=+{}) restore={restore_ok}",
+        "t110: rounds={rounds_ok} sers=({},{},{}) alive={alive_ok} count={}=={} stamps=(wakes=+{},eofs=+{},sends=+{}) restore={restore_ok}",
         sers[0],
         sers[1],
+        sers[2],
         fb::surf_count(),
         sc0,
         ust.6 - us0.6,
@@ -12387,7 +12427,7 @@ fn t116_run(log: &mut DualLog) -> bool {
     ok &= got == 124;
     let _ = writeln!(
         log,
-        "t120: chain got={got} kb={}",
+        "t120: chain got={got} kb={} ok={ok}",
         waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire)
     );
     let mut batch = [0u8; 512];
@@ -13483,10 +13523,18 @@ fn t120_run(log: &mut DualLog) -> bool {
     got = 0; // 游标复位（笔⑱揭雷①同款纪律——链域排水后重计，陈旧计数
              // 误满足门控域收口随码）
              // hit 域（input_pointer_motion 生产面——hit-test 焦点裁决，t115 同谱）
-    ok &= waycomp::input_pointer_motion(64, 64);
+    let inj_m = waycomp::input_pointer_motion(64, 64);
+    ok &= inj_m;
     // 轴扫掠批（input_pointer_axis 生产面——守护 + CompIn 唤醒链）
-    ok &= waycomp::input_pointer_axis(wl::AXIS_VERTICAL_SCROLL, -120, wl::AXIS_SOURCE_WHEEL);
-    ok &= waycomp::input_pointer_axis(wl::AXIS_VERTICAL_SCROLL, -240, wl::AXIS_SOURCE_WHEEL);
+    let inj_a0 = waycomp::input_pointer_axis(wl::AXIS_VERTICAL_SCROLL, -120, wl::AXIS_SOURCE_WHEEL);
+    let inj_a1 = waycomp::input_pointer_axis(wl::AXIS_VERTICAL_SCROLL, -240, wl::AXIS_SOURCE_WHEEL);
+    ok &= inj_a0 && inj_a1;
+    let _ = writeln!(
+        log,
+        "t120: inj motion={inj_m} axis=({inj_a0},{inj_a1}) keys={} ptrs={} ok={ok}",
+        waycomp::WLCOMP_KEYS.load(Ordering::Acquire),
+        waycomp::WLCOMP_PTRS.load(Ordering::Acquire)
+    );
     // 扫掠批全谱 = enter(24)〔motion hit 焦点域随行〕+ source(12) +
     // axis(20)×2 + frame(8) = 84B（walk 按 EV_AXIS 过滤——混合事件域
     // 尺寸域逐事件步进）
@@ -13561,7 +13609,7 @@ fn t120_run(log: &mut DualLog) -> bool {
     ok &= key_ms_ok;
     let _ = writeln!(
         log,
-        "LUMINA-T120-WIRE axis=({},{}) key_time={key_time} floor={ms_floor} axis_n={axis_n} axis_ok={axis_ms_ok} key_ok={key_ms_ok}",
+        "LUMINA-T120-WIRE axis=({},{}) key_time={key_time} floor={ms_floor} axis_n={axis_n} axis_ok={axis_ms_ok} key_ok={key_ms_ok} ok={ok}",
         axis_times[0], axis_times[1]
     );
 
@@ -13586,7 +13634,7 @@ fn t120_run(log: &mut DualLog) -> bool {
     ok &= guard_ok;
     let _ = writeln!(
         log,
-        "t120: eof-ok={eof_ok} done={} surf={} guard-ok={guard_ok} gerr={} endc={}",
+        "t120: eof-ok={eof_ok} done={} surf={} guard-ok={guard_ok} gerr={} endc={} ok={ok}",
         waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire),
         fb::surf_count(),
         waycomp::WLCOMP_GUARD_ERR.load(Ordering::Acquire) - g0,

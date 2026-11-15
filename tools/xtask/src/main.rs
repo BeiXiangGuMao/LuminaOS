@@ -388,15 +388,18 @@ fn smoke_inner() -> bool {
             return false;
         }
     };
-    // 看门狗：150 s 后强杀（步进睡眠，进程先退出则提前收工）。
+    // 看门狗：300 s 后强杀（步进睡眠，进程先退出则提前收工）。
     // M10 扩容依据：新增三自检（t34 双核 ring3 抢占窗口 + t35 八次盘 I/O
     // 的阻塞化换入链 + t36 等待/收割），TCG 下全程实测 ~80 s（v0.9 =
-    // ~50 s @55s 门），余量取整 150 s。
+    // ~50 s @55s 门），余量取整 150 s；M42-DMGL22/23 随行扩容（t122/t123
+    // 活体 + t110 round3 多 registry 批会话轮——每轮含 REGISTER paint +
+    // teardown 全 pane compose 全屏域，S8 全程实测 ~56-91 s @ 宿主负载
+    // 漂移 2-3× 窗——300 s 门给全谱余量）。
     let pid = child.id();
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let wd = std::sync::Arc::clone(&done);
     let watchdog = std::thread::spawn(move || {
-        for _ in 0..150 {
+        for _ in 0..300 {
             if wd.load(std::sync::atomic::Ordering::Relaxed) {
                 return;
             }
