@@ -61,7 +61,9 @@
 //! 臂〕）→ 会话环排空（[`drain_input`]——键盘 evdev 映射直注入；
 //! 指针 hit-test 焦点裁决〔z 序顶窗优先——cascade 平面逆序首个含点
 //! 窗〕+ click-to-focus〔按下域指针焦点面 = 键盘焦点迁移域〕+ 轴域
-//! 扫掠〔AXIS_Q 排空 → axis_source 前置 + axis/axis_stop 批 + 扫掠
+//! 扫掠〔AXIS_Q 排空 → axis_source 前置 + axis/axis_stop 批 + **wheel
+//! 源离散步进随行**〔M43-AV12036——axis 后同 frame 随行 axis_value120，
+//! value120 = dz×120 原字同字派生；非 wheel 源/零步进不随行〕+ 扫掠
 //! 终结 frame——官方分组语义〕）→ 会话待发队列（prism CompSession
 //! 焦点/注入钩子）→ feed 冲刷 wl_keyboard/wl_pointer 事件出域 → 客
 //! 户端。会话环 = **阻塞输入等
@@ -230,6 +232,11 @@ pub static WLCOMP_FRAMES: AtomicU64 = AtomicU64::new(0);
 /// 轴域越界拒收数（M42-WAYCOMP14——axis>1/source>3 生产域闸 fail-
 /// visible 取证，t115 断言面）。
 pub static WLCOMP_AXIS_BAD: AtomicU64 = AtomicU64::new(0);
+/// 离散步进随行 wire 发出数（M43-AV12036——wheel 源 frame 域 axis
+/// 随行 axis_value120 出域计数：非 wheel 源〔finger/continuous〕零
+/// 离散步进不随行，value=0 零步进不随行——官方语义域闸，t135 断言
+/// 面）。
+pub static WLCOMP_V120: AtomicU64 = AtomicU64::new(0);
 /// modifiers wire 发出数（M42-WAYCOMP15——feed 回执 Modifiers 记录批
 /// 计数：语义核变更域 + enter 快照域全谱，t116 断言面）。
 pub static WLCOMP_MODS: AtomicU64 = AtomicU64::new(0);
@@ -1386,6 +1393,17 @@ fn drain_input(session: &mut CompSession, windows: &[u64]) {
             }
         } else if session.pointer_axis(axis, value).is_ok() {
             WLCOMP_AXES.fetch_add(1, Ordering::AcqRel);
+            // 离散步进随行声明（M43-AV12036——官方语义：wheel 源
+            // frame 域 axis 事件随行 axis_value120；v0 口径 value =
+            // dz × 120 原字〔120 倍轮单位〕，value120 同字派生透传
+            // 〔int 非 fixed〕。非 wheel 源零离散步进不随行；value=0
+            // 零步进不随行——零扰域不占计数不占 wire）。
+            if source == prism::wayland::AXIS_SOURCE_WHEEL
+                && value != 0
+                && session.pointer_axis_value120(axis, value).is_ok()
+            {
+                WLCOMP_V120.fetch_add(1, Ordering::AcqRel);
+            }
         }
     }
     // sprite 平面批尾单合成（M42-SPRITE29 笔㉙——移动域损伤记账完毕后

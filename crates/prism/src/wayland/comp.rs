@@ -59,12 +59,13 @@ use super::{
     encode_keyboard_enter_event, encode_keyboard_key_event, encode_keyboard_keymap_event,
     encode_keyboard_leave_event, encode_keyboard_modifiers_event,
     encode_keyboard_repeat_info_event, encode_pointer_axis_event, encode_pointer_axis_source_event,
-    encode_pointer_axis_stop_event, encode_pointer_button_event, encode_pointer_enter_event,
-    encode_pointer_frame_event, encode_pointer_leave_event, encode_pointer_motion_event,
-    encode_registry_global_event, encode_seat_capabilities_event, iface_name, parse_args,
-    parse_header, registry, seat, shm, shm_pool, surface, WlArg, WlError, WlHeader, WlIface,
-    WlObjectTable, HEADER, KEYMAP_FORMAT_XKB_V1, MOD_ALT, MOD_CAPS, MOD_CTRL, MOD_MOD4, MOD_NUM2,
-    MOD_SHIFT, SEAT_CAPS_KEYBOARD, SEAT_CAPS_POINTER, SIG_COMPOSITOR_CREATE_REGION,
+    encode_pointer_axis_stop_event, encode_pointer_axis_value120_event,
+    encode_pointer_button_event, encode_pointer_enter_event, encode_pointer_frame_event,
+    encode_pointer_leave_event, encode_pointer_motion_event, encode_registry_global_event,
+    encode_seat_capabilities_event, iface_name, parse_args, parse_header, registry, seat, shm,
+    shm_pool, surface, WlArg, WlError, WlHeader, WlIface, WlObjectTable, HEADER,
+    KEYMAP_FORMAT_XKB_V1, MOD_ALT, MOD_CAPS, MOD_CTRL, MOD_MOD4, MOD_NUM2, MOD_SHIFT,
+    SEAT_CAPS_KEYBOARD, SEAT_CAPS_POINTER, SIG_COMPOSITOR_CREATE_REGION,
     SIG_COMPOSITOR_CREATE_SURFACE, SIG_DISPLAY_GET_REGISTRY, SIG_DISPLAY_SYNC, SIG_REGISTRY_BIND,
     SIG_SEAT_GET_KEYBOARD, SIG_SEAT_GET_POINTER, SIG_SHM_CREATE_POOL, SIG_SHM_POOL_CREATE_BUFFER,
     SIG_SHM_POOL_DESTROY, SIG_SURFACE_ATTACH, SIG_SURFACE_COMMIT, SIG_SURFACE_DAMAGE,
@@ -274,6 +275,9 @@ pub enum PtrKind {
     AxisSource,
     /// 滚动手势终结（wl_pointer.axis_stop）。
     AxisStop,
+    /// 离散步进语义（wl_pointer.axis_value120——wheel 源 frame 域随
+    /// axis 事件随行，M43-AV12036）。
+    AxisValue120,
 }
 
 /// 指针事件记录（feed 回执取证域——电气面对账 + t109 断言面）。
@@ -1051,6 +1055,40 @@ impl CompSession {
         Ok(())
     }
 
+    /// 离散步进语义注入（M43-AV12036——axis_value120(axis, value120)
+    /// 官方语义：wheel 源 frame 域随 axis 事件随行声明，value120 =
+    /// 步进累计 × 120 原字〔int 非 fixed〕，负值反向）。轴域闸同
+    /// [`pointer_axis`]（官方 enum axis 0..=1，fail-visible）；无焦点
+    /// 域零事件（官方语义——静默丢弃，Ok 返回）；队满 = InputQFull。
+    pub fn pointer_axis_value120(&mut self, axis: u32, value120: i32) -> Result<(), CompError> {
+        if axis > AXIS_AXIS_MAX {
+            return Err(CompError::BadObject); // 轴域越界（enum axis 声明序）
+        }
+        if self.pointer_obj == 0 || self.ptr_focus == 0 {
+            return Ok(()); // 无焦点域步进零事件（官方语义——静默丢弃）
+        }
+        if self.ptr_n >= INPUT_Q_MAX {
+            return Err(CompError::InputQFull);
+        }
+        self.input_serial = self.input_serial.wrapping_add(1);
+        let serial = self.input_serial;
+        let focus = self.ptr_focus;
+        self.ptr_q[self.ptr_n] = Some(PtrRecord {
+            kind: PtrKind::AxisValue120,
+            surface: focus,
+            serial,
+            x: 0,
+            y: 0,
+            button: 0,
+            state: 0,
+            axis,
+            value: value120,
+            source: 0,
+        });
+        self.ptr_n += 1;
+        Ok(())
+    }
+
     /// 公告名单只读视图。
     pub fn globals(&self) -> &[GlobalDef; GLOBALS_MAX] {
         &self.globals
@@ -1259,6 +1297,12 @@ impl CompSession {
                             self.pointer_obj,
                             self.time_ms as u32, // time 域 = 冲刷批时刻 ms（官方 32 位回绕——M42-WAYCOMP19）
                             r.axis,
+                        ),
+                        PtrKind::AxisValue120 => encode_pointer_axis_value120_event(
+                            &mut out[*out_len..],
+                            self.pointer_obj,
+                            r.axis,
+                            r.value, // value120 = 步进 × 120 原字（int 非 fixed——M43-AV12036）
                         ),
                     }
                     .map_err(CompError::Wire)?;
@@ -3059,6 +3103,77 @@ mod tests {
         );
         assert_eq!(rep.keys.items[2].map(|r| (r.key, r.state)), Some((0x02, 1)));
         assert_eq!(rep.keys.items[3].map(|r| (r.key, r.state)), Some((0x02, 0)));
+    }
+
+    /// M43-AV12036 axis_value120 冲刷链（wheel 源 frame 域随行——官方
+    /// 序 axis_source → axis → axis_value120 → frame 同 frame 出域，
+    /// value120 = 120 倍步进原字 int 透传）。
+    #[test]
+    fn pointer_axis_value120_flush_chain() {
+        let mut s = new_session();
+        setup_registry(&mut s);
+        let batch = {
+            let mut b = [0u8; 160];
+            let mut bl = 0usize;
+            bl += encode_registry_bind(&mut b[bl..], 2, 1, "wl_compositor", 4, 3).unwrap();
+            bl += encode_message(
+                &mut b[bl..],
+                3,
+                compositor::REQ_CREATE_SURFACE,
+                &[WlArg::NewId(0x21)],
+            )
+            .unwrap();
+            bl += encode_registry_bind(&mut b[bl..], 2, 2, "wl_seat", 1, 0x30).unwrap();
+            bl += encode_message(
+                &mut b[bl..],
+                0x30,
+                seat::REQ_GET_POINTER,
+                &[WlArg::NewId(0x31)],
+            )
+            .unwrap();
+            b[..bl].to_vec()
+        };
+        s.feed(&batch, &mut [0u8; 256]).unwrap();
+        s.set_pointer_focus(0x21, 8, 8).unwrap();
+        s.pointer_axis_source(crate::wayland::AXIS_SOURCE_WHEEL)
+            .unwrap();
+        s.pointer_axis(crate::wayland::AXIS_VERTICAL_SCROLL, 120)
+            .unwrap();
+        s.pointer_axis_value120(crate::wayland::AXIS_VERTICAL_SCROLL, 120)
+            .unwrap();
+        s.pointer_frame().unwrap();
+        let mut out = [0u8; 256];
+        let rep = s.feed(&[], &mut out).unwrap();
+        assert_eq!(
+            rep.ptrs.n, 5,
+            "enter + axis_source + axis + value120 + frame 记录批"
+        );
+        assert_eq!(
+            rep.out_len,
+            24 + 12 + 20 + 16 + 8,
+            "enter(24·带 x/y) + axis_source(12) + axis(20) + value120(16) + frame(8)"
+        );
+        let m = crate::wayland::parse_message(&out, crate::wayland::SIG_POINTER_ENTER).unwrap();
+        assert_eq!(m.header.opcode, crate::wayland::pointer::EV_ENTER);
+        let m = crate::wayland::parse_message(&out[24..], crate::wayland::SIG_POINTER_AXIS_SOURCE)
+            .unwrap();
+        assert_eq!(m.header.opcode, crate::wayland::pointer::EV_AXIS_SOURCE);
+        let m =
+            crate::wayland::parse_message(&out[36..], crate::wayland::SIG_POINTER_AXIS).unwrap();
+        assert_eq!(m.header.opcode, crate::wayland::pointer::EV_AXIS);
+        // value120 紧随 axis（官方序——同 frame 域随行声明）
+        let m =
+            crate::wayland::parse_message(&out[56..], crate::wayland::SIG_POINTER_AXIS_VALUE120)
+                .unwrap();
+        assert_eq!(m.header.opcode, crate::wayland::pointer::EV_AXIS_VALUE120);
+        assert_eq!(
+            m.args[0],
+            Some(WlArg::Uint(crate::wayland::AXIS_VERTICAL_SCROLL))
+        );
+        assert_eq!(m.args[1], Some(WlArg::Int(120)), "120 倍步进原字");
+        let m =
+            crate::wayland::parse_message(&out[72..], crate::wayland::SIG_POINTER_FRAME).unwrap();
+        assert_eq!(m.header.opcode, crate::wayland::pointer::EV_FRAME);
     }
 
     /// 修饰键语义核链（M42-WAYCOMP15——Shift 位域 ∪/∖ + CapsLock

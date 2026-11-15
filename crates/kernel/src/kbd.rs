@@ -201,6 +201,11 @@ static AUX_ST: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize
 static AUX_HEAD: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 /// dx 暂存。
 static AUX_DX: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+/// dy 暂存（M43-AV12036 笔㊱揭雷②收口——轮询四字节包态 2 转态 4
+/// 时 dy 字节落槽：v0 实现把态 4 的 dz 字节兼作 dy 位喂公共臂——
+/// dy 字节丢失 + dz 推动光标 y + dz≠0 时零位移闸被穿透，wheel 包
+/// 离域 leave → 轴族事件静默。dy/dz 分离后 dz 纯 axis 域承载）。
+static AUX_DY: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 /// 溢出包待吞字节计数（包头后 dx/dy 两字节——整包丢弃域）。
 static AUX_SKIP: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
@@ -399,8 +404,16 @@ fn aux_emit_packet(head: u8, dx_raw: u8, dy_raw: u8) -> (i32, i32) {
     AUX_CUR_X.store(nx, core::sync::atomic::Ordering::Release);
     AUX_CUR_Y.store(ny, core::sync::atomic::Ordering::Release);
     // 指针生产出线（受理域 fail-visible 由 waycomp 计数戳承载——队
-    // 满丢弃可辨）。
-    let _ = crate::waycomp::input_pointer_motion(nx, ny);
+    // 满丢弃可辨）。**零位移包零重发**（M43-AV12036 笔㊱揭雷收口——
+    // wheel 包 dx=dy=0 的绝对坐标重发 motion(同位) 在消费域 hit-test
+    // 下触发离域 leave（光标 (1914,0) 出窗格 → 焦点清零 → 轴族事件
+    // 静默——value120 离散步进语义在真实 wheel 路径失活，t135 流内序
+    // 锚 [enter,leave,source,frame] 实锤）。零位移 = 光标未动 = 零事
+    // 件（官方语义：motion 只在位移域出域）——三/四字节包一致闸；
+    // 光标态寄存与按钮沿检测不受闸影响。
+    if dxi != 0 || dyi != 0 {
+        let _ = crate::waycomp::input_pointer_motion(nx, ny);
+    }
     // 按钮沿检测（bit0/1/2 → evdev BTN_LEFT/RIGHT/MIDDLE）。
     let btns = usize::from(head & 0x07);
     let prev = AUX_BTN_PREV.load(core::sync::atomic::Ordering::Acquire);
@@ -486,8 +499,11 @@ pub fn aux_pump() -> usize {
             }
             2 => {
                 // 出包域分岔（笔㉜）：三字节态直出；轮询模式转态 4
-                // （dz 字节待收——包长四字节拓域）。
+                // （dz 字节待收——包长四字节拓域；M43-AV12036 揭雷②
+                // 收口——dy 字节落槽 AUX_DY，态 4 出包用真 dy，dz 纯
+                // axis 域承载）。
                 if AUX_WHEEL_MODE.load(core::sync::atomic::Ordering::Acquire) {
+                    AUX_DY.store(b, core::sync::atomic::Ordering::Relaxed);
                     AUX_ST.store(4, core::sync::atomic::Ordering::Release);
                 } else {
                     let head = AUX_HEAD.load(core::sync::atomic::Ordering::Relaxed);
@@ -511,13 +527,15 @@ pub fn aux_pump() -> usize {
             }
             _ => {
                 // 轮增量出包域（4，笔㉜）：dz 8 位二补解码 → 公共臂
-                // 出包 → dz ≠ 0 axis 生产（120 轮单位原字 + wheel 源
+                // 出包〔真 dy——M43-AV12036 揭雷②收口：v0 dz 兼 dy 位
+                // 退役〕→ dz ≠ 0 axis 生产（120 轮单位原字 + wheel 源
                 // 前置声明 + frame 分组终结——t115 扫掠语义同谱：源
                 // 声明先于轴值，帧标记收束分组）；dz = 0 零扰不出域。
                 let head = AUX_HEAD.load(core::sync::atomic::Ordering::Relaxed);
                 let dx_raw = AUX_DX.load(core::sync::atomic::Ordering::Relaxed);
+                let dy_raw = AUX_DY.load(core::sync::atomic::Ordering::Relaxed);
                 let dz = aux_wheel_decode(b);
-                let _ = aux_emit_packet(head, dx_raw, b);
+                let _ = aux_emit_packet(head, dx_raw, dy_raw);
                 if dz != 0 {
                     use prism::wayland::{AXIS_SOURCE_WHEEL, AXIS_VERTICAL_SCROLL};
                     let _ = crate::waycomp::input_pointer_axis(

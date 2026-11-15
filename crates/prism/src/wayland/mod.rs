@@ -631,6 +631,11 @@ pub mod pointer {
     pub const EV_AXIS_SOURCE: u16 = 6;
     /// event axis_stop（uint time + uint axis——滚动手势终结）。
     pub const EV_AXIS_STOP: u16 = 7;
+    /// event axis_value120（uint axis + int value120——离散步进语义，
+    /// M43-AV12036：官方 wl_pointer v9+ 事件声明序 8 = axis_discrete
+    /// 〔已废弃倾向〕、9 = axis_value120——本仓取 9 号 axis_value120
+    /// 承接，8 号 axis_discrete 域外挂账如实登记）。
+    pub const EV_AXIS_VALUE120: u16 = 9;
 }
 
 /// wl_output 请求/事件 opcode。
@@ -767,6 +772,10 @@ pub const SIG_POINTER_FRAME: &[WlType] = &[];
 pub const SIG_POINTER_AXIS_SOURCE: &[WlType] = &[WlType::Uint];
 /// wl_pointer.axis_stop 事件：`(uint time, uint axis)`。
 pub const SIG_POINTER_AXIS_STOP: &[WlType] = &[WlType::Uint, WlType::Uint];
+/// wl_pointer.axis_value120 事件：`(uint axis, int value120)`——离散步
+/// 进语义（M43-AV12036：value120 = 自上次 value120 以来的步进累计 ×
+/// 120，负值反向——官方 "ui" 签名逐字对账）。
+pub const SIG_POINTER_AXIS_VALUE120: &[WlType] = &[WlType::Uint, WlType::Int];
 /// wl_shm.create_pool：`(new_id, fd, int)`。
 pub const SIG_SHM_CREATE_POOL: &[WlType] = &[WlType::NewId, WlType::Fd, WlType::Int];
 /// wl_shm_pool.create_buffer：`(new_id, int offset, int width, int
@@ -1196,6 +1205,23 @@ pub fn encode_pointer_axis_stop_event(
         pointer_id,
         pointer::EV_AXIS_STOP,
         &[WlArg::Uint(time), WlArg::Uint(axis)],
+    )
+}
+
+/// wl_pointer.axis_value120 事件编组（M43-AV12036——离散步进语义：
+/// wheel 源 frame 域 axis 事件随行声明，官方序 axis → value120 同
+/// frame；value120 = 步进 × 120 原字透传〔int 非 fixed〕）。
+pub fn encode_pointer_axis_value120_event(
+    buf: &mut [u8],
+    pointer_id: u32,
+    axis: u32,
+    value120: i32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        pointer_id,
+        pointer::EV_AXIS_VALUE120,
+        &[WlArg::Uint(axis), WlArg::Int(value120)],
     )
 }
 
@@ -1631,6 +1657,24 @@ mod tests {
         let m = parse_message(&buf, SIG_POINTER_AXIS_STOP).expect("parse");
         assert_eq!(m.header.opcode, pointer::EV_AXIS_STOP);
         assert_eq!(m.args[1], Some(WlArg::Uint(AXIS_HORIZONTAL_SCROLL)));
+        assert_eq!(m.wire_size(), n);
+        // M43-AV12036 axis_value120 编组器（官方序：8 = axis_discrete
+        // 域外挂账、9 = axis_value120 在环——签名 "ui" 逐字对账）。
+        let n = encode_pointer_axis_value120_event(&mut buf, 6, AXIS_VERTICAL_SCROLL, 120)
+            .expect("encode");
+        let m = parse_message(&buf, SIG_POINTER_AXIS_VALUE120).expect("parse");
+        assert_eq!(m.header.opcode, pointer::EV_AXIS_VALUE120);
+        assert_eq!(pointer::EV_AXIS_VALUE120, 9, "官方事件声明序 9 号");
+        assert_eq!(m.args[0], Some(WlArg::Uint(AXIS_VERTICAL_SCROLL)));
+        assert_eq!(m.args[1], Some(WlArg::Int(120)), "120 倍步进原字");
+        assert_eq!(m.wire_size(), n);
+        assert_eq!(n, 16, "8 头 + 8 体（uint + int）");
+        // 负向步进原字透传（dz=-2 → value120=-240 同字派生口径）。
+        let n = encode_pointer_axis_value120_event(&mut buf, 6, AXIS_VERTICAL_SCROLL, -240)
+            .expect("encode");
+        let m = parse_message(&buf, SIG_POINTER_AXIS_VALUE120).expect("parse");
+        assert_eq!(m.header.opcode, pointer::EV_AXIS_VALUE120);
+        assert_eq!(m.args[1], Some(WlArg::Int(-240)));
         assert_eq!(m.wire_size(), n);
     }
 }
