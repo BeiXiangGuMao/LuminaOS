@@ -22,6 +22,22 @@
 //! 不依赖批跑环境的真实键入。**ISR 臂面 [`inject_isr`]**（笔⑰）：与
 //! IRQ1 桩体全谱同路径（on_scancode 双车道——feed + 转接臂，差异仅
 //! 触发源），t118 据此对 ISR 臂全链做活体断言。
+//!
+//! **PS/2 aux（IRQ12）电气源接线域**（M42-AUX25 笔㉕）：IRQ12 桩体
+//! （ostd，源位判读 + 级联双 EOI）→ [`on_aux_byte`] → [`AUX_RING`]
+//! 原始字节环（驱动车道——未来 aux 驱动进程消费域）。**双车道扩谱**
+//! （笔㉔挂账「kbd.rs 双车道接线随 aux 驱动批次」兑现任务面）：
+//! 〔电气车道 [`on_aux_byte`]：IRQ12 桩体 → 原始字节入环〕+
+//! 〔指针生产车道 [`aux_pump`]：三字节包状态机（标准 PS/2 兼容鼠
+//! 标包：字节 0 bit3 恒 1 + 按钮位 + 溢出位，字节 1/2 = dx/dy 9 位
+//! 二补）→ 增量累积光标绝对坐标（屏域钳制）→
+//! [`crate::waycomp::input_pointer_motion`] / [`input_pointer_button`]
+//! 任务语境生产出线——waycomp 会话环 drain 消费〕。包状态机 = 任务
+//! 语境消费域（[`aux_pump`]——waycomp drain 前置泵 + 测试直调双
+//! 入口；ISR 语境零重活纪律保持——桩体只做源位判读 + 入环）。溢出
+//! 包（bit6/7）整包丢弃 fail-visible（[`AUX_OVF`]）；中包杂码重同
+//! 步（[`AUX_RESYNC`]）；注入面 [`inject_aux`] 与 IRQ12 桩体全谱同
+//! 路径（t125 活体承载——批跑无鼠标输入无副作用）。
 
 use morse::{is_release, shift_event, translate};
 use ostd::sync::spsc::SpscRing;
@@ -42,8 +58,10 @@ static SHIFT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::n
 pub static KBD_IRQ_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 /// 初始化：注册 IRQ1 桩钩子（PIC 解 mask 由 interrupts 初始化序负责）。
+/// M42-AUX25 笔㉕随批：IRQ12 aux 钩子同序注册（电气源接线就位）。
 pub fn init() {
     ostd::interrupt::stubs::set_kbd_hook(on_scancode);
+    ostd::interrupt::stubs::set_aux_hook(on_aux_byte);
 }
 
 /// IRQ1 桩体转交点（ostd 钩子）：原始 scancode 入口。
@@ -130,4 +148,192 @@ pub fn inject_raw(b: u8) {
         KBD_DROP.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     }
     crate::task::wake_tasks(|w| matches!(w, crate::task::WaitWhat::TtyRead));
+}
+
+// ---- M42-AUX25 笔㉕：PS/2 aux（IRQ12）电气源接线域 ----
+
+/// aux 原始字节环深度（64 字节 = 包流缓冲余量；溢出丢弃计数显形）。
+const AUX_CAP: usize = 64;
+
+/// aux 原始字节环（驱动车道——IRQ12 桩体单生产 ISR 语境 / [`aux_pump`]
+/// 单消费任务语境，SPSC 契约成立；注入面批跑域事实单生产者纪律同
+/// [`inject_raw`] 先例如实登记）。
+static AUX_RING: SpscRing<u8, AUX_CAP> = SpscRing::new();
+
+/// IRQ12 电气源触发计数（t125 静态对账面；批跑环境通常为 0——无鼠
+/// 标输入，t64 [`KBD_IRQ_COUNT`] 同口径）。
+pub static AUX_IRQ_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// aux 环满丢弃计数（消费域停滞窗溢出显形——fail-visible）。
+pub static AUX_DROP: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// 解码包产出计数（指针生产车道活体取证——t125 断言面）。
+pub static AUX_PACKETS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// 溢出整包丢弃计数（字节 0 bit6/7 溢出位在场——fail-visible）。
+pub static AUX_OVF: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// 中包杂码重同步计数（包流对齐失步——bit3 恒 1 契约面）。
+pub static AUX_RESYNC: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// aux 光标绝对坐标 x（增量累积 + 屏域钳制——[`crate::fb::WIDTH`]）。
+static AUX_CUR_X: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(0);
+/// aux 光标绝对坐标 y（增量累积 + 屏域钳制——[`crate::fb::HEIGHT`]；
+/// PS/2 dy 正值 = 向上 = 屏 y 递减方向，极性反转在包出口）。
+static AUX_CUR_Y: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(0);
+
+/// 上包按钮位（bit0 left / bit1 right / bit2 middle——沿检测寄存面）。
+static AUX_BTN_PREV: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// 包状态机态（0 = 等包头 / 1 = 已收包头 / 2 = 已收 dx / 3 = 溢出吞字节）。
+static AUX_ST: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+/// 包头暂存（按钮位 + 符号位——出包域消费）。
+static AUX_HEAD: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+/// dx 暂存。
+static AUX_DX: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+/// 溢出包待吞字节计数（包头后 dx/dy 两字节——整包丢弃域）。
+static AUX_SKIP: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// 包状态机互斥（[`aux_pump`] 双入口串行化——waycomp drain 前置泵 +
+/// 测试直调并发窗；锁窗 = 状态机步进 + 指针生产即放，零嵌套持有：
+/// [`crate::waycomp::input_pointer_motion`] 内 IN_MU → SCHED 单向序
+/// 在本锁窗内展开，锁序 AUX_ST_MU → IN_MU → SCHED 单向不回环）。
+static AUX_ST_MU: ostd::sync::SpinLock<u32> = ostd::sync::SpinLock::new(0);
+
+/// IRQ12 桩体转交点（ostd 钩子）：原始 aux 字节入口（电气车道）。
+fn on_aux_byte(b: u8) {
+    AUX_IRQ_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    if AUX_RING.send(b).is_err() {
+        AUX_DROP.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// 自检/测试注入入口（M42-AUX25 笔㉕）：与 IRQ12 桩体全谱同路径
+/// （IRQ 计数随行 + 入环，差异仅触发源；t125 活体承载——v0 批跑无
+/// 鼠标输入，事实单生产者纪律同 [`inject_raw`] 先例如实登记）。
+pub fn inject_aux(b: u8) {
+    on_aux_byte(b);
+}
+
+/// aux 光标绝对坐标读面（增量累积域对账——t125 断言面）。
+pub fn aux_cursor() -> (i32, i32) {
+    (
+        AUX_CUR_X.load(core::sync::atomic::Ordering::Acquire),
+        AUX_CUR_Y.load(core::sync::atomic::Ordering::Acquire),
+    )
+}
+
+/// aux 计数读面（packets, ovf, resync, drop, irq——t125 全谱对账）。
+pub fn aux_counts() -> (usize, usize, usize, usize, usize) {
+    (
+        AUX_PACKETS.load(core::sync::atomic::Ordering::Acquire),
+        AUX_OVF.load(core::sync::atomic::Ordering::Acquire),
+        AUX_RESYNC.load(core::sync::atomic::Ordering::Acquire),
+        AUX_DROP.load(core::sync::atomic::Ordering::Acquire),
+        AUX_IRQ_COUNT.load(core::sync::atomic::Ordering::Acquire),
+    )
+}
+
+/// aux 环深度读面（驱动车道待消费字节——t125 排空对账）。
+pub fn aux_pending() -> usize {
+    AUX_RING.len()
+}
+
+/// 指针生产车道（M42-AUX25 笔㉕双车道扩谱任务面）：排空 [`AUX_RING`]
+/// → 三字节包状态机 → 增量累积光标绝对坐标（屏域钳制）→
+/// [`crate::waycomp::input_pointer_motion`] / [`input_pointer_button`]
+/// 任务语境生产出线。返回本轮解码包数。
+///
+/// 包格式（标准 PS/2 兼容鼠标流——QEMU i8042 第二通道默认形）：
+/// 字节 0 = bit3 恒 1 + bit6/7 溢出位 + bit4/5 dx/dy 符号位 +
+/// bit0/1/2 左/右/中按钮；字节 1 = dx（9 位二补低 8 位）；字节 2 =
+/// dy。正 dy = 向上（屏 y 递减）——极性反转在包出口。
+///
+/// 调用域 = 任务语境（waycomp drain 前置泵 + t125 直调——ISR 语境
+/// 零重活纪律：桩体只做源位判读 + 入环，状态机全谱在此）。互斥 =
+/// [`AUX_ST_MU`]（双入口串行化——锁窗内指针生产 IN_MU 单向序展开）。
+pub fn aux_pump() -> usize {
+    let _g = AUX_ST_MU.lock();
+    let mut produced = 0usize;
+    while let Some(b) = AUX_RING.recv() {
+        match AUX_ST.load(core::sync::atomic::Ordering::Acquire) {
+            0 => {
+                if b & 0x08 == 0 {
+                    // 包流对齐失步（bit3 恒 1 契约面）——fail-visible
+                    // 重同步（字节丢弃，态不变）。
+                    AUX_RESYNC.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                } else if b & 0xC0 != 0 {
+                    // 溢出包（bit6/7）整包丢弃——包头后 dx/dy 两字节
+                    // 吞没域（流对齐保持）。
+                    AUX_OVF.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    AUX_SKIP.store(2, core::sync::atomic::Ordering::Relaxed);
+                    AUX_ST.store(3, core::sync::atomic::Ordering::Release);
+                } else {
+                    AUX_HEAD.store(b, core::sync::atomic::Ordering::Relaxed);
+                    AUX_ST.store(1, core::sync::atomic::Ordering::Release);
+                }
+            }
+            1 => {
+                AUX_DX.store(b, core::sync::atomic::Ordering::Relaxed);
+                AUX_ST.store(2, core::sync::atomic::Ordering::Release);
+            }
+            2 => {
+                // 出包域：符号扩展 + 极性反转 + 屏域钳制 + 指针生产。
+                let head = AUX_HEAD.load(core::sync::atomic::Ordering::Relaxed);
+                let dx_raw = AUX_DX.load(core::sync::atomic::Ordering::Relaxed);
+                let dxi = if head & 0x10 != 0 {
+                    i32::from(dx_raw) - 256
+                } else {
+                    i32::from(dx_raw)
+                };
+                let dyi = if head & 0x20 != 0 {
+                    i32::from(b) - 256
+                } else {
+                    i32::from(b)
+                };
+                let w = crate::fb::WIDTH as i32;
+                let h = crate::fb::HEIGHT as i32;
+                let nx =
+                    (AUX_CUR_X.load(core::sync::atomic::Ordering::Acquire) + dxi).clamp(0, w - 1);
+                // 正 dy = 向上 = 屏 y 递减（PS/2 极性反转在包出口）。
+                let ny =
+                    (AUX_CUR_Y.load(core::sync::atomic::Ordering::Acquire) - dyi).clamp(0, h - 1);
+                AUX_CUR_X.store(nx, core::sync::atomic::Ordering::Release);
+                AUX_CUR_Y.store(ny, core::sync::atomic::Ordering::Release);
+                // 指针生产出线（受理域 fail-visible 由 waycomp 计数戳
+                // 承载——队满丢弃可辨）。
+                let _ = crate::waycomp::input_pointer_motion(nx, ny);
+                // 按钮沿检测（bit0/1/2 → evdev BTN_LEFT/RIGHT/MIDDLE）。
+                let btns = usize::from(head & 0x07);
+                let prev = AUX_BTN_PREV.load(core::sync::atomic::Ordering::Acquire);
+                for bit in 0..3u32 {
+                    let mask = 1usize << bit;
+                    if btns & mask != prev & mask {
+                        let code = match bit {
+                            0 => 0x110u32, // BTN_LEFT
+                            1 => 0x111u32, // BTN_RIGHT
+                            _ => 0x112u32, // BTN_MIDDLE
+                        };
+                        let state = if btns & mask != 0 { 1 } else { 0 };
+                        let _ = crate::waycomp::input_pointer_button(code, state);
+                    }
+                }
+                AUX_BTN_PREV.store(btns, core::sync::atomic::Ordering::Release);
+                AUX_PACKETS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                produced += 1;
+                AUX_ST.store(0, core::sync::atomic::Ordering::Release);
+            }
+            _ => {
+                // 溢出吞字节域（3）：dx/dy 两字节静默吞没——流对齐保持。
+                let left = AUX_SKIP.load(core::sync::atomic::Ordering::Acquire);
+                if left <= 1 {
+                    AUX_SKIP.store(0, core::sync::atomic::Ordering::Relaxed);
+                    AUX_ST.store(0, core::sync::atomic::Ordering::Release);
+                } else {
+                    AUX_SKIP.store(left - 1, core::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+    }
+    produced
 }

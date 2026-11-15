@@ -1015,6 +1015,12 @@ fn policy_focus(session: &mut CompSession, windows: &[u64]) {
 /// focus（指针焦点面 = 键盘焦点迁移域）。受理即计
 /// [`WLCOMP_INPUT_PTRS`]（t109 断言面）。
 fn drain_input(session: &mut CompSession, windows: &[u64]) {
+    // M42-AUX25 笔㉕：aux 电气源消费泵前置（kbd.rs 双车道扩谱任务面
+    // ——IRQ12 → AUX_RING 原始字节 → 三字节包状态机 → 增量光标 →
+    // input_pointer_motion/button 任务语境生产——产出元素与既有队列
+    // 同批 drain 消费）。内核双轨回归锚 face（ELF 车道 aux 消费域挂
+    // 账随 aux 驱动 ring3 批次）。
+    crate::kbd::aux_pump();
     while let Some(raw) = KEY_Q.recv() {
         let state = (raw & 0xFFFF_FFFF) as u32;
         let sc = (raw >> 32) as u32;

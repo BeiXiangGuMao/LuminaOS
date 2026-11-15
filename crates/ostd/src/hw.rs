@@ -459,6 +459,25 @@ pub mod pic {
         let imr = ports::read_u8(DATA_MASTER) & !0x02;
         ports::write_u8(DATA_MASTER, imr);
     }
+
+    /// 解除 IRQ12（PS/2 aux 第二通道）屏蔽——M42-AUX25 笔㉕：**级联双
+    /// 位纪律**——〔从片 IMR bit4 清零写回（读改写保留其余屏蔽位；
+    /// remap_timer_only 后从片 IMR=0xFF，清 bit4 → 0xEF）〕+〔主片
+    /// IMR bit2（IRQ2 级联线）清零写回（unmask_irq1 后主片 IMR=0xFC，
+    /// 清 bit2 → 0xF8）——从片任何 IRQ 到达 CPU 必经主片 IRQ2 级联线，
+    /// 只解从片位 = 电气链断（首割单解从片位域揭雷收口随批）〕。
+    pub fn unmask_irq12() {
+        let slave = ports::read_u8(DATA_SLAVE) & !0x10;
+        ports::write_u8(DATA_SLAVE, slave);
+        let master = ports::read_u8(DATA_MASTER) & !0x04;
+        ports::write_u8(DATA_MASTER, master);
+    }
+
+    /// 从片 EOI（IRQ8..15 处理完毕必发——M42-AUX25 笔㉕级联纪律面）。
+    #[inline]
+    pub fn eoi_slave() {
+        ports::write_u8(CMD_SLAVE, EOI);
+    }
 }
 
 /// PS/2 键盘控制器（i8042）——M23-①。第一 PS/2 口（0x60 数据）布线
@@ -472,6 +491,11 @@ pub mod ps2 {
 
     /// 输出缓冲状态位（STATUS bit0：1 = DATA 可读）。
     pub const ST_OUT_FULL: u8 = 0x01;
+
+    /// aux 源位（STATUS bit5：1 = DATA 字节来自第二通道，M42-AUX25
+    /// 笔㉕电气源判读面——IRQ12 桩体源位闸；bit0 在位 + bit5 缺席 =
+    /// 键盘源字节理论窗，随行排空不投递）。
+    pub const ST_AUX_FULL: u8 = 0x20;
 
     /// 读状态寄存器。
     #[inline]

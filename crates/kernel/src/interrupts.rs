@@ -38,6 +38,7 @@ pub fn init_and_enable(log: &mut DualLog) -> u32 {
     let lapic_timer_addr = ostd::interrupt::stub_addr(Stub::LapicTimer);
     let resched_addr = ostd::interrupt::stub_addr(Stub::Resched);
     let kbd_addr = ostd::interrupt::stub_addr(Stub::Irq1);
+    let aux_addr = ostd::interrupt::stub_addr(Stub::Irq12);
     let gate_ok = {
         let mut idt = IDT.lock();
         idt.set_raw(32, timer_addr);
@@ -64,10 +65,14 @@ pub fn init_and_enable(log: &mut DualLog) -> u32 {
         idt.set_raw(usize::from(ostd::hw::lapic::RESCHED_VECTOR), resched_addr);
         // 向量 33：IRQ1 PS/2 键盘（M23-①；PIC 主片，桩内 EOI）
         idt.set_raw(33, kbd_addr);
+        // 向量 44：IRQ12 PS/2 aux 第二通道（M42-AUX25 笔㉕；PIC 从片
+        // IRQ4，级联双 EOI——电气源接线随批，门表先行）
+        idt.set_raw(44, aux_addr);
         let ok = idt.entry_points_to(32, timer_addr)
             && idt.entry_points_to(0, ostd::interrupt::stub_addr(Stub::FaultDe))
             && idt.entry_points_to(14, pf_rec_addr)
             && idt.entry_points_to(33, kbd_addr)
+            && idt.entry_points_to(44, aux_addr)
             && idt.entry_points_to(usize::from(ostd::hw::lapic::IPI_VECTOR), ipi_addr)
             && idt.entry_points_to(usize::from(ostd::hw::lapic::TIMER_VECTOR), lapic_timer_addr)
             && idt.entry_points_to(usize::from(ostd::hw::lapic::RESCHED_VECTOR), resched_addr);
@@ -81,9 +86,13 @@ pub fn init_and_enable(log: &mut DualLog) -> u32 {
     let actual_hz = ostd::hw::pit::init_channel0(TIMER_HZ);
     ostd::hw::pic::remap_timer_only();
     // M23-①：IRQ1 解 mask + 键盘钩子注册（t64 前就位；批跑无键入无副作用）
+    // M42-AUX25 笔㉕：IRQ12 解 mask（级联双位）+ aux 钩子随 kbd::init
+    // 注册（电气源接线就位——批跑无鼠标输入无副作用，门表/IMR 契约
+    // 由 t125 静态对账）
     ostd::hw::pic::unmask_irq1();
+    ostd::hw::pic::unmask_irq12();
     crate::kbd::init();
-    let _ = writeln!(log, "pic remapped (irq0+irq1), pit {actual_hz} Hz");
+    let _ = writeln!(log, "pic remapped (irq0+irq1+irq12), pit {actual_hz} Hz");
 
     // 抢占钩子（M6-A）：LAPIC 定时器主体消费（向量 0x41）；M10-A 起本钩子
     // 为纯抢占判定（内核上下文源；计账/老化已迁墙钟钩子）。

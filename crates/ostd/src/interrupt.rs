@@ -214,6 +214,10 @@ pub enum Stub {
     Resched,
     /// 向量 33：IRQ1 PS/2 键盘（M23-①；PIC 主片，EOI 在桩主体内发）。
     Irq1,
+    /// 向量 44（0x2C = 0x28+4）：IRQ12 PS/2 aux 第二通道（M42-AUX25 笔
+    /// ㉕电气源接线；PIC 从片 IRQ4，级联 EOI 在桩主体内发——从片先、
+    /// 主片随行）。
+    Irq12,
 }
 
 /// 桩符号地址（供 [`Idt::set_raw`] 注册）。
@@ -234,6 +238,7 @@ pub fn stub_addr(stub: Stub) -> u64 {
         fn isr_lapic_timer();
         fn isr_resched();
         fn isr_kbd();
+        fn isr_aux();
     }
     let f: unsafe extern "C" fn() = match stub {
         Stub::Timer => isr_timer,
@@ -249,6 +254,7 @@ pub fn stub_addr(stub: Stub) -> u64 {
         Stub::LapicTimer => isr_lapic_timer,
         Stub::Resched => isr_resched,
         Stub::Irq1 => isr_kbd,
+        Stub::Irq12 => isr_aux,
     };
     f as usize as u64
 }
@@ -764,6 +770,36 @@ pub mod stubs {
         "    pop rax",
         "    pop rbp",
         "    iretq",
+        // ---- PS/2 aux 桩（向量 44 = IRQ12，M42-AUX25 笔㉕）----
+        // isr_kbd 同构：对称保存 caller-saved + rbp → 主体 → 对称恢复
+        // → iretq。源位判读（STATUS bit5）与级联 EOI 全在主体。
+        ".globl isr_aux",
+        "isr_aux:",
+        "    push rbp",
+        "    push rax",
+        "    push rcx",
+        "    push rdx",
+        "    push rsi",
+        "    push rdi",
+        "    push r8",
+        "    push r9",
+        "    push r10",
+        "    push r11",
+        "    mov rbp, rsp",
+        "    and rsp, -16",
+        "    call isr_aux_body",
+        "    mov rsp, rbp",
+        "    pop r11",
+        "    pop r10",
+        "    pop r9",
+        "    pop r8",
+        "    pop rdi",
+        "    pop rsi",
+        "    pop rdx",
+        "    pop rcx",
+        "    pop rax",
+        "    pop rbp",
+        "    iretq",
     }
 
     /// 定时器钩子：返回 true 表示已填写 plan 并完成切换目标布置
@@ -1022,6 +1058,46 @@ pub mod stubs {
             f(sc);
         }
         crate::hw::pic::eoi_master();
+    }
+
+    /// aux 钩子（M42-AUX25 笔㉕）：内核 kbd aux 车道注册点。
+    static AUX_HOOK: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+    /// 注册 aux 钩子（内核 kbd 初始化时调用；PIC IRQ12 解 mask 先于此）。
+    pub fn set_aux_hook(hook: fn(u8)) {
+        AUX_HOOK.store(hook as usize, core::sync::atomic::Ordering::Release);
+    }
+
+    /// aux 主体（向量 44 = IRQ12，M42-AUX25 笔㉕）：源位判读 → 读 0x60
+    /// → 转交钩子 → 级联 EOI（从片先、主片随行——i8042 第二通道经
+    /// PIC 从片 IRQ4 布线，级联协议双 EOI 纪律）。
+    /// 源位判读 = STATUS bit5（ST_AUX_FULL）：IRQ12 触发即输出缓冲满，
+    /// 但伪中断窗（spurious）下缓冲可空——OUT_FULL 未置位即跳过读取
+    /// （零 0x60 误吸——防键盘字节被 aux 桩吞没）；置位时读 0x60，
+    /// 仅 aux 源位在场的字节转交钩子（键盘源字节〔理论窗〕随行排空
+    /// 不投递——投递域 = aux 电气源定义域）。
+    #[no_mangle]
+    extern "C" fn isr_aux_body() {
+        let st = crate::hw::ps2::status();
+        if st & crate::hw::ps2::ST_OUT_FULL != 0 {
+            // SAFETY: OUT_FULL 置位即 DATA 可读（控制器保证）。
+            let b = crate::hw::ports::read_u8(0x60);
+            if st & crate::hw::ps2::ST_AUX_FULL != 0 {
+                let hook = AUX_HOOK.load(core::sync::atomic::Ordering::Acquire);
+                if hook != 0 {
+                    // SAFETY: 前置条件 —— 地址来自 set_aux_hook 存入的
+                    //          fn(u8)。
+                    // 并发 —— IRQ12 仅 BSP 布线触发（PIC 从片单一投递），
+                    //         串行；IRQ1/IRQ12 异源可交错——钩子侧环
+                    //         生产单写纪律由消费域承载（aux 车道 SPSC
+                    //         生产侧 ISR 语境 = aux 桩唯一写者）。
+                    let f: fn(u8) = unsafe { core::mem::transmute(hook) };
+                    f(b);
+                }
+            }
+        }
+        crate::hw::pic::eoi_slave(); // 级联纪律：从片 EOI 先行
+        crate::hw::pic::eoi_master(); // 主片随行（IRQ12 经从片级联）
     }
 
     /// 可恢复 #PF 钩子（M5：按需分页；参数 = CR2 故障地址 + 错误码，
