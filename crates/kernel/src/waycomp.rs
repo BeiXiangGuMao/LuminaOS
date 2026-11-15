@@ -427,6 +427,50 @@ fn pointer_cell_link(x: i32, y: i32) {
     );
 }
 
+// ---- M42-SPRITE29 笔㉙：光标 sprite 渲染面（消费域联动核）----
+
+/// sprite 平面位置镜像（打包 i64 同 [`crate::fb::CURSOR_PLANE`] 编码——
+/// 授权域 = fb 平面单事实源，本寄存器只承载同位重注变更检测）。
+static SPRITE_RECT: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+/// sprite 批移动旗（drain_input 批尾单合成门控——零移动批零合成零扰动
+/// 〔M42-DMGC21 批尾单合成纪律同谱〕）。
+static SPRITE_MOVED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// 光标 sprite 平面联动核（M42-SPRITE29 笔㉙消费域——v0「光标 sprite
+/// 渲染面（16px 图形域）」像素面挂账兑现）：热点对位画布左上角 = 指针
+/// 落点 − 热点偏移，屏域钳制（画布完整落屏——边缘域热点位移如实显形，
+/// [`mirror::CURSOR_HOT_X`] 尖端语义保持近缘）；位移非零域旧/新画布双
+/// 笔损伤记账（[`sync_rect`]——联合域单出口；[`crate::fb::DAMAGE_PTR_MARKS`]
+/// 计数域零扰动——t128 marks 断言面保持）+ [`fb::fb_cursor_plane_set`]
+/// 寄存 + 移动旗随批（批尾单合成域——drain_input 尾承接）。同位重注零
+/// 扰动（门控域——[`pointer_cell_link`] 同谱）。
+/// 调用域 = 消费域任务语境（drain_input motion 分支——ISR 语境零重活
+/// 纪律同 [`pointer_cell_link`]：SpinLock 窗不越 ISR）。
+fn cursor_sprite_move(x: i32, y: i32) {
+    let cw = mirror::CURSOR_W as i32;
+    let ch = mirror::CURSOR_H as i32;
+    let sx = (x - mirror::CURSOR_HOT_X as i32).clamp(0, crate::fb::WIDTH as i32 - cw);
+    let sy = (y - mirror::CURSOR_HOT_Y as i32).clamp(0, crate::fb::HEIGHT as i32 - ch);
+    let packed = ((sx as i64) << 32) | (sy as i64 & 0xFFFF_FFFF);
+    let prev = SPRITE_RECT.swap(packed, Ordering::AcqRel);
+    if prev == packed {
+        return; // 同位重注——零扰动（门控域）
+    }
+    if prev >= 0 {
+        let (px, py) = ((prev >> 32) as i32, (prev & 0xFFFF_FFFF) as i32);
+        sync_rect(px, py, mirror::CURSOR_W, mirror::CURSOR_H);
+    }
+    sync_rect(sx, sy, mirror::CURSOR_W, mirror::CURSOR_H);
+    crate::fb::fb_cursor_plane_set(sx, sy);
+    SPRITE_MOVED.store(true, Ordering::Release);
+}
+
+/// 光标 sprite 渲染面取证读面（t129 对账——(画布左上角, 指针落点)；
+/// 零变更只读）。
+pub fn waycomp_cursor_sprite() -> ((i32, i32), (i32, i32)) {
+    (crate::fb::fb_cursor_plane(), waycomp_cursor())
+}
+
 /// 输入链生产面：指针移动（屏幕坐标——会话侧 hit-test 裁决焦点域）。
 /// 守护门禁 + 受理入环唤醒链同 [`input_key`]。
 pub fn input_pointer_motion(x: i32, y: i32) -> bool {
@@ -1135,6 +1179,9 @@ fn drain_input(session: &mut CompSession, windows: &[u64]) {
             // M42-DMG28 笔㉘：指针 16px 粗粒度域联动（消费域光标损伤
             // 直标——格跳变 old+new 双笔 16px 吸附入账，同格零扰）。
             pointer_cell_link(x, y);
+            // M42-SPRITE29 笔㉙：光标 sprite 平面联动（消费域热点对位
+            // 寄存——旧/新画布双笔损伤记账，批尾单合成随 drain 尾）。
+            cursor_sprite_move(x, y);
             // hit-test：z 序顶窗优先（cascade 平面逆序——master 顶层）
             let mut hit = (0u32, 0i32, 0i32);
             if let Ok(plan) = cascade::tiling::tiling_plan(windows, VIEWPORT) {
@@ -1198,6 +1245,12 @@ fn drain_input(session: &mut CompSession, windows: &[u64]) {
         } else if session.pointer_axis(axis, value).is_ok() {
             WLCOMP_AXES.fetch_add(1, Ordering::AcqRel);
         }
+    }
+    // sprite 平面批尾单合成（M42-SPRITE29 笔㉙——移动域损伤记账完毕后
+    // 单 fb_compose_tick drain：旧/新画布域 + 格直标域联合一次上屏；
+    // 零移动批零合成零扰动——DMGC21 批尾单合成纪律同谱）。
+    if SPRITE_MOVED.swap(false, Ordering::AcqRel) {
+        let _ = fb::fb_compose_tick();
     }
     // 修饰键态快照读出（M42-WAYCOMP15——排空域语义核末态取证，t116
     // 端到端断言面）

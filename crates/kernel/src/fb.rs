@@ -600,6 +600,53 @@ pub fn sys_fb_sync_pointer(x: u64, y: u64, w: u64, h: u64) -> u64 {
     0
 }
 
+// ---- M42-SPRITE29 笔㉙：光标 sprite 渲染面（compose 执行器顶层平面域）----
+//
+// 硬件光标平面语义：sprite 不入 [`SURFACES`] 表（零槽位零登记零 z 仲裁
+// ——surf_count/活体断言面零扰动），由 compose 执行器在 blend 结果之上
+// 逐像素顶层盖章（[`cursor_plane_stamp`]）。位置域 = waycomp 消费域联动
+// 寄存（热点对位 + 屏域钳制），显示资产单事实源 = mirror::cursor（描边
+// /填充/透明三态纯函数——宿主测试谱同源同脸）。
+
+/// 光标 sprite 平面位置（打包 i64：高 32 = 画布左上 sx，低 32 = sy；
+/// 屏域钳制后域——boot 基线 (0,0)）。
+static CURSOR_PLANE: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+
+/// 光标 sprite 平面位置寄存（waycomp 消费域联动调用——[`crate::waycomp`]
+/// cursor_sprite_move 承接；位置无关盖章：compose 逐像素重判，旧画布域
+/// 清除 = 调用方旧/新域损伤记账承载）。
+pub fn fb_cursor_plane_set(x: i32, y: i32) {
+    CURSOR_PLANE.store(
+        ((x as i64) << 32) | (y as i64 & 0xFFFF_FFFF),
+        core::sync::atomic::Ordering::Release,
+    );
+}
+
+/// 光标 sprite 平面位置读面（t129 对账域——画布左上角 (sx, sy)）。
+pub fn fb_cursor_plane() -> (i32, i32) {
+    let p = CURSOR_PLANE.load(core::sync::atomic::Ordering::Acquire);
+    ((p >> 32) as i32, (p & 0xFFFF_FFFF) as i32)
+}
+
+/// sprite 平面顶层盖章（compose_one 逐像素消费——(x,y) 落画布域且
+/// sprite 像素不透明时覆写 blend 结果；透明像素保持底层合成原样。
+/// mirror [`mirror::cursor_px`] 单事实源，alpha 位 = 盖章判据——顶层
+/// 平面语义：z 仲裁域之上的确定性覆盖，与 SURFACES 表正交）。
+fn cursor_plane_stamp(x: i32, y: i32, rgb: u32) -> u32 {
+    let p = CURSOR_PLANE.load(core::sync::atomic::Ordering::Acquire);
+    let sx = (p >> 32) as i32;
+    let sy = (p & 0xFFFF_FFFF) as i32;
+    if x < sx || y < sy || x >= sx + mirror::CURSOR_W as i32 || y >= sy + mirror::CURSOR_H as i32 {
+        return rgb;
+    }
+    let px = mirror::cursor_px((x - sx) as u32, (y - sy) as u32);
+    if px >> 24 == 0 {
+        rgb // 透明域——底层合成原样
+    } else {
+        px & 0x00FF_FFFF // 不透明盖章（ARGB → RGB，compose_one 写域同谱）
+    }
+}
+
 // ---- M28-K1 组合器服务化：stage 后备缓冲 + 损伤驱动局部上屏 ----
 //
 // 双轨语义（ADR-0004）：SYS_FB_MAP 直写路径不动（ring3 写 VRAM、SYNC 记账
@@ -1562,11 +1609,10 @@ fn compose_one(
     for y in clip.y..clip.y + clip.h as i32 {
         for x in clip.x..clip.x + clip.w as i32 {
             let (px, _) = stack.blend(x, y, |id| sample_snap(snaps, stage_pages, x, y, id));
-            fb.px(
-                x,
-                y,
-                (u32::from(px.r) << 16) | (u32::from(px.g) << 8) | u32::from(px.b),
-            );
+            let rgb = (u32::from(px.r) << 16) | (u32::from(px.g) << 8) | u32::from(px.b);
+            // M42-SPRITE29 笔㉙：光标 sprite 平面顶层盖章（blend 之上的
+            // 确定性覆盖——透明域底层原样，不透明域覆写）
+            fb.px(x, y, cursor_plane_stamp(x, y, rgb));
             n += 1;
         }
     }

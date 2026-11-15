@@ -332,6 +332,102 @@ impl DamageTracker {
     }
 }
 
+// ---- M42-SPRITE29 笔㉙：光标 sprite 渲染面（显示资产域——纯函数像素面）----
+//
+// 经典左上箭头光标（1px 黑描边 + 白填充），画布 16×16 = [`POINTER_GRANULARITY`]
+// 同谱网格域；热点 = 箭头尖端 (2,2)。**零堆零状态纯函数**——宿主测试谱与
+// 内核 compose 执行器 sprite 平面（fb 顶层盖章域）同源同脸，资产定义单
+// 事实源在本 crate（显示域资产归 mirror 与 Surface/损伤面同族）。
+
+/// 光标 sprite 画布宽（px——16px 网格域单格承载）。
+pub const CURSOR_W: u32 = 16;
+/// 光标 sprite 画布高（px）。
+pub const CURSOR_H: u32 = 16;
+/// 热点 x（画布内偏移——箭头尖端；指针坐标 = 热点屏上落点）。
+pub const CURSOR_HOT_X: u32 = 2;
+/// 热点 y。
+pub const CURSOR_HOT_Y: u32 = 2;
+
+/// 轮廓色（ARGB8888 不透明黑——箭头描边）。
+pub const CURSOR_OUTLINE: u32 = 0xFF00_0000;
+/// 填充色（ARGB8888 不透明白——箭头主体）。
+pub const CURSOR_FILL: u32 = 0xFFFF_FFFF;
+/// 透明域（a=0——compose blend/sprite 平面盖章跳过域）。
+pub const CURSOR_CLEAR: u32 = 0x0000_0000;
+
+/// 轮廓掩码（16 行 × u16，bit15 = lx 0；1 = 黑描边像素）。箭头 12 行
+/// （ly 2..14）：左缘 dx0 竖线 + 对角右缘（dy_k 于 dx_k，k=1..7）+
+/// dy8 肩线横闭（dx3..dx8）+ dy9/10 尾杆（dx3 右缘）+ dy11 尾底横闭。
+static CURSOR_MASK_OUTLINE: [u16; 16] = [
+    0x0000, // ly 0
+    0x0000, // ly 1
+    0x2000, // ly 2：尖端（dx0）
+    0x3000, // ly 3：左缘 dx0-1
+    0x2800, // ly 4：左缘 dx0 + 右缘 dx2
+    0x2400, // ly 5：dx0 + dx3
+    0x2200, // ly 6：dx0 + dx4
+    0x2100, // ly 7：dx0 + dx5
+    0x2080, // ly 8：dx0 + dx6
+    0x2040, // ly 9：dx0 + dx7
+    0x27E0, // ly 10：左缘 dx0 + 肩线横闭 dx3..dx8
+    0x2400, // ly 11：尾杆（左缘 dx0 + 右缘 dx3）
+    0x2400, // ly 12：尾杆
+    0x3C00, // ly 13：尾底横闭 dx0..dx3
+    0x0000, // ly 14
+    0x0000, // ly 15
+];
+
+/// 填充掩码（1 = 白填充像素；描边位优先——同位双掩码命中时轮廓胜出）。
+static CURSOR_MASK_FILL: [u16; 16] = [
+    0x0000, // ly 0
+    0x0000, // ly 1
+    0x0000, // ly 2
+    0x0000, // ly 3
+    0x1000, // ly 4：dx1
+    0x1800, // ly 5：dx1-2
+    0x1C00, // ly 6：dx1-3
+    0x1E00, // ly 7：dx1-4
+    0x1F00, // ly 8：dx1-5
+    0x1F80, // ly 9：dx1-6
+    0x1800, // ly 10：肩下收窄 dx1-2（尾杆上段）
+    0x1800, // ly 11：尾杆 dx1-2
+    0x1800, // ly 12：尾杆 dx1-2
+    0x0000, // ly 13
+    0x0000, // ly 14
+    0x0000, // ly 15
+];
+
+/// sprite 像素函数（纯函数——画布外 / 透明域 = [`CURSOR_CLEAR`]；轮廓
+/// 位优先于填充位）。内核 compose 执行器 sprite 平面盖章域 + 宿主
+/// 测试谱同源消费。
+pub fn cursor_px(lx: u32, ly: u32) -> u32 {
+    if lx >= CURSOR_W || ly >= CURSOR_H {
+        return CURSOR_CLEAR;
+    }
+    let bit = 1u16 << (15 - lx);
+    if CURSOR_MASK_OUTLINE[ly as usize] & bit != 0 {
+        CURSOR_OUTLINE
+    } else if CURSOR_MASK_FILL[ly as usize] & bit != 0 {
+        CURSOR_FILL
+    } else {
+        CURSOR_CLEAR
+    }
+}
+
+/// 不透明像素计数（轮廓 + 填充——paint/compose 总量对账锚，t129 结构
+/// 域消费；静态面 O(1) 直报与逐像素重扫同值口径）。
+pub fn cursor_opaque() -> u32 {
+    let mut n = 0u32;
+    for row in 0..16u32 {
+        for lx in 0..16u32 {
+            if cursor_px(lx, row) != CURSOR_CLEAR {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -697,5 +793,47 @@ mod tests {
         });
         let plan2 = t.drain_plan();
         assert!(!plan2.full && plan2.rects.len() == 1);
+    }
+
+    // ---- M42-SPRITE29 笔㉙：光标 sprite 渲染面（显示资产域宿主谱）----
+
+    #[test]
+    fn cursor_sprite_structural_anchor() {
+        use super::{
+            cursor_opaque, cursor_px, CURSOR_CLEAR, CURSOR_FILL, CURSOR_H, CURSOR_HOT_X,
+            CURSOR_HOT_Y, CURSOR_OUTLINE, CURSOR_W,
+        };
+        // 画布/热点域契约（16px 网格单格承载 + 热点界内——常量面编译期断言）
+        const {
+            assert!(CURSOR_HOT_X < CURSOR_W && CURSOR_HOT_Y < CURSOR_H);
+            assert!(CURSOR_W == super::POINTER_GRANULARITY as u32);
+            assert!(CURSOR_H == super::POINTER_GRANULARITY as u32);
+        }
+        // 尖端 = 热点（描边不透明——指针落点即箭头尖）
+        assert_eq!(cursor_px(CURSOR_HOT_X, CURSOR_HOT_Y), CURSOR_OUTLINE);
+        // 四角透明（alpha 0——sprite 平面盖章跳过域）
+        for (lx, ly) in [(0, 0), (15, 0), (0, 15), (15, 15)] {
+            assert_eq!(cursor_px(lx, ly), CURSOR_CLEAR, "corner ({lx},{ly})");
+        }
+        // 填充/描边/透明三态定点（箭身白 + 描边黑 + 画布外透明）
+        assert_eq!(cursor_px(3, 4), CURSOR_FILL);
+        assert_eq!(cursor_px(2, 6), CURSOR_OUTLINE);
+        assert_eq!(cursor_px(16, 8), CURSOR_CLEAR);
+        assert_eq!(cursor_px(5, 16), CURSOR_CLEAR);
+        // 不透明总量 = 30 描边 + 27 填充 = 57（掩码台账直报对账）
+        assert_eq!(cursor_opaque(), 57);
+        // 纯函数确定性（同参双调同值——零隐藏状态）
+        assert_eq!(cursor_px(7, 9), cursor_px(7, 9));
+        assert_eq!(cursor_opaque(), {
+            let mut n = 0;
+            for ly in 0..CURSOR_H {
+                for lx in 0..CURSOR_W {
+                    if cursor_px(lx, ly) != CURSOR_CLEAR {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        });
     }
 }
