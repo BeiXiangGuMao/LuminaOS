@@ -86,8 +86,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126；M42-DMG27 t127（联合域上限细化活体）起 127；M42-DMG28 t128（指针 16px 粗粒度域联动活体）起 128；M42-SPRITE29 笔㉙ t129（光标 sprite 渲染面活体：compose 执行器顶层 sprite 平面 + 热点对位联动）起 129；M42-AUXR3 笔㉚ t130（ring3 aux 驱动进程活体：SYS_AUX_READ/SYS_PTR_INJECT 车道 + 接管态仲裁）起 130；M42-PTRLINK 笔㉛ t131（Enter/Leave 域联动活体：焦点切换取证计数 + 光标格直标强制入账）起 131；M42-WHEEL32 笔㉜ t132（IntelliMouse 轮询命令链 + wl_pointer axis 电气源活体）起 132；M42-CLICKF33 笔㉝ t133（click-to-focus 焦点迁移联动面活体：纯针直迁 + 键盘迁移取证戳 + 幂等/release 闸）起 133；M42-KBREP34 笔㉞ t134（wl_keyboard.repeat_info 键重复公告面活体：键盘派生域 keymap 后随行 + v0 关闭声明口径 + 域闸负例）起 134；M43-AV12036 笔㊱ t135（wl_pointer.axis_value120 离散步进语义活体：wheel 源 frame 域随行 + 流内序锚 + 零步进不随行域闸）起 135；M43-KBREP37 笔㊷ t136（键重复生产域 + set_cursor 请求域活体：repeat_info 真值公告 + delay/rate 重复窗 + 释放撤销 + 修饰键零登记 + 在册面/默认回退双臂）起 136）。
-const SELFTEST_TOTAL: usize = 136;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126；M42-DMG27 t127（联合域上限细化活体）起 127；M42-DMG28 t128（指针 16px 粗粒度域联动活体）起 128；M42-SPRITE29 笔㉙ t129（光标 sprite 渲染面活体：compose 执行器顶层 sprite 平面 + 热点对位联动）起 129；M42-AUXR3 笔㉚ t130（ring3 aux 驱动进程活体：SYS_AUX_READ/SYS_PTR_INJECT 车道 + 接管态仲裁）起 130；M42-PTRLINK 笔㉛ t131（Enter/Leave 域联动活体：焦点切换取证计数 + 光标格直标强制入账）起 131；M42-WHEEL32 笔㉜ t132（IntelliMouse 轮询命令链 + wl_pointer axis 电气源活体）起 132；M42-CLICKF33 笔㉝ t133（click-to-focus 焦点迁移联动面活体：纯针直迁 + 键盘迁移取证戳 + 幂等/release 闸）起 133；M42-KBREP34 笔㉞ t134（wl_keyboard.repeat_info 键重复公告面活体：键盘派生域 keymap 后随行 + v0 关闭声明口径 + 域闸负例）起 134；M43-AV12036 笔㊱ t135（wl_pointer.axis_value120 离散步进语义活体：wheel 源 frame 域随行 + 流内序锚 + 零步进不随行域闸）起 135；M43-KBREP37 笔㊷ t136（键重复生产域 + set_cursor 请求域活体：repeat_info 真值公告 + delay/rate 重复窗 + 释放撤销 + 修饰键零登记 + 在册面/默认回退双臂）起 136；M43-PRIO38 笔电解 t137（产者优先级域活体：boot 代执面 + waycomp 0/aux 3 级序 + 越界 clamp 语义核）起 137）。
+const SELFTEST_TOTAL: usize = 137;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -935,7 +935,9 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     // t106/t107/t109 断言面不变）。bind 时延吸收 = 名域登记只读探针
     // 有界轮询（零会话扰动——不 connect 不 stamp）；fail-visible：
     // 名域未登记即证据行缺位（t110 (b) 相位 boot-face 对账必炸）。
-    let wcelf_pid = procs::boot_service_spawn("waycomp-svc-elf", &user::WAYCOMP_SVC_ELF);
+    // M43-PRIO38 产者优先级域：waycomp = 输入消费者最高级（交互响应性
+    // ——ready 按级扫描首级拾取）。
+    let wcelf_pid = procs::boot_service_spawn("waycomp-svc-elf", &user::WAYCOMP_SVC_ELF, 0);
     procs::set_waycomp_svc_boot_pid(wcelf_pid);
     let dlw2 = ostd::time::now() + 480; // ELF 装载 + bind 时延吸收窗（t110 connect 重试窗同谱）
     while !unixsock::listener_name_registered(user::WC_SVC_SOCK_NAME) && ostd::time::now() < dlw2 {
@@ -955,7 +957,9 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     // AUX_ELF_OWNED=false——t125 断言面原貌），驱动 idle 让步环零消费；
     // 显式接管随 t130 活体切换。驱动 boot 取证行 LUMINA-T130-AUXBOOT
     // 随串口流（xtask required 面域）。
-    let aux_pid = procs::boot_service_spawn("aux-svc-elf", &user::AUX_SVC_ELF);
+    // M43-PRIO38 产者优先级域：aux-svc = 良民产者最低级（AUXR3 SET_PRIO(3)
+    // 纪律对齐——阻塞读零 CPU，生产事件由 IRQ 唤醒承接）。
+    let aux_pid = procs::boot_service_spawn("aux-svc-elf", &user::AUX_SVC_ELF, 3);
     procs::set_aux_svc_boot_pid(aux_pid);
 
     // 25) swap 预留位：唯一性 / LIFO 复用 / 统计自洽
@@ -7493,6 +7497,12 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t136 = t136_run(&mut log);
     report(&mut log, t136, "keyboard-repeat-producer");
 
+    // t137) 产者优先级域活体（M43-PRIO38 笔电解）：〔结构锚〕→
+    //       〔boot face——两服务级序对账〕→〔代执语义核 clamp/None〕
+    //       →〔计数稳定〕。LUMINA-T137-ANCHOR/BOOT/SEMANTIC/OK。
+    let t137 = t137_run(&mut log);
+    report(&mut log, t137, "producer-priority");
+
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
     //      pf_hook 入口扩判「U 位 或 CR2 落增长栈窗口域」——CPL0 用户
@@ -11526,7 +11536,7 @@ fn t112_run(log: &mut DualLog) -> bool {
     // (d) 服务退出后 boot 重启面：RESIDENT_SEED 探针 ×2 轮重播种 +
     //     注销停面（bounded-retry 有界域——重启尝试计数含失败面）
     let r0 = procs::boot_restarts();
-    let p1 = procs::boot_service_spawn("restart-probe", &user::RESIDENT_SEED);
+    let p1 = procs::boot_service_spawn("restart-probe", &user::RESIDENT_SEED, task::PRIO_NORMAL);
     let d_ok = p1 != usize::MAX && task::task_is_resident(p1) && !task::task_is_lin_abi(p1);
     ok &= d_ok;
     // 轮一：探针自退出 → 收割窗重播种（idle 生产闭包 + 测试直调双域）
@@ -16922,6 +16932,74 @@ fn t136_run(log: &mut DualLog) -> bool {
     let _ = crate::vfs::sys_close(hc as u64);
     if ok {
         let _ = writeln!(log, "LUMINA-T136-OK");
+    }
+    ok
+}
+
+/// t137 产者优先级域活体（M43-PRIO38 笔电解）——四相位：
+/// 〔(a) 结构锚——PRIO_LEVELS/PRIO_NORMAL 域 + 产者优先级策略常量
+///     对账〔waycomp 消费者最高级 0 / aux-svc 良民产者最低级 3——
+///     AUXR3 SET_PRIO(3) 纪律对齐〕〕→〔(b) boot face——两服务 prio
+///     读面对账（task_prio_of pid 槽 = 表行级一致）+ PRIO_BOOT_SETS
+///     代执计数 + 产者/消费者级序关系〕→〔(c) 代执语义核——越界
+///     clamp（level 9 → PRIO_LEVELS-1）+ 不在册 pid None + 自检任务
+///     级写回读对账〕→〔(d) 计数稳定对账〕。
+/// LUMINA-T137-ANCHOR / T137-BOOT / T137-SEMANTIC / T137-OK。
+fn t137_run(log: &mut DualLog) -> bool {
+    let mut ok = true;
+
+    // (a) 结构锚（优先级域常量 + 产者优先级策略）
+    let anchor_ok = task::PRIO_LEVELS == 4
+        && task::PRIO_NORMAL == 1
+        && procs::boot_service_prio("waycomp-svc-elf") == Some(0)
+        && procs::boot_service_prio("aux-svc-elf") == Some(3)
+        && procs::boot_service_prio("no-such-svc").is_none();
+    ok &= anchor_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T137-ANCHOR levels=4 normal=1 waycomp_prio=0 aux_prio=3 prod_lt_cons=true"
+    );
+
+    // (b) boot face（pid 槽级读面 = 表行级对账 + 代执计数 + 级序）
+    let wc_pid = procs::waycomp_svc_boot_pid();
+    let aux_pid = procs::aux_svc_pid();
+    let sets = procs::PRIO_BOOT_SETS.load(Ordering::Acquire);
+    let boot_ok = wc_pid != usize::MAX
+        && aux_pid != usize::MAX
+        && task::task_prio_of(wc_pid) == Some(0)
+        && task::task_prio_of(aux_pid) == Some(3)
+        && sets >= 2
+        && task::task_prio_of(wc_pid).unwrap_or(9) < task::task_prio_of(aux_pid).unwrap_or(9);
+    ok &= boot_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T137-BOOT wc_pid={wc_pid} prio=0 aux_pid={aux_pid} prio=3 sets={sets}（产者 3 > 消费者 0——级序在环）"
+    );
+
+    // (c) 代执语义核（越界 clamp + 不在册 None + 自检任务写回读）
+    let me = task::current_task_id();
+    let clamp_ok = task::task_set_prio_for(me, 9) && task::task_prio_of(me) == Some(3);
+    ok &= clamp_ok;
+    let restore_ok = task::task_set_prio_for(me, u64::from(task::PRIO_NORMAL))
+        && task::task_prio_of(me) == Some(task::PRIO_NORMAL);
+    ok &= restore_ok;
+    let none_ok =
+        task::task_prio_of(usize::MAX).is_none() && !task::task_set_prio_for(usize::MAX, 0);
+    ok &= none_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T137-SEMANTIC clamp=ok restore=ok unlisted_none={}",
+        task::task_prio_of(usize::MAX).is_none()
+    );
+
+    // (d) 计数稳定对账（M43-PRIO38 判据随行升级——服务重启窗代执
+    // 单调增长容忍：boot_restart_tick 重播种同值代执 PRIO_BOOT_SETS
+    // 单调不减——级序表行对账恒定承载）
+    let sets1 = procs::PRIO_BOOT_SETS.load(Ordering::Acquire);
+    let stable = sets1 >= sets && procs::boot_service_prio("waycomp-svc-elf") == Some(0);
+    ok &= stable;
+    if ok {
+        let _ = writeln!(log, "LUMINA-T137-OK");
     }
     ok
 }

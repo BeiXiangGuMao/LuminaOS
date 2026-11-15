@@ -405,12 +405,28 @@ struct BootSvc {
     pid: usize,
     /// 重启尝试计数（成功与失败尝试并入——上限域含失败面）。
     restarts: u64,
+    /// 服务调度优先级（M43-PRIO38 笔电解——产者优先级域：播种后
+    /// boot 代执 task_set_prio_for 承接；重生域同值代执同谱）。
+    prio: u8,
 }
 
 /// boot 服务重启表（定容纪律 = Vec 动态——boot 服务个位数规模）。
 static BOOT_SVCS: SpinLock<alloc::vec::Vec<BootSvc>> = SpinLock::new(alloc::vec::Vec::new());
 /// 累计成功重启数（t112 断言面）。
 static BOOT_RESTARTS: AtomicU64 = AtomicU64::new(0);
+/// boot 服务优先级代执成功数（M43-PRIO38 笔电解——播种/重生域代执
+/// 受理计数，t137 断言面）。
+pub static PRIO_BOOT_SETS: AtomicU64 = AtomicU64::new(0);
+
+/// boot 服务调度优先级读面（M43-PRIO38——名域寻址行级对账，t137
+/// 断言面）。服务不在表 = None。
+pub fn boot_service_prio(name: &str) -> Option<u8> {
+    BOOT_SVCS
+        .lock()
+        .iter()
+        .find(|s| s.name == name)
+        .map(|s| s.prio)
+}
 /// 单行重启尝试上限（M22-③ bounded-retry 纪律——超限停摆 fail-visible，
 /// 崩溃循环服务零无界繁殖；waycomp 名域重 bind 依赖 socket 对象
 /// 生命周期回收面〔挂账〕——重 bind 失败即尝试计数收敛到上限停摆）。
@@ -420,15 +436,21 @@ pub const BOOT_RESTART_MAX: u64 = 64;
 /// 单调用点 `spawn_elf_seed_resident` 换防为本面，重启表随行登记）。
 /// argv = `[name]`（kmain v0 传参同谱）。返回现任任务号（`usize::MAX`
 /// = 播种失败 fail-visible——表行照常登记，tick 收割窗重试）。
-pub fn boot_service_spawn(name: &'static str, blob: &'static [u8]) -> usize {
+pub fn boot_service_spawn(name: &'static str, blob: &'static [u8], prio: u8) -> usize {
     let pid = match spawn_elf_seed_resident(name, blob, &[name]) {
         Ok(p) => p,
         Err(_) => usize::MAX,
     };
+    // M43-PRIO38 产者优先级域代执（播种后按服务级落位——ring3 服务
+    // 自调 SET_PRIO 的 boot 语境等价面；重生域同值代执同谱）。
+    if pid != usize::MAX && task::task_set_prio_for(pid, u64::from(prio)) {
+        PRIO_BOOT_SETS.fetch_add(1, Ordering::AcqRel);
+    }
     BOOT_SVCS.lock().push(BootSvc {
         name,
         blob,
         pid,
+        prio,
         restarts: 0,
     });
     pid

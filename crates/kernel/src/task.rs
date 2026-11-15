@@ -2247,6 +2247,34 @@ pub fn set_current_prio(level: u64) -> u64 {
     prio as u64
 }
 
+/// boot 代执优先级写入面（M43-PRIO38 笔电解——产者优先级域落位：
+/// boot_service_spawn 播种后按服务级代执〔ring3 服务自调 SET_PRIO
+/// 的 boot 语境等价面〕——语义核 set_current_prio 同款：越界
+/// clamp [0, PRIO_LEVELS) + base_prio 衰减目标同步迁移。返回受理。
+pub fn task_set_prio_for(pid: usize, level: u64) -> bool {
+    let _w = IntWindow::new();
+    let mut s = sched_lock!();
+    let prio = level.min((PRIO_LEVELS - 1) as u64) as u8;
+    if let Some(t) = s.tasks.get_mut(pid).and_then(|slot| slot.as_mut()) {
+        t.prio = prio;
+        t.base_prio = prio;
+        true
+    } else {
+        false
+    }
+}
+
+/// 任务调度优先级只读面（M43-PRIO38 笔电解——boot face 取证域：
+/// 服务播种后代执级对账，t137 断言面）。任务不在册 = None。
+pub fn task_prio_of(pid: usize) -> Option<u8> {
+    let _w = IntWindow::new();
+    let s = sched_lock!();
+    s.tasks
+        .get(pid)
+        .and_then(|slot| slot.as_ref())
+        .map(|t| t.prio)
+}
+
 /// 读取当前任务的调度优先级（SYS_GET_PRIO 慢路径）。
 pub fn current_prio() -> u64 {
     let _w = IntWindow::new();
