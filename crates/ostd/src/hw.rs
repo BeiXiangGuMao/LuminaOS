@@ -530,6 +530,108 @@ pub mod ps2 {
         ports::write_u8(IMR_MASTER, saved);
         got.filter(|&b| b == 0x55)
     }
+
+    // ---- M42-WHEEL32 笔㉜：IntelliMouse 轮询命令链电气面 ----
+
+    /// 输入缓冲状态位（STATUS bit1：1 = 控制器输入缓冲满——写前等窗）。
+    const ST_IN_FULL: u8 = 0x02;
+
+    /// 控制器配置寄存器第二端口 IRQ 位（bit1——IRQ12 使能位）。
+    const CFG_AUX_IRQ: u8 = 0x02;
+
+    /// 忙等预算（IN_BUF 空等窗 / OUT_FULL 到达窗，每相位 10 万轮——
+    /// [`controller_self_test`] 同谱预算口径；超限 = false fail-visible）。
+    const AUX_PORT_SPIN_BUDGET: u32 = 100_000;
+
+    /// IMR 主片 IRQ1 位（配置读改写窗自屏蔽——[`controller_self_test`]
+    /// 同款纪律：控制器响应字节为键盘源（bit5=0），IRQ1 桩体抢读会
+    /// 饿死同步读窗；IRQ12 不入本窗——设备源字节仅击键命令链后到达）。
+    const IMR_IRQ1_BIT: u8 = 0x02;
+
+    /// 等输入缓冲空（IN_BUF=0），有界预算；超限 false。
+    fn wait_in_buf_free() -> bool {
+        for _ in 0..AUX_PORT_SPIN_BUDGET {
+            if status() & ST_IN_FULL == 0 {
+                return true;
+            }
+            core::hint::spin_loop();
+        }
+        false
+    }
+
+    /// 等输出缓冲满并读出（OUT_FULL=1），有界预算；超限 None。
+    fn wait_out_read() -> Option<u8> {
+        for _ in 0..AUX_PORT_SPIN_BUDGET {
+            if status() & ST_OUT_FULL != 0 {
+                return Some(data_read());
+            }
+            core::hint::spin_loop();
+        }
+        None
+    }
+
+    /// 控制器命令写（0x64）+ 数据写（0x60）双相位。
+    fn cmd_then_data(cmd: u8, data: u8) -> bool {
+        if !wait_in_buf_free() {
+            return false;
+        }
+        ports::write_u8(CMD, cmd);
+        if !wait_in_buf_free() {
+            return false;
+        }
+        ports::write_u8(DATA, data);
+        true
+    }
+
+    /// 第二 PS/2 端口（aux）使能面（M42-WHEEL32 笔㉜——命令 0xA8 +
+    /// 控制器配置 bit1 置位）。配置寄存器读改写（0x20 读 / 0x60 写）
+    /// 保持其余位（键盘 IRQ bit0 / 翻译 bit6 等）；**IRQ1 自屏蔽窗**
+    /// （配置响应字节经 IRQ1 源投递——ISR 抢读饿死同步读窗，
+    /// [`controller_self_test`] IMR 纪律同谱；出窗恢复原 IMR——自包
+    /// 含，任何调用点均安全）。返回全链是否预算内完成。
+    pub fn aux_port_enable() -> bool {
+        const IMR_MASTER: u16 = 0x21;
+        let saved = ports::read_u8(IMR_MASTER);
+        ports::write_u8(IMR_MASTER, saved | IMR_IRQ1_BIT);
+        let ok = (|| {
+            // 0xA8：使能第二通道（QEMU pckbd 口径——aux IRQ 拉升前提一）。
+            if !wait_in_buf_free() {
+                return false;
+            }
+            ports::write_u8(CMD, 0xA8);
+            // 配置读（0x20）→ 响应字节（键盘源）→ bit1 置位 → 写回（0x60）。
+            if !wait_in_buf_free() {
+                return false;
+            }
+            ports::write_u8(CMD, 0x20);
+            let Some(cfg) = wait_out_read() else {
+                return false;
+            };
+            if cfg & CFG_AUX_IRQ != 0 {
+                return true; // 已使能——幂等域（零写回）
+            }
+            cmd_then_data(0x60, cfg | CFG_AUX_IRQ)
+        })();
+        ports::write_u8(IMR_MASTER, saved);
+        ok
+    }
+
+    /// aux 设备命令/参数单字节写（0xD4 前缀路由第二通道——QEMU i8042
+    /// 口径：0x64←0xD4 后 0x60 写入即设备命令）。双 IN_BUF 空等窗（前
+    /// 缀 + 数据），有界预算 fail-visible。设备 ACK（0xFA）经 IRQ12
+    /// 出字域异步到达——消费域在内核 kbd aux 泵 ACK 过滤臂（本面零同
+    /// 步读——ISR 出字单车道纪律保持）。
+    pub fn aux_write(b: u8) -> bool {
+        if !wait_in_buf_free() {
+            return false;
+        }
+        ports::write_u8(CMD, 0xD4);
+        if !wait_in_buf_free() {
+            return false;
+        }
+        ports::write_u8(DATA, b);
+        true
+    }
 }
 
 /// 8253/8254 可编程间隔定时器（PIT）——HW-07。通道 0 接 PIC IRQ0。
