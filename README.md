@@ -1,16 +1,29 @@
 # Lumina OS（曜光系统）
 
 **100% Rust framekernel 桌面操作系统**——x86_64 长模式裸机内核 + 19 组件 crate
-workspace。内核可经 multiboot1 在 QEMU（`-smp 2`）上裸机启动，物理帧管理、四级
-页表（MMU 实机往返）、双核 SMP、抢占式调度、ring3 用户进程、SYSCALL/SYSRET
-系统调用、能力化 IPC、swap 换页、持久化存储面全部在环；键盘/TTY 交互、
-显示面（1080p LFB/Surface 服务化/文本渲染/stage 合成器）、virtio-net 网络面
-（UDP/TCP 协议栈）全部在环；crystal 格式 v1 文件系统（WAL/快照）在环；
-**96 项裸机自检全绿并自动验收**（QEMU 退出码 33）。
+workspace。内核可经 multiboot1 在 QEMU（`-smp 2`）上裸机启动：物理帧管理、
+四级页表（MMU 实机往返）、双核 SMP、抢占式调度、ring3 用户进程、
+SYSCALL/SYSRET 系统调用、能力化 IPC、swap 换页、持久化存储面全部在环；
+键盘/TTY 交互、显示面（1080p LFB/Surface 服务化/文本渲染/stage 合成器）、
+virtio-net 网络面（UDP/TCP 协议栈）全部在环；crystal 格式 v1 文件系统
+（WAL/快照）在环；用户态桌面链在环——unix socket + Wayland wire 语义、
+ELF 播种 lane、常驻合成器服务（WAYCOMP_SVC_ELF）与键鼠输入链全谱。
+**128 项裸机自检全绿并自动验收**（QEMU 退出码 33）。
 
-当前状态：**v0.27.0（M41 四候选全落账：栈 grow 缺陷族 × syscall entry 致命域三面根治〔#PF 门挂 IST1 应急栈——Linux page_fault 同款 + pf_hook 入口扩判 + t95 撤闸转正〕+ M17-① 块层字节域清账〔t98 取证矩阵全绿消解 + t96 三相位翻正〕+ 多用户纵深二批〔saved-set 三态 + 补充组 + 号域四目 COVERED 43 + t99 交换链矩阵〕+ ash 交互面〔lin_read fd 0 阻塞化 + t100 交互模式端到端——echo 消费/exit 收割〕；v0.27.0 定版八步全闭环——tag/双 tar/SHA256SUMS/GitHub Release 四资产/ls-remote 回环，M32–M40 九里程碑成果固化；原 M40 四候选：ash 启动链滞点标本流程〔pf-evidence 定根因→互斥→回归三步全落——栈 grow 缺陷族 × syscall entry 致命域定性 + M22-③ 族 ISR 抢占窗互斥三闸 + t34/t40 装置事件驱动化适配 + 号域勘误 109/110/111〔getppid 真面〕〕+ 盘上属主域〔crystal InodeRec v2 uid/gid/mode 落盘——FORMAT_VERSION 2 + chown(92)/chmod(90) 车道 + 门禁回源双车道 + stat 真面 + t96 六相位——M39-MU 盘上属主挂账摘牌〕+ cat applet 实证〔t97 内容级断言 + sendfile 车道 + 负例——applet 10 目〕+ PR-P04 Vulkan 计算域语义面 v0〔prism::compute SPIR-V 解析壳 + 管线登记面 + 标量求算核——旧误引标签收口〕；自检 100/100）** · ROADMAP 制度化（M24→M41 十八里程碑逐笔
-落账）· 取证证据链全程落账（t 系活体 t66-t100 续编）· ADR 八项裁决在库
-（docs/adr/）· 五维成熟度 v4 = 6.7/10（docs/MATURITY.md）。
+## 当前状态
+
+已定版 **v0.27.0**（M41 收官：栈 grow 缺陷族 × syscall entry 致命域三面根治、
+块层字节域清账、多用户纵深二批、ash 交互面；八步发布流水线闭环）。v0.27.0
+之后进入 **M42「用户态桌面进程/Wayland 合成器」里程碑**，已逐笔落账 28 笔：
+
+- **阶段一**：用户态 fb 驱动进程移交链（SYS_DEV_PIO 端口裁量 + 常驻 fbdev 服务化）；
+- **阶段二**：unix socket 域 + Wayland 协议语义面（AF_UNIX 流套接字 + wire 解析壳 + SCM_RIGHTS fd 传递 + wl_shm 池域）；
+- **阶段三**：合成器进程面——prism 仲裁策略 ring3 化、重排改写面、native 编译进程链（gen_m42_elf_lane.py 八形）、waycomp 主体 ELF 化迁移、boot 换防、输入链全谱（wl_seat 键盘/指针/轴族、evdev 键码、keymap、modifiers、多产者队列、ISR 转接臂与五臂扩展、阻塞等待）；
+- **卫生与损伤批次**：argv 真消费、shm 池生命周期回收、服务 boot 重启面、毫秒时间源、damage 联合域 SYNC 矩形、commit 发布域批量化、frame callback delete_id 复用、ELF 公告多注册、PS/2 aux（IRQ12）电气源接线（键鼠双源）、rdtsc lfence 序列化读、联合域上限细化（近邻吸附降阶）、指针 16px 粗粒度域联动。
+
+每笔带活体自检（t1-t128 续编）、双面板标记与 CI-OK 11 阶段门禁；取证证据链
+全程落账，ADR 八项裁决在库（docs/adr/），五维成熟度 v4 = 6.7/10
+（docs/MATURITY.md，v5 复评随 M42 收口）。
 
 ## 特性一览
 
@@ -30,7 +43,15 @@ workspace。内核可经 multiboot1 在 QEMU（`-smp 2`）上裸机启动，物�
 - busybox Linux 兼容路径（M33 P1 末 DoD）：ELF64 静态直载 + fork/execve/wait4 进程族
   + syscall 转换层首批硬需集 + multiboot module 制备（t82 活体全链）
 
-**可靠性 · 取证（本项目特色）**
+**用户态桌面链（M42）**
+- unix socket 域：AF_UNIX 流套接字 + 阻塞 accept/EOF 终结 + SCM_RIGHTS fd 传递
+- Wayland 语义面：wire 解析壳 + wl_seat 键盘/指针/轴族 + keymap/modifiers + wl_shm 池域
+- 常驻合成器：WAYCOMP_SVC_ELF（gen 链八形编译产物）ring3 承接会话环 + boot 换防 + 重启面
+- 输入链：多产者队列 + ring3 守护 + kbd→waycomp ISR 转接臂（五臂全谱）+ PS/2 aux IRQ12 双源
+- 损伤域：damage 联合域 SYNC 矩形 + commit 批尾单合成 + 上限近邻吸附细化 + 指针 16px 联动
+- 时间域：TSC 校准毫秒源（lfence 序列化读）+ wire 事件毫秒戳
+
+**可靠性 · 取证**
 - #PF 专项取证面（五级现场分级）+ pf-hunt 大批次守候（断点续跑 + 时间预算收批）
 - census 败点名内化：无锁原子计数 + 首败签名/rip，串口丢线盲区闭环（遗言面）
 - pickup_sentinel 切换目标哨兵（cont/栈界校验，活体标本 > 静默继续）
@@ -79,7 +100,8 @@ lumina-os/                 ← 源码树（保持干爽，永不出现编译产�
 │   │                SAFETY 四行模板，unsafe_op_in_unsafe_fn = deny）
 │   ├── kernel/      内核映像（启动汇编 + 中断子系统 + 调度 + 进程 + VFS 接线
 │   │                + crystal 装配 + fb stage 合成器 + vnet UDP/TCP 回环 + census
-│   │                败点名面 + bootprep 自举预备活体 + busybox Linux 兼容活体 + 83 项自检）
+│   │                败点名面 + bootprep 自举预备活体 + busybox Linux 兼容活体
+│   │                + unix socket/waycomp 合成器域 + kbd/aux 双源输入 + 128 项自检）
 │   ├── bedrock/     磐基内核（syscall ABI、TLV、IPC 端点信箱、LXE1、自持同步原语）
 │   ├── quill/       羽管笔终端文本规程纯函数面（console 翻译核 + tty 行分类核——M34-D2 外移，零依赖零 unsafe）
 │   ├── harbor/      港湾 libc 符号面（errno/string/ctype/stdlib 首批 57 符号
@@ -100,7 +122,8 @@ lumina-os/                 ← 源码树（保持干爽，永不出现编译产�
 │   ├── loom/        织机 Elm 架构（Model/Msg/update/view 折叠环、约束求解布局、虚拟化列表、8px 网格 token）
 │   ├── ripple/      涟漪弹簧（170/26 与 300/30，半隐式欧拉）
 │   ├── glyph/       曜纹图标（24/48/96 同源缩放 + IconDef 注册表光栅化渲染）
-│   ├── mirror/      映境合成（损伤包围盒/并集合并/16 块翻转/drain_plan 消费面）
+│   ├── mirror/      映境合成（损伤包围盒/并集合并/上限近邻吸附细化/指针 16px 网格
+│   │                粒度/drain_plan 消费面）
 │   ├── prism/       棱镜显示栈合成（z 序仲裁、交盒裁剪、逐像素裁决；M28 归位）
 │   ├── cascade/     流域外壳（四态机、工作区表、master-stack 平铺计划、Dock 登记、焦点序 LRU）
 │   └── aurora/      极光应用框架（.luapp 校验、六态生命周期、权限中心四相、SDK 注册折叠/意图路由、AF-P01 基准桩）
@@ -118,7 +141,7 @@ lumina-build/              ← 编译产物 + 日志 + 报告（源码树外，�
 
 ```bash
 cargo build --workspace          # 全仓构建（19 crate）
-cargo test  --workspace          # 全仓测试（宿主）+ 83 项裸机自检（S8）
+cargo test  --workspace          # 全仓测试（宿主）+ 128 项裸机自检（S8）
 cargo run -p xtask -- ci         # 十一阶段门禁（S1-S5 + S5b IDL 一致性 + S5c lint 台账 + S6/S7 + S8 冒烟 + S9 报告，fail-fast）
 cargo run -p xtask -- smoke      # 仅内核：lint + build + QEMU 裸机自检
 cargo run -p xtask -- check      # 仅宿主快速门禁（fmt + clippy + 测试 + 文档 + IDL 一致性 + lint 台账）
@@ -141,7 +164,7 @@ objcopy -O binary \
   <target-dir>/x86_64-unknown-none/release/lumina-kernel \
   <target-dir>/x86_64-unknown-none/release/lumina-kernel.bin
 
-# 裸机启动（串口落盘 + isa-debug-exit 自动退出，退出码 33 = 自检全过[83 项]）
+# 裸机启动（串口落盘 + isa-debug-exit 自动退出，退出码 33 = 自检全过[128 项]）
 qemu-system-x86_64 -L <seabios> -L <qemu-data> \
   -kernel lumina-kernel.bin -m 256M -display none -no-reboot \
   -serial file:boot.log -device isa-debug-exit,iobase=0xf4,iosize=0x04
@@ -174,10 +197,12 @@ BeiXiangGuMao）；M20-① / M22-① 两个开发提交按原时刻 cherry-pick 
 | v0.24.0 | M24 | 服务边界元年：v0.24.0 定版 + ADR 八篇裁决 + Meridian dispatcher 首割 + IDL 纪律 + lint-deps/unsafe 台账 + mirror 损伤细则 + vnet 背压/ICMP（t72-t74） |
 | v0.25.0 | M25–M27 | 兼容与栈收口三季连发：M25 Conduit abi-defs 20 结构/布局双闸 C-P04=0/25 调用绑定（t75）→ M26 Crystal 文件系统首割（格式 v1 + WAL + COW B-tree + O(1) 快照 + crash-fs ≥1000 注入，ADR-0002 vfs 迁移，t76）→ M27 网络栈收口（ADR-0005 环归位 + t73 丢帧类排水限流收口 + UDP 协议面 + t78 回环活体 + PU-P03 口径挂接 + TCP 首割） |
 | v0.26.0 | M29–M31 | 服务与桌面三季连发：M29 Harbor libc 首版（ADR-0003 分配器归 ostd::heap + H-P01 首批 57 符号 forbid unsafe）+ Weave 对象库/WE-P02 四相断电注入 → M30 桌面骨架（Loom Elm 架构 + Cascade shell 语义四面 + Glyph 同源渲染 + t79 活体）→ M31 自举预备（驱动旁路台账首版成像 + morse 翻译面外移首割 + V-P05 注入矩阵 + Weave 自举装载面 + t80 活体） |
-| v0.27.0 | M32–M40 | 九里程碑连发：M32 Aurora SDK/权限中心（perm 四相 + SDK 注册折叠/意图路由 + AF-P01 基准 + t81）→ M33 busybox Linux 兼容全链（ELF 直载/fork/号域转换层 + t82 活体 + 成熟度首评 6.0）→ M34 服务化首割（kernel::svc + quill 外移 + 电源语义面）→ M35 H-P01 闸 150（harbor 158 符号 + sh 流水线 t85）→ M36 xxh3-128/TCP 电气/阻塞管道/boot 布局根治 → M37 fb 合成电气化（t88 alpha 双锚）+ TCP 重传面 t89 → M38 slots_pair 竞态根治 + TCP 服务化五面 t91 → M39 六候选（ls 深链 t92/多用户 t93/DPMS t94/C ABI/PDF 对账/成熟度 6.7）→ M40 四候选（ash 标本三步/盘上属主 t96/cat t97/Vulkan 语义面）；**v0.27.0 定版八步全闭环**（tag/双 tar/SHA256SUMS/GitHub Release 四资产/ls-remote 回环）+ **M41 四候选**（栈 grow 缺陷族三面根治 t95 转正/M17-① 块层字节域清账 t98/多用户纵深二批 t99/ash 交互面 t100——自检 100/100） |
+| v0.27.0 | M32–M41 | 九里程碑连发（M32 Aurora SDK → M33 busybox Linux 兼容 → M34 服务化首割 → M35 harbor 闸 150 → M36 TCP/管道 → M37 fb 合成电气化 → M38 竞态根治/TCP 服务化 → M39 六候选 → M40 四候选）+ M41 收官四候选（栈 grow 缺陷族根治、块层字节域清账、多用户纵深二批、ash 交互面——自检 100/100）+ 八步发布流水线闭环；逐笔详单见 CHANGELOG 与 ROADMAP §三/§四 |
+| 开发线（v0.27.0 后） | M42 用户态桌面进程/Wayland 合成器 | 28 笔逐笔落账（阶段一 fb 驱动进程移交 → 阶段二 unix socket + Wayland 语义面 → 阶段三合成器 ELF 化 + 输入链全谱 + 卫生/损伤/时间域批次）；自检 100→128，ABI v0.22，双面板 119 标记；详单见 ROADMAP §三 M42 行与 §四 | 
 
 最新发布：**[Release v0.27.0](../../releases)**——src / artifacts（门禁日志 +
-ci-summary 报告）/ RELEASE_NOTES / SHA256SUMS 四资产。
+ci-summary 报告）/ RELEASE_NOTES / SHA256SUMS 四资产。v0.27.0 之后的 M42 桌面
+链进度随里程碑收口定版（当前 28 笔落账，HEAD 门禁 CI-OK 全绿）。
 
 ## 工程纪律（对指南的承接）
 
