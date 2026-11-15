@@ -535,6 +535,20 @@ extern "C" fn lumina_syscall_dispatch(frame: &mut SyscallFrame) -> u64 {
             // MAP）——池对象 + 任务根映射（kernel::shm 承接面）
             crate::shm::sys_shm(op, a, b)
         }
+        Syscall::AuxRead { reserved: _ } => {
+            task::count_syscall(2);
+            // M42-AUXR3 笔㉚ ring3 aux 驱动消费车道：IRQ12 原始字节环
+            // 的 ring3 出口（接管态闸——内核车道持有期 NOT_OWNER 哨兵
+            // 返回，驱动侧 YIELD 让步重试；接管/释放面 = 内核内部仲裁，
+            // ABI 负空间纪律）
+            crate::kbd::sys_aux_read()
+        }
+        Syscall::PtrInject { kind, a } => {
+            task::count_syscall(2);
+            // M42-AUXR3 笔㉚ ring3 指针生产授权车道：pid 门禁 + 接管态
+            // 双闸（仅 boot 常驻 aux 驱动进程可达——fail-visible 计数域）
+            crate::waycomp::sys_ptr_inject(kind, a)
+        }
         Syscall::Pipe { op } => {
             task::count_syscall(2);
             // M24-A1 shell 管道/分页面：捕获武装/排水/分页重放/弃置

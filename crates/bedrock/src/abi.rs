@@ -505,6 +505,32 @@ pub const SHM_VA_BASE: u64 = 0x7000_0000;
 /// [`SYS_SHM`] 映射窗上限（128 MiB 窗——多池并存域）。
 pub const SHM_VA_LIMIT: u64 = 0x7800_0000;
 
+/// PS/2 aux 原始字节读出面（v0.23，M42-AUXR3 笔㉚；rdi = 预留 0）。
+/// ring3 aux 驱动进程消费车道：IRQ12 → 内核 kbd 模块原始字节环
+/// 的唯一 ring3 出口。返回：字节 0..=255；环空 = `u64::MAX`（EMPTY
+/// 哨兵）；内核车道持有环（接管声明未置位）= `u64::MAX-1`（NOT_OWNER
+/// 哨兵——驱动侧 YIELD 让步重试域，零消费零争抢）。接管/释放声明面 =
+/// 内核内部仲裁（kbd::aux_elf_claim 内核内部仲裁——boot 双轨回归锚纪
+/// 律：默认内核车道持有，显式声明才移交 ring3 驱动），**ABI 面不设
+/// 接管臂**（ABI 负空间纪律——ring3 不可改写环属主）。
+pub const SYS_AUX_READ: u64 = 44;
+/// [`SYS_AUX_READ`] 返回哨兵：环空（无字节可消费）。
+pub const AUX_RET_EMPTY: u64 = u64::MAX;
+/// [`SYS_AUX_READ`] 返回哨兵：环属内核车道（接管未声明）。
+pub const AUX_RET_NOT_OWNER: u64 = u64::MAX - 1;
+
+/// 指针事件注入面（v0.23，M42-AUXR3 笔㉚；rdi = kind，rsi = a）。
+/// ring3 指针生产授权车道——**仅 boot 常驻 aux 驱动进程 pid 可达**
+/// （kernel::waycomp r3 生产闸：pid 门禁 + 接管态双闸，fail-visible
+/// 计数域；ABI 负空间纪律收口面——ring3 指针生产唯一合法路径）。
+/// kind 0 = motion（a = x<<32 | y——屏幕绝对坐标）；kind 1 = button
+/// （a = evdev 按钮码 << 32 | 键态 0/1）。
+pub const SYS_PTR_INJECT: u64 = 45;
+/// [`SYS_PTR_INJECT`] kind：指针移动（a = x<<32 | y 屏幕绝对坐标）。
+pub const PTR_INJECT_MOTION: u64 = 0;
+/// [`SYS_PTR_INJECT`] kind：指针按键（a = 按钮码 << 32 | 键态）。
+pub const PTR_INJECT_BUTTON: u64 = 1;
+
 /// 套接字名词法校验（fail-visible 注册面）：1..=[`USOCK_NAME_MAX`]
 /// 字节，ASCII 可打印域（0x21..=0x7E——空格/控制域拒收；平名命名域
 /// v0 无路径解析，斜杠词法域放行如实记档）。宿主可测纯函数
@@ -616,7 +642,7 @@ pub const SYS_EXEC: u64 = 17;
 /// v0.16 = M15：目录面五落点 MKDIR/REMOVE/READDIR/MOUNT/UMOUNT +
 /// 句柄面深化 DUP/FCNTL（CLOEXEC）+ NANOSLEEP 参数语义升级为 TSC 纳秒。
 /// v0.8 = SYS_QUOTA；v0.7 = 文件面六落点 + NANOSLEEP + 统一句柄面）。
-pub const ABI_VERSION: (u16, u16) = (0, 22);
+pub const ABI_VERSION: (u16, u16) = (0, 23);
 
 /// ---------------------------------------------------------------------------
 /// LXE1 v0 错误码表（具名化事实源，M25-C1）：
@@ -971,6 +997,20 @@ pub enum Syscall {
         /// 忽略。
         b: u64,
     },
+    /// PS/2 aux 原始字节读出（v0.23，M42-AUXR3 笔㉚；见
+    /// [`SYS_AUX_READ`]）。
+    AuxRead {
+        /// 预留参数（v0 必须为 0——接管/释放面为内核内部仲裁，ABI
+        /// 负空间纪律：ring3 不可改写环属主）。
+        reserved: u64,
+    },
+    /// 指针事件注入（v0.23，M42-AUXR3 笔㉚；见 [`SYS_PTR_INJECT`]）。
+    PtrInject {
+        /// 事件类（0 = motion / 1 = button）。
+        kind: u64,
+        /// 事件载荷（motion：x<<32|y；button：按钮码<<32|键态）。
+        a: u64,
+    },
 }
 
 /// 从寄存器快照解析调用意图。只做结构校验，不做内存访问（由慢路径完成）。
@@ -1130,6 +1170,10 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
             b: a2,
         }),
         SYS_SHM => Err(AbiError::BadArgs),
+        SYS_AUX_READ if a0 == 0 => Ok(Syscall::AuxRead { reserved: a0 }),
+        SYS_AUX_READ => Err(AbiError::BadArgs),
+        SYS_PTR_INJECT if a0 <= PTR_INJECT_BUTTON => Ok(Syscall::PtrInject { kind: a0, a: a1 }),
+        SYS_PTR_INJECT => Err(AbiError::BadArgs),
         _ => Err(AbiError::UnknownSyscall),
     }
 }
@@ -1533,7 +1577,7 @@ mod tests {
         assert_eq!(super::SYS_DUP, 31);
         assert_eq!(super::SYS_FCNTL, 32);
         assert_eq!(super::SYS_IMAGE_ENUM, 33);
-        assert_eq!(super::ABI_VERSION, (0, 22));
+        assert_eq!(super::ABI_VERSION, (0, 23));
         assert_eq!(super::SYS_TTY_GETCH, 34);
         assert_eq!(
             super::parse(super::SyscallRegs {
@@ -2132,9 +2176,10 @@ mod svc_abi_tests {
             "op 2 越域拒收"
         );
         assert_eq!(
-            super::parse(r(super::SYS_SHM + 1, [0; 5])),
+            super::parse(r(super::SYS_SHM + 3, [0; 5])),
             Err(super::AbiError::UnknownSyscall),
-            "号域 44 未注册拒收（编号冻结只增不改域探针）"
+            "号域 46 未注册拒收（编号冻结只增不改域探针——44/45 = M42-AUXR3 \
+             SYS_AUX_READ/SYS_PTR_INJECT 收录后探针顺延）"
         );
     }
 }

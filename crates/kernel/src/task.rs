@@ -210,6 +210,14 @@ pub enum WaitWhat {
         /// 会话端点对象 id（流/终结唤醒键——输入域唤醒为零键全域）。
         conn: u64,
     },
+    /// ring3 aux 驱动阻塞读（M42-AUXR3 笔㉚——第 11 形）：等待接管态
+    /// 声明或原始字节环出数据（kbd aux_elf_claim / on_aux_byte /
+    /// inject_aux 三向唤醒——探针 = 接管态与环空双读零锁）。v0 轮询
+    /// 口径退役：boot 忙式 idle 环 = ~37k polls/s 调度洪水拉宽
+    /// exit_current→Zombie 切换竞窗（t95 早退实录）+ 有界等待裕量侵
+    /// 蚀（t124 短收）——阻塞化后 idle 零 CPU 零扰动（RESIDENT/ACCEPT_B
+    /// 同族形态）。
+    AuxRead,
 }
 
 /// 任务入口函数指针。
@@ -2452,6 +2460,7 @@ pub fn task_debug_wait(id: usize) -> u8 {
             Some(WaitWhat::UnixRecv { .. }) => 8,
             Some(WaitWhat::UnixAccept { .. }) => 9,
             Some(WaitWhat::CompIn { .. }) => 10,
+            Some(WaitWhat::AuxRead) => 11,
         },
     }
 }

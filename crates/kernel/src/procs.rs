@@ -372,6 +372,22 @@ pub fn waycomp_svc_boot_pid() -> usize {
     WAYCOMP_SVC_BOOT_PID.load(Ordering::Acquire)
 }
 
+/// M42-AUXR3（笔㉚）boot 常驻 aux 驱动进程 pid 槽（[`AUX_SVC_ELF`] 播
+/// 种落账——ring3 指针生产授权车道 pid 门禁事实源；usize::MAX = 播种
+/// 失败 fail-visible，t130 必炸无静默降级）。
+static AUX_SVC_BOOT_PID: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+/// aux 驱动 boot pid 落账（kmain 单调用点）。
+pub fn set_aux_svc_boot_pid(pid: usize) {
+    AUX_SVC_BOOT_PID.store(pid, Ordering::Release);
+}
+
+/// aux 驱动 boot pid 读面（[`crate::waycomp::sys_ptr_inject`] pid 门禁
+/// + t130 对账域）。
+pub fn aux_svc_pid() -> usize {
+    AUX_SVC_BOOT_PID.load(Ordering::Acquire)
+}
+
 // ---- M42-WAYCOMP11（笔⑪）域②：服务退出后 boot 重启面 ----
 //（M42-FBSVC2「常驻服务 boot-spawn 生命周期面」挂账域摘牌：boot 播种
 // → 死亡 → 自动重启生命周期闭环——boot_service_spawn 换防点 ×

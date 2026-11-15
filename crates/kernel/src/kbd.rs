@@ -206,6 +206,9 @@ fn on_aux_byte(b: u8) {
     if AUX_RING.send(b).is_err() {
         AUX_DROP.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     }
+    // AuxRead 阻塞唤醒（M42-AUXR3——IRQ12 出字域；接管态下唯一消费
+    // 者 = ring3 驱动，ISR 语境 wake_tasks 可达〔CompIn 同谱先例〕）。
+    crate::task::wake_tasks(|w| matches!(w, crate::task::WaitWhat::AuxRead));
 }
 
 /// 自检/测试注入入口（M42-AUX25 笔㉕）：与 IRQ12 桩体全谱同路径
@@ -234,6 +237,60 @@ pub fn aux_counts() -> (usize, usize, usize, usize, usize) {
     )
 }
 
+// ---- M42-AUXR3 笔㉚：ring3 aux 驱动消费车道（接管态仲裁域）----
+
+/// 环属主旗（boot 双轨回归锚纪律——默认 false = 内核 aux_pump 车道
+/// 持有〔t125 断言面原貌〕；显式声明才移交 ring3 aux-svc-elf 驱动。
+/// 声明面 = 内核内部仲裁 [`aux_elf_claim`]——ABI 面不设接管臂，ring3
+/// 不可改写环属主）。
+static AUX_ELF_OWNED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// 接管声明/释放（内核内部仲裁面——t130 活体显式切换； wahr 冪等）。
+pub fn aux_elf_claim(on: bool) {
+    AUX_ELF_OWNED.store(on, core::sync::atomic::Ordering::Release);
+    // AuxRead 阻塞唤醒（claim 双向——接管放行消费域 / 释放回收哨兵
+    // 让步域；wake_tasks 自带 IntWindow，任务语境可达）。
+    crate::task::wake_tasks(|w| matches!(w, crate::task::WaitWhat::AuxRead));
+}
+
+/// 接管态读面（t130 对账域）。
+pub fn aux_elf_owned() -> bool {
+    AUX_ELF_OWNED.load(core::sync::atomic::Ordering::Acquire)
+}
+
+/// [`SYS_AUX_READ`](bedrock::abi::SYS_AUX_READ) 承接面：ring3 aux 驱
+/// 动单字节读出（**阻塞式**——M42-AUXR3 揭雷收口）。三态语义：接管
+/// 未声明 → `AUX_RET_NOT_OWNER` 立返后**登记阻塞**（AuxRead 等待——
+/// claim 唤醒；v0 轮询口径退役——boot 忙式 idle 环 ~37k polls/s 调度
+/// 洪水拉宽 exit_current→Zombie 竞窗〔t95 早退实录〕+ t124 短收）；
+/// 接管声明 → 环出单字节 / 环空登记阻塞（on_aux_byte/inject_aux 唤
+/// 醒）。探针 = 接管态与环空双读零锁（CompIn 探针同款纪律——SCHED 锁
+/// 窗内零 AUX_ST_MU 取锁，锁序 AUX_ST_MU → SCHED 单向保持）。SPSC 单
+/// 消费者契约：接管态下唯一消费者 = ring3 驱动（内核 aux_pump 同期零
+/// 消费）。返回：字节 0..=255 / AUX_RET_NOT_OWNER / AUX_RET_EMPTY
+/// （唤醒后竞窗域——驱动侧让步重试承载）。
+pub fn sys_aux_read() -> u64 {
+    use bedrock::abi::{AUX_RET_EMPTY, AUX_RET_NOT_OWNER};
+    if !AUX_ELF_OWNED.load(core::sync::atomic::Ordering::Acquire) {
+        // 未接管：立返哨兵 + 登记 AuxRead 阻塞（claim 唤醒——idle 零
+        // CPU 零扰动，RESIDENT/ACCEPT_B 同族形态）。
+        crate::task::block_current_unless(crate::task::WaitWhat::AuxRead, true, || {
+            !AUX_ELF_OWNED.load(core::sync::atomic::Ordering::Acquire)
+        });
+        return AUX_RET_NOT_OWNER;
+    }
+    match AUX_RING.recv() {
+        Some(b) => u64::from(b),
+        None => {
+            // 接管但环空：登记阻塞（on_aux_byte/inject_aux 唤醒）。
+            crate::task::block_current_unless(crate::task::WaitWhat::AuxRead, true, || {
+                AUX_ELF_OWNED.load(core::sync::atomic::Ordering::Acquire) && AUX_RING.is_empty()
+            });
+            AUX_RET_EMPTY
+        }
+    }
+}
+
 /// aux 环深度读面（驱动车道待消费字节——t125 排空对账）。
 pub fn aux_pending() -> usize {
     AUX_RING.len()
@@ -253,6 +310,12 @@ pub fn aux_pending() -> usize {
 /// 零重活纪律：桩体只做源位判读 + 入环，状态机全谱在此）。互斥 =
 /// [`AUX_ST_MU`]（双入口串行化——锁窗内指针生产 IN_MU 单向序展开）。
 pub fn aux_pump() -> usize {
+    // M42-AUXR3 笔㉚接管态让步门（boot 双轨回归锚纪律——ring3 驱动
+    // 持有期内核车道零消费零争抢：单消费者契约以属主旗承载；显形计
+    // 数域 fail-visible，零静默）。
+    if AUX_ELF_OWNED.load(core::sync::atomic::Ordering::Acquire) {
+        return 0;
+    }
     let _g = AUX_ST_MU.lock();
     let mut produced = 0usize;
     while let Some(b) = AUX_RING.recv() {

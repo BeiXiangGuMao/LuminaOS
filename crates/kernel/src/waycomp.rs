@@ -471,12 +471,67 @@ pub fn waycomp_cursor_sprite() -> ((i32, i32), (i32, i32)) {
     (crate::fb::fb_cursor_plane(), waycomp_cursor())
 }
 
+// ---- M42-AUXR3 笔㉚：ring3 指针生产授权车道 ----
+
+/// ring3 指针注入受理数（`SYS_PTR_INJECT` 生产闸放行域——t130 对账）。
+pub static WLCOMP_R3PTRS: AtomicU64 = AtomicU64::new(0);
+/// ring3 指针注入拒收数（pid 门禁 / 接管态闸 / kind 域闸 fail-visible
+/// 取证——ABI 负空间纪律显形域）。
+pub static WLCOMP_R3_DENY: AtomicU64 = AtomicU64::new(0);
+
+/// [`SYS_PTR_INJECT`](bedrock::abi::SYS_PTR_INJECT) 承接面：ring3 指针
+/// 生产授权车道。**双闸门禁**——(a) pid 闸：调用方 = boot 常驻
+/// aux-svc-elf（[`crate::procs::aux_svc_pid`]——ABI 负空间纪律收口面，
+/// ring3 指针生产唯一合法路径，其余进程 fail-visible 拒收）；(b) 接管
+/// 态闸：kbd 环属 ring3 驱动（[`crate::kbd::aux_elf_owned`]——双轨回
+/// 归锚纪律，内核车道持有期驱动无生产资格）。kind 0 = motion（a =
+/// x<<32|y）；kind 1 = button（a = 按钮码<<32|键态）。生产核与任务语
+/// 境面同心出口（[`ptr_motion_produce`]/[`ptr_button_produce`]——IN_MU
+/// 串行化 + 光标随批 + 唤醒链同谱）。返回 0 = 受理，1 = 拒收（计数
+/// 域随行）。
+pub fn sys_ptr_inject(kind: u64, a: u64) -> u64 {
+    let me = task::current_task_id();
+    let authorized = me == crate::procs::aux_svc_pid()
+        && crate::procs::aux_svc_pid() != usize::MAX
+        && crate::kbd::aux_elf_owned();
+    if !authorized {
+        WLCOMP_R3_DENY.fetch_add(1, Ordering::AcqRel);
+        return 1;
+    }
+    let accepted = match kind {
+        bedrock::abi::PTR_INJECT_MOTION => {
+            let x = (a >> 32) as u32 as i32;
+            let y = (a & 0xFFFF_FFFF) as u32 as i32;
+            ptr_motion_produce(x, y)
+        }
+        bedrock::abi::PTR_INJECT_BUTTON => {
+            let button = (a >> 32) as u32;
+            let state = (a & 0xFFFF_FFFF) as u32;
+            ptr_button_produce(button, state)
+        }
+        _ => false,
+    };
+    if accepted {
+        WLCOMP_R3PTRS.fetch_add(1, Ordering::AcqRel);
+        0
+    } else {
+        1
+    }
+}
+
 /// 输入链生产面：指针移动（屏幕坐标——会话侧 hit-test 裁决焦点域）。
 /// 守护门禁 + 受理入环唤醒链同 [`input_key`]。
 pub fn input_pointer_motion(x: i32, y: i32) -> bool {
     if !input_guard() {
         return false;
     }
+    ptr_motion_produce(x, y)
+}
+
+/// 指针移动生产核（M42-AUXR3 笔㉚抽取面——[`input_pointer_motion`] 与
+/// ring3 授权车道 [`sys_ptr_inject`] 同心出口）：IN_MU 锁窗 send 即放
+/// + 光标状态随批 + 唤醒链锁外域。
+fn ptr_motion_produce(x: i32, y: i32) -> bool {
     let raw = (((x as u32) as u64) << 32) | ((y as u32) as u64 & 0xFFFF_FFFF);
     // 多产者串行化窗（M42-WAYCOMP16——input_key 同谱）
     let accepted = {
@@ -495,14 +550,10 @@ pub fn input_pointer_motion(x: i32, y: i32) -> bool {
     }
 }
 
-/// 输入链生产面：指针按键（evdev 按钮码 + 键态——BTN_LEFT 0x110 等）。
-/// 守护门禁 + 受理入环唤醒链同 [`input_key`]。
-pub fn input_pointer_button(button: u32, state: u32) -> bool {
-    if !input_guard() {
-        return false;
-    }
+/// 指针按键生产核（M42-AUXR3 笔㉚抽取面——[`input_pointer_button`] 与
+/// ring3 授权车道同心出口）。
+fn ptr_button_produce(button: u32, state: u32) -> bool {
     let raw = (1u64 << 63) | ((button as u64) << 32) | (state as u64 & 0xFFFF_FFFF);
-    // 多产者串行化窗（M42-WAYCOMP16——input_key 同谱）
     let accepted = {
         let _g = IN_MU.lock();
         WLCOMP_MPS.fetch_add(1, Ordering::AcqRel);
@@ -514,6 +565,15 @@ pub fn input_pointer_button(button: u32, state: u32) -> bool {
     } else {
         false
     }
+}
+
+/// 输入链生产面：指针按键（evdev 按钮码 + 键态——BTN_LEFT 0x110 等）。
+/// 守护门禁 + 受理入环唤醒链同 [`input_key`]。
+pub fn input_pointer_button(button: u32, state: u32) -> bool {
+    if !input_guard() {
+        return false;
+    }
+    ptr_button_produce(button, state)
 }
 
 /// 输入链生产面：轴滚动（M42-WAYCOMP14 axis 族——axis 值域官方

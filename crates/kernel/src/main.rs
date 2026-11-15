@@ -86,8 +86,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126；M42-DMG27 t127（联合域上限细化活体）起 127；M42-DMG28 t128（指针 16px 粗粒度域联动活体）起 128；M42-SPRITE29 笔㉙ t129（光标 sprite 渲染面活体：compose 执行器顶层 sprite 平面 + 热点对位联动）起 129）。
-const SELFTEST_TOTAL: usize = 129;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126；M42-DMG27 t127（联合域上限细化活体）起 127；M42-DMG28 t128（指针 16px 粗粒度域联动活体）起 128；M42-SPRITE29 笔㉙ t129（光标 sprite 渲染面活体：compose 执行器顶层 sprite 平面 + 热点对位联动）起 129；M42-AUXR3 笔㉚ t130（ring3 aux 驱动进程活体：SYS_AUX_READ/SYS_PTR_INJECT 车道 + 接管态仲裁）起 130）。
+const SELFTEST_TOTAL: usize = 130;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -947,6 +947,16 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
             "LUMINA-WAYCOMP-BOOT-ELF pid={wcelf_pid} name=wayland-1 (常驻合成器 ring3 换防 boot 面)"
         );
     }
+
+    // M42-AUXR3（笔㉚）boot 常驻 aux 驱动进程（ring3 输入链第二进程）：
+    // AUX_SVC_ELF 播种（boot_service_spawn = spawn_elf_seed_resident ×
+    // 重启表登记——崩溃重启 face 同谱）+ pid 槽落账（waycomp r3 生产闸
+    // 门禁事实源）。boot 双轨回归锚纪律：接管态默认内核车道持有（kbd
+    // AUX_ELF_OWNED=false——t125 断言面原貌），驱动 idle 让步环零消费；
+    // 显式接管随 t130 活体切换。驱动 boot 取证行 LUMINA-T130-AUXBOOT
+    // 随串口流（xtask required 面域）。
+    let aux_pid = procs::boot_service_spawn("aux-svc-elf", &user::AUX_SVC_ELF);
+    procs::set_aux_svc_boot_pid(aux_pid);
 
     // 25) swap 预留位：唯一性 / LIFO 复用 / 统计自洽
     let t25 = {
@@ -7422,6 +7432,16 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     //       LUMINA-T129-SPRITE / T129-MOVE / T129-BLEND / T129-OK。
     let t129 = t129_run(&mut log);
     report(&mut log, t129, "cursor-sprite-render-plane");
+
+    // t130) ring3 aux 驱动进程活体（M42-AUXR3 笔㉚）：〔结构锚——真
+    //       ELF64 容器 + gen 域⑨常量交叉〕→〔boot face——pid 槽 +
+    //       存活/常驻/重启表 + 接管态基线〕→〔内核车道基线 + r3 生产
+    //       闸负例（kmain 拒收）+ inject_aux 直驱对账〕→〔ELF 车道接
+    //       管——驱动光标 (4,2) + R3PTRS=+4 + 内核计数冻结 + release
+    //       内核回归 (1918,2)〕→〔收场复原〕。
+    //       LUMINA-T130-ANCHOR/BOOT/KTRACK/ELF/RELEASE/OK。
+    let t130 = t130_run(&mut log);
+    report(&mut log, t130, "ring3-aux-driver");
 
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
@@ -15184,6 +15204,141 @@ fn t129_run(log: &mut DualLog) -> bool {
     let _ = crate::vfs::sys_close(hc as u64);
     if ok {
         let _ = writeln!(log, "LUMINA-T129-OK");
+    }
+    ok
+}
+
+/// t130 ring3 aux 驱动进程活体（M42-AUXR3 笔㉚）——五相位：
+/// 〔(a) 结构锚——AUX_SVC_ELF 真 ELF64 容器对账（bedrock::elf::parse）
+/// 与 gen 域⑨常量交叉（取证行长、屏域钳制上界等于 fb 尺寸减一、
+/// BTN_BASE 等于 0x110 官方 evdev 值）〕→〔(b) boot face——pid 槽落
+/// 账与存活常驻重启表三读面，接管态基线（内核车道持有——t125 断言
+/// 面原貌）〕→〔(c) 内核车道基线与 ring3 生产闸负例（kmain 语境
+/// sys_ptr_inject 拒收——pid 门禁取证；inject_aux 包经 aux_pump 直
+/// 驱，内核计数与光标推进——回归锚在环）〕→〔(d) ELF 车道接管——
+/// claim 后注入 press 与 release 双包，有界等待驱动光标 (4,2) 对账
+///（dx 加四、dy 减二极性反转与符号扩展、钳制域实证），R3PTRS 加四
+///（motion 双笔与按钮沿双笔），内核计数冻结（接管态零消费——单消
+/// 费者契约），release 后内核车道回归（aux_pump 直驱 (1918,2) 对
+/// 账——sx 符号扩展负增量加极性反转）〕→〔(e) 排水复原与取证行〕。
+/// LUMINA-T130-KTRACK / T130-ELF / T130-RELEASE / T130-OK。
+fn t130_run(log: &mut DualLog) -> bool {
+    use bedrock::abi::{AUX_RET_EMPTY, AUX_RET_NOT_OWNER};
+    let mut ok = true;
+
+    // (a) 结构锚：AUX_SVC_ELF 真 ELF64 容器 + gen 域⑨常量交叉
+    let img = &user::AUX_SVC_ELF;
+    let parsed = bedrock::elf::parse(img);
+    ok &= parsed.is_ok();
+    if let Ok(e) = parsed {
+        ok &= e.entry == user::ELF_LANE_ENTRY; // gen ELF_ENTRY 对账
+    }
+    ok &= user::AUX_BOOT_EVID_LEN == 30; // "LUMINA-T130-AUXBOOT ring3 idle"（gen 域⑨字节数直报对账）
+    ok &= user::AUX_SCREEN_W == fb::WIDTH as i32 && user::AUX_SCREEN_H == fb::HEIGHT as i32; // 钳制上界 = fb 尺寸 − 1 同源
+    ok &= user::AUX_BTN_BASE == 0x110; // BTN_LEFT 官方 evdev 值
+    ok &= user::AUX_PKT_EVID_LEN == 19 && user::AUX_PKT_EVID_OFF == 0x48;
+    let _ = writeln!(
+        log,
+        "LUMINA-T130-ANCHOR entry_ok={} consts_ok=true",
+        parsed.is_ok()
+    );
+
+    // (b) boot face：pid 槽 + 存活/常驻/重启表 + 接管态基线
+    let pid = procs::aux_svc_pid();
+    ok &= pid != usize::MAX;
+    ok &= task::task_alive(pid);
+    ok &= task::task_is_resident(pid);
+    ok &= procs::boot_service_registered("aux-svc-elf");
+    ok &= !crate::kbd::aux_elf_owned(); // 内核车道持有——双轨回归锚纪律
+    let (pk0, _ovf0, _rsy0, _drp0, _irq0) = crate::kbd::aux_counts();
+    let (kx0, ky0) = crate::kbd::aux_cursor();
+    let _ = writeln!(log, "LUMINA-T130-BOOT pid={pid} alive=true owned=false");
+
+    // (c) 内核车道基线 + ring3 生产闸负例（kmain 语境拒收——pid 门禁）
+    let deny0 = waycomp::WLCOMP_R3_DENY.load(Ordering::Acquire);
+    ok &= waycomp::sys_ptr_inject(0, 0) == 1; // kmain ≠ aux pid——fail-visible
+    ok &= waycomp::WLCOMP_R3_DENY.load(Ordering::Acquire) == deny0 + 1;
+    crate::kbd::inject_aux(0x19); // press 包：head=0x09|0x10（sx）dx raw=0xFC→−4 dy raw=0x02→+2
+    crate::kbd::inject_aux(0xFC);
+    crate::kbd::inject_aux(0x02);
+    crate::kbd::aux_pump(); // 内核车道直驱（t125 同谱）
+    let (pk1, _, _, _, _) = crate::kbd::aux_counts();
+    ok &= pk1 == pk0 + 1;
+    let (kx1, ky1) = crate::kbd::aux_cursor();
+    ok &= (kx1, ky1) == (kx0 - 4, ky0 - 2); // sx 符号扩展 −4 / y −= dyi 极性反转（钳制域外内域对账）
+    waycomp::input_queue_flush(); // 生产域 PTR_Q 排水复原（t128 装置面同谱）
+    let _ = writeln!(log, "LUMINA-T130-KTRACK pk=+1 cur=({kx1},{ky1}) deny=+1");
+
+    // (d) ELF 车道接管：claim → 注入 press/release 双包 → 驱动消费
+    crate::kbd::aux_elf_claim(true);
+    let r3_0 = waycomp::WLCOMP_R3PTRS.load(Ordering::Acquire);
+    let (pk_d0, _, _, _, _) = crate::kbd::aux_counts();
+    crate::kbd::inject_aux(0x29); // press 包：head=0x09|0x20（sy）dx=+4 dy raw=0xFE→−2
+    crate::kbd::inject_aux(0x04);
+    crate::kbd::inject_aux(0xFE);
+    crate::kbd::inject_aux(0x08); // release 包：btn=0 dx=0 dy=0
+    crate::kbd::inject_aux(0x00);
+    crate::kbd::inject_aux(0x00);
+    // 驱动消费等待（ring3 YIELD 让步环——4800 拍 t112 同谱预算）。
+    // M42-AUXR3 揭雷收口：等待谓词扩 R3PTRS 完成域——v0 仅判 cursor
+    // 时窗，press 包 motion 即满足出环而按钮沿/释放包仍在驱动 YIELD
+    // 让步环途中（r3ptrs 早读 +1 竞窗实录）；谓词并四笔注入完成域。
+    let dl = ostd::time::now() + 4800;
+    while (waycomp::waycomp_cursor() != (4, 2)
+        || waycomp::WLCOMP_R3PTRS.load(Ordering::Acquire) < r3_0 + 4)
+        && ostd::time::now() < dl
+    {
+        task::yield_now();
+    }
+    ok &= waycomp::waycomp_cursor() == (4, 2); // 驱动光标累积（dx=+4 / dy=−2 极性反转实证）
+    let r3_1 = waycomp::WLCOMP_R3PTRS.load(Ordering::Acquire);
+    ok &= r3_1 == r3_0 + 4; // motion ×2 + 按钮沿 ×2（press/release）
+    let (pk_d1, _, _, _, _) = crate::kbd::aux_counts();
+    ok &= pk_d1 == pk_d0; // 内核计数冻结（接管态零消费——单消费者契约）
+    ok &= crate::kbd::aux_pending() == 0; // 环已排空（驱动消费）
+    ok &= crate::kbd::aux_elf_owned();
+    let _ = writeln!(
+        log,
+        "LUMINA-T130-ELF cursor=(4,2) r3ptrs=+{} pk_frozen=true",
+        r3_1 - r3_0
+    );
+
+    // release → 内核车道回归（sx 符号扩展负增量 + 极性反转对账）
+    crate::kbd::aux_elf_claim(false);
+    crate::kbd::inject_aux(0x18); // head=0x08|0x10（sx）dx raw=0xFF→−1 dy raw=0x01→+1
+    crate::kbd::inject_aux(0xFF);
+    crate::kbd::inject_aux(0x01);
+    crate::kbd::aux_pump(); // 内核车道直驱
+    let (pk2, _, _, _, _) = crate::kbd::aux_counts();
+    ok &= pk2 == pk1 + 1; // 内核计数回归
+    let (kx2, ky2) = crate::kbd::aux_cursor();
+    ok &= (kx2, ky2) == (kx1 - 1, ky1 - 1); // dx=−1（sx 符号扩展）/ y −= dyi 极性反转
+    let deny1 = waycomp::WLCOMP_R3_DENY.load(Ordering::Acquire);
+    let _ = writeln!(
+        log,
+        "LUMINA-T130-RELEASE pk=+1 cur=({kx2},{ky2}) deny={deny1}"
+    );
+
+    // (e) 收场复原（驱动常驻存续 + 接管态复位 + 队列排水）
+    ok &= !crate::kbd::aux_elf_owned();
+    let st_e = task::task_debug_state(pid);
+    let rs_e = procs::boot_svc_restarts("aux-svc-elf").unwrap_or(0);
+    let (pk_e, _, _, _, _) = crate::kbd::aux_counts();
+    let _ = writeln!(
+        log,
+        "LUMINA-T130-STATE alive_state={st_e:?} alive={} restarts={rs_e} pending={} pk={pk_e} ok_so_far={ok}",
+        task::task_alive(pid),
+        crate::kbd::aux_pending(),
+    );
+    ok &= task::task_alive(pid); // 驱动真常驻不退出
+    ok &= rs_e == 0; // 零重启（驱动零崩溃域）
+    ok &= procs::aux_svc_pid() == pid;
+    waycomp::input_queue_flush();
+    // AUX_READ 哨兵语义快验（接管态下 NOT_OWNER 路径已证——EMPTY 域由
+    // 驱动 idle 环承载，此处仅常量对账）
+    ok &= AUX_RET_EMPTY == u64::MAX && AUX_RET_NOT_OWNER == u64::MAX - 1;
+    if ok {
+        let _ = writeln!(log, "LUMINA-T130-OK");
     }
     ok
 }

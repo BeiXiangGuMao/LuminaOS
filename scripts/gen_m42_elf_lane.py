@@ -251,6 +251,41 @@ ARGV_BUF_OFF = 0x11    # argv[0] 拷贝缓冲（= len(ARGV_EVID)——前缀后�
                        # 前缀尾与缓冲间 15 字节空洞致取证行断链）
 ARGV_BUF_CAP = 0x40    # 缓冲上界（strlen ≤ 64——spawn 传参域闸内核侧）
 
+# ---- 域⑨常量（M42-AUXR3 笔㉚——ring3 aux 驱动进程。编译进程链第九形
+# ——**驱动形**：IRQ12 → 内核原始字节环 → SYS_AUX_READ(44) 单字节读出
+# → 三字节包状态机（bit3 包头闸 + 溢出整包吞没 + 杂码重同步）→ 符号扩
+# 展 / PS/2 极性反转（y -= dyi——正 dy 向上屏 y 递减，内核车道同款）/
+# 屏域钳制 → 增量光标累积 → SYS_PTR_INJECT(45) 授权车道指针生产（motion
+# 绝对坐标 x<<32|y + 按钮沿 bit0..2 → BTN_LEFT/RIGHT/MIDDLE 0x110..）。
+# 寄存器契约：r14 = 数据段基址（跨 syscall 常驻——syscall 硬件清 rcx/r11
+# 不及 r14；域⑥槽面纪律——状态全量内存槽面化，寄存器零持久态〔域⑦
+# r15 打包退役同谱〕）；工作寄存器 = caller-saved 全谱 + rbx/rbp/r13
+# 直线条内暂存。boot 双轨回归锚纪律：接管态默认内核车道持有（AUX_RET_
+# NOT_OWNER 哨兵 → YIELD 让步重试），显式声明才移交本驱动。真常驻不退
+# 出形（RESIDENT_SEED/WAYCOMP_SVC_ELF 同族）。t130 消费。）----
+SYS_SET_PRIO_N = 7       # bedrock SYS_SET_PRIO 镜像（自调节 0 最高..3 最低）
+SYS_AUX_READ_N = 44      # bedrock SYS_AUX_READ 镜像（gen 侧单事实源）
+SYS_PTR_INJECT_N = 45    # bedrock SYS_PTR_INJECT 镜像
+AUX_RET_NOT_OWNER = 0xFFFFFFFFFFFFFFFE  # 内核车道持有哨兵（cmp imm32 符号扩展域）
+AUX_RET_EMPTY = 0xFFFFFFFFFFFFFFFF      # 环空哨兵
+AUX_W = 1920             # 屏宽钳制上界（fb::WIDTH 同源——x ∈ 0..1919）
+AUX_H = 1080             # 屏高钳制上界（fb::HEIGHT 同源——y ∈ 0..1079）
+AUX_BTN_BASE = 0x110     # BTN_LEFT（沿检测 +1 RIGHT / +2 MIDDLE——内核车道同谱）
+AUX_BOOT_EVID = b"LUMINA-T130-AUXBOOT ring3 idle"  # boot 取证行（常驻形——真常驻不退出）
+AUX_PKT_EVID = b"LUMINA-T130-AUX pkt"              # 出包取证行（常量串零数字格式化）
+AUX_PKT_EVID_OFF = 0x48  # 出包取证串偏移（0x20..0x48 槽面域外正交）
+AUX_DATA_SIZE = 0x60
+AUX_ST = 0x20    # 状态机态（0 头等待 / 1 DX 待收 / 2 出包 / 3 溢出吞没）
+AUX_HEAD = 0x24  # 包头字节（bit3 恒 1 + bit4/5 符号位 + bit0..2 按钮）
+AUX_DX = 0x28    # dx 原字节
+AUX_SKIP = 0x2C  # 溢出吞没余量（包头 bit6/7 → dx/dy 两字节吞没——内核车道同谱）
+AUX_X = 0x30     # 光标 x 累积（驱动自持——与内核 AUX_CUR_X 双轨分立）
+AUX_Y = 0x34     # 光标 y 累积
+AUX_BTNP = 0x38  # 上一包按钮态（沿检测域）
+AUX_PKT = 0x3C   # 出包计数（驱动侧取证域）
+AUX_BT = 0x40    # 按钮沿检测循环计数 b（0..2）
+AUX_YLD = 0x44   # 让步节流余量（idle/包后 YIELD×64——调度洪水域收口）
+
 
 OUT = Path(__file__).resolve().parent.parent / "crates/kernel/src/exec_images_gen_m42_elf.rs"
 
@@ -1418,6 +1453,205 @@ def build_argv_code():
     return bytes(a.buf)
 
 
+# ---- 域⑨：AUX_SVC_ELF 代码段（M42-AUXR3 笔㉚——ring3 aux 驱动进程，
+# 编译进程链第九形驱动形。寄存器契约：r14 = 数据段基址（跨 syscall 常
+# 驻）；状态全量内存槽面化（域⑥纪律——寄存器零持久态）；rbx/rbp/r13/
+# r8/r9 直线条内暂存（syscall 硬件清 rcx/r11 不及其余）。boot 双轨回归
+# 锚纪律：NOT_OWNER 哨兵 → YIELD 让步重试，零消费零争抢。）----
+def build_aux_svc_code():
+    a = Asm()
+
+    # 1) r14 = 数据段基址（一次装载——跨 syscall 常驻；syscall 硬件清
+    #    rcx/r11 不及 r14）
+    a.db(0x49, 0xBE); a.imm64(ELF_DATA_VA)     # movabs r14, DATA_VA
+
+    # 2) 状态槽复位（ST/SKIP/BT/X/Y/BTNP/PKT——HEAD/DX 随写域零险免除）
+    for slot in (AUX_ST, AUX_SKIP, AUX_BT, AUX_X, AUX_Y, AUX_BTNP, AUX_PKT, AUX_YLD):
+        a.db(0x41, 0xC7, 0x86); a.imm32(slot); a.imm32(0)  # mov dword [r14+d], 0
+
+    # 3) boot 取证（常驻形——真常驻不退出）
+    a.db(0x48, 0xBF); a.imm64(ELF_DATA_VA)     # movabs rdi, evid
+    mov_esi_i(a, len(AUX_BOOT_EVID))
+    mov_eax_i(a, SYS_LOG)
+    syscall(a)
+
+    # 3b) 自降最低优先级（SYS_SET_PRIO 3——boot 忙式 idle 轮询环的调度
+    #     良民纪律：TCG 实录 v0 默认优先级 yield 自旋饿死同核 ring3 任
+    #     务〔ash 40 拍滞域 + t124 wire 批短收三败同根〕；最低级 = 仅空
+    #     闲窗运行，生产任务零扰动）
+    mov_edi_i(a, 3)                            # level = 3（最低）
+    mov_eax_i(a, SYS_SET_PRIO_N)
+    syscall(a)
+
+    # 4) 真常驻环：SYS_AUX_READ 单字节 → 状态机 → SYS_PTR_INJECT 生产
+    a.label("loop")
+    mov_edi_i(a, 0)                            # rdi = 0 预留
+    mov_eax_i(a, SYS_AUX_READ_N)
+    syscall(a)
+    a.db(0x48, 0x3D); a.imm32(0xFFFFFFFE)      # cmp rax, NOT_OWNER（imm32 符号扩展域）
+    a.jcc32(0x84, "yield")                     # je yield（内核车道持有——让步重试）
+    a.db(0x48, 0x3D); a.imm32(0xFFFFFFFF)      # cmp rax, EMPTY
+    a.jcc32(0x84, "yield")                     # je yield（环空）
+    a.db(0x89, 0xC3)                           # mov ebx, eax（字节 0..255）
+
+    # 态分派（ST 槽 0..3）
+    a.db(0x41, 0x83, 0xBE); a.imm32(AUX_ST); a.db(0)   # cmp dword [r14+ST], 0
+    a.jcc32(0x84, "st0")
+    a.db(0x41, 0x83, 0xBE); a.imm32(AUX_ST); a.db(1)
+    a.jcc32(0x84, "st1")
+    a.db(0x41, 0x83, 0xBE); a.imm32(AUX_ST); a.db(2)
+    a.jcc32(0x84, "st2")
+    a.jmp32u("st3")
+
+    # —— st0：包头域（bit3 恒 1 契约 + 溢出整包吞没 + 杂码重同步）
+    a.label("st0")
+    a.db(0xF6, 0xC3, 0x08)                     # test bl, 0x08
+    a.jcc32(0x84, "resync")                    # je resync（丢字节态不变）
+    a.db(0xF6, 0xC3, 0xC0)                     # test bl, 0xC0
+    a.jcc32(0x85, "ovf")                       # jnz ovf（bit6/7 非零）
+    a.db(0x41, 0x89, 0x9E); a.imm32(AUX_HEAD)  # mov [r14+HEAD], ebx
+    a.db(0x41, 0xC7, 0x86); a.imm32(AUX_ST); a.imm32(1)
+    a.jmp32u("yield")
+    a.label("resync")
+    a.jmp32u("yield")
+    a.label("ovf")                             # 溢出包（bit6/7）——dx/dy 吞没
+    a.db(0x41, 0xC7, 0x86); a.imm32(AUX_SKIP); a.imm32(2)
+    a.db(0x41, 0xC7, 0x86); a.imm32(AUX_ST); a.imm32(3)
+    a.jmp32u("yield")
+
+    # —— st1：dx 待收
+    a.label("st1")
+    a.db(0x41, 0x89, 0x9E); a.imm32(AUX_DX)    # mov [r14+DX], ebx
+    a.db(0x41, 0xC7, 0x86); a.imm32(AUX_ST); a.imm32(2)
+    a.jmp32u("yield")
+
+    # —— st2：出包域（符号扩展 + 极性反转 + 钳制 + 光标累积 + 指针生产）
+    a.label("st2")
+    # dxi = DX（r13d）——sx 位（HEAD bit4）符号扩展（test cl 8 位域）
+    a.db(0x45, 0x8B, 0xAE); a.imm32(AUX_DX)    # mov r13d, [r14+DX]（REX R|B = 45——R 位给 r13 reg 域 101 + B 位给 r14 rm 域 110；v0 0x44 缺 B 位实存 [rsi+0x28] 揭雷随行）
+    a.db(0x41, 0x8B, 0x8E); a.imm32(AUX_HEAD)  # mov ecx, [r14+HEAD]
+    a.db(0xF6, 0xC1, 0x10)                     # test cl, 0x10（sx）
+    a.jcc32(0x84, "no_sx")                     # je no_sx
+    a.db(0x41, 0x81, 0xED); a.imm32(256)       # sub r13d, 256（mod=11 rm=101+REX.B = r13d——v0 0xEE 误编 rm=110 实存 sub r14d,256 基址腐蚀揭雷随行）
+    a.label("no_sx")
+    # dyi = 第三字节（ebp）——sy 位（HEAD bit5）符号扩展
+    a.db(0x89, 0xDD)                           # mov ebp, ebx
+    a.db(0xF6, 0xC1, 0x20)                     # test cl, 0x20（sy）
+    a.jcc32(0x84, "no_sy")
+    a.db(0x81, 0xED); a.imm32(256)             # sub ebp, 256
+    a.label("no_sy")
+    # X = clamp(X + dxi, 0, 1919)
+    a.db(0x41, 0x8B, 0x86); a.imm32(AUX_X)     # mov eax, [r14+X]
+    a.db(0x44, 0x01, 0xE8)                     # add eax, r13d
+    a.db(0x85, 0xC0)                           # test eax, eax
+    a.jcc32(0x89, "x_hi")                      # jns x_hi
+    a.db(0x31, 0xC0)                           # xor eax, eax
+    a.jmp32u("x_store")
+    a.label("x_hi")
+    a.db(0x3D); a.imm32(AUX_W - 1)             # cmp eax, 1919
+    a.jcc32(0x8E, "x_store")                   # jle x_store
+    mov_eax_i(a, AUX_W - 1)                    # mov eax, 1919
+    a.label("x_store")
+    a.db(0x41, 0x89, 0x86); a.imm32(AUX_X)     # mov [r14+X], eax
+    # Y = clamp(Y - dyi, 0, 1079)（PS/2 极性反转——y -= dyi，内核车道同款）
+    a.db(0x41, 0x8B, 0x86); a.imm32(AUX_Y)     # mov eax, [r14+Y]
+    a.db(0x29, 0xE8)                           # sub eax, ebp
+    a.db(0x85, 0xC0)                           # test eax, eax
+    a.jcc32(0x89, "y_hi")
+    a.db(0x31, 0xC0)
+    a.jmp32u("y_store")
+    a.label("y_hi")
+    a.db(0x3D); a.imm32(AUX_H - 1)             # cmp eax, 1079
+    a.jcc32(0x8E, "y_store")
+    mov_eax_i(a, AUX_H - 1)
+    a.label("y_store")
+    a.db(0x41, 0x89, 0x86); a.imm32(AUX_Y)
+    # PKT++
+    a.db(0x41, 0x8B, 0x86); a.imm32(AUX_PKT)
+    a.db(0xFF, 0xC0)                           # inc eax
+    a.db(0x41, 0x89, 0x86); a.imm32(AUX_PKT)
+    # motion 注入：rsi = X<<32 | Y（kind=0——屏幕绝对坐标）
+    a.db(0x41, 0x8B, 0x86); a.imm32(AUX_X)     # mov eax, [r14+X]
+    a.db(0x89, 0xC6)                           # mov esi, eax（esi 写入清零高 32）
+    a.db(0x48, 0xC1, 0xE6, 0x20)               # shl rsi, 32
+    a.db(0x41, 0x8B, 0x86); a.imm32(AUX_Y)     # mov eax, [r14+Y]
+    a.db(0x89, 0xC7)                           # mov edi, eax
+    a.db(0x48, 0x09, 0xFE)                     # or rsi, rdi
+    mov_edi_i(a, 0)                            # kind = 0 motion
+    mov_eax_i(a, SYS_PTR_INJECT_N)
+    syscall(a)
+    # 按钮沿检测（bit0..2 对 BTNP——变更即注入 BTN_LEFT/RIGHT/MIDDLE）
+    a.db(0x41, 0xC7, 0x86); a.imm32(AUX_BT); a.imm32(0)
+    a.label("bt_loop")
+    a.db(0x41, 0x8B, 0x8E); a.imm32(AUX_BT)    # mov ecx, [r14+BT]
+    a.db(0x83, 0xF9, 0x03)                     # cmp ecx, 3
+    a.jcc32(0x8D, "bt_done")                   # jge bt_done
+    a.db(0x41, 0x89, 0xC8)                     # mov r8d, ecx（b）
+    a.db(0x41, 0x8B, 0x9E); a.imm32(AUX_HEAD)  # mov ebx, [r14+HEAD]
+    a.db(0x83, 0xE3, 0x07)                     # and ebx, 7（btn）
+    a.db(0x89, 0xD8)                           # mov eax, ebx
+    a.db(0x44, 0x88, 0xC1)                     # mov cl, r8b
+    a.db(0xD3, 0xE8)                           # shr eax, cl
+    a.db(0x83, 0xE0, 0x01)                     # and eax, 1（cur）
+    a.db(0x41, 0x89, 0xC1)                     # mov r9d, eax（state 暂存）
+    a.db(0x41, 0x8B, 0x9E); a.imm32(AUX_BTNP)  # mov ebx, [r14+BTNP]
+    a.db(0x44, 0x88, 0xC1)                     # mov cl, r8b
+    a.db(0xD3, 0xEB)                           # shr ebx, cl
+    a.db(0x83, 0xE3, 0x01)                     # and ebx, 1（prev）
+    a.db(0x39, 0xD8)                           # cmp eax, ebx
+    a.jcc32(0x84, "bt_next")                   # je bt_next（沿未变零扰动）
+    a.db(0xB8); a.imm32(AUX_BTN_BASE)          # mov eax, 0x110
+    a.db(0x44, 0x01, 0xC0)                     # add eax, r8d（code = 0x110 + b）
+    a.db(0x89, 0xC6)                           # mov esi, eax
+    a.db(0x48, 0xC1, 0xE6, 0x20)               # shl rsi, 32
+    a.db(0x4C, 0x09, 0xCE)                     # or rsi, r9（code<<32 | state）
+    mov_edi_i(a, 1)                            # kind = 1 button
+    mov_eax_i(a, SYS_PTR_INJECT_N)
+    syscall(a)
+    a.label("bt_next")
+    a.db(0x41, 0x8B, 0x86); a.imm32(AUX_BT)
+    a.db(0xFF, 0xC0)                           # inc eax
+    a.db(0x41, 0x89, 0x86); a.imm32(AUX_BT)
+    a.jmp32u("bt_loop")
+    a.label("bt_done")
+    # BTNP = HEAD 低 3 位（沿检测基线随包）
+    a.db(0x41, 0x8B, 0x8E); a.imm32(AUX_HEAD)
+    a.db(0x83, 0xE1, 0x07)                     # and ecx, 7
+    a.db(0x41, 0x89, 0x8E); a.imm32(AUX_BTNP)
+    a.db(0x41, 0xC7, 0x86); a.imm32(AUX_ST); a.imm32(0)
+    # 出包取证行（常量串——零数字格式化，串口日志域防淹没）
+    a.db(0x48, 0xBF); a.imm64(ELF_DATA_VA + AUX_PKT_EVID_OFF)
+    mov_esi_i(a, len(AUX_PKT_EVID))
+    mov_eax_i(a, SYS_LOG)
+    syscall(a)
+    a.jmp32u("yield")
+
+    # —— st3：溢出吞没（SKIP 递减归零出域——内核车道同谱）
+    a.label("st3")
+    a.db(0x41, 0x8B, 0x86); a.imm32(AUX_SKIP)
+    a.db(0xFF, 0xC8)                           # dec eax
+    a.db(0x41, 0x89, 0x86); a.imm32(AUX_SKIP)
+    a.jcc32(0x85, "yield")                     # jnz yield（余量未尽）
+    a.db(0x41, 0xC7, 0x86); a.imm32(AUX_ST); a.imm32(0)
+
+    # —— 让步域（idle/包后同站点——真常驻不退出）。YIELD×64 节流
+    #    （M42-AUXR3 揭雷收口：v0 单 YIELD 直返环 = ~37k yields/s 调度
+    #    洪水——就绪队列灌满拉宽 exit_current→Zombie 切换竞窗〔t95 早
+    #    退实录〕+ 有界等待裕量侵蚀〔t124 短收〕；×64 节流后轮询率降
+    #    至空闲窗本底，生产任务零扰动）
+    a.label("yield")
+    a.db(0x41, 0xC7, 0x86); a.imm32(AUX_YLD); a.imm32(64)
+    a.label("yield_loop")
+    mov_eax_i(a, SYS_YIELD)
+    syscall(a)
+    a.db(0x41, 0x8B, 0x86); a.imm32(AUX_YLD)
+    a.db(0xFF, 0xC8)                           # dec eax
+    a.db(0x41, 0x89, 0x86); a.imm32(AUX_YLD)
+    a.jcc32(0x85, "yield_loop")                # jnz yield_loop（余量未尽——jcc32 全码 0F 85，域⑨揭雷同族复发收口）
+    a.jmp32u("loop")
+    a.resolve()
+    return bytes(a.buf)
+
 def main():
     native_code = build_native_code()
     client_code, wire = build_client_code()
@@ -1427,6 +1661,7 @@ def main():
     wc_code = build_wc_svc_code()
     spec_code = build_spec_isr_code()
     argv_code = build_argv_code()
+    aux_code = build_aux_svc_code()
     wc_globals = build_wc_globals_blob()
     wc_batch = build_wc_client_batch()
     wc_batch_ext = build_wc_client_batch_ext()
@@ -1460,6 +1695,10 @@ def main():
     argv_data = bytearray(ARGV_DATA_SIZE)  # 域⑧：+0x00 取证前缀 / +0x20 argv[0] 拷贝缓冲（运行期 rep movsb 填装）
     argv_data[0x00:0x00 + len(ARGV_EVID)] = ARGV_EVID
     assert len(ARGV_EVID) <= ARGV_BUF_OFF
+    aux_data = bytearray(AUX_DATA_SIZE)  # 域⑨：+0x00 boot 取证 / +0x20..0x48 槽面 / +0x48 出包取证
+    aux_data[0x00:0x00 + len(AUX_BOOT_EVID)] = AUX_BOOT_EVID
+    aux_data[AUX_PKT_EVID_OFF:AUX_PKT_EVID_OFF + len(AUX_PKT_EVID)] = AUX_PKT_EVID
+    assert AUX_PKT_EVID_OFF + len(AUX_PKT_EVID) <= AUX_DATA_SIZE
 
     elf_native = elf64(ELF_ENTRY, [
         (ELF_ENTRY, 5, native_code),            # PF_R|PF_X
@@ -1492,6 +1731,10 @@ def main():
     elf_argv = elf64(ELF_ENTRY, [
         (ELF_ENTRY, 5, argv_code),
         (ELF_DATA_VA, 6, bytes(argv_data)),
+    ])
+    elf_aux = elf64(ELF_ENTRY, [
+        (ELF_ENTRY, 5, aux_code),
+        (ELF_DATA_VA, 6, bytes(aux_data)),
     ])
 
     # objdump 反汇编锚定 + syscall 计数
@@ -1602,6 +1845,28 @@ def main():
         ("add %r14d,%esi", "取证行长合成域（前缀 + strlen——REX.R 揭雷②收口先例）"),
         ("mov $0x11,%esi", "前缀长域"),
     ], n_sys=3)  # LOG 1 + EXIT 1（主道 EXIT(argc)）+ bail EXIT 1（argc=0/NULL 防御域）
+    objdump_check(aux_code, [
+        ("movabs $0x401000,%r14", "数据段基址装载域（槽面纪律——跨 syscall 常驻）"),
+        ("mov $0x2c,%eax", "SYS_AUX_READ 读出域"),
+        ("cmp $0xfffffffffffffffe,%rax", "NOT_OWNER 哨兵闸（imm32 符号扩展域——内核车道让步）"),
+        ("cmp $0xffffffffffffffff,%rax", "EMPTY 哨兵闸（环空让步）"),
+        ("test $0x8,%bl", "包头 bit3 恒 1 契约域"),
+        ("test $0xc0,%bl", "溢出包 bit6/7 闸（整包吞没）"),
+        ("test $0x10,%cl", "sx 符号位域"),
+        ("test $0x20,%cl", "sy 符号位域"),
+        ("sub $0x100,%r13d", "dx 符号扩展域"),
+        ("sub $0x100,%ebp", "dy 符号扩展域"),
+        ("cmp $0x77f,%eax", "X 钳制上界（1919）"),
+        ("cmp $0x437,%eax", "Y 钳制上界（1079）"),
+        ("shl $0x20,%rsi", "motion xy 打包域"),
+        ("mov $0x110,%eax", "BTN_LEFT 基码域（沿检测 +b）"),
+        ("cmp $0x3,%ecx", "按钮沿循环上界域"),
+        ("shr %cl,%eax", "按钮位提取域"),
+        ("mov $0x2d,%eax", "SYS_PTR_INJECT 生产域"),
+        ("mov $0x2,%eax", "SYS_YIELD 让步域"),
+    ("mov $0x3,%edi", "SET_PRIO 调用级域（3 = 最低——调度良民纪律）"),
+        ("mov $0x7,%eax", "SYS_SET_PRIO 自调节域"),
+    ], n_sys=7)  # LOG 2（boot + 出包）+ SET_PRIO 1 + AUX_READ 1 + PTR_INJECT 2（motion + button）+ YIELD 1（idle/包后同站点）——真常驻不退出形零 EXIT
 
     # Rust 生成物
     out = f"""// 本文件由 scripts/gen_m42_elf_lane.py 生成——勿手改；重跑脚本再生成。
@@ -1886,13 +2151,50 @@ pub static SPEC_ISR: [u8; {len(elf_spec)}] = [
 pub static ARGV_SEED: [u8; {len(elf_argv)}] = [
 {rs_hex(elf_argv)}
 ];
+
+/// 域⑨ boot 取证行长（gen 域⑨ AUX_BOOT_EVID 对账——t130 结构锚）。
+pub const AUX_BOOT_EVID_LEN: usize = {len(AUX_BOOT_EVID)};
+/// 域⑨ 出包取证行长（gen 同源——串口双面板标记域字节数）。
+#[allow(dead_code)] // 文档锚点：LOG esi imm32 内嵌同值
+pub const AUX_PKT_EVID_LEN: usize = {len(AUX_PKT_EVID)};
+/// 域⑨ 出包取证串偏移（gen 域⑨ AUX_PKT_EVID_OFF 对账）。
+#[allow(dead_code)] // 文档锚点：LOG rdi movabs 内嵌同值
+pub const AUX_PKT_EVID_OFF: usize = {AUX_PKT_EVID_OFF};
+/// 域⑨ 屏宽钳制上界（gen 域⑨ AUX_W 对账——1919 = fb::WIDTH − 1）。
+#[allow(dead_code)] // 文档锚点：cmp imm32 内嵌同值
+pub const AUX_SCREEN_W: i32 = {AUX_W};
+/// 域⑨ 屏高钳制上界（gen 同源——1079 = fb::HEIGHT − 1）。
+#[allow(dead_code)] // 文档锚点：cmp imm32 内嵌同值
+pub const AUX_SCREEN_H: i32 = {AUX_H};
+/// 域⑨ 按钮基码（gen 域⑨ AUX_BTN_BASE 对账——BTN_LEFT 官方 evdev 值）。
+#[allow(dead_code)] // 文档锚点：mov eax imm32 内嵌同值
+pub const AUX_BTN_BASE: u32 = {AUX_BTN_BASE};
+
+/// 域⑨ 映像：AUX_SVC_ELF（M42-AUXR3 笔㉚——**ring3 aux 驱动进程**，
+/// 编译进程链第九形——驱动形，真常驻不退出形，播种 lane
+/// `spawn_elf_seed_resident` 消费）。车道：SYS_LOG boot 取证 → 真常驻
+/// 环：SYS_AUX_READ(44) 单字节读出〔NOT_OWNER/EMPTY 双哨兵 → YIELD 让
+/// 步重试——boot 双轨回归锚纪律，内核车道持有期零消费零争抢〕→ 三字
+/// 节包状态机〔bit3 包头闸 + 溢出整包吞没（SKIP 槽）+ 杂码重同步〕→
+/// 符号扩展（HEAD bit4/5）→ PS/2 极性反转（y -= dyi）→ 屏域钳制
+/// （0..1919 / 0..1079）→ 光标累积（X/Y 槽——驱动自持，与内核
+/// AUX_CUR_X/Y 双轨分立）→ SYS_PTR_INJECT(45) 授权车道指针生产
+/// 〔motion 绝对坐标 x<<32|y + 按钮沿 bit0..2 → BTN_LEFT/RIGHT/MIDDLE
+/// 0x110..〕→ YIELD 让步 → 回环。寄存器契约：r14 = 数据段基址跨
+/// syscall 常驻；状态全量内存槽面化（ST/HEAD/DX/SKIP/X/Y/BTNP/PKT/BT
+/// ——域⑥纪律，寄存器零持久态）；syscall 计数锚 7〔LOG 2 + SET_PRIO 1 + AUX_READ
+/// 1 + PTR_INJECT 2 + YIELD 1〕+ objdump 锚定 18 目。t130 消费
+/// （ring3 aux 驱动活体）。
+pub static AUX_SVC_ELF: [u8; {len(elf_aux)}] = [
+{rs_hex(elf_aux)}
+];
 """
     OUT.write_text(out)
     print(
         f"[gen_m42_elf_lane] ELF_NATIVE={len(elf_native)}B SHM_CLIENT={len(elf_client)}B "
         f"FBDEV_SVC_ELF={len(elf_fbsvc)}B RESIDENT_SEED={len(elf_resident)}B "
         f"INPUT_CLIENT={len(elf_input)}B WAYCOMP_SVC_ELF={len(elf_wc)}B "
-        f"SPEC_ISR={len(elf_spec)}B ARGV_SEED={len(elf_argv)}B "
+        f"SPEC_ISR={len(elf_spec)}B ARGV_SEED={len(elf_argv)}B AUX_SVC_ELF={len(elf_aux)}B "
         f"wire={len(wire)}B input_wire={len(input_wire)}B wc_batch={len(wc_batch)}B "
         f"wc_batch_ext={len(wc_batch_ext)}B wc_globals={len(wc_globals)}B → {OUT}"
     )
