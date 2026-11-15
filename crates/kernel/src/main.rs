@@ -86,8 +86,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126）。
-const SELFTEST_TOTAL: usize = 126;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126；M42-DMG27 t127（联合域上限细化活体）起 127）。
+const SELFTEST_TOTAL: usize = 127;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7393,6 +7393,15 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t126 = t126_run(&mut log);
     report(&mut log, t126, "rdtsc-lfence-serialized");
 
+    // t127) 联合域上限细化活体（M42-DMG27 笔㉗）：〔mirror 直驱——
+    //       20 块近邻碎片（gap 8 ≤ 32）吸附降阶部分计划不翻全帧 +
+    //       远距碎片（gap 92）超限翻全帧预算外域继承〕→〔fb 活体
+    //       面——sys_fb_sync 近邻批 marks 20 → rects ≤ 16 非全帧 +
+    //       远距批 → 全帧 + 复原〕。
+    //       LUMINA-T127-NEAR/T127-FAR/T127-OK。
+    let t127 = t127_run(&mut log);
+    report(&mut log, t127, "damage-union-cap-refinement");
+
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
     //      pf_hook 入口扩判「U 位 或 CR2 落增长栈窗口域」——CPL0 用户
@@ -13874,8 +13883,10 @@ fn t121_run(log: &mut DualLog) -> bool {
         sr_c - sr0
     );
 
-    // (d) fb 域联合直驱（相邻块并集 coalesce + 分离块保留 + 16 上限全
-    //     帧翻转 + 复原——mirror DamageTracker 三态计划端到端）
+    // (d) fb 域联合直驱（相邻块并集 coalesce + 分离块保留 + 上限细化
+    //     两域〔M42-DMG27 笔㉗：近邻超限吸附降阶 + 预算外远距翻转继
+    //     承——v0 直翻退役显形〕+ 复原——mirror DamageTracker 三态
+    //     计划端到端）
     fb::fb_damage_reset();
     let mk_d0 = fb::fb_damage_marks();
     let _ = fb::sys_fb_sync(0, 0, 100, 100);
@@ -13888,7 +13899,16 @@ fn t121_run(log: &mut DualLog) -> bool {
         let _ = fb::sys_fb_sync(u64::from(1000 + i * 12), 900, 5, 5);
     }
     let (r3, f3) = fb::fb_damage_plan();
-    let _ = r3; // 全帧态矩形账目已清空（is_full 权威表达）
+    // 上限细化域（笔㉗）：17 块近邻（gap 7 ≤ 32）吸附降阶——部分计
+    // 划保持（v0 直翻退役显形；t121 首割直翻判据随细化演进改判）。
+    let near_absorb_ok = !f3 && r3 <= 16;
+    // 预算外域继承：远距批（间距 41 → gap 36）超限翻转全帧。
+    fb::fb_damage_reset();
+    for i in 0..20u32 {
+        let _ = fb::sys_fb_sync(u64::from(i * 41), 8, 5, 5);
+    }
+    let (_, f3b) = fb::fb_damage_plan();
+    let far_flip_ok = f3b;
     fb::fb_damage_reset();
     let (r4, f4) = fb::fb_damage_plan();
     let union_ok = r1 == 1
@@ -13896,13 +13916,14 @@ fn t121_run(log: &mut DualLog) -> bool {
         && mk1 - mk_d0 == 2 // marks 2 → rects 1（联合显形）
         && r2 == 2
         && !f2
-        && f3 // 17 块 > 16 → 全帧翻转
+        && near_absorb_ok // 17 块近邻 → 吸附降阶（v0 全帧翻转退役）
+        && far_flip_ok // 20 块远距 → 预算外翻转（v0 语义继承）
         && r4 == 0
         && !f4;
     ok &= union_ok;
     let _ = writeln!(
         log,
-        "LUMINA-T121-UNION-FB marks=+{} rects=(1→2→full→0) union_ok={union_ok}",
+        "LUMINA-T121-UNION-FB marks=+{} rects=(1→2→near-absorb={near_absorb_ok}→far-full={far_flip_ok}→0) union_ok={union_ok}",
         mk1 - mk_d0
     );
 
@@ -14702,6 +14723,71 @@ fn t126_run(log: &mut DualLog) -> bool {
     );
     if ok {
         let _ = writeln!(log, "LUMINA-T126-OK");
+    }
+    ok
+}
+
+/// t127 联合域上限细化活体（M42-DMG27 笔㉗）——两相位描述见 kmain
+/// 调度注记（t120-t126 同款纪律：活体描述随调度块，函数体免长文档）。
+fn t127_run(log: &mut DualLog) -> bool {
+    let mut ok = true;
+
+    // (a) mirror 直驱（联合域上限细化策略面——kernel 内同源 tracker）。
+    let mut near = mirror::DamageTracker::new();
+    for i in 0..20i32 {
+        near.mark(mirror::Rect {
+            x: i * 16,
+            y: 0,
+            w: 8,
+            h: 8,
+        });
+    }
+    let near_ok = !near.is_full() && near.rects().len() <= mirror::DAMAGE_MAX_RECTS;
+    ok &= near_ok;
+    let mut far = mirror::DamageTracker::new();
+    for i in 0..20i32 {
+        far.mark(mirror::Rect {
+            x: i * 100,
+            y: i * 100,
+            w: 8,
+            h: 8,
+        });
+    }
+    let far_ok = far.is_full() && far.rects().is_empty();
+    ok &= far_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T127-NEAR near-len={} (cap={}) full={} far-full={}",
+        near.rects().len(),
+        mirror::DAMAGE_MAX_RECTS,
+        near.is_full(),
+        far.is_full()
+    );
+
+    // (b) fb 活体面（SYS_FB_SYNC 车道——SYNC_DAMAGE 同一累计器内发
+    //     生）：近邻批（间距 24 → gap 16 ≤ 32 吸附）不翻全帧；远距
+    //     批（间距 41 → gap 33，行内排列屏域内）翻全帧；复原清账。
+    fb::fb_damage_reset();
+    for i in 0..20i64 {
+        let _ = fb::sys_fb_sync((i * 24) as u64, 4, 8, 8);
+    }
+    let (nr, nf) = fb::fb_damage_plan();
+    let live_near_ok = !nf && nr <= mirror::DAMAGE_MAX_RECTS;
+    ok &= live_near_ok;
+    fb::fb_damage_reset();
+    for i in 0..20i64 {
+        let _ = fb::sys_fb_sync((i * 41) as u64, 8, 8, 8);
+    }
+    let (_, ff) = fb::fb_damage_plan();
+    let live_far_ok = ff;
+    ok &= live_far_ok;
+    fb::fb_damage_reset();
+    let _ = writeln!(
+        log,
+        "LUMINA-T127-FAR live near=(rects={nr},full={nf}) far=(full={ff})"
+    );
+    if ok {
+        let _ = writeln!(log, "LUMINA-T127-OK");
     }
     ok
 }

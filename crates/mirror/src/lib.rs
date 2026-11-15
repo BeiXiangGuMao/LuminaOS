@@ -85,6 +85,14 @@ pub const DAMAGE_MAX_RECTS: usize = 16;
 /// 移动指针的碎片损伤由此聚成粗粒度块而非灌爆矩形预算。
 pub const POINTER_GRANULARITY: i32 = 16;
 
+/// 近邻吸附间距（像素，M42-DMG27 笔㉗联合域上限细化）：合并后账目
+/// 超出 [`DAMAGE_MAX_RECTS`] 时，最近对 Chebyshev 间距 ≤ 本限则先吸
+/// 附融合（包围盒融合——账目降阶至 ≤ 上限），预算外（全部对间距超
+/// 限）才翻转全帧。32px = 2×[`POINTER_GRANULARITY`]——碎片风暴
+/// 〔指针拖尾/窗拖拽条带〕在局部邻域内聚成粗块，不溢出为全帧重绘；
+/// 融合产物面积膨胀有界（连接走廊 ≤ 间距限 × 两轴）。
+pub const NEAR_MERGE_GAP: i32 = 32;
+
 /// 相交或贴边（闭区间语义）：并集合并的触发条件。贴边块也并——指针
 /// 网格粒度的相邻单元才能累积成块；分离对保留两块。
 fn touches(a: &Rect, b: &Rect) -> bool {
@@ -102,6 +110,19 @@ fn div_floor(v: i32, g: i32) -> i32 {
     } else {
         q
     }
+}
+
+/// 两矩形 Chebyshev 间距（M42-DMG27 笔㉗上限细化面）：两轴分离距
+/// 各自钳零后取最大——相交/贴边对恒 0（[`touches`] 前置域已合并），
+/// 分离对 = 最近轴距离。近邻吸附判据消费面（≤ [`NEAR_MERGE_GAP`]）。
+fn gap(a: &Rect, b: &Rect) -> i32 {
+    let dx = (a.x - (b.x + b.w as i32))
+        .max(b.x - (a.x + a.w as i32))
+        .max(0);
+    let dy = (a.y - (b.y + b.h as i32))
+        .max(b.y - (a.y + a.h as i32))
+        .max(0);
+    dx.max(dy)
 }
 
 /// 上取整除（经下取整对称定义）。
@@ -167,18 +188,37 @@ impl DamageTracker {
     /// 记录一块脏区（细则：矩形并集合并）。
     ///
     /// 与既有账目相交或贴边的块即时并入包围盒（迭代至不动点——合并
-    /// 产物可能触达更远邻块）；分离块保留。合并后账目仍超
-    /// [`DAMAGE_MAX_RECTS`] → 翻转全帧（[`Self::is_full`]，账目清空，
-    /// 后续脏区被全帧重绘吸收）。全帧态下本调用为无事。
+    /// 产物可能触达更远邻块）；分离块保留。合并后账目超出
+    /// [`DAMAGE_MAX_RECTS`] 时**上限细化**（M42-DMG27 笔㉗——v0 直
+    /// 翻口径退役）：最近对 Chebyshev 间距 ≤ [`NEAR_MERGE_GAP`] 则吸
+    /// 附融合（包围盒并入 + 重合并不动点——融合产物可能触达更远邻
+    /// 块），逐轮降阶直至 ≤ 上限；预算外（全部对间距超限）才翻转全
+    /// 帧（[`Self::is_full`]，账目清空，后续脏区被全帧重绘吸收）。
+    /// 全帧态下本调用为无事。
     pub fn mark(&mut self, r: Rect) {
         if self.full {
             return; // 全帧态：一切脏区被全帧重绘吸收
         }
         self.rects.push(r);
         self.coalesce();
-        if self.rects.len() > DAMAGE_MAX_RECTS {
-            self.full = true;
-            self.rects.clear();
+        while self.rects.len() > DAMAGE_MAX_RECTS {
+            match self.nearest_pair() {
+                Some((i, j)) if gap(&self.rects[i], &self.rects[j]) <= NEAR_MERGE_GAP => {
+                    // swap_remove(j)：账目无序（几何面不依赖顺序）；
+                    // i < j 故 i 槽位不受搬移影响。
+                    let b = self.rects.swap_remove(j);
+                    let fused = self.rects[i].union(&b);
+                    self.rects[i] = fused;
+                    self.coalesce();
+                }
+                _ => {
+                    // 预算外：全部对间距 > NEAR_MERGE_GAP——碎片
+                    // 不聚簇，翻转全帧（v0 口径语义继承）。
+                    self.full = true;
+                    self.rects.clear();
+                    break;
+                }
+            }
         }
     }
 
@@ -208,6 +248,28 @@ impl DamageTracker {
                 }
             }
         }
+    }
+
+    /// 最近对寻址（M42-DMG27 笔㉗上限细化面）：全账目两两扫描取
+    /// Chebyshev 间距最小对（n ≤ 上限 + 1，O(n²) 预算平凡）。返回
+    /// (i, j)，i < j；空/单元素账目返回 None。
+    fn nearest_pair(&self) -> Option<(usize, usize)> {
+        let n = self.rects.len();
+        if n < 2 {
+            return None;
+        }
+        let mut best = (0usize, 1usize);
+        let mut best_gap = gap(&self.rects[0], &self.rects[1]);
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let g = gap(&self.rects[i], &self.rects[j]);
+                if g < best_gap {
+                    best = (i, j);
+                    best_gap = g;
+                }
+            }
+        }
+        Some(best)
     }
 
     /// 本帧脏区列表（合并后两两分离，≤ [`DAMAGE_MAX_RECTS`] 块；
@@ -462,6 +524,83 @@ mod tests {
                 h: 16
             }
         );
+    }
+
+    #[test]
+    fn near_absorption_keeps_partial_plan() {
+        // M42-DMG27 笔㉗上限细化面：20 个 8px 间距碎块（gap 8 ≤ 32）——
+        // 超限近邻吸附降阶，部分计划保持（v0 直翻全帧退役显形）。
+        let mut t = DamageTracker::default();
+        for i in 0..20u32 {
+            t.mark(Rect {
+                x: (i * 16) as i32,
+                y: 0,
+                w: 8,
+                h: 8,
+            });
+        }
+        assert!(!t.is_full(), "近邻碎片吸附后不翻全帧");
+        assert!(
+            t.rects().len() <= super::DAMAGE_MAX_RECTS,
+            "账目降阶至预算内 len={}",
+            t.rects().len()
+        );
+        assert!(t.rects().len() < 20, "吸附确有合并 len={}", t.rects().len());
+        // 包围盒覆盖全谱（零损伤丢失）
+        let bb = t.bounding_box().expect("bbox");
+        assert_eq!((bb.x, bb.y), (0, 0));
+        assert_eq!(bb.x + bb.w as i32, 19 * 16 + 8);
+    }
+
+    #[test]
+    fn far_fragments_still_flip_full() {
+        // 预算外域：20 个 64px 间距碎块（gap 64 > 32 全谱）——碎片不
+        // 聚簇，翻转全帧（v0 口径语义继承）。
+        let mut t = DamageTracker::default();
+        for i in 0..20u32 {
+            t.mark(Rect {
+                x: (i * 100) as i32,
+                y: (i * 100) as i32,
+                w: 8,
+                h: 8,
+            });
+        }
+        assert!(t.is_full(), "远距碎片超限翻转全帧");
+        assert!(t.rects().is_empty(), "全帧态账目清空");
+    }
+
+    #[test]
+    fn near_gap_boundary_absorbs_only_within_limit() {
+        // 间距判据边界域：15 块远距基座 + 2 笔近距探针（len=17 真超限
+        // 窗）——最近对 gap=32 → 吸附降阶保持部分计划；gap=33 → 预算
+        // 外翻转全帧。
+        let mk = |x: i32| Rect {
+            x,
+            y: 0,
+            w: 8,
+            h: 8,
+        };
+        // (a) gap=32：基座 15 块 x=i*80（i=0..14，末块 x=1120——间距
+        //     72 > 32），近探针 x=1160（与末块 gap=32）+ 远探针 x=2000
+        //     （与全谱 gap > 32）——len=17 超限 → 最近对（1160, 末块）
+        //     吸附 → len=16 部分。
+        let mut t = DamageTracker::default();
+        for i in 0..15u32 {
+            t.mark(mk((i * 80) as i32));
+        }
+        t.mark(mk(14 * 80 + 8 + 32));
+        t.mark(mk(2000));
+        assert!(!t.is_full(), "gap=32 边界内吸附——部分计划保持");
+        assert!(t.rects().len() <= super::DAMAGE_MAX_RECTS);
+        // (b) gap=33：近探针 x=1161（与末块 gap=33）+ 远探针 x=2000——
+        //     全谱对间距 > 32 → 预算外翻转全帧。
+        let mut t2 = DamageTracker::default();
+        for i in 0..15u32 {
+            t2.mark(mk((i * 80) as i32));
+        }
+        t2.mark(mk(14 * 80 + 8 + 33));
+        t2.mark(mk(2000));
+        assert!(t2.is_full(), "gap=33 预算外——翻转全帧");
     }
     #[test]
     fn damage_bbox_and_skip_frame() {
