@@ -541,6 +541,171 @@ pub fn input_pointer_frame() -> bool {
     }
 }
 
+// ---- M42-DMGI24（笔㉔）：kbd→waycomp ISR 臂指针/轴域扩展 ----
+//（笔⑰挂账「kbd→waycomp ISR 臂指针/轴域扩展（input_pointer_*_isr 臂
+// 面随批）」兑现——[`input_key_isr`] 同谱五臂：motion/button/axis/
+// axis_stop/frame 全谱 ISR 语境面。**PS/2 aux（IRQ12）电气源挂账**：
+// 臂面先在环（inject 同谱自检入口承载——t124），kbd.rs 双车道接线随
+// aux 驱动批次。臂样板对 = [`isr_arm_enter`]/[`isr_arm_exit`] 旗随批
+// + [`isr_arm_send`] try_lock 有界退避核——锁窗 send 即放、退避耗尽
+// [`WLCOMP_ISR_DROP`] fail-visible、队满 [`WLCOMP_ISR_FULL`] 显形、
+// 受理唤醒链锁外域——[`input_key_isr`] 全谱同语义（t118 断言面稳定）。）
+
+/// ISR 臂旗随批进入（per-cpu 置位——守护门禁旗快路径放行前批）。
+/// 返回 (cpu 槽号, 前值)——[`isr_arm_exit`] 配对复位（嵌套安全）。
+fn isr_arm_enter() -> (usize, bool) {
+    let cpu = task::current_cpu_slot();
+    let prev = IN_ISR_CTX[cpu].swap(true, Ordering::AcqRel);
+    (cpu, prev)
+}
+
+/// ISR 臂旗随批退出（前值复位——嵌套安全配对面）。
+fn isr_arm_exit(cpu: usize, prev: bool) {
+    IN_ISR_CTX[cpu].store(prev, Ordering::Release);
+}
+
+/// ISR 臂通用锁窗核（try_lock 有界退避随批——[`input_key_isr`] 同谱
+/// 语义单点化）：`IN_MU.try_lock()` 锁窗内 `send()` 即放 +
+/// [`WLCOMP_MPS`] 计数；队满 [`WLCOMP_ISR_FULL`] 显形；退避窗 =
+/// spin_loop 提示重试（非等锁自旋——ISR 语境禁自旋纪律），耗尽
+/// [`WLCOMP_ISR_DROP`] fail-visible。返回受理。
+fn isr_arm_send(send: impl FnOnce() -> bool) -> bool {
+    let mut tries = 0u32;
+    loop {
+        match IN_MU.try_lock() {
+            Some(g) => {
+                WLCOMP_MPS.fetch_add(1, Ordering::AcqRel);
+                let ok = send();
+                if !ok {
+                    WLCOMP_ISR_FULL.fetch_add(1, Ordering::AcqRel);
+                }
+                drop(g);
+                return ok;
+            }
+            None => {
+                tries += 1;
+                if tries >= ISR_LOCK_TRIES {
+                    WLCOMP_ISR_DROP.fetch_add(1, Ordering::AcqRel);
+                    return false; // 退避耗尽丢弃（fail-visible——零静默）
+                }
+                core::hint::spin_loop();
+            }
+        }
+    }
+}
+
+/// ISR 臂受理唤醒链（锁外域——IN_MU → SCHED 锁序单向；wake_tasks 自
+/// 带 IntWindow，ISR 语境可达）。
+fn isr_arm_wake() {
+    task::wake_tasks(|w| matches!(w, task::WaitWhat::CompIn { .. }));
+}
+
+/// ISR 臂：指针移动（屏幕坐标——bit63=0 移动域，[`input_pointer_motion`]
+/// 同谱载荷编码）。旗随批 + try_lock 有界退避 + 受理唤醒锁外。
+pub fn input_pointer_motion_isr(x: i32, y: i32) -> bool {
+    let (cpu, prev) = isr_arm_enter();
+    let ok = if input_guard() {
+        let raw = (((x as u32) as u64) << 32) | ((y as u32) as u64 & 0xFFFF_FFFF);
+        let accepted = isr_arm_send(|| PTR_Q.send(raw & !(1u64 << 63)).is_ok());
+        if accepted {
+            isr_arm_wake();
+        }
+        accepted
+    } else {
+        false
+    };
+    isr_arm_exit(cpu, prev);
+    ok
+}
+
+/// ISR 臂：指针按键（evdev 按钮码 + 键态——bit63=1 按钮域，
+/// [`input_pointer_button`] 同谱载荷编码）。
+pub fn input_pointer_button_isr(button: u32, state: u32) -> bool {
+    let (cpu, prev) = isr_arm_enter();
+    let ok = if input_guard() {
+        let raw = (1u64 << 63) | ((u64::from(button)) << 32) | (u64::from(state) & 0xFFFF_FFFF);
+        let accepted = isr_arm_send(|| PTR_Q.send(raw).is_ok());
+        if accepted {
+            isr_arm_wake();
+        }
+        accepted
+    } else {
+        false
+    };
+    isr_arm_exit(cpu, prev);
+    ok
+}
+
+/// ISR 臂：轴滚动（axis/source 值域闸同任务面——[`WLCOMP_AXIS_BAD`]
+/// fail-visible；bit37 轴源有效旗 + source<<34 + axis<<32 载荷编码，
+/// [`input_pointer_axis`] 同谱）。
+pub fn input_pointer_axis_isr(axis: u32, value: i32, source: u32) -> bool {
+    let (cpu, prev) = isr_arm_enter();
+    let ok = if input_guard() {
+        if axis > prism::wayland::comp::AXIS_AXIS_MAX
+            || source > prism::wayland::comp::AXIS_SOURCE_MAX
+        {
+            WLCOMP_AXIS_BAD.fetch_add(1, Ordering::AcqRel);
+            isr_arm_exit(cpu, prev);
+            return false; // 轴/轴源域越界（生产域闸——fail-visible）
+        }
+        let raw = (1u64 << 37)
+            | ((u64::from(source) & 0x3) << 34)
+            | ((u64::from(axis) & 0x3) << 32)
+            | ((value as u32) as u64 & 0xFFFF_FFFF);
+        let accepted = isr_arm_send(|| AXIS_Q.send(raw).is_ok());
+        if accepted {
+            isr_arm_wake();
+        }
+        accepted
+    } else {
+        false
+    };
+    isr_arm_exit(cpu, prev);
+    ok
+}
+
+/// ISR 臂：滚动手势终结（bit36 手势终结旗——[`input_pointer_axis_stop`]
+/// 同谱载荷编码；axis 值域闸同 [`input_pointer_axis_isr`]）。
+pub fn input_pointer_axis_stop_isr(axis: u32) -> bool {
+    let (cpu, prev) = isr_arm_enter();
+    let ok = if input_guard() {
+        if axis > prism::wayland::comp::AXIS_AXIS_MAX {
+            WLCOMP_AXIS_BAD.fetch_add(1, Ordering::AcqRel);
+            isr_arm_exit(cpu, prev);
+            return false;
+        }
+        let raw = (1u64 << 36) | ((u64::from(axis) & 0x3) << 32);
+        let accepted = isr_arm_send(|| AXIS_Q.send(raw).is_ok());
+        if accepted {
+            isr_arm_wake();
+        }
+        accepted
+    } else {
+        false
+    };
+    isr_arm_exit(cpu, prev);
+    ok
+}
+
+/// ISR 臂：帧界标记（bit38 帧界旗零载荷——[`input_pointer_frame`] 同
+/// 谱；扫掠边界生产者标记 ISR 语境面）。
+pub fn input_pointer_frame_isr() -> bool {
+    let (cpu, prev) = isr_arm_enter();
+    let ok = if input_guard() {
+        let raw = 1u64 << 38;
+        let accepted = isr_arm_send(|| AXIS_Q.send(raw).is_ok());
+        if accepted {
+            isr_arm_wake();
+        }
+        accepted
+    } else {
+        false
+    };
+    isr_arm_exit(cpu, prev);
+    ok
+}
+
 /// 输入队列深度取证读面（M42-WAYCOMP12 域①——t113 守护受理对账
 /// 域）：(键盘队列, 指针队列) 各自可消费元素数。零变更只读。
 pub fn input_queue_depth() -> (usize, usize) {
