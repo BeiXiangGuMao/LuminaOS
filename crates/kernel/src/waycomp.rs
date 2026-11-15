@@ -156,7 +156,8 @@ pub static WLCOMP_BOUND: AtomicBool = AtomicBool::new(false);
 pub static WLCOMP_SESSIONS: AtomicU64 = AtomicU64::new(0);
 /// commit 应用数（damage-commit 发布域对账）。
 pub static WLCOMP_COMMITS: AtomicU64 = AtomicU64::new(0);
-/// 合成执行数（fb_compose_tick 调用数——合流电气面对账）。
+/// 合成执行数（commit 发布域 = 批尾单合成批计数〔M42-DMGC21——N commit
+/// 批 = 1；v0 逐 commit 计数退役，t122 断言面〕）。
 pub static WLCOMP_COMPOSES: AtomicU64 = AtomicU64::new(0);
 /// 最近登记 z（仲裁策略面承接证据——cascade 平面序号域）。
 pub static WLCOMP_LAST_Z: AtomicI32 = AtomicI32::new(0);
@@ -1119,6 +1120,11 @@ fn keymap_serve(conn: u64, rep: &FeedReport, me: usize, pools_out: &mut Vec<u64>
 /// 〔policy_sync 已在环〕+ fb 机械面 REGISTER + 几何一致性裁决
 /// 〔重排改写执行器主责——commit 面兜底，M42-GEOM6 域①〕+ 损伤域
 /// 像素源分流〔wl_shm 池直读 / 代 Paint 回退〕+ SYNC/COMPOSE 合流）。
+/// **批尾单合成（M42-DMGC21 commit 发布域批量化）**：批内 N commit 的
+/// 全部损伤矩形〔内容域 + 几何演进兜底域〕入账（[`sync_rect`]——联合
+/// 域单出口）完毕后批尾单 `fb::fb_compose_tick` drain——v0 逐 commit
+/// 合成退役（N commit = N 次合成 → 1 次联合合成；mirror tracker 并集
+/// 合并承载联合）；[`WLCOMP_COMPOSES`] 随批计数（t122 断言面）。
 fn apply_commits(
     rep: &FeedReport,
     windows: &[u64],
@@ -1126,6 +1132,9 @@ fn apply_commits(
     base: u32,
     pools: &[(u32, u64)],
 ) {
+    // 批内成功 commit 计数（批尾单合成门控——M42-DMGC21：零 commit
+    // 批零合成零 COMPOSES，快径零扰动）
+    let mut committed = 0u64;
     for rec in rep.commits.items[..rep.commits.n].iter().flatten() {
         let rec: CommitRecord = *rec;
         let wl = rec.wl_id;
@@ -1181,11 +1190,12 @@ fn apply_commits(
                         _ => paint_damage(row_fb, row_slot, rect, rect),
                     }
                 }
-                // 旧/新矩形双域损伤量化 + 合成（重排改写执行器同款——
-                // 联合域单出口承接〔M42-DMG20〕）
+                // 旧/新矩形双域损伤量化（重排改写执行器同款——联合域
+                // 单出口承接〔M42-DMG20〕；兜底合成随批尾〔M42-DMGC21
+                // ——v0 逐 commit 兜底合成退役：演进域入账与内容域同
+                // 批联合 drain〕）
                 sync_rect(old.x, old.y, old.w, old.h);
                 sync_rect(rect.x, rect.y, rect.w, rect.h);
-                let _ = fb::fb_compose_tick();
                 WLCOMP_REWRITES.fetch_add(1, Ordering::AcqRel);
             }
             slots[pos].slot
@@ -1231,16 +1241,26 @@ fn apply_commits(
             }
             _ => paint_damage(fb_id, slot, rect, paint_dmg),
         }
-        // 合流电气面：损伤量化 + 合成执行（SYS_FB_SYNC → fb_compose_tick
-        //——联合域单出口承接〔M42-DMG20〕）
+        // 合流电气面：损伤量化入账（SYS_FB_SYNC——联合域单出口承接
+        //〔M42-DMG20〕；合成随批尾〔M42-DMGC21——v0 逐 commit 合成
+        // 退役〕）
         sync_rect(
             paint_dmg.x.max(0),
             paint_dmg.y.max(0),
             paint_dmg.w,
             paint_dmg.h,
         );
+        committed += 1;
+    }
+    // 批尾单合成（M42-DMGC21 commit 发布域批量化——N commit 批 = N 次
+    // 逐 commit 合成 → 1 次联合合成：批内全部损伤矩形〔内容域 + 几何
+    // 演进兜底域〕入账完毕后单 fb_compose_tick drain——mirror tracker
+    // 并集合并承载联合；COMPOSES 随批计数）。**COMMITS 批量落账随行**
+    //（笔⑳揭雷①同根收口：计数递增 = 批含合成全完——v0 逐 commit 落
+    // 账语义〔合成后计数〕保持，既有活体 stamps 门控读窗零扰动）
+    if committed > 0 {
         let _ = fb::fb_compose_tick();
-        WLCOMP_COMMITS.fetch_add(1, Ordering::AcqRel);
+        WLCOMP_COMMITS.fetch_add(committed, Ordering::AcqRel);
         WLCOMP_COMPOSES.fetch_add(1, Ordering::AcqRel);
     }
 }

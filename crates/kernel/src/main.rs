@@ -86,8 +86,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121）。
-const SELFTEST_TOTAL: usize = 121;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122）。
+const SELFTEST_TOTAL: usize = 122;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7339,6 +7339,16 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t121 = t121_run(&mut log);
     report(&mut log, t121, "damage-union-sync-rect");
 
+    // t122) commit 发布域批量化活体（M42-DMGC21 笔㉑）：〔同窗双 commit
+    //       单批——批尾单合成（ticks +1——v0 逐 commit = 2 退役显形）+
+    //       COMPOSES 随批 +1〕→〔三窗单批——批尾单合成（ticks +2 = 改
+    //       写批尾 1 + commit 批尾 1——v0 逐 commit = 4 退役显形）+
+    //       COMPOSES 随批 +1 + rw +1 改写域对账〕→〔SHUT EOF 收场复
+    //       原〕。
+    //       LUMINA-T122-BATCH/T122-MULTI/T122-OK。
+    let t122 = t122_run(&mut log);
+    report(&mut log, t122, "commit-publish-batching");
+
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
     //      pf_hook 入口扩判「U 位 或 CR2 落增长栈窗口域」——CPL0 用户
@@ -13568,8 +13578,9 @@ fn t121_run(log: &mut DualLog) -> bool {
     let c3 = loop {
         let c = waycomp::waycomp_stamps();
         // tick 门控随行（批尾 compose 后于 REWRITES++ 落账——SMP 读窗
-        // 免提前快照域）
-        if (c.3 > c2.3 && c.6 > rw0 && fb::fb_compose_ticks() >= ticks0 + 4)
+        // 免提前快照域；M42-DMGC21 commit 发布域批量化随行——(a) 双
+        // commit 联合批尾 1 + (b) commit 批尾 1 + 改写批尾 1）
+        if (c.3 > c2.3 && c.6 > rw0 && fb::fb_compose_ticks() >= ticks0 + 3)
             || ostd::time::now() >= dl
         {
             break c;
@@ -13577,14 +13588,15 @@ fn t121_run(log: &mut DualLog) -> bool {
         task::yield_now();
     };
     let ticks_b = fb::fb_compose_ticks();
-    let reg3_ok = c3.3 > c2.3 && c3.6 == rw0 + 1 && ticks_b - ticks0 == 4 && fb::surf_count() == 4;
-    // tick 差分口径：(a) 2 commit → 2 tick；(b) 1 commit + 1 改写联合
-    // 批 → 2 tick；合计 4——(b) 单演进窗与 v0 同值，判别域在 (c) 双
-    // 演进批（v0 逐窗 = 3 → 联合 = 2）
+    let reg3_ok = c3.3 > c2.3 && c3.6 == rw0 + 1 && ticks_b - ticks0 == 3 && fb::surf_count() == 4;
+    // tick 差分口径（M42-DMGC21 批量化后）：(a) 2 commit → 批尾单合
+    // 成 1 tick（v0 逐 commit = 2 退役）；(b) 1 commit 批尾 1 + 改写
+    // 联合批 1 = 2 tick；合计 3——判别域在 (c) 双演进批（v0 逐窗 = 3
+    // → 联合 = 2）
     ok &= reg3_ok;
     let _ = writeln!(
         log,
-        "LUMINA-T121-UNION reg3 count=4 rw=+1 ticks=+4（判别域随 (c) 双演进批）"
+        "LUMINA-T121-UNION reg3 count=4 rw=+1 ticks=+3（判别域随 (c) 双演进批）"
     );
 
     // (c) 销窗联合域（destroy 0x61 → drop 1 + 0x62/0x63 双演进改写批
@@ -13697,6 +13709,193 @@ fn t121_run(log: &mut DualLog) -> bool {
     let _ = crate::vfs::sys_close(hc as u64);
     if ok {
         let _ = writeln!(log, "LUMINA-T121-OK");
+    }
+    ok
+}
+
+/// t122 commit 发布域批量化活体（M42-DMGC21 笔㉑）——三相位描述见
+/// kmain 调度注记（t117-t121 同款纪律：活体描述随调度块，函数体免长
+/// 文档）。
+fn t122_run(log: &mut DualLog) -> bool {
+    use prism::wayland as wl;
+    let mut ok = true;
+    let me = task::current_task_id();
+    let c0 = waycomp::waycomp_stamps();
+    let rw0 = c0.6; // 重排改写基线（stamps 位序 7 = rewrites）
+    let ticks0 = fb::fb_compose_ticks();
+    let co0 = waycomp::WLCOMP_COMPOSES.load(Ordering::Acquire);
+    let base = (c0.2 as u32) * waycomp::FB_ID_SESSION_STRIDE;
+    let fb_a = base | 0x81;
+
+    // (a) 同窗双 commit 单批（0x81 create + damage 全 pane + frame +
+    //     commit + commit）→ 批尾单合成（ticks +1——v0 逐 commit = 2
+    //     退役显形）+ commits +2 + COMPOSES 随批 +1（v0 逐 commit = +2
+    //     退役显形）
+    let hc = match unixsock::sock_connect(me, waycomp::WAYCOMP_SOCK_NAME) {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = writeln!(log, "t122: connect failed ({e:?})");
+            return false;
+        }
+    };
+    let mut batch = [0u8; 256];
+    let mut bl = 0usize;
+    // registry 前置批（t121 (a) 同款——get_registry + bind wl_compositor
+    //：obj 3 未登记即 create → BadObject teardown（公告单发纪律），commits
+    // 零消费 fail-visible——t122 首割揭雷实录）
+    bl += wl::encode_display_get_registry(&mut batch[bl..], 1, 2).unwrap_or(0);
+    bl += wl::encode_registry_bind(&mut batch[bl..], 2, 1, "wl_compositor", 4, 3).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        3,
+        wl::compositor::REQ_CREATE_SURFACE,
+        &[wl::WlArg::NewId(0x81)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        0x81,
+        wl::surface::REQ_DAMAGE,
+        &[
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(1920),
+            wl::WlArg::Int(1080),
+        ],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        0x81,
+        wl::surface::REQ_FRAME,
+        &[wl::WlArg::NewId(0x91)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_surface_commit(&mut batch[bl..], 0x81).unwrap_or(0);
+    bl += wl::encode_surface_commit(&mut batch[bl..], 0x81).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &batch[..bl]).unwrap_or(0);
+    ok &= sent == bl;
+    let dl = ostd::time::now() + 480;
+    let c2 = loop {
+        let c = waycomp::waycomp_stamps();
+        // tick 门控随行（批尾 compose 后于 COMMITS++ 落账——SMP 读窗
+        // 免提前快照域）
+        if (c.3 >= c0.3 + 2 && fb::fb_compose_ticks() > ticks0) || ostd::time::now() >= dl {
+            break c;
+        }
+        task::yield_now();
+    };
+    let co_a = waycomp::WLCOMP_COMPOSES.load(Ordering::Acquire);
+    let ticks_a = fb::fb_compose_ticks();
+    let batch_ok = c2.3 >= c0.3 + 2
+        && ticks_a - ticks0 == 1 // 判别显形（v0 逐 commit = 2）
+        && co_a == co0 + 1 // COMPOSES 随批（v0 逐 commit = +2）
+        && fb::surf_count() == 2
+        && fb::surf_layer_of(fb_a).is_some(); // 0x81 REGISTER 在环
+    ok &= batch_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T122-BATCH commits=+{} ticks=+{} comp=+{}（批尾单合成——v0 逐 commit = 2）",
+        c2.3 - c0.3,
+        ticks_a - ticks0,
+        co_a - co0
+    );
+
+    // (b) 三窗单批（0x82/0x83/0x84 各 create + damage + frame，commit
+    //     ×3 同批）→ commit 批尾单合成（v0 逐 commit = 3 退役显形）+
+    //     改写域批尾（0x81 已登记窗 2→4 窗演进 rw +1 改写批尾 1）→
+    //     ticks +2 + COMPOSES 随批 +1 + commits +3
+    let mut b3 = [0u8; 384];
+    let mut bl3 = 0usize;
+    for sid in [0x82u32, 0x83, 0x84] {
+        bl3 += wl::encode_message(
+            &mut b3[bl3..],
+            3,
+            wl::compositor::REQ_CREATE_SURFACE,
+            &[wl::WlArg::NewId(sid)],
+        )
+        .unwrap_or(0);
+        bl3 += wl::encode_message(
+            &mut b3[bl3..],
+            sid,
+            wl::surface::REQ_DAMAGE,
+            &[
+                wl::WlArg::Int(0),
+                wl::WlArg::Int(0),
+                wl::WlArg::Int(1920),
+                wl::WlArg::Int(1080),
+            ],
+        )
+        .unwrap_or(0);
+        bl3 += wl::encode_message(
+            &mut b3[bl3..],
+            sid,
+            wl::surface::REQ_FRAME,
+            &[wl::WlArg::NewId(sid + 0x10)],
+        )
+        .unwrap_or(0);
+    }
+    for sid in [0x82u32, 0x83, 0x84] {
+        bl3 += wl::encode_surface_commit(&mut b3[bl3..], sid).unwrap_or(0);
+    }
+    let sent = unixsock::sock_send(me, hc as u64, &b3[..bl3]).unwrap_or(0);
+    ok &= sent == bl3;
+    let dl = ostd::time::now() + 480;
+    let c3 = loop {
+        let c = waycomp::waycomp_stamps();
+        // tick 门控随行（改写批尾 + commit 批尾均后于计数落账——SMP
+        // 读窗免提前快照域）
+        if (c.3 >= c2.3 + 3 && c.6 > rw0 && fb::fb_compose_ticks() >= ticks_a + 2)
+            || ostd::time::now() >= dl
+        {
+            break c;
+        }
+        task::yield_now();
+    };
+    let co_b = waycomp::WLCOMP_COMPOSES.load(Ordering::Acquire);
+    let ticks_b = fb::fb_compose_ticks();
+    let multi_ok = c3.3 >= c2.3 + 3
+        && c3.6 == rw0 + 1 // 0x81 演进改写（2→4 窗重排）
+        && ticks_b - ticks_a == 2 // 改写批尾 1 + commit 批尾 1（v0 = 4）
+        && co_b == co_a + 1 // COMPOSES 随批（v0 逐 commit = +3）
+        && fb::surf_count() == 5;
+    ok &= multi_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T122-MULTI commits=+{} ticks=+{} comp=+{} rw=+{}（commit 批尾 1 + 改写批尾 1——v0 逐 commit = 4）",
+        c3.3 - c2.3,
+        ticks_b - ticks_a,
+        co_b - co_a,
+        c3.6 - rw0
+    );
+
+    // (c) SHUT EOF 收场复原（t121 (e) 同谱——全摘 + VRAM==stage 复原）
+    let shut = unixsock::sock_shutdown(me, hc as u64);
+    ok &= shut.is_ok();
+    let dl = ostd::time::now() + 480;
+    while !waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && ostd::time::now() < dl {
+        core::hint::spin_loop();
+    }
+    let teardown_ok = waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
+    let mut restore_ok = teardown_ok;
+    if let Ok(plan) = cascade::tiling::tiling_plan(&[0x81u64, 0x82, 0x83, 0x84], waycomp::VIEWPORT)
+    {
+        for (_, r) in plan.panes.iter() {
+            let dx = 16i32;
+            let dy = 16i32;
+            if fb::fb_probe_px_read(r.x + dx, r.y + dy)
+                != fb::stage_probe_px_read(r.x + dx, r.y + dy)
+            {
+                restore_ok = false;
+            }
+        }
+    } else {
+        restore_ok = false;
+    }
+    ok &= restore_ok;
+    let _ = crate::vfs::sys_close(hc as u64);
+    if ok {
+        let _ = writeln!(log, "LUMINA-T122-OK");
     }
     ok
 }
