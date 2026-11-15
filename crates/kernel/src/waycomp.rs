@@ -471,6 +471,34 @@ pub fn waycomp_cursor_sprite() -> ((i32, i32), (i32, i32)) {
     (crate::fb::fb_cursor_plane(), waycomp_cursor())
 }
 
+// ---- M42-PTRLINK 笔㉛：Enter/Leave 域联动（焦点切换光标格直标）----
+
+/// 焦点切换 enter 取证戳（wl_pointer.enter 出域计数——t131 对账域）。
+pub static WLCOMP_PTR_ENTER: AtomicU64 = AtomicU64::new(0);
+/// 焦点切换 leave 取证戳（wl_pointer.leave 出域计数——t131 对账域）。
+pub static WLCOMP_PTR_LEAVE: AtomicU64 = AtomicU64::new(0);
+
+/// 焦点切换域光标格直标（M42-PTRLINK 笔㉛——笔㉘挂账「Enter/Leave 域
+/// 联动（焦点切换光标格直标——v0 motion-only 口径）」兑现）：焦点面
+/// 切换（leave/enter 对出域）即光标格 16px 直标强制入账 + sprite 平
+/// 面批尾合成旗——v0 motion-only 口径退役：[`pointer_cell_link`] 格门
+/// 控只覆盖格跳变，同格跨窗焦点切换（tiling 边界近邻域）无直标则合
+/// 成器不知光标已易窗；本核强制入账 + sprite 重影随批（SPRITE_MOVED
+/// 旗——drain 尾单合成承接）。调用域 = 消费域任务语境（ISR 语境零重
+/// 活纪律同谱——SpinLock 窗不越 ISR）。
+fn pointer_focus_link(x: i32, y: i32) {
+    let g = mirror::POINTER_GRANULARITY;
+    let cx = x.clamp(0, crate::fb::WIDTH as i32 - 1).div_euclid(g);
+    let cy = y.clamp(0, crate::fb::HEIGHT as i32 - 1).div_euclid(g);
+    let _ = crate::fb::sys_fb_sync_pointer(
+        (cx * g).max(0) as u64,
+        (cy * g).max(0) as u64,
+        g as u64,
+        g as u64,
+    );
+    SPRITE_MOVED.store(true, Ordering::Release);
+}
+
 // ---- M42-AUXR3 笔㉚：ring3 指针生产授权车道 ----
 
 /// ring3 指针注入受理数（`SYS_PTR_INJECT` 生产闸放行域——t130 对账）。
@@ -1260,6 +1288,15 @@ fn drain_input(session: &mut CompSession, windows: &[u64]) {
             let (target, lx, ly) = hit;
             let prev = session.pointer_focus();
             if target != prev {
+                // M42-PTRLINK 笔㉛：Enter/Leave 域联动（焦点切换取证计
+                // 数 + 光标格直标强制入账——v0 motion-only 口径退役）
+                if prev != 0 {
+                    WLCOMP_PTR_LEAVE.fetch_add(1, Ordering::AcqRel);
+                }
+                if target != 0 {
+                    WLCOMP_PTR_ENTER.fetch_add(1, Ordering::AcqRel);
+                }
+                pointer_focus_link(x, y);
                 // 面切换域（含 target=0 离域 leave）
                 let _ = session.set_pointer_focus(target, lx, ly);
             } else if target != 0 {

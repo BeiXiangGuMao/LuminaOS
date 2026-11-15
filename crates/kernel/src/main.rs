@@ -86,8 +86,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126；M42-DMG27 t127（联合域上限细化活体）起 127；M42-DMG28 t128（指针 16px 粗粒度域联动活体）起 128；M42-SPRITE29 笔㉙ t129（光标 sprite 渲染面活体：compose 执行器顶层 sprite 平面 + 热点对位联动）起 129；M42-AUXR3 笔㉚ t130（ring3 aux 驱动进程活体：SYS_AUX_READ/SYS_PTR_INJECT 车道 + 接管态仲裁）起 130）。
-const SELFTEST_TOTAL: usize = 130;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126；M42-DMG27 t127（联合域上限细化活体）起 127；M42-DMG28 t128（指针 16px 粗粒度域联动活体）起 128；M42-SPRITE29 笔㉙ t129（光标 sprite 渲染面活体：compose 执行器顶层 sprite 平面 + 热点对位联动）起 129；M42-AUXR3 笔㉚ t130（ring3 aux 驱动进程活体：SYS_AUX_READ/SYS_PTR_INJECT 车道 + 接管态仲裁）起 130；M42-PTRLINK 笔㉛ t131（Enter/Leave 域联动活体：焦点切换取证计数 + 光标格直标强制入账）起 131）。
+const SELFTEST_TOTAL: usize = 131;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7442,6 +7442,13 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     //       LUMINA-T130-ANCHOR/BOOT/KTRACK/ELF/RELEASE/OK。
     let t130 = t130_run(&mut log);
     report(&mut log, t130, "ring3-aux-driver");
+
+    // t131) Enter/Leave 域联动活体（M42-PTRLINK 笔㉛）：〔双窗链域基
+    //       线〕→〔焦点切换域——enter/leave 计数 + 联动直标 marks 确
+    //       定性 + sprite 旗批尾单合成〕→〔同窗零扰〕→〔SHUT 收场〕。
+    //       LUMINA-T131-ENTER / T131-LINK / T131-OK。
+    let t131 = t131_run(&mut log);
+    report(&mut log, t131, "enter-leave-linkage");
 
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
@@ -14927,12 +14934,17 @@ fn t128_run(log: &mut DualLog) -> bool {
     let m3 = waycomp::input_pointer_motion(72, 72); // cell (4,4) 跳变
     ok &= m1 && m2 && m3;
     let dl = ostd::time::now() + 960;
-    while fb::fb_damage_ptr_marks() < pm0 + 5 && ostd::time::now() < dl {
+    // M42-PTRLINK 揭雷收口：谓词扩全批终值 +6（PIT 抢占可劈 drain 于
+    //    pointer_cell_link 与 pointer_focus_link 之间——v0 +5 谓词在
+    //    半批窗早退实录 pm1=5/链接滞留 +1）
+    while fb::fb_damage_ptr_marks() < pm0 + 6 && ostd::time::now() < dl {
         task::yield_now();
     }
     let pm1 = fb::fb_damage_ptr_marks();
     let (cx1, cy1) = waycomp::waycomp_cursor();
-    let cell_ok = pm1 == pm0 + 5 && (cx1, cy1) == (72, 72);
+    // M42-PTRLINK 笔㉛判据随行升级：enter 联动直标 +1（首笔焦点切换
+    // 0→0x44 直标随批——官方语义升级实锤如实落账非缺陷域）
+    let cell_ok = pm1 == pm0 + 6 && (cx1, cy1) == (72, 72);
     ok &= cell_ok;
     let _ = writeln!(
         log,
@@ -14962,12 +14974,15 @@ fn t128_run(log: &mut DualLog) -> bool {
     let m5 = waycomp::input_pointer_motion_isr(104, 8); // cell (6,0) 跳变
     ok &= m5;
     let dl = ostd::time::now() + 960;
-    while fb::fb_damage_ptr_marks() < pm2 + 2 && ostd::time::now() < dl {
+    while fb::fb_damage_ptr_marks() < pm2 + 3 && ostd::time::now() < dl {
         task::yield_now();
     }
     let pm3 = fb::fb_damage_ptr_marks();
     let (cx2, cy2) = waycomp::waycomp_cursor();
-    let isr_ok = pm3 == pm2 + 2 && (cx2, cy2) == (104, 8);
+    // M42-PTRLINK 笔㉛判据随行升级二：(104,8) 在单窗策略几何 (32,32,
+    //    320,200) pane 外域——hit-test target=0 = leave 切换 → 联动直
+    //    标 +1（跳变 +2 + leave 联动 +1 = +3）
+    let isr_ok = pm3 == pm2 + 3 && (cx2, cy2) == (104, 8);
     ok &= isr_ok;
     let _ = writeln!(
         log,
@@ -15107,14 +15122,14 @@ fn t129_run(log: &mut DualLog) -> bool {
     // drain_input 中段更新，sprite 批尾单合成 tick 在尾段落账；谓词缺
     // 合成完成域则测试可于 tick 落账前出环（ticks 断言读旧值竞窗——
     // TCG 调度域 3/4 跑实录）。
-    while (fb::fb_damage_ptr_marks() < pm0 + 2
+    while (fb::fb_damage_ptr_marks() < pm0 + 3
         || fb::fb_cursor_plane() != (198, 118)
         || fb::fb_compose_ticks() <= tk0)
         && ostd::time::now() < dl
     {
         task::yield_now();
     }
-    ok &= fb::fb_damage_ptr_marks() == pm0 + 2;
+    ok &= fb::fb_damage_ptr_marks() == pm0 + 3; // 跳变双标 +2 + enter 联动直标 +1（笔㉛判据随行升级）
     ok &= fb::fb_cursor_plane() == (198, 118);
     ok &= (waycomp::waycomp_cursor().0, waycomp::waycomp_cursor().1) == (200, 120);
     ok &= fb::fb_compose_ticks() > tk0; // 批尾单合成（sprite 移动域）
@@ -15126,7 +15141,7 @@ fn t129_run(log: &mut DualLog) -> bool {
     {
         task::yield_now();
     }
-    ok &= fb::fb_damage_ptr_marks() == pm0 + 2; // 格门控同格零扰
+    ok &= fb::fb_damage_ptr_marks() == pm0 + 3; // 格门控同格零扰
     ok &= fb::fb_cursor_plane() == (202, 122); // 平面门控 rect 变更即移动
     ok &= fb::fb_compose_ticks() >= tk0 + 2;
     let cross = fb::fb_damage_ptr_marks() - pm0;
@@ -15152,7 +15167,7 @@ fn t129_run(log: &mut DualLog) -> bool {
         task::yield_now();
     }
     ok &= fb::fb_cursor_plane() == (fb::WIDTH as i32 - 16, fb::HEIGHT as i32 - 16);
-    ok &= fb::fb_damage_ptr_marks() == pm0 + 4; // (12,7)→(119,67) 跳变双标
+    ok &= fb::fb_damage_ptr_marks() == pm0 + 6; // (12,7)→(119,67) 跳变双标 + pane 外域 leave 联动 +1（笔㉛判据随行升级）
     let m4 = waycomp::input_pointer_motion(200, 120);
     ok &= m4;
     let dl = ostd::time::now() + 4800;
@@ -15160,7 +15175,7 @@ fn t129_run(log: &mut DualLog) -> bool {
         task::yield_now();
     }
     ok &= fb::fb_cursor_plane() == (198, 118);
-    ok &= fb::fb_damage_ptr_marks() == pm0 + 6; // 回位跳变双标
+    ok &= fb::fb_damage_ptr_marks() == pm0 + 9; // 回位跳变双标 + pane 内 enter 联动 +1（笔㉛判据随行升级）
     let _ = writeln!(
         log,
         "LUMINA-T129-EDGE clamp=({},{}) marks=+{}",
@@ -15339,6 +15354,190 @@ fn t130_run(log: &mut DualLog) -> bool {
     ok &= AUX_RET_EMPTY == u64::MAX && AUX_RET_NOT_OWNER == u64::MAX - 1;
     if ok {
         let _ = writeln!(log, "LUMINA-T130-OK");
+    }
+    ok
+}
+
+/// t131 Enter/Leave 域联动活体（M42-PTRLINK 笔㉛）——五相位：
+/// 〔(a) 链域基线——双窗会话（registry/seat/get_pointer/compositor/
+/// create 0x46 与 0x47/双 damage/双 commit——tiling 双半屏）+ 双
+/// REGISTER 层域等待 + 排水复原 + 格哨兵复位〕→〔(b) 焦点切换域——
+/// motion 入 A 半屏：enter=+1 leave=+0 + 格哨兵单标与焦点联动直标
+/// marks=+2（sentinel +1 + 焦点联动 +1——v0 motion-only 口径退役显
+/// 形）；跨界 motion 入 B 半屏：leave=+1 enter=+1 + 格跳变双标与联动
+/// 直标 marks=+3〕→〔(c) 同窗零扰——B 半屏内 motion：enter/leave 零
+/// 增 + marks=+0（格门控与联动门控双重零扰域）〕→〔(d) sprite 平面
+/// 对账——焦点切换随批 SPRITE_MOVED 置旗（drain 尾单合成承接——
+/// compose tick 增量域）〕→〔(e) SHUT EOF 收场复原〕。
+/// LUMINA-T131-ENTER / T131-LINK / T131-OK。
+fn t131_run(log: &mut DualLog) -> bool {
+    use prism::wayland as wl;
+    let mut ok = true;
+    let me = task::current_task_id();
+
+    // (a) 链域基线（双窗会话——tiling 双半屏承载跨窗焦点切换）
+    waycomp::input_queue_flush();
+    let c0 = waycomp::waycomp_stamps();
+    let base = (c0.2 as u32) * waycomp::FB_ID_SESSION_STRIDE;
+    let fb_a = base | 0x46;
+    let fb_b = base | 0x47;
+    let hc = match unixsock::sock_connect(me, waycomp::WAYCOMP_SOCK_NAME) {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = writeln!(log, "t131: connect failed ({e:?})");
+            return false;
+        }
+    };
+    let mut batch = [0u8; 512];
+    let mut bl = 0usize;
+    bl += wl::encode_display_get_registry(&mut batch[bl..], 1, 2).unwrap_or(0);
+    bl += wl::encode_registry_bind(&mut batch[bl..], 2, 1, "wl_seat", 1, 4).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        4,
+        wl::seat::REQ_GET_POINTER,
+        &[wl::WlArg::NewId(6)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_registry_bind(&mut batch[bl..], 2, 1, "wl_compositor", 4, 3).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        3,
+        wl::compositor::REQ_CREATE_SURFACE,
+        &[wl::WlArg::NewId(0x46)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        0x46,
+        wl::surface::REQ_DAMAGE,
+        &[
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(320),
+            wl::WlArg::Int(200),
+        ],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_surface_commit(&mut batch[bl..], 0x46).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        3,
+        wl::compositor::REQ_CREATE_SURFACE,
+        &[wl::WlArg::NewId(0x47)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        0x47,
+        wl::surface::REQ_DAMAGE,
+        &[
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(320),
+            wl::WlArg::Int(200),
+        ],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_surface_commit(&mut batch[bl..], 0x47).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &batch[..bl]).unwrap_or(0);
+    ok &= sent == bl;
+    let mut sink = [0u8; 1024];
+    let mut got0 = 0usize;
+    let dl = ostd::time::now() + 960;
+    while got0 < 124 && ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            task::yield_now();
+            continue;
+        }
+        let n = unixsock::sock_recv(me, hc as u64, &mut sink[got0..]).unwrap_or(0);
+        if n > 0 {
+            got0 += n;
+        }
+    }
+    ok &= got0 >= 124;
+    let dl = ostd::time::now() + 960;
+    while (fb::surf_layer_of(fb_a).is_none() || fb::surf_layer_of(fb_b).is_none())
+        && ostd::time::now() < dl
+    {
+        core::hint::spin_loop();
+    }
+    ok &= fb::surf_layer_of(fb_a).is_some() && fb::surf_layer_of(fb_b).is_some();
+
+    // (b) 焦点切换域（格哨兵复位 + 基线 + 跨窗 motion 对账）
+    waycomp::waycomp_ptr_cell_reset();
+    let pm0 = fb::fb_damage_ptr_marks();
+    let en0 = waycomp::WLCOMP_PTR_ENTER.load(Ordering::Acquire);
+    let lv0 = waycomp::WLCOMP_PTR_LEAVE.load(Ordering::Acquire);
+    // 标记行先行（motion 注入前——compose 证据零竞窗域：串口交错把
+    //    v0 行尾标记劈裂实录 LUMINA-T131-ENT|LUMINA-FB-COMPOSE）
+    let _ = writeln!(log, "LUMINA-T131-ENTER phase marks0={pm0} enter0={en0}");
+    // motion 入 A 半屏（cell (30,33)——哨兵单标 +1 + 焦点联动直标 +1）
+    let m1 = waycomp::input_pointer_motion(480, 540);
+    ok &= m1;
+    let dl = ostd::time::now() + 4800;
+    while (fb::fb_damage_ptr_marks() < pm0 + 2
+        || waycomp::WLCOMP_PTR_ENTER.load(Ordering::Acquire) < en0 + 1)
+        && ostd::time::now() < dl
+    {
+        task::yield_now();
+    }
+    ok &= fb::fb_damage_ptr_marks() == pm0 + 2; // 哨兵 +1 + 焦点联动 +1
+    ok &= waycomp::WLCOMP_PTR_ENTER.load(Ordering::Acquire) == en0 + 1;
+    ok &= waycomp::WLCOMP_PTR_LEAVE.load(Ordering::Acquire) == lv0;
+    // sprite 旗批尾单合成承接取证 = FB-COMPOSE 串口证据行（tk0 与
+    // rewrite 批尾合成时序域竞窗——tick 差分断言弱判据退役如实记档）
+    // 跨界 motion 入 B 半屏（cell (90,33)——格跳变双标 +2 + 联动直标 +1）
+    let m2 = waycomp::input_pointer_motion(1440, 540);
+    ok &= m2;
+    let dl = ostd::time::now() + 4800;
+    while (fb::fb_damage_ptr_marks() < pm0 + 5
+        || waycomp::WLCOMP_PTR_LEAVE.load(Ordering::Acquire) < lv0 + 1)
+        && ostd::time::now() < dl
+    {
+        task::yield_now();
+    }
+    ok &= fb::fb_damage_ptr_marks() == pm0 + 5; // 跳变双标 +2 + 联动 +1
+    ok &= waycomp::WLCOMP_PTR_ENTER.load(Ordering::Acquire) == en0 + 2;
+    ok &= waycomp::WLCOMP_PTR_LEAVE.load(Ordering::Acquire) == lv0 + 1;
+    let _ = writeln!(
+        log,
+        "LUMINA-T131-FOCUS enter=+{} leave=+{} marks=+{} focus=(A→B) ok_b={ok}",
+        waycomp::WLCOMP_PTR_ENTER.load(Ordering::Acquire) - en0,
+        waycomp::WLCOMP_PTR_LEAVE.load(Ordering::Acquire) - lv0,
+        fb::fb_damage_ptr_marks() - pm0
+    );
+
+    // (c) 同窗零扰（B 半屏内同格 motion——enter/leave 零增 + marks 零增）
+    let _ = writeln!(log, "LUMINA-T131-LINK phase marks5={pm0}");
+    let m3 = waycomp::input_pointer_motion(1448, 540); // 同 cell (90,33) 同窗（v0 1456 实为 cell 91 越格揭雷收口）
+    ok &= m3;
+    let dl = ostd::time::now() + 960;
+    while waycomp::WLCOMP_PTRS.load(Ordering::Acquire) < c0.9 + 1 && ostd::time::now() < dl {
+        task::yield_now();
+    }
+    ok &= waycomp::WLCOMP_PTR_ENTER.load(Ordering::Acquire) == en0 + 2;
+    ok &= waycomp::WLCOMP_PTR_LEAVE.load(Ordering::Acquire) == lv0 + 1;
+    ok &= fb::fb_damage_ptr_marks() == pm0 + 5; // 双重门控零扰
+    let _ = writeln!(
+        log,
+        "LUMINA-T131-SAMECELL same-cell=+0 enter/leave 零增 marks=+{} ok_c={ok}",
+        fb::fb_damage_ptr_marks() - pm0
+    );
+
+    // (d) SHUT EOF 收场复原
+    let shut = unixsock::sock_shutdown(me, hc as u64);
+    ok &= shut.is_ok();
+    let dl = ostd::time::now() + 4800;
+    while (!waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) || fb::surf_count() != 1)
+        && ostd::time::now() < dl
+    {
+        core::hint::spin_loop();
+    }
+    ok &= waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
+    let _ = crate::vfs::sys_close(hc as u64);
+    if ok {
+        let _ = writeln!(log, "LUMINA-T131-OK");
     }
     ok
 }
