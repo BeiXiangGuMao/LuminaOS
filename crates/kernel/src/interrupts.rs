@@ -36,6 +36,8 @@ pub fn init_and_enable(log: &mut DualLog) -> u32 {
     let pf_rec_addr = ostd::interrupt::stub_addr(Stub::FaultPfRec);
     let ipi_addr = ostd::interrupt::stub_addr(Stub::Ipi);
     let lapic_timer_addr = ostd::interrupt::stub_addr(Stub::LapicTimer);
+    // M43-TSC39 笔㊹：TSC deadline one-shot 定时器桩（向量 0x43）。
+    let tsc_deadline_addr = ostd::interrupt::stub_addr(Stub::TscDeadline);
     let resched_addr = ostd::interrupt::stub_addr(Stub::Resched);
     let kbd_addr = ostd::interrupt::stub_addr(Stub::Irq1);
     let aux_addr = ostd::interrupt::stub_addr(Stub::Irq12);
@@ -59,6 +61,12 @@ pub fn init_and_enable(log: &mut DualLog) -> u32 {
         idt.set_raw(8, ostd::interrupt::stub_addr(Stub::FaultDf));
         // 向量 0x40：LAPIC IPI（TLB 击落；M5）
         idt.set_raw(usize::from(ostd::hw::lapic::IPI_VECTOR), ipi_addr);
+        // 向量 0x43：TSC deadline one-shot（M43-TSC39 笔㊹——IA32_TSC_
+        // DEADLINE 武装交付面；特性探测在位前置由 t138 活体承载）。
+        idt.set_raw(
+            usize::from(ostd::hw::lapic::DEADLINE_VECTOR),
+            tsc_deadline_addr,
+        );
         // 向量 0x41：LAPIC 定时器（统一 per-CPU 抢占源；M6-A）
         idt.set_raw(usize::from(ostd::hw::lapic::TIMER_VECTOR), lapic_timer_addr);
         // 向量 0x42：跨核重调度提示 IPI（M6-A）

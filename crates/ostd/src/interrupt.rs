@@ -210,6 +210,9 @@ pub enum Stub {
     FaultPfRec,
     /// 向量 0x41：LAPIC 定时器（统一 per-CPU 抢占源，M6-A）。
     LapicTimer,
+    /// 向量 0x43：TSC deadline one-shot 定时器（M43-TSC39 笔㊹——
+    /// IA32_TSC_DEADLINE 武装交付面：EOI + 计数取证，零抢占）。
+    TscDeadline,
     /// 向量 0x42：跨核重调度提示 IPI（唤醒 idle 核，M6-A）。
     Resched,
     /// 向量 33：IRQ1 PS/2 键盘（M23-①；PIC 主片，EOI 在桩主体内发）。
@@ -236,6 +239,7 @@ pub fn stub_addr(stub: Stub) -> u64 {
         fn isr_ipi();
         fn isrf_pf_rec();
         fn isr_lapic_timer();
+        fn isr_tsc_deadline();
         fn isr_resched();
         fn isr_kbd();
         fn isr_aux();
@@ -252,6 +256,7 @@ pub fn stub_addr(stub: Stub) -> u64 {
         Stub::Ipi => isr_ipi,
         Stub::FaultPfRec => isrf_pf_rec,
         Stub::LapicTimer => isr_lapic_timer,
+        Stub::TscDeadline => isr_tsc_deadline,
         Stub::Resched => isr_resched,
         Stub::Irq1 => isr_kbd,
         Stub::Irq12 => isr_aux,
@@ -424,6 +429,41 @@ pub mod stubs {
         "    call isr_lapic_timer_body",
         "    test eax, eax",
         "    jnz 6f",
+        "    mov rsp, rbp",
+        "    pop r11",
+        "    pop r10",
+        "    pop r9",
+        "    pop r8",
+        "    pop rdi",
+        "    pop rsi",
+        "    pop rdx",
+        "    pop rcx",
+        "    pop rax",
+        "    pop rbp",
+        "    iretq",
+        // ---- TSC deadline one-shot 桩（向量 0x43，M43-TSC39 笔㊹）：
+        // 与 LAPIC timer 桩同构裁剪（零抢占——EOI + 主体计数后直返；
+        // 对称保存 caller-saved + rbp → 主体 → 恢复 iretq；标签 8 与
+        // 既有 4/6/7/12/13 隔离——同一 global_asm 块内标签唯一）。
+        ".globl isr_tsc_deadline",
+        "isr_tsc_deadline:",
+        "    push rbp",
+        "    push rax",
+        "    push rcx",
+        "    push rdx",
+        "    push rsi",
+        "    push rdi",
+        "    push r8",
+        "    push r9",
+        "    push r10",
+        "    push r11",
+        "    mov rbp, rsp",
+        "    and rsp, -16",
+        "    sub rsp, 16",
+        "    mov qword ptr [rsp + 8], 0",
+        "    mov qword ptr [rsp], 0",
+        "    mov rdi, rsp",
+        "    call isr_tsc_deadline_body",
         "    mov rsp, rbp",
         "    pop r11",
         "    pop r10",
@@ -956,6 +996,17 @@ pub mod stubs {
             let f: fn(&mut super::PreemptPlan) -> bool = unsafe { core::mem::transmute(hook) };
             return u32::from(f(plan));
         }
+        0
+    }
+
+    /// TSC deadline one-shot 主体（向量 0x43，M43-TSC39 笔㊹）：
+    /// LAPIC EOI + DEADLINE_TICKS 计数取证（零抢占零钩子——one-shot
+    /// 交付面，t138 断言面）。
+    #[no_mangle]
+    extern "C" fn isr_tsc_deadline_body(plan: &mut super::PreemptPlan) -> u32 {
+        crate::hw::lapic::eoi();
+        crate::hw::lapic::DEADLINE_TICKS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+        let _ = plan;
         0
     }
 

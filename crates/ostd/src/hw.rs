@@ -795,6 +795,12 @@ pub mod cpuid {
     pub fn parse_leaf1(l: Leaf1) -> (bool, u8) {
         (l.ecx & (1 << 9) != 0, (l.ebx >> 24) as u8)
     }
+
+    /// 叶子 1 ECX 原字读面（M43-TSC39 笔㊹——TSC-Deadline 特性位
+    /// bit24 探测消费域；宿主可测）。
+    pub fn leaf1_ecx() -> u32 {
+        leaf1().ecx
+    }
 }
 
 /// 本地 APIC（LAPIC）——HW-13（M5 申请新增：IPI 与 SMP 依赖）。
@@ -899,6 +905,54 @@ pub mod lapic {
     pub fn enable() {
         let v = read_reg(REG_SPURIOUS);
         write_reg(REG_SPURIOUS, (v & !0xFF) | 0xFF | SPURIOUS_ENABLE);
+    }
+
+    /// IA32_TSC_DEADLINE MSR 号（M43-TSC39 笔㊹——LAPIC timer one-shot
+    /// deadline 模式：写 deadline TSC 值，TSC ≥ deadline 交付向量中断）。
+    pub const MSR_TSC_DEADLINE: u32 = 0x6E0;
+    /// TSC deadline 定时器向量（0x42 Resched 已占，0x43 空闲槽承接）。
+    pub const DEADLINE_VECTOR: u8 = 0x43;
+    /// LVT timer 交付模式位 17 = TSC-deadline（SDM Vol.3 §10.5.4）。
+    const LVT_TIMER_DEADLINE_MODE: u32 = 1 << 17;
+    /// CPUID.01H:ECX bit24 = TSC-Deadline 特性位。
+    pub const CPUID_TSC_DEADLINE_BIT: u32 = 1 << 24;
+
+    /// TSC-Deadline 特性探测（M43-TSC39——CPUID.01H:ECX bit24 逐位
+    /// 读；宿主可测语义核抽离）。
+    pub fn tsc_deadline_supported() -> bool {
+        super::cpuid::leaf1_ecx() & CPUID_TSC_DEADLINE_BIT != 0
+    }
+
+    /// LAPIC timer LVT 读面（M43-TSC39——使能后 LVT 配置对账，t138
+    /// 断言面）。
+    pub fn timer_lvt_read() -> u32 {
+        read_reg(REG_TIMER_LVT)
+    }
+
+    /// LAPIC timer TSC-deadline 模式使能（M43-TSC39——LVT timer 寄存
+    /// 器：bit17 = deadline 模式 + vector 0x43 + mask 解除；前置 =
+    /// LAPIC 全局使能〔SMP 域 IA32_APIC_BASE bit11〕+ 特性在位）。
+    pub fn lapic_timer_deadline_enable() {
+        write_reg(
+            REG_TIMER_LVT,
+            u32::from(DEADLINE_VECTOR) | LVT_TIMER_DEADLINE_MODE,
+        );
+    }
+
+    /// TSC deadline one-shot 交付计数（M43-TSC39——向量 0x43 ISR 主
+    /// 体消费，t138 断言面）。
+    pub static DEADLINE_TICKS: AtomicU64 = AtomicU64::new(0);
+
+    /// TSC deadline 武装（M43-TSC39——IA32_TSC_DEADLINE MSR 写入；
+    /// one-shot 语义：TSC ≥ deadline 即交付 0x43 向量一次，写新值
+    /// 重新武装。调用方前置 = tsc_deadline_supported() 探测在位）。
+    pub fn tsc_deadline_arm(deadline: u64) {
+        // SAFETY: 前置条件 —— tsc_deadline_supported() 特性探测在位
+        //          （CPUID bit24）；deadline 值由调用方取 TSC 前向偏移。
+        // 不变式 —— wrmsr 原子写入 64 位；写后 LAPIC 计时域即时武装。
+        // 并发 —— MSR 天然「当前核」视角；armed 域核内自持。
+        // 违反后果 —— 特性不在位的核写 0x6E0 触发 #GP（致命异常路径）。
+        unsafe { super::msr::write(MSR_TSC_DEADLINE, deadline) }
     }
 
     /// 本核 APIC ID（xAPIC：ID 寄存器高 8 位有效）。

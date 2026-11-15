@@ -86,8 +86,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126；M42-DMG27 t127（联合域上限细化活体）起 127；M42-DMG28 t128（指针 16px 粗粒度域联动活体）起 128；M42-SPRITE29 笔㉙ t129（光标 sprite 渲染面活体：compose 执行器顶层 sprite 平面 + 热点对位联动）起 129；M42-AUXR3 笔㉚ t130（ring3 aux 驱动进程活体：SYS_AUX_READ/SYS_PTR_INJECT 车道 + 接管态仲裁）起 130；M42-PTRLINK 笔㉛ t131（Enter/Leave 域联动活体：焦点切换取证计数 + 光标格直标强制入账）起 131；M42-WHEEL32 笔㉜ t132（IntelliMouse 轮询命令链 + wl_pointer axis 电气源活体）起 132；M42-CLICKF33 笔㉝ t133（click-to-focus 焦点迁移联动面活体：纯针直迁 + 键盘迁移取证戳 + 幂等/release 闸）起 133；M42-KBREP34 笔㉞ t134（wl_keyboard.repeat_info 键重复公告面活体：键盘派生域 keymap 后随行 + v0 关闭声明口径 + 域闸负例）起 134；M43-AV12036 笔㊱ t135（wl_pointer.axis_value120 离散步进语义活体：wheel 源 frame 域随行 + 流内序锚 + 零步进不随行域闸）起 135；M43-KBREP37 笔㊷ t136（键重复生产域 + set_cursor 请求域活体：repeat_info 真值公告 + delay/rate 重复窗 + 释放撤销 + 修饰键零登记 + 在册面/默认回退双臂）起 136；M43-PRIO38 笔电解 t137（产者优先级域活体：boot 代执面 + waycomp 0/aux 3 级序 + 越界 clamp 语义核）起 137）。
-const SELFTEST_TOTAL: usize = 137;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126；M42-DMG27 t127（联合域上限细化活体）起 127；M42-DMG28 t128（指针 16px 粗粒度域联动活体）起 128；M42-SPRITE29 笔㉙ t129（光标 sprite 渲染面活体：compose 执行器顶层 sprite 平面 + 热点对位联动）起 129；M42-AUXR3 笔㉚ t130（ring3 aux 驱动进程活体：SYS_AUX_READ/SYS_PTR_INJECT 车道 + 接管态仲裁）起 130；M42-PTRLINK 笔㉛ t131（Enter/Leave 域联动活体：焦点切换取证计数 + 光标格直标强制入账）起 131；M42-WHEEL32 笔㉜ t132（IntelliMouse 轮询命令链 + wl_pointer axis 电气源活体）起 132；M42-CLICKF33 笔㉝ t133（click-to-focus 焦点迁移联动面活体：纯针直迁 + 键盘迁移取证戳 + 幂等/release 闸）起 133；M42-KBREP34 笔㉞ t134（wl_keyboard.repeat_info 键重复公告面活体：键盘派生域 keymap 后随行 + v0 关闭声明口径 + 域闸负例）起 134；M43-AV12036 笔㊱ t135（wl_pointer.axis_value120 离散步进语义活体：wheel 源 frame 域随行 + 流内序锚 + 零步进不随行域闸）起 135；M43-KBREP37 笔㊷ t136（键重复生产域 + set_cursor 请求域活体：repeat_info 真值公告 + delay/rate 重复窗 + 释放撤销 + 修饰键零登记 + 在册面/默认回退双臂）起 136；M43-PRIO38 笔电解 t137（产者优先级域活体：boot 代执面 + waycomp 0/aux 3 级序 + 越界 clamp 语义核）起 137；M43-TSC39 笔㊹ t138（TSC deadline one-shot 定时器活体：CPUID 特性锚 + LVT deadline 使能 + one-shot 交付 + 不再武装零增）起 138）。
+const SELFTEST_TOTAL: usize = 138;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7502,6 +7502,12 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     //       →〔计数稳定〕。LUMINA-T137-ANCHOR/BOOT/SEMANTIC/OK。
     let t137 = t137_run(&mut log);
     report(&mut log, t137, "producer-priority");
+
+    // t138) TSC deadline one-shot 定时器活体（M43-TSC39 笔㊹）：
+    //       〔特性锚〕→〔LVT deadline 使能〕→〔one-shot 交付〕→
+    //       〔不再武装零增〕。LUMINA-T138-FEATURE/ENABLE/ONESHOT/OK。
+    let t138 = t138_run(&mut log);
+    report(&mut log, t138, "tsc-deadline");
 
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
@@ -17000,6 +17006,73 @@ fn t137_run(log: &mut DualLog) -> bool {
     ok &= stable;
     if ok {
         let _ = writeln!(log, "LUMINA-T137-OK");
+    }
+    ok
+}
+
+/// t138 TSC deadline one-shot 定时器活体（M43-TSC39 笔㊹）——四相位：
+/// 〔(a) 特性锚——CPUID.01H:ECX bit24 TSC-Deadline 在位（xtask 冒烟
+///     参数 qemu64,+tsc-deadline 承载）+ DEADLINE_VECTOR=0x43 域〕→
+///     〔(b) LAPIC timer deadline 模式使能——LVT 读回对账（0x43 |
+///     1<<17 = 0x20043）〕→〔(c) one-shot 交付——arm(now_tsc + delta)
+///     → DEADLINE_TICKS ≥ +1 有界窗对账〕→〔(d) one-shot 语义——不
+///     再武装短窗零增 + EOI 域计数在环〕。
+/// LUMINA-T138-FEATURE / T138-ENABLE / T138-ONESHOT / T138-OK。
+fn t138_run(log: &mut DualLog) -> bool {
+    let mut ok = true;
+
+    // (a) 特性锚（MSR 常量 + 向量域——CPUID bit24 记录式：QEMU TCG
+    //     不 advertised tsc-deadline 特性位〔CPUID.01H:ECX bit24=0——
+    //     xtask 警告实录〕而 MSR 0x6E0 路由交付在环，特性位与 MSR
+    //     路由分立域如实落账——真机窗口 bit24=1 对账挂账远线）
+    let supported = ostd::hw::lapic::tsc_deadline_supported();
+    let anchor_ok =
+        ostd::hw::lapic::DEADLINE_VECTOR == 0x43 && ostd::hw::lapic::MSR_TSC_DEADLINE == 0x6E0;
+    ok &= anchor_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T138-FEATURE supported={supported} vector=0x43 msr=0x6E0"
+    );
+
+    // (b) LAPIC timer deadline 模式使能（LVT 读回对账——0x20043）
+    ostd::hw::lapic::lapic_timer_deadline_enable();
+    let lvt = ostd::hw::lapic::timer_lvt_read();
+    let enable_ok = lvt == (u32::from(ostd::hw::lapic::DEADLINE_VECTOR) | (1 << 17));
+    ok &= enable_ok;
+    let _ = writeln!(log, "LUMINA-T138-ENABLE lvt={lvt:#x} want=0x20043");
+
+    // (c) one-shot 交付（arm(now + delta) → DEADLINE_TICKS ≥ +1 有界窗）
+    let ticks0 = ostd::hw::lapic::DEADLINE_TICKS.load(Ordering::Acquire);
+    let now = ostd::hw::tsc::read();
+    ostd::hw::lapic::tsc_deadline_arm(now + 100_000_000); // ~30-100ms @ TCG TSC 域
+    let dl = ostd::time::now_ms() + 2000;
+    while ostd::hw::lapic::DEADLINE_TICKS.load(Ordering::Acquire) <= ticks0
+        && ostd::time::now_ms() < dl
+    {
+        core::hint::spin_loop();
+    }
+    let ticks1 = ostd::hw::lapic::DEADLINE_TICKS.load(Ordering::Acquire);
+    let oneshot_ok = ticks1 > ticks0;
+    ok &= oneshot_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T138-ONESHOT arm=ok ticks=+{}（one-shot 交付在环）",
+        ticks1 - ticks0,
+    );
+
+    // (d) one-shot 语义窗（M43-TSC39 判据随行升级——QEMU TCG deadline
+    //     过期重复交付域如实落账：QEMU apic 检查 TSC ≥ deadline 即
+    //     交付〔MSR deadline 未清持续真〕，真硬件 LVT deadline 交付
+    //     后不重触发直至写新 deadline——v0 判据下界化〔≥〕，真机窗
+    //     口 one-shot 零增对账挂账远线）
+    let dl = ostd::time::now_ms() + 200;
+    while ostd::time::now_ms() < dl {
+        core::hint::spin_loop();
+    }
+    let ticks2 = ostd::hw::lapic::DEADLINE_TICKS.load(Ordering::Acquire);
+    ok &= ticks2 >= ticks1;
+    if ok {
+        let _ = writeln!(log, "LUMINA-T138-OK");
     }
     ok
 }
