@@ -86,8 +86,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126；M42-DMG27 t127（联合域上限细化活体）起 127；M42-DMG28 t128（指针 16px 粗粒度域联动活体）起 128；M42-SPRITE29 笔㉙ t129（光标 sprite 渲染面活体：compose 执行器顶层 sprite 平面 + 热点对位联动）起 129；M42-AUXR3 笔㉚ t130（ring3 aux 驱动进程活体：SYS_AUX_READ/SYS_PTR_INJECT 车道 + 接管态仲裁）起 130；M42-PTRLINK 笔㉛ t131（Enter/Leave 域联动活体：焦点切换取证计数 + 光标格直标强制入账）起 131；M42-WHEEL32 笔㉜ t132（IntelliMouse 轮询命令链 + wl_pointer axis 电气源活体）起 132）。
-const SELFTEST_TOTAL: usize = 132;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126；M42-DMG27 t127（联合域上限细化活体）起 127；M42-DMG28 t128（指针 16px 粗粒度域联动活体）起 128；M42-SPRITE29 笔㉙ t129（光标 sprite 渲染面活体：compose 执行器顶层 sprite 平面 + 热点对位联动）起 129；M42-AUXR3 笔㉚ t130（ring3 aux 驱动进程活体：SYS_AUX_READ/SYS_PTR_INJECT 车道 + 接管态仲裁）起 130；M42-PTRLINK 笔㉛ t131（Enter/Leave 域联动活体：焦点切换取证计数 + 光标格直标强制入账）起 131；M42-WHEEL32 笔㉜ t132（IntelliMouse 轮询命令链 + wl_pointer axis 电气源活体）起 132；M42-CLICKF33 笔㉝ t133（click-to-focus 焦点迁移联动面活体：纯针直迁 + 键盘迁移取证戳 + 幂等/release 闸）起 133）。
+const SELFTEST_TOTAL: usize = 133;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7459,6 +7459,15 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     //       〔SHUT 收场〕。LUMINA-T132-ANCHOR/KNOCK/AXIS/SIGN/OK。
     let t132 = t132_run(&mut log);
     report(&mut log, t132, "wheel-axis-source");
+
+    // t133) click-to-focus 焦点迁移联动面活体（M42-CLICKF33 笔㉝）：
+    //       〔会话一基线——双窗链域 + 定位 A 半屏 + SHUT 复原〕→
+    //       〔会话二纯针 click 直迁——ENTER +1/marks +1/键盘幂等〕→
+    //       〔motion 跨窗 + click 键盘迁移——CLICK_FOCUS +1〕→〔幂等
+    //       + release 闸〕→〔SHUT 收场〕。
+    //       LUMINA-T133-BASE/CLICK/MIGRATE/IDEMP/OK。
+    let t133 = t133_run(&mut log);
+    report(&mut log, t133, "click-to-focus");
 
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
@@ -15847,6 +15856,297 @@ fn t132_run(log: &mut DualLog) -> bool {
     let _ = crate::vfs::sys_close(hc as u64);
     if ok {
         let _ = writeln!(log, "LUMINA-T132-OK");
+    }
+    ok
+}
+
+/// t133 会话开链 helper（笔㉝ t133 承载——双会话复用，独立函数纪律）：
+/// connect → get_registry → 回执 124B → 指针/键盘/合成器/双窗全批
+/// （seat bind → get_pointer 5 + get_keyboard 6 → compositor 3 →
+/// surface 0x46 + damage + commit + surface 0x47 + damage + commit——
+/// t131 双窗批 + t113 键盘链合谱）→ **双 REGISTER 层域等待**（surf_
+/// layer_of 双判——tiling 双半屏成型前提）。返回 Some((hc, fb_a,
+/// fb_b)) 或 None（失败域已写日志）。
+fn t133_session_open(_log: &mut DualLog) -> Option<(usize, u32, u32)> {
+    use prism::wayland as wl;
+    let me = task::current_task_id();
+    let c0 = waycomp::waycomp_stamps();
+    let fb_a = ((c0.2 as u32) * waycomp::FB_ID_SESSION_STRIDE) | 0x46;
+    let fb_b = ((c0.2 as u32) * waycomp::FB_ID_SESSION_STRIDE) | 0x47;
+    let hc = unixsock::sock_connect(me, waycomp::WAYCOMP_SOCK_NAME).ok()?;
+    let mut req = [0u8; 64];
+    let n_req = wl::encode_display_get_registry(&mut req, 1, 2).ok()?;
+    unixsock::sock_send(me, hc as u64, &req[..n_req]).ok()?;
+    let mut gbuf = [0u8; 512];
+    let mut got = 0usize;
+    let dl = ostd::time::now() + 960;
+    while got < 124 && ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            task::yield_now();
+            continue;
+        }
+        let n = unixsock::sock_recv(me, hc as u64, &mut gbuf[got..]).unwrap_or(0);
+        if n > 0 {
+            got += n;
+        }
+    }
+    if got < 124 {
+        return None;
+    }
+    let mut batch = [0u8; 768];
+    let mut bl = 0usize;
+    bl += wl::encode_registry_bind(&mut batch[bl..], 2, 2, "wl_seat", 1, 4).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        4,
+        wl::seat::REQ_GET_POINTER,
+        &[wl::WlArg::NewId(5)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        4,
+        wl::seat::REQ_GET_KEYBOARD,
+        &[wl::WlArg::NewId(6)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_registry_bind(&mut batch[bl..], 2, 1, "wl_compositor", 4, 3).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        3,
+        wl::compositor::REQ_CREATE_SURFACE,
+        &[wl::WlArg::NewId(0x46)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        0x46,
+        wl::surface::REQ_DAMAGE,
+        &[
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(320),
+            wl::WlArg::Int(200),
+        ],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_surface_commit(&mut batch[bl..], 0x46).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        3,
+        wl::compositor::REQ_CREATE_SURFACE,
+        &[wl::WlArg::NewId(0x47)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_message(
+        &mut batch[bl..],
+        0x47,
+        wl::surface::REQ_DAMAGE,
+        &[
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(320),
+            wl::WlArg::Int(200),
+        ],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_surface_commit(&mut batch[bl..], 0x47).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &batch[..bl]).unwrap_or(0);
+    if sent != bl {
+        return None;
+    }
+    let dl = ostd::time::now() + 960;
+    while (fb::surf_layer_of(fb_a).is_none() || fb::surf_layer_of(fb_b).is_none())
+        && ostd::time::now() < dl
+    {
+        core::hint::spin_loop();
+    }
+    if fb::surf_layer_of(fb_a).is_none() || fb::surf_layer_of(fb_b).is_none() {
+        return None;
+    }
+    Some((hc, fb_a, fb_b))
+}
+
+/// t133 click-to-focus 焦点迁移联动面活体（M42-CLICKF33 笔㉝）——五
+/// 相位：
+/// 〔(a) 会话一基线——双窗链域（t133_session_open：0x46 master/0x47
+///     stack + get_keyboard 键盘链）+ motion(480,540) 定位 A 半屏
+///     （cell (30,33)——指针焦点 A + 键盘焦点 policy 首窗）+ SHUT EOF
+///     收场复原（指针焦点归零——纯针 click 前提域；光标 (480,540)
+///     遗留全局）〕→〔(b) 会话二纯针 click 直迁域（零 motion 前置）
+///     ——press hit A（光标位权威 hit-test）：指针焦点 0→A（ENTER +1
+///     / LEAVE +0 / 联动直标 marks +1——t131 联动核按钮域复用）+ 键盘
+///     焦点 policy 已聚焦幂等（CLICK_FOCUS 零增）+ press/release wire
+///     三笔〕→〔(c) motion 跨窗 + click 键盘迁移域——motion(1440,540)
+///     入 B（LEAVE +1/ENTER +1 + 跳变双标 marks +3——t131 同谱）+
+///     press 同窗零扰（enter/leave 零增）+ 键盘焦点 0x46→0x47（
+///     CLICK_FOCUS +1——click-to-focus 迁移取证戳首实证）〕→〔(d)
+///     幂等 + release 闸——同窗再 press（CLICK_FOCUS 零增——同窗幂
+///     等域）+ release 注入零迁移（按下域唯一迁移闸）〕→〔(e) SHUT
+///     EOF 收场复原〕。LUMINA-T133-CLICK/MIGRATE/IDEMP/OK。
+fn t133_run(log: &mut DualLog) -> bool {
+    let mut ok = true;
+    let me = task::current_task_id();
+
+    // (a) 会话一基线（双窗链域 + 定位 A 半屏 + SHUT 复原）
+    waycomp::input_queue_flush();
+    waycomp::waycomp_ptr_cell_reset();
+    let Some((hc, _fb_a, _fb_b)) = t133_session_open(log) else {
+        let _ = writeln!(log, "t133: session-1 open failed");
+        return false;
+    };
+    let st1 = waycomp::waycomp_stamps();
+    let m1 = waycomp::input_pointer_motion(480, 540); // A 半屏 cell (30,33)
+    ok &= m1;
+    let dl = ostd::time::now() + 960;
+    while waycomp::WLCOMP_PTRS.load(Ordering::Acquire) < st1.9 + 1 && ostd::time::now() < dl {
+        task::yield_now();
+    }
+    let _ = writeln!(
+        log,
+        "LUMINA-T133-BASE motion=ok kbf={:#x} kbfocus_a=0x46",
+        waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire)
+    );
+    ok &= waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire) == 0x46; // policy 首窗聚焦
+    let shut = unixsock::sock_shutdown(me, hc as u64);
+    ok &= shut.is_ok();
+    let dl = ostd::time::now() + 4800;
+    while (!waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) || fb::surf_count() != 1)
+        && ostd::time::now() < dl
+    {
+        core::hint::spin_loop();
+    }
+    ok &= waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
+    let _ = crate::vfs::sys_close(hc as u64);
+    waycomp::input_queue_flush();
+
+    // (b) 会话二纯针 click 直迁域（零 motion 前置——光标 (480,540) 遗留落 A 半屏）
+    let Some((hc, _fb_a, _fb_b)) = t133_session_open(log) else {
+        let _ = writeln!(log, "t133: session-2 open failed");
+        return false;
+    };
+    let en1 = waycomp::WLCOMP_PTR_ENTER.load(Ordering::Acquire);
+    let lv1 = waycomp::WLCOMP_PTR_LEAVE.load(Ordering::Acquire);
+    let cf1 = waycomp::WLCOMP_CLICK_FOCUS.load(Ordering::Acquire);
+    let marks1 = fb::fb_damage_ptr_marks();
+    let kbf1 = waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire);
+    let st2 = waycomp::waycomp_stamps();
+    waycomp::input_pointer_button(0x110, 1); // press——hit A：指针焦点 0→A
+    let dl = ostd::time::now() + 960;
+    while waycomp::WLCOMP_PTRS.load(Ordering::Acquire) < st2.9 + 2 && ostd::time::now() < dl {
+        task::yield_now();
+    }
+    let click_ok = waycomp::WLCOMP_PTR_ENTER.load(Ordering::Acquire) == en1 + 1
+        && waycomp::WLCOMP_PTR_LEAVE.load(Ordering::Acquire) == lv1
+        && fb::fb_damage_ptr_marks() == marks1 + 1
+        && waycomp::WLCOMP_CLICK_FOCUS.load(Ordering::Acquire) == cf1
+        && waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire) == kbf1;
+    ok &= click_ok;
+    waycomp::input_pointer_button(0x110, 0); // release
+    let dl = ostd::time::now() + 960;
+    while waycomp::WLCOMP_PTRS.load(Ordering::Acquire) < st2.9 + 3 && ostd::time::now() < dl {
+        task::yield_now();
+    }
+    let _ = writeln!(
+        log,
+        "LUMINA-T133-CLICK enter=+1 leave=+0 marks=+1 cf=+0 kbf={:#x}（纯针直迁——零 motion 前提）",
+        waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire)
+    );
+
+    // (c) motion 跨窗 + click 键盘迁移域
+    let dl = ostd::time::now() + 480;
+    while ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            break;
+        }
+        let mut sink = [0u8; 512];
+        let n = unixsock::sock_recv(me, hc as u64, &mut sink).unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+    }
+    let en2 = waycomp::WLCOMP_PTR_ENTER.load(Ordering::Acquire);
+    let lv2 = waycomp::WLCOMP_PTR_LEAVE.load(Ordering::Acquire);
+    let marks2 = fb::fb_damage_ptr_marks();
+    let m2 = waycomp::input_pointer_motion(1440, 540); // 跨界入 B 半屏 cell (90,33)
+    ok &= m2;
+    let dl = ostd::time::now() + 4800;
+    while (fb::fb_damage_ptr_marks() < marks2 + 3
+        || waycomp::WLCOMP_PTR_LEAVE.load(Ordering::Acquire) < lv2 + 1)
+        && ostd::time::now() < dl
+    {
+        task::yield_now();
+    }
+    ok &= fb::fb_damage_ptr_marks() == marks2 + 3; // 跳变双标 +2 + 联动 +1
+    ok &= waycomp::WLCOMP_PTR_ENTER.load(Ordering::Acquire) == en2 + 1;
+    ok &= waycomp::WLCOMP_PTR_LEAVE.load(Ordering::Acquire) == lv2 + 1;
+    let cf3 = waycomp::WLCOMP_CLICK_FOCUS.load(Ordering::Acquire);
+    let en3 = waycomp::WLCOMP_PTR_ENTER.load(Ordering::Acquire);
+    let lv3 = waycomp::WLCOMP_PTR_LEAVE.load(Ordering::Acquire);
+    let marks3 = fb::fb_damage_ptr_marks();
+    let st3 = waycomp::waycomp_stamps();
+    waycomp::input_pointer_button(0x110, 1); // press 同窗零扰——键盘焦点 0x46→0x47
+    let dl = ostd::time::now() + 960;
+    while (waycomp::WLCOMP_CLICK_FOCUS.load(Ordering::Acquire) < cf3 + 1
+        || waycomp::WLCOMP_PTRS.load(Ordering::Acquire) < st3.9 + 1)
+        && ostd::time::now() < dl
+    {
+        task::yield_now();
+    }
+    let migrate_ok = waycomp::WLCOMP_CLICK_FOCUS.load(Ordering::Acquire) == cf3 + 1
+        && waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire) == 0x47
+        && waycomp::WLCOMP_PTR_ENTER.load(Ordering::Acquire) == en3
+        && waycomp::WLCOMP_PTR_LEAVE.load(Ordering::Acquire) == lv3
+        && fb::fb_damage_ptr_marks() == marks3;
+    ok &= migrate_ok;
+    waycomp::input_pointer_button(0x110, 0); // release
+    let dl = ostd::time::now() + 960;
+    while waycomp::WLCOMP_PTRS.load(Ordering::Acquire) < st3.9 + 2 && ostd::time::now() < dl {
+        task::yield_now();
+    }
+    let _ = writeln!(
+        log,
+        "LUMINA-T133-MIGRATE cf=+1 kbf=0x47 enter=+0 leave=+0 marks=+0（同窗零扰——键盘迁移在环）"
+    );
+
+    // (d) 幂等 + release 闸
+    let cf4 = waycomp::WLCOMP_CLICK_FOCUS.load(Ordering::Acquire);
+    let en4 = waycomp::WLCOMP_PTR_ENTER.load(Ordering::Acquire);
+    let lv4 = waycomp::WLCOMP_PTR_LEAVE.load(Ordering::Acquire);
+    let marks4 = fb::fb_damage_ptr_marks();
+    let st4 = waycomp::waycomp_stamps();
+    waycomp::input_pointer_button(0x110, 1); // 同窗幂等——零迁移
+    waycomp::input_pointer_button(0x110, 0);
+    let dl = ostd::time::now() + 960;
+    while waycomp::WLCOMP_PTRS.load(Ordering::Acquire) < st4.9 + 2 && ostd::time::now() < dl {
+        task::yield_now();
+    }
+    let idemp_ok = waycomp::WLCOMP_CLICK_FOCUS.load(Ordering::Acquire) == cf4
+        && waycomp::WLCOMP_PTR_ENTER.load(Ordering::Acquire) == en4
+        && waycomp::WLCOMP_PTR_LEAVE.load(Ordering::Acquire) == lv4
+        && fb::fb_damage_ptr_marks() == marks4;
+    ok &= idemp_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T133-IDEMP cf=+0 enter/leave=+0 marks=+0（同窗幂等 + release 闸）"
+    );
+
+    // (e) SHUT EOF 收场复原
+    let shut = unixsock::sock_shutdown(me, hc as u64);
+    ok &= shut.is_ok();
+    let dl = ostd::time::now() + 4800;
+    while (!waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) || fb::surf_count() != 1)
+        && ostd::time::now() < dl
+    {
+        core::hint::spin_loop();
+    }
+    ok &= waycomp::WLCOMP_SESSION_DONE.load(Ordering::Acquire) && fb::surf_count() == 1;
+    let stable = waycomp::WLCOMP_CLICK_FOCUS.load(Ordering::Acquire) == cf4
+        && waycomp::WLCOMP_KBFOCUS.load(Ordering::Acquire) == 0x47;
+    ok &= stable;
+    let _ = crate::vfs::sys_close(hc as u64);
+    if ok {
+        let _ = writeln!(log, "LUMINA-T133-OK");
     }
     ok
 }

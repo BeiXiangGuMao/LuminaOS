@@ -478,6 +478,13 @@ pub static WLCOMP_PTR_ENTER: AtomicU64 = AtomicU64::new(0);
 /// 焦点切换 leave 取证戳（wl_pointer.leave 出域计数——t131 对账域）。
 pub static WLCOMP_PTR_LEAVE: AtomicU64 = AtomicU64::new(0);
 
+// ---- M42-CLICKF33 笔㉝：click-to-focus 焦点迁移联动面（按钮域随批）----
+
+/// 点击焦点迁移取证戳（按钮按下域 keyboard focus 迁移笔数——同窗
+/// 幂等零计，t133 对账域；v0 click-to-focus 无迁移取证戳——本戳补
+/// 面）。
+pub static WLCOMP_CLICK_FOCUS: AtomicU64 = AtomicU64::new(0);
+
 /// 焦点切换域光标格直标（M42-PTRLINK 笔㉛——笔㉘挂账「Enter/Leave 域
 /// 联动（焦点切换光标格直标——v0 motion-only 口径）」兑现）：焦点面
 /// 切换（leave/enter 对出域）即光标格 16px 直标强制入账 + sprite 平
@@ -1253,10 +1260,48 @@ fn drain_input(session: &mut CompSession, windows: &[u64]) {
         if is_btn {
             let (button, state) = (hi, lo);
             if state == 1 {
-                // click-to-focus：指针焦点面按键 = 键盘焦点迁移域
-                let pf = session.pointer_focus();
-                if pf != 0 && session.set_keyboard_focus(pf).is_ok() {
-                    WLCOMP_KBFOCUS.store(pf, Ordering::Release);
+                // M42-CLICKF33 笔㉝：click-to-focus 焦点迁移联动面（按
+                // 钮域随批——笔㉝挂账兑现）。按钮按下域 hit-test 复用
+                // （光标位权威 waycomp_cursor——点击发生在光标处，v0
+                // pointer_focus 直读口径退役）：跨窗域复用 t131 联动核
+                // （enter/leave 取证计数 + 光标格直标
+                // pointer_focus_link 强制入账——motion-only 口径退役延
+                // 伸到按钮域）+ 面切换域 set_pointer_focus；同窗域键
+                // 盘焦点迁移（click-to-focus 本义——指针焦点面 = 键盘
+                // 焦点迁移域）+ WLCOMP_CLICK_FOCUS 取证戳（同窗幂等零
+                // 计）。
+                let (cx, cy) = waycomp_cursor();
+                let mut hit_id = 0u32;
+                let mut hit_lx = 0i32;
+                let mut hit_ly = 0i32;
+                if let Ok(plan) = cascade::tiling::tiling_plan(windows, VIEWPORT) {
+                    for (id, rect) in plan.panes.iter().rev() {
+                        let r = *rect;
+                        if cx >= r.x && cx < r.x + r.w as i32 && cy >= r.y && cy < r.y + r.h as i32
+                        {
+                            hit_id = *id as u32;
+                            hit_lx = (cx - r.x).wrapping_mul(256); // surface 局部 fixed 24.8
+                            hit_ly = (cy - r.y).wrapping_mul(256);
+                            break;
+                        }
+                    }
+                }
+                let prev_pf = session.pointer_focus();
+                if hit_id != prev_pf {
+                    // 跨窗/离域域：t131 联动核复用（取证计数 + 格直标）
+                    if prev_pf != 0 {
+                        WLCOMP_PTR_LEAVE.fetch_add(1, Ordering::AcqRel);
+                    }
+                    if hit_id != 0 {
+                        WLCOMP_PTR_ENTER.fetch_add(1, Ordering::AcqRel);
+                    }
+                    pointer_focus_link(cx, cy);
+                    let _ = session.set_pointer_focus(hit_id, hit_lx, hit_ly);
+                }
+                let kb_prev = WLCOMP_KBFOCUS.load(Ordering::Acquire);
+                if hit_id != 0 && hit_id != kb_prev && session.set_keyboard_focus(hit_id).is_ok() {
+                    WLCOMP_KBFOCUS.store(hit_id, Ordering::Release);
+                    WLCOMP_CLICK_FOCUS.fetch_add(1, Ordering::AcqRel);
                 }
             }
             if session.pointer_button(button, state).is_ok() {
