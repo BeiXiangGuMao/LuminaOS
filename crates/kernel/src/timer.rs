@@ -50,6 +50,12 @@ static TIMER_PROBE_HITS: AtomicU64 = AtomicU64::new(0);
 /// SMP 任务迁移语境下探针（`mononow < deadline` 两次相邻读数）与到期
 /// 判定必须立于真正单调的时间面上。地板经 fetch_max 全局推进：任何核
 /// 上的任一读数只升不降，None 塌 0 亦被既有地板挡住。
+///
+/// M42-RDTSC26 笔㉖随行注记：hw::tsc::read 已升级 lfence 序列化读
+/// （采样点对先行加载有序——`lfence; rdtsc` 双层序列化：硬件加载栅
+/// 栏 + 编译器零重排越过采样点）。本地板面与其正交：lfence 序列化
+/// 承载单采样窗内存序契约，跨核单调性仍由 MONO_FLOOR fetch_max 承
+/// 载（SMP 迁移域契约外域维持——双面口径不变）。
 static MONO_FLOOR: AtomicU64 = AtomicU64::new(0);
 
 /// 单调纳秒当前时刻（M15-③）：TSC 校准后 = `now_ns()`；未校准（防御

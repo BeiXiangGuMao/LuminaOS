@@ -610,15 +610,35 @@ pub mod msr {
 /// 时间戳计数器（TSC）——HW-10（M4 申请新增）。
 pub mod tsc {
     /// 读 TSC（64 位单调计数；频率经 [`crate::time`] 校准）。
+    ///
+    /// **lfence 序列化读**（M42-RDTSC26 笔㉖——「rdtsc lfence 序列化
+    /// 读」笔㉓挂账既录）：`lfence` 前置于 `rdtsc`——乱序执行域下
+    /// rdtsc 本身无序列化语义（历史流水漂移合法），先前发射的加载
+    /// 可越过 rdtsc 采样点完成——采样窗相对内存序不确定。lfence =
+    /// 加载栅栏：此前发射的全部加载完成后方放行 rdtsc 采样，采样点
+    /// 对先行内存操作有序（M40-ASH2 同族时序域口径——t120 五节点
+    /// 快照诊断面既录「乱序回退域审计在案」，本面收口）。编译器面：
+    /// 本 asm! 不携 nomem/pure 选项——内存效果保守假设，编译器零
+    /// 内存操作重排越过采样点（语义面与硬件面双层序列化）。
+    /// QEMU TCG 域 lfence 直通（nop 等价）——契约面活体由 t126 承
+    /// 载（单调 + 校准一致性 + 紧邻采样非回退）。
     #[inline]
     pub fn read() -> u64 {
         let (lo, hi): (u32, u32);
         // SAFETY: 前置条件 —— x86_64 执行环境（编译期保证）。
-        // 不变式 —— rdtsc 返回单调递增计数（QEMU/现代硬件保证不回退）。
+        // 不变式 —— rdtsc 返回单调递增计数（QEMU/现代硬件保证不回
+        //           退）；lfence 前置 = 采样点对先行加载有序（序列化
+        //           读契约——笔㉖）。
         // 并发 —— 单核视角；跨核不做同步比较（M4 单核）。
-        // 违反后果 —— 无（纯读）。
+        // 违反后果 —— 无（纯读；lfence 零内存访问零副作用）。
         unsafe {
-            core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nomem, nostack, preserves_flags))
+            core::arch::asm!(
+                "lfence",
+                "rdtsc",
+                out("eax") lo,
+                out("edx") hi,
+                options(nostack, preserves_flags)
+            )
         };
         ((hi as u64) << 32) | lo as u64
     }

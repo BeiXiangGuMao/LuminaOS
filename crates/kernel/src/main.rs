@@ -86,8 +86,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125）。
-const SELFTEST_TOTAL: usize = 125;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126）。
+const SELFTEST_TOTAL: usize = 126;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7384,6 +7384,15 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     let t125 = t125_run(&mut log);
     report(&mut log, t125, "ps2-aux-irq12-wiring");
 
+    // t126) rdtsc lfence 序列化读活体（M42-RDTSC26 笔㉖）：〔紧邻采
+    //       样单调域——256 次背靠背读非回退（序列化读契约面）〕→
+    //       〔校准一致性——hz>0 + now_ns/now_ms ≤10ms 容差（t120 口
+    //       径同源）〕→〔增量窗——忙旋窗 TSC 增量 >0 + now_ns 八读
+    //       单调〕。
+    //       LUMINA-T126-TSC/T126-OK。
+    let t126 = t126_run(&mut log);
+    report(&mut log, t126, "rdtsc-lfence-serialized");
+
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
     //      pf_hook 入口扩判「U 位 或 CR2 落增长栈窗口域」——CPL0 用户
@@ -14639,6 +14648,60 @@ fn t125_run(log: &mut DualLog) -> bool {
     ok &= drain_ok;
     if ok {
         let _ = writeln!(log, "LUMINA-T125-OK pending={pending}");
+    }
+    ok
+}
+
+/// t126 rdtsc lfence 序列化读活体（M42-RDTSC26 笔㉖）——三相位描述
+/// 见 kmain 调度注记（t120-t125 同款纪律：活体描述随调度块，函数体
+/// 免长文档）。
+fn t126_run(log: &mut DualLog) -> bool {
+    let mut ok = true;
+
+    // (a) 紧邻采样单调域（序列化读契约面——lfence;rdtsc 背靠背 256
+    //     读非回退；乱序回退域在此窗显形）。
+    let mut prev = ostd::hw::tsc::read();
+    let mut mono = true;
+    for _ in 0..256 {
+        let cur = ostd::hw::tsc::read();
+        if cur < prev {
+            mono = false;
+        }
+        prev = cur;
+    }
+    ok &= mono;
+
+    // (b) 校准一致性（t120 口径同源——hz>0 + ns/ms 双读 ≤10ms 容差
+    //     ——PIT 步进域采样间隙合法窗）。
+    let calib_ok = ostd::time::tsc_clock::hz() > 0
+        && ostd::time::tsc_clock::now_ns()
+            .map(|ns| (ns / 1_000_000).abs_diff(ostd::time::now_ms()) <= 10)
+            .unwrap_or(false);
+    ok &= calib_ok;
+
+    // (c) 增量窗（忙旋窗 TSC 增量 >0——计数器推进活体 + now_ns 八读
+    //     单调——ms 域校准路径同源）。
+    let t0 = ostd::hw::tsc::read();
+    let mut sink = 0u64;
+    for i in 0..40_000u64 {
+        sink = sink.wrapping_add(i);
+    }
+    let t1 = ostd::hw::tsc::read();
+    core::hint::black_box(sink);
+    ok &= t1 > t0;
+    let ns_mono = (0..8).all(|_| {
+        let a = ostd::time::tsc_clock::now_ns();
+        let b = ostd::time::tsc_clock::now_ns();
+        b >= a
+    });
+    ok &= ns_mono;
+    let _ = writeln!(
+        log,
+        "LUMINA-T126-TSC mono256={mono} calib={calib_ok} delta={}>0 ns-mono={ns_mono}",
+        t1 - t0
+    );
+    if ok {
+        let _ = writeln!(log, "LUMINA-T126-OK");
     }
     ok
 }
