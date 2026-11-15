@@ -62,14 +62,14 @@ use super::{
     encode_pointer_axis_stop_event, encode_pointer_axis_value120_event,
     encode_pointer_button_event, encode_pointer_enter_event, encode_pointer_frame_event,
     encode_pointer_leave_event, encode_pointer_motion_event, encode_registry_global_event,
-    encode_seat_capabilities_event, iface_name, parse_args, parse_header, registry, seat, shm,
-    shm_pool, surface, WlArg, WlError, WlHeader, WlIface, WlObjectTable, HEADER,
+    encode_seat_capabilities_event, iface_name, keyboard_req, parse_args, parse_header, registry,
+    seat, shm, shm_pool, surface, WlArg, WlError, WlHeader, WlIface, WlObjectTable, HEADER,
     KEYMAP_FORMAT_XKB_V1, MOD_ALT, MOD_CAPS, MOD_CTRL, MOD_MOD4, MOD_NUM2, MOD_SHIFT,
     SEAT_CAPS_KEYBOARD, SEAT_CAPS_POINTER, SIG_COMPOSITOR_CREATE_REGION,
-    SIG_COMPOSITOR_CREATE_SURFACE, SIG_DISPLAY_GET_REGISTRY, SIG_DISPLAY_SYNC, SIG_REGISTRY_BIND,
-    SIG_SEAT_GET_KEYBOARD, SIG_SEAT_GET_POINTER, SIG_SHM_CREATE_POOL, SIG_SHM_POOL_CREATE_BUFFER,
-    SIG_SHM_POOL_DESTROY, SIG_SURFACE_ATTACH, SIG_SURFACE_COMMIT, SIG_SURFACE_DAMAGE,
-    SIG_SURFACE_FRAME, WIRE_MAX,
+    SIG_COMPOSITOR_CREATE_SURFACE, SIG_DISPLAY_GET_REGISTRY, SIG_DISPLAY_SYNC,
+    SIG_KEYBOARD_SET_CURSOR, SIG_REGISTRY_BIND, SIG_SEAT_GET_KEYBOARD, SIG_SEAT_GET_POINTER,
+    SIG_SHM_CREATE_POOL, SIG_SHM_POOL_CREATE_BUFFER, SIG_SHM_POOL_DESTROY, SIG_SURFACE_ATTACH,
+    SIG_SURFACE_COMMIT, SIG_SURFACE_DAMAGE, SIG_SURFACE_FRAME, WIRE_MAX,
 };
 
 /// 单会话 surface 槽容量（定容零堆——SurfaceTable 同量级先例）。
@@ -205,6 +205,10 @@ pub enum KbKind {
     Key,
     /// 修饰键态事件（wl_keyboard.modifiers——M42-WAYCOMP15 语义核）。
     Modifiers,
+    /// 键盘光标面宣告回执（wl_keyboard.set_cursor 请求域——
+    /// M43-KBREP37 笔㊷；KeyRecord 复用域：surface = 目标面〔0 = 默
+    /// 认光标回退〕、key = hotspot_x、state = hotspot_y）。
+    SetCursor,
 }
 
 /// 键盘事件记录（feed 回执取证域——电气面对账 + t109 断言面）。
@@ -561,6 +565,15 @@ pub struct CompSession {
     key_q: [Option<KeyRecord>; INPUT_Q_MAX],
     /// 键盘队列在队数。
     key_n: usize,
+    /// 键重复 rate（chars/s——0 = 关闭；M43-KBREP37 笔㊷ 生产域，
+    /// 默认 25 = weston 同量级默认）。
+    rep_rate: u32,
+    /// 键重复首延迟（ms——默认 400）。
+    rep_delay: u32,
+    /// 当前按住键（重复登记域——0 = 无；修饰键零登记）。
+    rep_key: u32,
+    /// 下次重复时刻（ms——now + delay / +1000/rate 步进）。
+    rep_next_ms: u64,
     /// 指针事件待发队列（feed 冲刷域）。
     ptr_q: [Option<PtrRecord>; INPUT_Q_MAX],
     /// 指针队列在队数。
@@ -599,6 +612,10 @@ impl CompSession {
             mods_group: 0,
             key_q: [None; INPUT_Q_MAX],
             key_n: 0,
+            rep_rate: 25,
+            rep_delay: 400,
+            rep_key: 0,
+            rep_next_ms: 0,
             ptr_q: [None; INPUT_Q_MAX],
             ptr_n: 0,
             keymap_out: None,
@@ -801,6 +818,16 @@ impl CompSession {
             group: 0,
         });
         self.key_n += 1;
+        // 键重复登记域（M43-KBREP37 笔㊷——按下非修饰键登记 + 释放撤
+        // 销；修饰键零登记零撤销——官方语义修饰键不产重复文本）。
+        if mod_bit.is_none() {
+            if pressed {
+                self.rep_key = key;
+                self.rep_next_ms = self.time_ms + u64::from(self.rep_delay);
+            } else if self.rep_key == key {
+                self.rep_key = 0;
+            }
+        }
         self.mods_depressed = new_d;
         self.mods_locked = new_lk;
         if mods_changed {
@@ -820,6 +847,66 @@ impl CompSession {
             self.key_n += 1;
         }
         Ok(())
+    }
+
+    /// 键重复参数设定（M43-KBREP37 笔㊷——waycomp 侧会话配置域：
+    /// repeat_info 公告真值承载 + 生产域参数。rate = chars/s（0 =
+    /// 关闭合法——官方语义 no-repeat），delay = 首重复前 ms。域外
+    /// clamp：rate 0..=100、delay 0..=2000——v0 clamp 域如实登记。
+    pub fn set_repeat_info(&mut self, rate: u32, delay: u32) {
+        self.rep_rate = rate.min(100);
+        self.rep_delay = delay.min(2000);
+    }
+
+    /// 键重复参数读面（公告域 + 取证面）。
+    pub fn repeat_info(&self) -> (u32, u32) {
+        (self.rep_rate, self.rep_delay)
+    }
+
+    /// 重复域待产读面（阻塞面豁免判据——rep_key 非零且 rate > 0 =
+    /// 非静：重复窗内消费域轮询推进，阻塞面零登记挂账）。
+    pub fn repeat_pending(&self) -> bool {
+        self.rep_key != 0 && self.rep_rate > 0
+    }
+
+    /// 键重复生产泵（M43-KBREP37 笔㊷——drain 尾消费域推进）：按住
+    /// 键（rep_key 登记）且 rate > 0 时，now ≥ rep_next_ms 产重复
+    /// key 事件（state = PRESSED 重复按下——官方 wl_keyboard.key 语
+    /// 义）入待发队列 + rep_next_ms 步进 1000/rate（钳 ≥1——多拍
+    /// 追产上限 8 防风暴）。焦点丢失域撤销 / 容量满容 skip 本拍（追
+    /// 产窗保持——feed 冲刷后继续）。返回本拍产数。
+    pub fn repeat_tick(&mut self, now_ms: u64) -> usize {
+        let mut produced = 0usize;
+        while self.rep_key != 0 && self.rep_rate > 0 && now_ms >= self.rep_next_ms && produced < 8 {
+            if self.kb_focus == 0 {
+                self.rep_key = 0; // 焦点丢失——重复域撤销
+                break;
+            }
+            if self.key_n >= INPUT_Q_MAX {
+                break; // 满容 skip 本拍（追产窗保持）
+            }
+            self.input_serial = self.input_serial.wrapping_add(1);
+            let serial = self.input_serial;
+            let focus = self.kb_focus;
+            let key = self.rep_key;
+            self.key_q[self.key_n] = Some(KeyRecord {
+                kind: KbKind::Key,
+                surface: focus,
+                serial,
+                key,
+                state: super::KEY_STATE_PRESSED,
+                mods_d: 0,
+                mods_l: 0,
+                mods_lk: 0,
+                group: 0,
+            });
+            self.key_n += 1;
+            produced += 1;
+            self.rep_next_ms = self
+                .rep_next_ms
+                .saturating_add((1000 / self.rep_rate).max(1) as u64);
+        }
+        produced
     }
 
     /// 指针焦点注入（M42-INPUT7 策略面钩子——hit-test 消费域）：
@@ -1176,6 +1263,10 @@ impl CompSession {
             )?;
             consumed += step;
         }
+        // 派生回执二次冲刷（M43-KBREP37 笔㊷——同批请求回执同批出域：
+        // set_cursor 回执在 dispatch 域入待发队列，flush 先行段已过——
+        // 尾部二次冲刷承接，空队列零操作幂等）。
+        self.flush_inputs(out, &mut out_len, &mut keys, &mut ptrs)?;
         Ok(FeedReport {
             consumed,
             out_len,
@@ -1236,6 +1327,9 @@ impl CompSession {
                             r.mods_lk,
                             r.group,
                         ),
+                        // M43-KBREP37 笔㊷：set_cursor 回执 = 记录批域
+                        // （回执取证——零 wire 出域，电气面对账消费）。
+                        KbKind::SetCursor => Ok(0),
                     }
                     .map_err(CompError::Wire)?;
                     *out_len += n;
@@ -1341,14 +1435,75 @@ impl CompSession {
             WlIface::Shm => self.dispatch_shm(&header, body, pools, fd_need)?,
             WlIface::ShmPool => self.dispatch_shm_pool(&header, body)?,
             WlIface::Seat => self.dispatch_seat(&header, body, out_len, out)?,
-            // pointer/keyboard：客户端只消费事件——请求域
-            // 外（release/set_repeat_info 挂账，M42-INPUT7）。
-            WlIface::Pointer | WlIface::Keyboard => return Err(CompError::UnknownRequest),
+            // keyboard：set_cursor 官方请求域在环（M43-KBREP37 笔㊷）
+            // ——release 挂账维持（对象摘除域随会话收场承载）。
+            WlIface::Keyboard => self.dispatch_keyboard(&header, body, out_len, out)?,
+            // pointer：客户端只消费事件——请求域外（v0 子集）。
+            WlIface::Pointer => return Err(CompError::UnknownRequest),
             // callback/output/region/buffer：服务端
             // 请求域外（v0 子集——fail-visible）。
             _ => return Err(CompError::UnknownRequest),
         }
         Ok(header.size as usize)
+    }
+
+    /// wl_keyboard 请求域（M43-KBREP37 笔㊷——set_cursor 官方请求域
+    /// 落域：客户端键盘焦点光标面宣告，回执记录批 KeyRecord 复用域
+    /// 〔kind = SetCursor、surface = 目标面、key = hotspot_x、state =
+    /// hotspot_y——记录域双载判读〕；surface = 0 合法 = 默认光标回退
+    /// 域。release 挂账维持——v0 对象摘除域随会话收场承载）。
+    fn dispatch_keyboard(
+        &mut self,
+        header: &WlHeader,
+        body: &[u8],
+        _out_len: &mut usize,
+        _out: &mut [u8],
+    ) -> Result<(), CompError> {
+        match header.opcode {
+            keyboard_req::REQ_SET_CURSOR => {
+                let (args, _) =
+                    parse_args(body, SIG_KEYBOARD_SET_CURSOR).map_err(CompError::Wire)?;
+                let Some(WlArg::Uint(_serial)) = args[0] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                let surface = match args[1] {
+                    Some(WlArg::Object(id)) => id,
+                    _ => return Err(CompError::Wire(WlError::BadLength)),
+                };
+                let hot_x = match args[2] {
+                    Some(WlArg::Int(v)) => v,
+                    _ => return Err(CompError::Wire(WlError::BadLength)),
+                };
+                let hot_y = match args[3] {
+                    Some(WlArg::Int(v)) => v,
+                    _ => return Err(CompError::Wire(WlError::BadLength)),
+                };
+                // 目标面在册闸（surface = 0 默认光标回退合法域；非零
+                // 不在册 = BadObject fail-visible）。
+                if surface != 0 && self.surface_slot(surface).is_none() {
+                    return Err(CompError::BadObject);
+                }
+                if self.key_n >= INPUT_Q_MAX {
+                    return Err(CompError::InputQFull);
+                }
+                self.input_serial = self.input_serial.wrapping_add(1);
+                let serial = self.input_serial;
+                self.key_q[self.key_n] = Some(KeyRecord {
+                    kind: KbKind::SetCursor,
+                    surface,
+                    serial,
+                    key: hot_x as u32,
+                    state: hot_y as u32,
+                    mods_d: 0,
+                    mods_l: 0,
+                    mods_lk: 0,
+                    group: 0,
+                });
+                self.key_n += 1;
+                Ok(())
+            }
+            _ => Err(CompError::UnknownRequest), // release 挂账维持
+        }
     }
 
     /// wl_display 请求域（sync 即时 done + **delete_id 随行销毁**
@@ -1515,10 +1670,17 @@ impl CompSession {
                     size: KEYMAP_XKB_V1.len() as u32,
                 });
                 // repeat_info 公告（M42-KBREP34 笔㉞——官方语义：键盘派生
-                // 域 keymap 后随行；v0 内核无键重复机制——rate=0/delay=0
-                // 重复关闭声明口径，客户端侧 repeat 生产域挂账远线）。
-                let n = encode_keyboard_repeat_info_event(&mut out[*out_len..], kbd_id, 0, 0)
-                    .map_err(CompError::Wire)?;
+                // 域 keymap 后随行；M43-KBREP37 笔㊷ 真值域——v0 关闭声
+                // 明 0/0 退役，会话域默认 25/400 + set_repeat_info 配置
+                // 域承载，生产域在环）。
+                let (rep_rate, rep_delay) = self.repeat_info();
+                let n = encode_keyboard_repeat_info_event(
+                    &mut out[*out_len..],
+                    kbd_id,
+                    rep_rate,
+                    rep_delay,
+                )
+                .map_err(CompError::Wire)?;
                 *out_len += n;
                 Ok(())
             }
@@ -3009,6 +3171,16 @@ mod tests {
             Some(WlArg::Uint(KEYMAP_XKB_V1.len() as u32)),
             "keymap size = 内容真实长度"
         );
+        // M43-KBREP37 笔㊷判据随行升级（官方语义：repeat_info 公告真值域
+        // ——v0 关闭声明 0/0 退役，会话域默认 25/400）。
+        let m = crate::wayland::parse_message(
+            &out[12 + 20..rep.out_len],
+            crate::wayland::SIG_KEYBOARD_REPEAT_INFO,
+        )
+        .unwrap();
+        assert_eq!(m.header.opcode, crate::wayland::keyboard::EV_REPEAT_INFO);
+        assert_eq!(m.args[0], Some(WlArg::Uint(25)), "默认 rate = 25 chars/s");
+        assert_eq!(m.args[1], Some(WlArg::Uint(400)), "默认 delay = 400 ms");
         assert_eq!(
             rep.keymaps,
             Some(KeymapRecord {
@@ -3174,6 +3346,169 @@ mod tests {
         let m =
             crate::wayland::parse_message(&out[72..], crate::wayland::SIG_POINTER_FRAME).unwrap();
         assert_eq!(m.header.opcode, crate::wayland::pointer::EV_FRAME);
+    }
+
+    /// M43-KBREP37 键重复语义核链（登记/撤销 + delay/rate 步进追产 +
+    /// 修饰键零登记 + 焦点丢失撤销 + 关闭域）。
+    #[test]
+    fn keyboard_repeat_core_chain() {
+        let mut s = new_session();
+        setup_registry(&mut s);
+        let batch = {
+            let mut b = [0u8; 192];
+            let mut bl = 0usize;
+            bl += encode_registry_bind(&mut b[bl..], 2, 1, "wl_compositor", 4, 3).unwrap();
+            bl += encode_message(
+                &mut b[bl..],
+                3,
+                compositor::REQ_CREATE_SURFACE,
+                &[WlArg::NewId(0x21)],
+            )
+            .unwrap();
+            bl += encode_registry_bind(&mut b[bl..], 2, 2, "wl_seat", 1, 0x30).unwrap();
+            bl += encode_message(
+                &mut b[bl..],
+                0x30,
+                seat::REQ_GET_KEYBOARD,
+                &[WlArg::NewId(0x32)],
+            )
+            .unwrap();
+            b[..bl].to_vec()
+        };
+        s.feed(&batch, &mut [0u8; 256]).unwrap();
+        s.set_keyboard_focus(0x21).unwrap();
+        // 默认域 + 配置域（rate 域外 clamp）
+        assert_eq!(s.repeat_info(), (25, 400), "默认 25/400");
+        s.set_repeat_info(50, 20);
+        assert_eq!(s.repeat_info(), (50, 20));
+        s.set_repeat_info(500, 9999);
+        assert_eq!(s.repeat_info(), (100, 2000), "rate/delay 域外 clamp");
+        s.set_repeat_info(50, 20);
+        // 按下 'a'（wl 30 = evdev 22——非修饰键）→ 登记 rep_key
+        s.keyboard_inject(30, crate::wayland::KEY_STATE_PRESSED)
+            .unwrap();
+        // delay 未到零产
+        assert_eq!(s.repeat_tick(19), 0, "delay 未到零产");
+        // delay 到点产 1（state = PRESSED 重复）
+        assert_eq!(s.repeat_tick(20), 1);
+        s.feed(&[], &mut [0u8; 256]).unwrap(); // 冲刷清队列（容量域复位）
+                                               // rate 步进 1000/50 = 20ms
+        assert_eq!(s.repeat_tick(39), 0);
+        assert_eq!(s.repeat_tick(40), 1);
+        s.feed(&[], &mut [0u8; 256]).unwrap();
+        // 多拍追产（now >> next——上限 8）
+        assert_eq!(s.repeat_tick(1000), 8, "追产上限 8");
+        s.feed(&[], &mut [0u8; 256]).unwrap();
+        // 修饰键零登记（Shift 按下不扰动 rep_key——重复域继续）
+        s.keyboard_inject(50, crate::wayland::KEY_STATE_PRESSED)
+            .unwrap();
+        assert_eq!(s.repeat_tick(250), 2, "修饰键按下不撤销重复域");
+        s.feed(&[], &mut [0u8; 256]).unwrap();
+        // 释放撤销
+        s.keyboard_inject(30, crate::wayland::KEY_STATE_RELEASED)
+            .unwrap();
+        assert!(!s.repeat_pending(), "释放撤销登记");
+        assert_eq!(s.repeat_tick(5000), 0, "撤销后零产");
+        // 关闭域（rate=0 官方 no-repeat）
+        s.keyboard_inject(31, crate::wayland::KEY_STATE_PRESSED)
+            .unwrap();
+        s.set_repeat_info(0, 0);
+        assert!(!s.repeat_pending(), "rate=0 关闭域");
+        assert_eq!(s.repeat_tick(9000), 0, "关闭域零产");
+    }
+
+    /// M43-KBREP37 set_cursor 请求域（回执记录批 + surface 在册闸 +
+    /// 默认光标回退域 surface=0）。
+    #[test]
+    fn keyboard_set_cursor_dispatch() {
+        let mut s = new_session();
+        setup_registry(&mut s);
+        let batch = {
+            let mut b = [0u8; 192];
+            let mut bl = 0usize;
+            bl += encode_registry_bind(&mut b[bl..], 2, 1, "wl_compositor", 4, 3).unwrap();
+            bl += encode_message(
+                &mut b[bl..],
+                3,
+                compositor::REQ_CREATE_SURFACE,
+                &[WlArg::NewId(0x21)],
+            )
+            .unwrap();
+            bl += encode_registry_bind(&mut b[bl..], 2, 2, "wl_seat", 1, 0x30).unwrap();
+            bl += encode_message(
+                &mut b[bl..],
+                0x30,
+                seat::REQ_GET_KEYBOARD,
+                &[WlArg::NewId(0x32)],
+            )
+            .unwrap();
+            b[..bl].to_vec()
+        };
+        s.feed(&batch, &mut [0u8; 256]).unwrap();
+        // set_cursor 目标面在册（hotspot (3,5)）→ 回执记录批
+        let req = {
+            let mut b = [0u8; 64];
+            let n = encode_message(
+                &mut b,
+                0x32,
+                keyboard_req::REQ_SET_CURSOR,
+                &[
+                    WlArg::Uint(9),
+                    WlArg::Object(0x21),
+                    WlArg::Int(3),
+                    WlArg::Int(5),
+                ],
+            )
+            .unwrap();
+            b[..n].to_vec()
+        };
+        let mut out = [0u8; 64];
+        let rep = s.feed(&req, &mut out).unwrap();
+        assert_eq!(rep.consumed, req.len());
+        assert_eq!(rep.keys.n, 1, "set_cursor 回执恰一笔");
+        let r = rep.keys.items[0].unwrap();
+        assert_eq!(r.kind, KbKind::SetCursor);
+        assert_eq!(r.surface, 0x21);
+        assert_eq!(r.key, 3, "hotspot_x 复用域");
+        assert_eq!(r.state, 5, "hotspot_y 复用域");
+        // surface = 0 默认光标回退域（合法）
+        let req0 = {
+            let mut b = [0u8; 64];
+            let n = encode_message(
+                &mut b,
+                0x32,
+                keyboard_req::REQ_SET_CURSOR,
+                &[
+                    WlArg::Uint(10),
+                    WlArg::Object(0),
+                    WlArg::Int(0),
+                    WlArg::Int(0),
+                ],
+            )
+            .unwrap();
+            b[..n].to_vec()
+        };
+        let rep2 = s.feed(&req0, &mut [0u8; 64]).unwrap();
+        assert_eq!(rep2.keys.n, 1);
+        assert_eq!(rep2.keys.items[0].unwrap().surface, 0, "默认光标回退域");
+        // 目标面不在册 = BadObject fail-visible（feed Err 透传）
+        let bad = {
+            let mut b = [0u8; 64];
+            let n = encode_message(
+                &mut b,
+                0x32,
+                keyboard_req::REQ_SET_CURSOR,
+                &[
+                    WlArg::Uint(11),
+                    WlArg::Object(0x99),
+                    WlArg::Int(0),
+                    WlArg::Int(0),
+                ],
+            )
+            .unwrap();
+            b[..n].to_vec()
+        };
+        assert!(s.feed(&bad, &mut [0u8; 64]).is_err(), "不在册面拒收");
     }
 
     /// 修饰键语义核链（M42-WAYCOMP15——Shift 位域 ∪/∖ + CapsLock
@@ -3384,19 +3719,23 @@ mod tests {
         assert_eq!(rep.drops.n, 1);
         assert_eq!(s.keyboard_focus(), 0, "键盘焦点清零");
         assert_eq!(s.pointer_focus(), 0, "指针焦点清零");
+        // M43-KBREP37 判据随行升级（官方语义：destroy 摘除 leave 同批
+        // 响应出域——派生回执二次冲刷后 leave 不再滞留至下一 feed）。
         assert_eq!(
-            rep.keys.n, 2,
-            "kb Enter + modifiers 快照（焦点 set 残队——M42-WAYCOMP15 enter 域随行）"
+            rep.keys.n, 3,
+            "kb Enter + modifiers 快照 + destroy 摘除 leave 同批（M43-KBREP37）"
         );
-        assert_eq!(rep.ptrs.n, 1, "ptr Enter（焦点 set 残队）");
+        assert_eq!(
+            rep.ptrs.n, 2,
+            "ptr Enter（焦点 set 残队）+ destroy 摘除 leave 同批"
+        );
+        assert_eq!(rep.keys.items[2].map(|r| r.kind), Some(KbKind::Leave));
+        assert_eq!(rep.ptrs.items[1].map(|r| r.kind), Some(PtrKind::Leave));
         let mut out2 = [0u8; 128];
         let rep2 = s.feed(&[], &mut out2).unwrap();
-        assert_eq!(rep2.keys.n, 1, "kb leave（destroy 摘除域）");
-        assert_eq!(rep2.ptrs.n, 1, "ptr leave（destroy 摘除域）");
-        assert_eq!(rep2.keys.items[0].map(|r| r.kind), Some(KbKind::Leave));
-        assert_eq!(rep2.ptrs.items[0].map(|r| r.kind), Some(PtrKind::Leave));
-        assert_eq!(rep2.keys.items[0].map(|r| r.surface), Some(0x21));
-        assert_eq!(rep2.ptrs.items[0].map(|r| r.surface), Some(0x21));
+        assert_eq!(rep2.keys.n, 0, "摘除域已同批出（二次冲刷）");
+        assert_eq!(rep2.ptrs.n, 0);
+        assert_eq!(rep.keys.items[2].map(|r| r.surface), Some(0x21));
     }
 
     /// 输入链负例域。

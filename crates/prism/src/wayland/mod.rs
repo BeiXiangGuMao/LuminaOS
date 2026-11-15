@@ -611,6 +611,18 @@ pub mod keyboard {
     pub const EV_REPEAT_INFO: u16 = 5;
 }
 
+/// wl_keyboard 请求 opcode（M43-KBREP37 笔㊷——客户端请求域落域：
+/// v0 release/set_repeat_info 挂账注退役、set_cursor 官方请求域在环。
+/// repeat_info 是服务端公告事件非客户端请求——公告面笔㉞已落域）。
+pub mod keyboard_req {
+    /// request release（v0 挂账维持——对象摘除域随会话收场承载）。
+    pub const REQ_RELEASE: u16 = 0;
+    /// request set_cursor（uint serial + object surface + int
+    /// hotspot_x + int hotspot_y——客户端键盘焦点光标面宣告，
+    /// surface = 0 合法〔默认光标回退域〕）。
+    pub const REQ_SET_CURSOR: u16 = 1;
+}
+
 /// wl_pointer 事件 opcode（M42-INPUT7 输入链——官方 XML 声明序；
 /// axis 族/frame/请求域域外挂账）。
 pub mod pointer {
@@ -748,9 +760,14 @@ pub const SIG_KEYBOARD_MODIFIERS: &[WlType] = &[
 ];
 /// wl_keyboard.repeat_info 事件（M42-KBREP34 笔㉞）：`(uint rate,
 /// uint delay)`——键重复公告面（rate = 每秒重复数，delay = 首重复前
-/// 毫秒；v0 内核无键重复机制——rate=0/delay=0 重复关闭声明口径，
-/// 客户端侧 repeat 生产域挂账远线）。
+/// 毫秒；M43-KBREP37 笔㊷ 真值公告域——v0 关闭声明 0/0 退役，默认
+/// rate=25/delay=400 会话域承载 + 生产域在环）。
 pub const SIG_KEYBOARD_REPEAT_INFO: &[WlType] = &[WlType::Uint, WlType::Uint];
+/// wl_keyboard.set_cursor 请求：`(uint serial, object surface,
+/// int hotspot_x, int hotspot_y)`（M43-KBREP37 笔㊷——surface 0 合法
+/// = 默认光标回退域）。
+pub const SIG_KEYBOARD_SET_CURSOR: &[WlType] =
+    &[WlType::Uint, WlType::Object, WlType::Int, WlType::Int];
 /// wl_pointer.enter 事件：`(uint serial, object surface, fixed x,
 /// fixed y)`——surface 局部坐标域（fixed 24.8 原字透传）。
 pub const SIG_POINTER_ENTER: &[WlType] =
@@ -1612,6 +1629,29 @@ mod tests {
         assert_eq!(m.args[1], Some(WlArg::Uint(0)));
         assert_eq!(m.wire_size(), n);
         assert_eq!(n, 16);
+        // M43-KBREP37 set_cursor 请求签名对账（"uoi i" 四参——官方
+        // wl_keyboard.set_cursor 逐字对账）。
+        assert_eq!(keyboard_req::REQ_SET_CURSOR, 1);
+        let n = encode_message(
+            &mut buf,
+            6,
+            keyboard_req::REQ_SET_CURSOR,
+            &[
+                WlArg::Uint(7),
+                WlArg::Object(0x41),
+                WlArg::Int(3),
+                WlArg::Int(5),
+            ],
+        )
+        .expect("encode");
+        let m = parse_message(&buf, SIG_KEYBOARD_SET_CURSOR).expect("parse");
+        assert_eq!(m.header.opcode, keyboard_req::REQ_SET_CURSOR);
+        assert_eq!(m.args[0], Some(WlArg::Uint(7)));
+        assert_eq!(m.args[1], Some(WlArg::Object(0x41)));
+        assert_eq!(m.args[2], Some(WlArg::Int(3)));
+        assert_eq!(m.args[3], Some(WlArg::Int(5)));
+        assert_eq!(m.wire_size(), n);
+        assert_eq!(n, 24, "8 头 + 16 体（uint + object + int + int）");
         let n = encode_pointer_enter_event(&mut buf, 6, 14, 5, 32 << 8, 64 << 8).expect("encode");
         let m = parse_message(&buf, SIG_POINTER_ENTER).expect("parse");
         assert_eq!(m.header.opcode, pointer::EV_ENTER);

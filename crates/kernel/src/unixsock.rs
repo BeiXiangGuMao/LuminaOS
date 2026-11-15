@@ -265,6 +265,15 @@ pub fn listener_name_registered(name: &[u8]) -> bool {
 /// 套接字对象判定（SYS_CLOSE 分支守门——identity/文件/管道/通道对象
 /// 不误消费；同面不泄拓扑纪律：只回是/否）。
 pub fn is_socket_object(object: u64) -> bool {
+    // M43-KBREP37 揭雷④兼容域：双端终结后表行摘除（POSIX close 对
+    // 象生命周期对齐——SOCKETS 定容域收口）——段域判定兜底〔socket
+    // 铸造段 [USOCK_OBJECT_BASE, SHM_OBJECT_BASE) 原字域——行已摘的
+    // 悬空 close 在 sys_close socket 臂命中收口，handle 槽零悬空〕+
+    // 活表判定（活跃对象权威域，摘行后表查 miss 不误伤真 socket 段
+    // 邻接 SHM 段——SHM_OBJECT_BASE 邻接注记笔⑪既录）。
+    if (USOCK_OBJECT_BASE..crate::shm::SHM_OBJECT_BASE).contains(&object) {
+        return true;
+    }
     let socks = SOCKETS.lock();
     if socks.iter().any(|e| e.object == object) {
         return true;
@@ -341,6 +350,12 @@ fn free_one(caller: usize) -> Result<usize, UsockError> {
     .ok_or(UsockError::Table)
 }
 
+/// 调试取证：SOCKETS 在表数（M43-KBREP37 t136 句柄域诊断面——
+/// 满载域定位用；仅自检消费）。
+pub fn usock_debug_len() -> usize {
+    SOCKETS.lock().len()
+}
+
 /// 能力铸造 + 句柄安装（sys_bind 步骤 3 同款）；失败回滚能力槽。
 fn install_cap(caller: usize, object: u64, handle: usize) -> Result<(), UsockError> {
     let cap = Capability::new(object, Right::IPC_SEND.bits() | Right::IPC_RECV.bits());
@@ -377,6 +392,31 @@ fn mint_pair() -> Result<MintedPair, UsockError> {
 /// 段内单调，跨核交错无碍）。失败路径：环泄漏随通道 BIND 先例纪律
 /// （内核生命周期静态域），登记槽已占则回滚。
 fn mint_pair_ends() -> Result<(u64, u64), UsockError> {
+    // M43-KBREP37 揭雷④收口：SOCKETS 定容域惰性清扫（v0「对象行存
+    // 续纪律」原貌维持——shutdown 仅终结旗置位，EOF/recv 语义零扰动
+    // ——t104 eof 判据在环；mint 前双端 dead 行摘除〔POSIX close 对
+    // 象生命周期对齐——双端终结后行无活跃消费方，recv/send Err(Cap)
+    // fail-visible 原貌〕。长跑自检 26 会话窗 64 定容满载 connect
+    // Nomem/Table 实锤收口。
+    {
+        let mut socks = SOCKETS.lock();
+        if socks.len() >= USOCK_MAX {
+            let dead_objs: alloc::vec::Vec<u64> = socks
+                .iter()
+                .filter(|e| e.dead.load(Ordering::Acquire))
+                .filter(|e| {
+                    socks
+                        .iter()
+                        .any(|p| p.object == e.peer_object && p.dead.load(Ordering::Acquire))
+                })
+                .map(|e| e.object)
+                .collect();
+            socks.retain(|e| !dead_objs.contains(&e.object));
+        }
+        if socks.len() >= USOCK_MAX {
+            return Err(UsockError::Nomem); // 清扫后仍满——真满载 fail-visible
+        }
+    }
     // 旗标配对纪律：A.dead 与 B.peer_dead 共用同一原子、B.dead 与
     // A.peer_dead 共用同一原子——shutdown(A) 单点改写即镜像对端视图
     // （shutdown_by_object 单写者域）。
@@ -741,11 +781,12 @@ pub fn shutdown_by_object(object: u64) -> Result<(), UsockError> {
             .map(|e| e.peer_object)
     };
     if let Some(peer_object) = peer {
-        let socks = SOCKETS.lock();
-        if let Some(e) = socks.iter().find(|e| e.object == object) {
-            e.dead.store(true, Ordering::Release);
+        {
+            let mut socks = SOCKETS.lock();
+            if let Some(e) = socks.iter_mut().find(|e| e.object == object) {
+                e.dead.store(true, Ordering::Release);
+            }
         }
-        drop(socks);
         // M42-WAYCOMP13：流终结域未交付 fd 随行 revoke（SCM_RIGHTS
         // 未交付 fd 于套接字终结时关闭语义对齐——POSIX close(socket)
         // 同款；本端队列遗留槽逐槽撤销——半装不留痕）。

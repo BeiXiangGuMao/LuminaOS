@@ -237,6 +237,12 @@ pub static WLCOMP_AXIS_BAD: AtomicU64 = AtomicU64::new(0);
 /// 离散步进不随行，value=0 零步进不随行——官方语义域闸，t135 断言
 /// 面）。
 pub static WLCOMP_V120: AtomicU64 = AtomicU64::new(0);
+/// 键重复出域数（M43-KBREP37 笔㊷——repeat 泵重复 key 事件出域计
+/// 数，t136 断言面）。
+pub static WLCOMP_REPS: AtomicU64 = AtomicU64::new(0);
+/// set_cursor 请求受理数（M43-KBREP37 笔㊷——wl_keyboard.set_cursor
+/// 官方请求域回执计数，t136 断言面）。
+pub static WLCOMP_KBSETCUR: AtomicU64 = AtomicU64::new(0);
 /// modifiers wire 发出数（M42-WAYCOMP15——feed 回执 Modifiers 记录批
 /// 计数：语义核变更域 + enter 快照域全谱，t116 断言面）。
 pub static WLCOMP_MODS: AtomicU64 = AtomicU64::new(0);
@@ -280,6 +286,9 @@ pub static WLCOMP_ISR_FULL: AtomicU64 = AtomicU64::new(0);
 /// 输入源队列深度（键盘/指针/轴各一定容——定容零堆纪律；M42-WAYCOMP16
 /// 多产者域在环——SPSC 契约以 IN_MU 生产侧互斥保持）。
 const INPUT_CAP: usize = 16;
+/// drain 批次限排上限（M43-KBREP37 揭雷⑤——与 prism 会话队列
+/// INPUT_Q_MAX 同值：批界失配零丢域收口）。
+const INPUT_CAP_MAX: usize = 8;
 /// 键盘输入队列（元素 = (key << 32) | state 打包）。
 static KEY_Q: SpscRing<u64, INPUT_CAP> = SpscRing::new();
 /// 指针输入队列（元素 = bit63=按钮旗 | (button/x << 32) | state/y）。
@@ -1084,6 +1093,13 @@ fn session_loop(conn: u64) {
                         WLCOMP_MODS.fetch_add(1, Ordering::AcqRel);
                     }
                 }
+                // set_cursor 请求回执计数（M43-KBREP37 笔㊷——记录批消
+                // 费域：回执域双载判读 kind = SetCursor）。
+                for r in rep.keys.items[..rep.keys.n].iter().flatten() {
+                    if prism::wayland::comp::KbKind::SetCursor == r.kind {
+                        WLCOMP_KBSETCUR.fetch_add(1, Ordering::AcqRel);
+                    }
+                }
                 if rep.out_len > 0 {
                     send_all(conn, &out[..rep.out_len]);
                 }
@@ -1092,42 +1108,51 @@ fn session_loop(conn: u64) {
             Err(_) => break, // 会话域 fail-visible 断连（v0 口径——回执 error 事件挂账）
         }
         if pending == 0 && got == 0 {
-            // M42-WAYCOMP12 域②阻塞输入等待面（WaitWhat::CompIn 扩域
-            // ——v0 探针轮询 + 让步口径退役）：三静域（输入队列空 +
-            // 会话流空 + 非终结）登记阻塞。**M42-WAYCOMP17 揭雷④收口
-            // ——静域扩 AXIS_Q**（笔⑭轴环在环时停靠谓词漏列——SMP 域
-            // 轴元素/帧界标记滞留停靠窗：元素入队前谓词已判静 → 停靠，
-            // 入队 wake 落于 block 注册前 = 丢失唤醒域——t115 TCG 实录
-            // frames=+1 帧界标记滞留至 EOF 才扫出域）。探针 = 预捕获静
-            // 态视图零锁读（rx 环 len + 终结旗对 + 输入队列 is_empty）
-            // ——SCHED 锁窗内零 SOCKETS 取锁（锁序 SOCKETS→SCHED 单向
-            // 保持，recv_by_object 探针同款纪律）。唤醒源三向：输入生
-            // 产（wake 全域）+ 会话流到达（send 落环 conn 匹配域）+
-            // 对端终结（shutdown 双向）。miss → 零阻塞回环（顶层探
-            // 针 dead 收场——fail-visible）。fd 附带数据域维持 feed
-            // 报告驱动（v0 协议时序域不变——pool_admit 触发源 = feed
-            // 池记录，阻塞面零触碰）。
-            let views = unixsock::session_wait_views(conn);
-            WLCOMP_IN_WAITS.fetch_add(1, Ordering::AcqRel); // 登记前计数（t39 口径）
-            let blocked = task::block_current_unless(task::WaitWhat::CompIn { conn }, true, || {
-                // still_pending 契约（recv_by_object 探针同款）：true = 三
-                // 静域持续（输入队列空〔键盘/指针/轴——M42-WAYCOMP17 扩
-                // AXIS_Q〕∧ 会话流空 ∧ 非终结）——继续阻塞；任一唤醒源
-                // 就绪 = false → 探针命中回滚，调用方重试消费。
-                match views {
-                    Some((rx, dead, peer_dead)) => {
-                        KEY_Q.is_empty()
-                            && PTR_Q.is_empty()
-                            && AXIS_Q.is_empty()
-                            && rx.is_empty()
-                            && !dead.load(Ordering::Acquire)
-                            && !peer_dead.load(Ordering::Acquire)
-                    }
-                    None => false, // 对象不在域——零阻塞回环收场（fail-visible）
+            // M43-KBREP37 笔㊷阻塞面豁免：重复域待产（rep_key 非零且
+            // rate > 0）= 非静——零登记轮询推进（repeat_tick 在 drain
+            // 尾消费域时钟驱动；v0 消费域轮询泵口径，repeat 唤醒器
+            // 挂账远线）。零重复窗回归三静域阻塞原貌。
+            if session.repeat_pending() {
+                task::yield_now();
+            } else {
+                // M42-WAYCOMP12 域②阻塞输入等待面（WaitWhat::CompIn 扩域
+                // ——v0 探针轮询 + 让步口径退役）：三静域（输入队列空 +
+                // 会话流空 + 非终结）登记阻塞。**M42-WAYCOMP17 揭雷④收口
+                // ——静域扩 AXIS_Q**（笔⑭轴环在环时停靠谓词漏列——SMP 域
+                // 轴元素/帧界标记滞留停靠窗：元素入队前谓词已判静 → 停靠，
+                // 入队 wake 落于 block 注册前 = 丢失唤醒域——t115 TCG 实录
+                // frames=+1 帧界标记滞留至 EOF 才扫出域）。探针 = 预捕获静
+                // 态视图零锁读（rx 环 len + 终结旗对 + 输入队列 is_empty）
+                // ——SCHED 锁窗内零 SOCKETS 取锁（锁序 SOCKETS→SCHED 单向
+                // 保持，recv_by_object 探针同款纪律）。唤醒源三向：输入生
+                // 产（wake 全域）+ 会话流到达（send 落环 conn 匹配域）+
+                // 对端终结（shutdown 双向）。miss → 零阻塞回环（顶层探
+                // 针 dead 收场——fail-visible）。fd 附带数据域维持 feed
+                // 报告驱动（v0 协议时序域不变——pool_admit 触发源 = feed
+                // 池记录，阻塞面零触碰）。
+                let views = unixsock::session_wait_views(conn);
+                WLCOMP_IN_WAITS.fetch_add(1, Ordering::AcqRel); // 登记前计数（t39 口径）
+                let blocked =
+                    task::block_current_unless(task::WaitWhat::CompIn { conn }, true, || {
+                        // still_pending 契约（recv_by_object 探针同款）：true = 三
+                        // 静域持续（输入队列空〔键盘/指针/轴——M42-WAYCOMP17 扩
+                        // AXIS_Q〕∧ 会话流空 ∧ 非终结）——继续阻塞；任一唤醒源
+                        // 就绪 = false → 探针命中回滚，调用方重试消费。
+                        match views {
+                            Some((rx, dead, peer_dead)) => {
+                                KEY_Q.is_empty()
+                                    && PTR_Q.is_empty()
+                                    && AXIS_Q.is_empty()
+                                    && rx.is_empty()
+                                    && !dead.load(Ordering::Acquire)
+                                    && !peer_dead.load(Ordering::Acquire)
+                            }
+                            None => false, // 对象不在域——零阻塞回环收场（fail-visible）
+                        }
+                    });
+                if blocked {
+                    WLCOMP_IN_WAKES.fetch_add(1, Ordering::AcqRel);
                 }
-            });
-            if blocked {
-                WLCOMP_IN_WAKES.fetch_add(1, Ordering::AcqRel);
             }
         }
     }
@@ -1245,7 +1270,19 @@ fn drain_input(session: &mut CompSession, windows: &[u64]) {
     // 同批 drain 消费）。内核双轨回归锚 face（ELF 车道 aux 消费域挂
     // 账随 aux 驱动 ring3 批次）。
     crate::kbd::aux_pump();
-    while let Some(raw) = KEY_Q.recv() {
+    // M43-KBREP37 批次限排（揭雷⑤收口——drain 一次全排 KEY_Q(16)
+    // vs 会话 key_q(8) 批界失配：inject Err 即丢键，tcg 慢消费窗
+    // 20 键并发实录丢 6——限排 = 每批至多 INPUT_Q_MAX 笔，与会话队
+    // 列容量对齐，零丢域闭环；余量滞环下轮消费——KEY_Q 16 容承载）。
+    let mut kn_batch = 0usize;
+    loop {
+        if kn_batch >= INPUT_CAP_MAX {
+            break;
+        }
+        let Some(raw) = KEY_Q.recv() else {
+            break;
+        };
+        kn_batch += 1;
         let state = (raw & 0xFFFF_FFFF) as u32;
         let sc = (raw >> 32) as u32;
         // M42-WAYCOMP13 evdev 键码映射出域（morse 纯函数面）：scancode
@@ -1260,7 +1297,15 @@ fn drain_input(session: &mut CompSession, windows: &[u64]) {
             WLCOMP_INPUT_KEYS.fetch_add(1, Ordering::AcqRel);
         }
     }
-    while let Some(raw) = PTR_Q.recv() {
+    let mut pn_batch = 0usize;
+    loop {
+        if pn_batch >= INPUT_CAP_MAX {
+            break;
+        }
+        let Some(raw) = PTR_Q.recv() else {
+            break;
+        };
+        pn_batch += 1;
         let is_btn = raw >> 63 == 1;
         let lo = (raw & 0xFFFF_FFFF) as u32;
         let hi = ((raw >> 32) & 0x7FFF_FFFF) as u32;
@@ -1368,7 +1413,15 @@ fn drain_input(session: &mut CompSession, windows: &[u64]) {
     // frames=+3），帧计数 = 标记数确定性对账，与注入面直通域
     // pointer_frame 解耦〕）。
     let mut src_pending = None::<u32>;
-    while let Some(raw) = AXIS_Q.recv() {
+    let mut an_batch = 0usize;
+    loop {
+        if an_batch >= INPUT_CAP_MAX {
+            break;
+        }
+        let Some(raw) = AXIS_Q.recv() else {
+            break;
+        };
+        an_batch += 1;
         if (raw >> 38) & 1 == 1 {
             // 帧界标记：标记即 frame 出域（零 axis/stop/轴源计数）
             if session.pointer_frame().is_ok() {
@@ -1405,6 +1458,14 @@ fn drain_input(session: &mut CompSession, windows: &[u64]) {
                 WLCOMP_V120.fetch_add(1, Ordering::AcqRel);
             }
         }
+    }
+    // 键重复生产泵（M43-KBREP37 笔㊷——drain 尾消费域时钟推进：按住
+    // 键 delay/rate 到点产重复 key 事件入待发队列，本轮 feed 冲刷出
+    // 域；毫秒时间源承接笔⑲。重复窗内阻塞面豁免——repeat_pending
+    // 非静域零登记，消费域轮询推进）。
+    let reps = session.repeat_tick(ostd::time::now_ms());
+    if reps > 0 {
+        WLCOMP_REPS.fetch_add(reps as u64, Ordering::AcqRel);
     }
     // sprite 平面批尾单合成（M42-SPRITE29 笔㉙——移动域损伤记账完毕后
     // 单 fb_compose_tick drain：旧/新画布域 + 格直标域联合一次上屏；
