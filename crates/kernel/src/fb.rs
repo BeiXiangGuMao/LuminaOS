@@ -543,6 +543,63 @@ pub fn sys_fb_sync(x: u64, y: u64, w: u64, h: u64) -> u64 {
     bytes
 }
 
+/// 指针损伤入账累计数（M42-DMG28 笔㉘联动取证——sys_fb_sync_pointer
+/// mark_pointer 域计数：每笔光标损伤入账 +1；16px 粗粒度域对账面）。
+static DAMAGE_PTR_MARKS: AtomicU64 = AtomicU64::new(0);
+
+/// 指针损伤入账累计读面（M42-DMG28 笔㉘——16px 联动对账，t128 断言面）。
+pub fn fb_damage_ptr_marks() -> u64 {
+    DAMAGE_PTR_MARKS.load(Ordering::Relaxed)
+}
+
+/// 指针面损伤入账（M42-DMG28 笔㉘「指针 16px 粗粒度域联动」——合成
+/// 器光标域直标车道）：交盒经 mirror [`DamageTracker::mark_pointer`]
+/// 16px 网格外扩吸附入账（v0「指针面留合成器直标」注记域兑现——
+/// syscall 面只流矩形，指针面走本口）。
+///
+/// **零证据行设计**：光标移动高频域〔每格跳变两笔〕——sys_fb_sync
+/// 逐调用串口证据行在指针流量下将淹没串口日志〔longrun 双面板取证
+/// 域污染〕，本口仅计数显形（[`DAMAGE_PTR_MARKS`]），几何对账由
+/// t128 活体 + mirror 宿主测试谱承载。
+pub fn sys_fb_sync_pointer(x: u64, y: u64, w: u64, h: u64) -> u64 {
+    const ENODEV: u64 = 19;
+    let (sw, sh) = (
+        FB_W.load(Ordering::Acquire) as i64,
+        FB_H.load(Ordering::Acquire) as i64,
+    );
+    if sw == 0 {
+        return ENODEV;
+    }
+    // 几何单一事实源同 [`sys_fb_sync`]（mirror 求交 + i32 收敛窗）。
+    let (x, y) = (x as i64, y as i64);
+    let (w, h) = (w as i64, h as i64);
+    let (w, h) = (w.max(0), h.max(0));
+    let win = |v: i64| v.clamp(-(1 << 29), 1 << 29) as i32;
+    let dim = |v: i64| v.min(1 << 29) as u32;
+    let full = Rect {
+        x: 0,
+        y: 0,
+        w: sw as u32,
+        h: sh as u32,
+    };
+    let req = Rect {
+        x: win(x),
+        y: win(y),
+        w: dim(w),
+        h: dim(h),
+    };
+    // 指针面损伤累计（16px 网格外扩吸附在 mark_pointer 内发生）：
+    // 空交盒不入账；零证据行（计数显形——高频光标流量防串口淹没）。
+    let mut acc = SYNC_DAMAGE.lock();
+    if let Some(c) = full.intersection(&req) {
+        if c.w > 0 && c.h > 0 {
+            acc.mark_pointer(c);
+            DAMAGE_PTR_MARKS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    0
+}
+
 // ---- M28-K1 组合器服务化：stage 后备缓冲 + 损伤驱动局部上屏 ----
 //
 // 双轨语义（ADR-0004）：SYS_FB_MAP 直写路径不动（ring3 写 VRAM、SYNC 记账

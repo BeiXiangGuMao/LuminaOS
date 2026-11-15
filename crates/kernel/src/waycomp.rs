@@ -355,6 +355,78 @@ pub fn input_key(key: u32, state: u32) -> bool {
     }
 }
 
+/// 光标绝对坐标 x（M42-DMG28 笔㉘——生产域寄存，屏域钳制）。
+static CUR_X: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(0);
+/// 光标绝对坐标 y（M42-DMG28 笔㉘）。
+static CUR_Y: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(0);
+/// 上次消费域光标格（16px 网格坐标——-1 哨兵 = 未定位；格跳变门控
+/// 域——同格重注零扰动）。
+static CUR_CELL: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(-1);
+
+/// 光标坐标寄存（M42-DMG28 笔㉘生产域——受理受理同源推进；屏域钳
+/// 制 fb::WIDTH/HEIGHT）。
+fn cursor_store(x: i32, y: i32) {
+    let cx = x.clamp(0, crate::fb::WIDTH as i32 - 1);
+    let cy = y.clamp(0, crate::fb::HEIGHT as i32 - 1);
+    CUR_X.store(cx, Ordering::Release);
+    CUR_Y.store(cy, Ordering::Release);
+}
+
+/// 光标坐标读面（M42-DMG28 笔㉘——t128 对账面）。
+pub fn waycomp_cursor() -> (i32, i32) {
+    (CUR_X.load(Ordering::Acquire), CUR_Y.load(Ordering::Acquire))
+}
+
+/// 消费域光标格读面（M42-DMG28 笔㉘——格坐标 = 坐标 div_euclid 16；
+/// -1 哨兵 = 未定位）。
+pub fn waycomp_cursor_cell() -> (i32, i32) {
+    let c = CUR_CELL.load(Ordering::Acquire);
+    if c < 0 {
+        (-1, -1)
+    } else {
+        ((c >> 16) as i16 as i32, (c & 0xFFFF) as i16 as i32)
+    }
+}
+
+/// 联动状态复位（t128 装置面——格门控回哨兵未定位域，首笔=单标
+/// 新格确定性基线；in_mu_hold 争用装置先例同谱）。
+pub fn waycomp_ptr_cell_reset() {
+    CUR_CELL.store(-1, Ordering::Release);
+}
+
+/// 指针 16px 粗粒度域联动（M42-DMG28 笔㉘消费域核心——v0「指针面
+/// 留合成器直标」注记域兑现）：消费域 motion 逐笔格门控——格跳变
+/// 即旧格 + 新格双笔 16×16 直标（[`fb::sys_fb_sync_pointer`] →
+/// mark_pointer 16px 网格外扩吸附入账），同格重注零扰动（碎片损伤
+/// 聚成粗粒度块不灌爆预算）；首笔哨兵域单标新格。
+/// 调用域 = 消费域任务语境（drain_input motion 分支——ISR 语境零
+/// 重活纪律：SpinLock 窗不越 ISR）。
+fn pointer_cell_link(x: i32, y: i32) {
+    const G: i32 = mirror::POINTER_GRANULARITY;
+    let cx = x.div_euclid(G);
+    let cy = y.div_euclid(G);
+    let packed = ((cx as i64) << 16) | (cy as i64 & 0xFFFF);
+    let prev = CUR_CELL.swap(packed, Ordering::AcqRel);
+    if prev == packed {
+        return; // 同格重注——零扰动（门控域）
+    }
+    if prev >= 0 {
+        let (px, py) = ((prev >> 16) as i16 as i32, (prev & 0xFFFF) as i16 as i32);
+        let _ = crate::fb::sys_fb_sync_pointer(
+            (px * G).max(0) as u64,
+            (py * G).max(0) as u64,
+            G as u64,
+            G as u64,
+        );
+    }
+    let _ = crate::fb::sys_fb_sync_pointer(
+        (cx * G).max(0) as u64,
+        (cy * G).max(0) as u64,
+        G as u64,
+        G as u64,
+    );
+}
+
 /// 输入链生产面：指针移动（屏幕坐标——会话侧 hit-test 裁决焦点域）。
 /// 守护门禁 + 受理入环唤醒链同 [`input_key`]。
 pub fn input_pointer_motion(x: i32, y: i32) -> bool {
@@ -369,6 +441,9 @@ pub fn input_pointer_motion(x: i32, y: i32) -> bool {
         PTR_Q.send(raw & !(1u64 << 63)).is_ok() // bit63 = 0（移动域）
     };
     if accepted {
+        // 光标状态随批（M42-DMG28 笔㉘——生产域屏幕坐标寄存，消费域
+        // 消费联动直标——cursor 与受理事件同源推进）。
+        cursor_store(x, y);
         task::wake_tasks(|w| matches!(w, task::WaitWhat::CompIn { .. }));
         true
     } else {
@@ -608,6 +683,9 @@ pub fn input_pointer_motion_isr(x: i32, y: i32) -> bool {
         let raw = (((x as u32) as u64) << 32) | ((y as u32) as u64 & 0xFFFF_FFFF);
         let accepted = isr_arm_send(|| PTR_Q.send(raw & !(1u64 << 63)).is_ok());
         if accepted {
+            // 光标状态随批（M42-DMG28 笔㉘——ISR 臂受理同谱寄存；原子
+            // 存零锁 ISR 语境纪律，损伤直标留消费域）。
+            cursor_store(x, y);
             isr_arm_wake();
         }
         accepted
@@ -1054,6 +1132,9 @@ fn drain_input(session: &mut CompSession, windows: &[u64]) {
             }
         } else {
             let (x, y) = (hi as i32, lo as i32);
+            // M42-DMG28 笔㉘：指针 16px 粗粒度域联动（消费域光标损伤
+            // 直标——格跳变 old+new 双笔 16px 吸附入账，同格零扰）。
+            pointer_cell_link(x, y);
             // hit-test：z 序顶窗优先（cascade 平面逆序——master 顶层）
             let mut hit = (0u32, 0i32, 0i32);
             if let Ok(plan) = cascade::tiling::tiling_plan(windows, VIEWPORT) {
