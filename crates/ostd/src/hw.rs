@@ -943,16 +943,57 @@ pub mod lapic {
     /// 体消费，t138 断言面）。
     pub static DEADLINE_TICKS: AtomicU64 = AtomicU64::new(0);
 
+    /// LVT timer mask 位（bit16——SDM Vol.3 §10.5.4；置位即 timer
+    /// 交付屏蔽）。
+    const LVT_TIMER_MASK: u32 = 1 << 16;
+
     /// TSC deadline 武装（M43-TSC39——IA32_TSC_DEADLINE MSR 写入；
     /// one-shot 语义：TSC ≥ deadline 即交付 0x43 向量一次，写新值
-    /// 重新武装。调用方前置 = tsc_deadline_supported() 探测在位）。
+    /// 重新武装。调用方前置 = tsc_deadline_supported() 探测在位。
+    /// M44-TSCRG44 笔㊾全谱对账收口：武装面扩 **LVT 解除屏蔽前置**
+    /// （[`tsc_deadline_disarm`] 的 mask 口径配套——写 LVT 解除屏蔽
+    /// 后写 deadline MSR，one-shot 可重武装）；交付后 ISR 主体随行
+    /// 解除武装（mask 口径——QEMU deadline 过期重复交付域退役实锤
+    /// 面：QEMU apic 检查 TSC ≥ deadline 即交付〔MSR deadline 未清
+    /// 持续真〕，mask 斩断交付路径零重交付——真硬件 LVT deadline 交
+    /// 付后本不重触发，mask 无害同谱，双域语义收敛 exact-one）。
+    /// **随行揭雷如实落账**：QEMU 10 实况「IA32_TSC_DEADLINE 写 0 解
+    /// 除武装」口径退役——写 0 实测重交付风暴不歇（TSC ≥ 0 恒真——
+    /// t143 首割 settle +34 实锤），SDM 写 0 解除口径与判官实况分立
+    /// 域，mask 口径双域皆停交付落域。
     pub fn tsc_deadline_arm(deadline: u64) {
         // SAFETY: 前置条件 —— tsc_deadline_supported() 特性探测在位
         //          （CPUID bit24）；deadline 值由调用方取 TSC 前向偏移。
-        // 不变式 —— wrmsr 原子写入 64 位；写后 LAPIC 计时域即时武装。
-        // 并发 —— MSR 天然「当前核」视角；armed 域核内自持。
+        // 不变式 —— wrmsr 原子写入 64 位；写后 LAPIC 计时域即时武装；
+        //          LVT 写解除屏蔽前置（disarm mask 口径配套）。
+        // 并发 —— MSR/LVT 天然「当前核」视角；armed 域核内自持。
         // 违反后果 —— 特性不在位的核写 0x6E0 触发 #GP（致命异常路径）。
+        write_reg(
+            REG_TIMER_LVT,
+            u32::from(DEADLINE_VECTOR) | LVT_TIMER_DEADLINE_MODE,
+        );
         unsafe { super::msr::write(MSR_TSC_DEADLINE, deadline) }
+    }
+
+    /// TSC deadline 解除武装（M44-TSCRG44 笔㊾——**LVT timer mask 口
+    /// 径**：LVT timer 寄存器置 mask 位（bit16）即交付屏蔽——QEMU
+    /// 重复交付域退役面 + 真硬件 one-shot 语义对齐，双域收敛
+    /// exact-one 交付；ISR 主体交付后随行调用。**随行揭雷**：v0
+    /// 「IA32_TSC_DEADLINE 写 0 解除」口径退役——QEMU 10 实况写 0
+    /// 不解除（重交付风暴 +32/+34 实录），SDM 写 0 口径与判官实况
+    /// 分立域如实落账；mask 口径双域皆停交付（QEMU apic_local_deliver
+    /// mask 早退 + 真硬件 timer 交付屏蔽）。再武装随
+    /// [`tsc_deadline_arm`] LVT 解除屏蔽前置恢复）。
+    pub fn tsc_deadline_disarm() {
+        // SAFETY: 前置条件同 [`tsc_deadline_arm`]（deadline 模式已使
+        //          能核）；LVT 写屏域核内自持无副作用非致命面。
+        // 不变式 —— LVT mask 置位即 timer 交付屏蔽；deadline 模式位
+        //          与向量域原貌保持。
+        // 并发 —— ISR 语境单写者（交付核自持）。
+        write_reg(
+            REG_TIMER_LVT,
+            u32::from(DEADLINE_VECTOR) | LVT_TIMER_DEADLINE_MODE | LVT_TIMER_MASK,
+        );
     }
 
     /// 本核 APIC ID（xAPIC：ID 寄存器高 8 位有效）。

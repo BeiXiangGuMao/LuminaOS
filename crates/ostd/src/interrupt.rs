@@ -1000,11 +1000,16 @@ pub mod stubs {
     }
 
     /// TSC deadline one-shot 主体（向量 0x43，M43-TSC39 笔㊹）：
-    /// LAPIC EOI + DEADLINE_TICKS 计数取证（零抢占零钩子——one-shot
-    /// 交付面，t138 断言面）。
+    /// LAPIC EOI + DEADLINE_TICKS 计数取证 + **交付后解除武装**
+    /// （M44-TSCRG44 笔㊾——tsc_deadline_disarm LVT mask 口径：QEMU
+    /// TCG deadline 过期重复交付域退役〔MSR deadline 未清持续真
+    /// ——mask 斩断交付路径零重交付〕，真硬件 LVT deadline 交付后
+    /// 本不重触发、mask 无害同谱——双域收敛 exact-one 交付，t143
+    /// 零增判据承载；零抢占零钩子——one-shot 交付面，t138 断言面）。
     #[no_mangle]
     extern "C" fn isr_tsc_deadline_body(plan: &mut super::PreemptPlan) -> u32 {
         crate::hw::lapic::eoi();
+        crate::hw::lapic::tsc_deadline_disarm();
         crate::hw::lapic::DEADLINE_TICKS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
         let _ = plan;
         0
