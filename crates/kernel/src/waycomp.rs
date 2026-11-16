@@ -246,6 +246,9 @@ pub static WLCOMP_REPS: AtomicU64 = AtomicU64::new(0);
 /// set_cursor 请求受理数（M43-KBREP37 笔㊷——wl_keyboard.set_cursor
 /// 官方请求域回执计数，t136 断言面）。
 pub static WLCOMP_KBSETCUR: AtomicU64 = AtomicU64::new(0);
+/// 光标直迁出域数（M43-CURSOR41 笔㊻——窗亡重排域 pointer_relink
+/// 迁移笔数：异窗才计，幂等零扰零计——t140 断言面）。
+pub static WLCOMP_RELINK: AtomicU64 = AtomicU64::new(0);
 /// modifiers wire 发出数（M42-WAYCOMP15——feed 回执 Modifiers 记录批
 /// 计数：语义核变更域 + enter 快照域全谱，t116 断言面）。
 pub static WLCOMP_MODS: AtomicU64 = AtomicU64::new(0);
@@ -1076,6 +1079,12 @@ fn session_loop(conn: u64) {
         match session.feed(&stream, &mut out) {
             Ok(rep) => {
                 drop_apply(&rep, &mut windows, &mut slots);
+                // M43-CURSOR41 笔㊻：窗亡域光标直迁重评（drop 摘除后
+                // stationary 光标位 hit-test——pane 蒸发域焦点面直迁
+                // 0→存活窗，零 motion 前提；幂等域 hit==pf 零扰）。
+                if rep.drops.n > 0 {
+                    pointer_relink(&mut session, &windows);
+                }
                 policy_sync(&mut session, &mut windows);
                 policy_focus(&mut session, &windows);
                 policy_rewrite(&windows, &mut slots);
@@ -1521,6 +1530,48 @@ fn drop_apply(rep: &FeedReport, windows: &mut Vec<u64>, slots: &mut Vec<Window>)
         }
         WLCOMP_DROPS.fetch_add(1, Ordering::AcqRel);
     }
+}
+
+/// 光标直迁重评域（M43-CURSOR41 笔㊻——官方语义：指针下窗格变更域
+/// enter/leave 随行；v0「跨窗直迁须 motion 先行」口径退役〔窗亡半
+/// 域——M42-CLICKF33 挂账兑现〕）：窗集变更（destroy 摘除——
+/// [`drop_apply`] 后）stationary 光标位 hit-test 重评 → 焦点异窗域
+/// t131 联动核直迁（LEAVE/ENTER 取证计数 + 光标格直标
+/// [`pointer_focus_link`] + `set_pointer_focus`——零 motion 前提）。
+/// 幂等域：hit == 现焦点零扰（enter/leave/relink 零增——t140 判
+/// 据）。创建期/map 域不直迁（v0 点击随光标位判据面维持——t133
+/// 纯针 click 直迁相位语义零扰动；官方 map 域 enter 半域挂账如实
+/// 登记）。亡窗 leave 由 prism `session_surface_drop` wire 面承接
+/// （pf 摘除域 Leave 记录随行）——本域计数面 enter 单增口径。
+fn pointer_relink(session: &mut CompSession, windows: &[u64]) {
+    let (cx, cy) = waycomp_cursor();
+    let mut hit = 0u32;
+    let mut hit_lx = 0i32;
+    let mut hit_ly = 0i32;
+    if let Ok(plan) = cascade::tiling::tiling_plan(windows, VIEWPORT) {
+        for (id, rect) in plan.panes.iter().rev() {
+            let r = *rect;
+            if cx >= r.x && cx < r.x + r.w as i32 && cy >= r.y && cy < r.y + r.h as i32 {
+                hit = *id as u32;
+                hit_lx = (cx - r.x).wrapping_mul(256); // surface 局部 fixed 24.8
+                hit_ly = (cy - r.y).wrapping_mul(256);
+                break;
+            }
+        }
+    }
+    let prev = session.pointer_focus();
+    if hit == prev {
+        return; // 幂等零扰域（同窗直迁零计——t140 IDEMP 判据）
+    }
+    if prev != 0 {
+        WLCOMP_PTR_LEAVE.fetch_add(1, Ordering::AcqRel);
+    }
+    if hit != 0 {
+        WLCOMP_PTR_ENTER.fetch_add(1, Ordering::AcqRel);
+    }
+    pointer_focus_link(cx, cy);
+    let _ = session.set_pointer_focus(hit, hit_lx, hit_ly);
+    WLCOMP_RELINK.fetch_add(1, Ordering::AcqRel);
 }
 
 /// **重排改写执行器**（feed 后每轮——M42-GEOM6 域①核心）：cascade
