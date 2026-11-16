@@ -249,6 +249,11 @@ pub static WLCOMP_KBSETCUR: AtomicU64 = AtomicU64::new(0);
 /// 光标直迁出域数（M43-CURSOR41 笔㊻——窗亡重排域 pointer_relink
 /// 迁移笔数：异窗才计，幂等零扰零计——t140 断言面）。
 pub static WLCOMP_RELINK: AtomicU64 = AtomicU64::new(0);
+/// map 域光标直迁出域数（M44-MAP42 笔㊼——创建期/map 域
+/// pointer_relink 迁移笔数：首映射批后 stationary 光标位 hit-test
+/// 异窗才计，幂等零扰零计——t141 断言面；窗亡域戳
+/// [`WLCOMP_RELINK`] 分立双戳——触发源分域取证）。
+pub static WLCOMP_MAP_RELINK: AtomicU64 = AtomicU64::new(0);
 /// modifiers wire 发出数（M42-WAYCOMP15——feed 回执 Modifiers 记录批
 /// 计数：语义核变更域 + enter 快照域全谱，t116 断言面）。
 pub static WLCOMP_MODS: AtomicU64 = AtomicU64::new(0);
@@ -1083,7 +1088,7 @@ fn session_loop(conn: u64) {
                 // stationary 光标位 hit-test——pane 蒸发域焦点面直迁
                 // 0→存活窗，零 motion 前提；幂等域 hit==pf 零扰）。
                 if rep.drops.n > 0 {
-                    pointer_relink(&mut session, &windows);
+                    pointer_relink(&mut session, &windows, &WLCOMP_RELINK);
                 }
                 policy_sync(&mut session, &mut windows);
                 policy_focus(&mut session, &windows);
@@ -1091,6 +1096,18 @@ fn session_loop(conn: u64) {
                 pool_admit(conn, &rep, &mut pools);
                 keymap_serve(conn, &rep, me, &mut keymap_pools);
                 apply_commits(&rep, &windows, &mut slots, base, &pools);
+                // M44-MAP42 笔㊼：创建期/map 域光标直迁重评（首映射批后
+                // stationary 光标位 hit-test——官方 map 域 enter 半域
+                // 兑现：新映射窗 pane 蒸发/新生域指针焦点随行，零
+                // motion 前提；幂等域 hit==pf 零扰；戳 MAP_RELINK 分
+                // 域取证——窗亡域 RELINK 同核异戳）。
+                if rep.commits.items[..rep.commits.n]
+                    .iter()
+                    .flatten()
+                    .any(|c| c.first_map)
+                {
+                    pointer_relink(&mut session, &windows, &WLCOMP_MAP_RELINK);
+                }
                 // 输入事件 wire 发出数（M42-INPUT7——KeyLog/PtrLog 记录批对账）
                 WLCOMP_KEYS.fetch_add(rep.keys.n as u64, Ordering::AcqRel);
                 WLCOMP_PTRS.fetch_add(rep.ptrs.n as u64, Ordering::AcqRel);
@@ -1532,18 +1549,31 @@ fn drop_apply(rep: &FeedReport, windows: &mut Vec<u64>, slots: &mut Vec<Window>)
     }
 }
 
-/// 光标直迁重评域（M43-CURSOR41 笔㊻——官方语义：指针下窗格变更域
-/// enter/leave 随行；v0「跨窗直迁须 motion 先行」口径退役〔窗亡半
-/// 域——M42-CLICKF33 挂账兑现〕）：窗集变更（destroy 摘除——
-/// [`drop_apply`] 后）stationary 光标位 hit-test 重评 → 焦点异窗域
-/// t131 联动核直迁（LEAVE/ENTER 取证计数 + 光标格直标
+/// 光标直迁重评域（M43-CURSOR41 笔㊻窗亡半域 + **M44-MAP42 笔㊼
+/// 创建期/map 半域**——官方语义：指针下窗格变更域
+/// enter/leave 随行；v0「跨窗直迁须 motion 先行」口径退役〔M42-CLICKF33 挂账兑
+/// 现〕）：stationary 光标位（waycomp_cursor 权威）hit-test 重评 →
+/// 焦点异窗域 t131 联动核直迁（LEAVE/ENTER 取证计数 + 光标格直标
 /// [`pointer_focus_link`] + `set_pointer_focus`——零 motion 前提）。
-/// 幂等域：hit == 现焦点零扰（enter/leave/relink 零增——t140 判
-/// 据）。创建期/map 域不直迁（v0 点击随光标位判据面维持——t133
-/// 纯针 click 直迁相位语义零扰动；官方 map 域 enter 半域挂账如实
-/// 登记）。亡窗 leave 由 prism `session_surface_drop` wire 面承接
-/// （pf 摘除域 Leave 记录随行）——本域计数面 enter 单增口径。
-fn pointer_relink(session: &mut CompSession, windows: &[u64]) {
+/// **双触发源分域**：〔窗亡域〕destroy 摘除（[`drop_apply`] 后——
+/// `rep.drops.n > 0` 门控，戳 [`WLCOMP_RELINK`]，t140 断言面）；
+/// 〔map 域〕创建期首映射批（`apply_commits` 后——批内任一
+/// `first_map` commit 门控，戳 [`WLCOMP_MAP_RELINK`]，t141 断言
+/// 面——v0「创建期不直迁」口径退役：官方 map 域 enter 半域兑现，
+/// stationary 光标位落于新映射窗 pane 即 enter 随行）。幂等域：
+/// hit == 现焦点零扰（enter/leave/relink 零增——t140/t141 判据）。
+/// 亡窗 leave 由 prism `session_surface_drop` wire 面承接（pf 摘除
+/// 域 Leave 记录随行）——窗亡域计数面 enter 单增口径；map 域
+/// leave 面全谱计数（prev ≠ 0 即计——跨窗直迁实证域）。
+fn pointer_relink(session: &mut CompSession, windows: &[u64], stamp: &AtomicU64) {
+    // 无 wl_pointer 派生域零指针焦点语义（官方语义守卫——纯几何会话
+    // t121/t122 同谱无 wl_seat/get_pointer：set_pointer_focus
+    // BadObject 域无 wire 承载面，直迁重评零触发零计——v0 窗亡域无
+    // 守卫口径退役：无设备域 enter/leave 计数属伪取证，本守卫双域
+    // 〔窗亡/map〕同收口）。
+    if session.pointer_object() == 0 {
+        return;
+    }
     let (cx, cy) = waycomp_cursor();
     let mut hit = 0u32;
     let mut hit_lx = 0i32;
@@ -1571,7 +1601,7 @@ fn pointer_relink(session: &mut CompSession, windows: &[u64]) {
     }
     pointer_focus_link(cx, cy);
     let _ = session.set_pointer_focus(hit, hit_lx, hit_ly);
-    WLCOMP_RELINK.fetch_add(1, Ordering::AcqRel);
+    stamp.fetch_add(1, Ordering::AcqRel);
 }
 
 /// **重排改写执行器**（feed 后每轮——M42-GEOM6 域①核心）：cascade
