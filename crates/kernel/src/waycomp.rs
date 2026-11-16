@@ -78,38 +78,37 @@
 //! `LUMINA-WAYCOMP-BOOT` 缺位即 S8 显形）；**服务退出后 boot 重启
 //! 面挂账**（M42-FBSVC2 既录口径不变）。
 //!
-//! **多产者域**（M42-WAYCOMP16 笔⑯——v0 事实单生产者域退役）：内核
-//! 任务语境多产者并发注入经 [`IN_MU`] SpinLock 串行化窗承接（SPSC
-//! 环 SPSC 契约以生产侧互斥保持——消费侧单线程不变；锁窗 send 即放
-//! 零嵌套，唤醒链锁外域）。
+//! **多产者域**（M42-WAYCOMP16 笔⑯落域 + M45-MPMC46 笔51 替换升级）：内核
+//! 任务语境多产者并发注入经 [`MpmcRing`] 无锁 MPMC 环直推承接（v0
+//! `IN_MU` SpinLock 串行化窗口径退役——生产域零锁零串行化窗，消费侧
+//! 单线程不变；唤醒链锁外域）。
 //!
-//! **ISR 臂**（M42-WAYCOMP17 笔⑰——kbd→waycomp 转接臂落域）：kbd
+//! **ISR 臂**（M42-WAYCOMP17 笔⑰落域 + M45-MPMC46 笔51 升级）：kbd
 //! IRQ1 桩体（[`crate::kbd`] `on_scancode` 转接臂车道）scancode 键
 //! 态语义直传 [`input_key_isr`]——**内核语境旗** [`IN_ISR_CTX`] 随
 //! 批（per-cpu 置位/复位：ISR 语境 = 内核语境定义域，被打断任务的
 //! 用户性与本批无关——[`input_guard`] 旗快路径放行，current_is_user
 //! 的 SCHED 锁窗任务查询免除〔M40-ASH2 ISR 快路径纪律同谱——
-//! PERCPU_IS_USER 零锁旗先例〕）+ **[`IN_MU`] try_lock 有界退避随
-//! 批**（ISR 语境禁自旋——持锁者可能为被打断任务，同核自旋永不推
-//! 进死锁窗；退避耗尽即丢弃 + [`WLCOMP_ISR_DROP`] fail-visible）。
-//! tty 车道（KBD_RING ASCII 控制面）与 waycomp 车道（KEY_Q 键态语
-//! 义直传）双车道分域——同批 scancode 双投递独立消费（tty 消费者 =
-//! 行规程读侧，waycomp 消费者 = 会话环 drain，互不相扰）。
+//! PERCPU_IS_USER 零锁旗先例〕）+ **MPMC 零锁直推随批**（v0
+//! `IN_MU` try_lock 有界退避口径退役——MPMC 环生产域无锁，ISR 语境
+//! 零自旋窗零退避窗；队满 [`WLCOMP_ISR_FULL`] fail-visible 显形，
+//! [`WLCOMP_ISR_DROP`] 退役戳恒零）。tty 车道（KBD_RING ASCII 控制面）
+//! 与 waycomp 车道（KEY_Q 键态语义直传）双车道分域——同批 scancode
+//! 双投递独立消费（tty 消费者 = 行规程读侧，waycomp 消费者 = 会话
+//! 环 drain，互不相扰）。
 //!
-//! 锁序契约：[`IN_MU`] 自持锁（生产域串行化——单锁窗即放，零嵌套，
-//! 唤醒链锁外域；ISR 臂 try_lock 窗同谱——try_lock 零等待无自旋
-//! 窗）；[`IN_ISR_CTX`] 零锁旗（per-cpu 随批自持——PERCPU_IS_USER
-//! 同谱纪律，非锁零嵌套）；域内锁全部单取即放（unixsock/fb 单锁纪
-//! 律同谱）；阻塞点 = accept_wait（WaitWhat::UnixAccept）+ 会话环
-//! 三静域（WaitWhat::CompIn——M42-WAYCOMP12 扩域，探针零锁读）。
+//! 锁序契约：输入生产域零锁（MPMC 环直推——v0 `IN_MU` 单锁窗口径退
+//! 役，锁序图单点消除）；[`IN_ISR_CTX`] 零锁旗（per-cpu 随批自持——
+//! PERCPU_IS_USER 同谱纪律，非锁零嵌套）；域内余锁全部单取即放
+//! （unixsock/fb 单锁纪律同谱）；阻塞点 = accept_wait（WaitWhat::UnixAccept）
+//! + 会话环三静域（WaitWhat::CompIn——M42-WAYCOMP12 扩域，探针零锁读）。
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 use mirror::Rect;
 use morse::KEYCODE_WL_OFFSET;
-use ostd::sync::spsc::SpscRing;
-use ostd::sync::SpinLock;
+use ostd::sync::mpmc::MpmcRing;
 use prism::wayland::comp::{
     BufferRec, CommitRecord, CompSession, FeedReport, GlobalDef, GLOBALS_MAX, KEYMAP_XKB_V1,
 };
@@ -260,8 +259,9 @@ pub static WLCOMP_MODS: AtomicU64 = AtomicU64::new(0);
 /// 修饰键 depressed 掩码快照（M42-WAYCOMP15——排空域会话语义核末态
 /// 读出，t116 端到端断言面）。
 pub static WLCOMP_MODS_DEP: AtomicU32 = AtomicU32::new(0);
-/// 生产域串行化计数（M42-WAYCOMP16——IN_MU 锁窗受理次数 = 多产者域
-/// 取证戳，t117 断言面；ISR 臂锁窗同谱计入，t118 断言面）。
+/// 生产域直推受理计数（M42-WAYCOMP16 落域 + M45-MPMC46 口径升级——
+/// 多产者域取证戳：v0 IN_MU 锁窗受理口径退役，MPMC 直推受理计数同戳
+/// 承接，t117 断言面；ISR 臂同谱计入，t118 断言面）。
 pub static WLCOMP_MPS: AtomicU64 = AtomicU64::new(0);
 /// sync 即时完成数（M42-WAYCOMP18 多注册表面——feed 回执 syncs 增量
 /// 计数：每 sync 恰一 done + delete_id 对，t119 断言面）。
@@ -286,37 +286,32 @@ fn sync_rect(x: i32, y: i32, w: u32, h: u32) {
 /// 中即计：放行路径可辨——旗路径而非任务查询路径，旗面活体取证，
 /// t118 断言面）。
 pub static WLCOMP_ISR_PASS: AtomicU64 = AtomicU64::new(0);
-/// ISR 臂 try_lock 有界退避耗尽丢弃数（M42-WAYCOMP17——[`IN_MU`]
-/// 争用窗退避耗尽 fail-visible 取证：ISR 语境零静默丢弃，t118 断言
-/// 面）。
+/// ISR 臂退避耗尽丢弃数（M42-WAYCOMP17 落域 + **M45-MPMC46 口径退役**
+/// ——v0 [`IN_MU`] try_lock 有界退避耗尽丢弃域退役：MPMC 环生产域
+/// 无锁，退避窗不存在；本戳退役保留为恒零判据面——零静默纪律在环，
+/// t118 断言面随行升级）。
 pub static WLCOMP_ISR_DROP: AtomicU64 = AtomicU64::new(0);
 /// ISR 臂队满丢弃数（M42-WAYCOMP17——KEY_Q 容量域 fail-visible 取
 /// 证：消费域停滞窗〔会话缺席/阻塞〕溢出显形，t118 断言面）。
 pub static WLCOMP_ISR_FULL: AtomicU64 = AtomicU64::new(0);
 
 /// 输入源队列深度（键盘/指针/轴各一定容——定容零堆纪律；M42-WAYCOMP16
-/// 多产者域在环——SPSC 契约以 IN_MU 生产侧互斥保持）。
+/// 多产者域在环 + M45-MPMC46 无锁 MPMC 环直推——v0 SPSC+IN_MU 串行化
+/// 口径退役，多产者/ISR 臂零锁直推，消费侧单线程不变）。
 const INPUT_CAP: usize = 16;
 /// drain 批次限排上限（M43-KBREP37 揭雷⑤——与 prism 会话队列
 /// INPUT_Q_MAX 同值：批界失配零丢域收口）。
 const INPUT_CAP_MAX: usize = 8;
 /// 键盘输入队列（元素 = (key << 32) | state 打包）。
-static KEY_Q: SpscRing<u64, INPUT_CAP> = SpscRing::new();
+static KEY_Q: MpmcRing<u64, INPUT_CAP> = MpmcRing::new();
 /// 指针输入队列（元素 = bit63=按钮旗 | (button/x << 32) | state/y）。
-static PTR_Q: SpscRing<u64, INPUT_CAP> = SpscRing::new();
+static PTR_Q: MpmcRing<u64, INPUT_CAP> = MpmcRing::new();
 /// 轴输入队列（M42-WAYCOMP14——独立定容环与 PTR_Q 分域：元素 =
 /// bit36=手势终结旗 | bit37=轴源有效旗 | **bit38=帧界标记旗**
 /// 〔M42-WAYCOMP17 揭雷③收口——生产者标记帧界〕 | source << 34 |
 /// axis << 32 | value i32 原字；位域正交性 = 独立环承载，无 bit63/62
 /// 冲突窗）。
-static AXIS_Q: SpscRing<u64, INPUT_CAP> = SpscRing::new();
-/// 输入生产域互斥（M42-WAYCOMP16 笔⑯——**多产者域**：内核任务语境
-/// 多产者并发注入经 SpinLock 串行化窗承接——SpscRing SPSC 契约以生
-/// 产侧互斥保持，消费侧单线程不变；锁窗 = send 即放零嵌套，唤醒链
-/// 锁外域〔IN_MU → SCHED 锁序单向〕；ISR 臂在环（M42-WAYCOMP17——
-/// `input_key_isr`：try_lock 有界退避随批 + IN_ISR_CTX 内核语境旗
-/// 随批，try_lock 零等待无自旋窗——ISR 语境纪律在环）。
-static IN_MU: SpinLock<u32> = SpinLock::new(0);
+static AXIS_Q: MpmcRing<u64, INPUT_CAP> = MpmcRing::new();
 
 /// 内核语境旗（M42-WAYCOMP17 笔⑰——ISR 臂随批携带）：per-cpu ISR
 /// 语境旗——kbd IRQ1 转接臂入批前置位、出批复位（swap/restore 嵌套
@@ -325,12 +320,6 @@ static IN_MU: SpinLock<u32> = SpinLock::new(0);
 /// 威读在 ISR 语境免除，M40-ASH2 ISR 快路径纪律同谱〔PERCPU_IS_USER
 /// 零锁旗先例——ISR 语境零 SCHED 查询〕）。
 static IN_ISR_CTX: [AtomicBool; task::MAX_CPUS] = [AtomicBool::new(false), AtomicBool::new(false)];
-
-/// ISR 臂锁窗退避上界（M42-WAYCOMP17——try_lock 有界退避随批：ISR
-/// 语境禁自旋〔持锁者可能为被打断任务——同核自旋永不推进死锁窗〕，
-/// 退避耗尽即丢弃 + [`WLCOMP_ISR_DROP`] fail-visible；4 次有界窗 ≈
-/// 微秒级——持锁窗 μs 量级纪律下充裕）。
-const ISR_LOCK_TRIES: u32 = 4;
 
 /// 输入注入域门禁（M42-WAYCOMP12 域①——ring3 输入守护）：当前语境
 /// = ring3（Kind::User 任务——syscall 派发器执行域同源）→ 拒绝（违规
@@ -367,10 +356,9 @@ pub fn input_key(key: u32, state: u32) -> bool {
         return false;
     }
     let raw = ((key as u64) << 32) | (state as u64 & 0xFFFF_FFFF);
-    // 多产者串行化窗（M42-WAYCOMP16——IN_MU 锁窗 send 即放；唤醒链
-    // 锁外域〔IN_MU → SCHED 锁序单向〕）
+    // MPMC 零锁直推（M45-MPMC46——v0 IN_MU 串行化窗口径退役；唤醒链
+    // 锁外域同谱）
     let accepted = {
-        let _g = IN_MU.lock();
         WLCOMP_MPS.fetch_add(1, Ordering::AcqRel);
         KEY_Q.send(raw).is_ok()
     };
@@ -378,7 +366,7 @@ pub fn input_key(key: u32, state: u32) -> bool {
         task::wake_tasks(|w| matches!(w, task::WaitWhat::CompIn { .. }));
         true
     } else {
-        false // 队满丢弃（SPSC 环纪律——KBD_DROP 同谱）
+        false // 队满丢弃（MPMC 环纪律——KBD_DROP 同谱）
     }
 }
 
@@ -416,7 +404,7 @@ pub fn waycomp_cursor_cell() -> (i32, i32) {
 }
 
 /// 联动状态复位（t128 装置面——格门控回哨兵未定位域，首笔=单标
-/// 新格确定性基线；in_mu_hold 争用装置先例同谱）。
+/// 新格确定性基线）。
 pub fn waycomp_ptr_cell_reset() {
     CUR_CELL.store(-1, Ordering::Release);
 }
@@ -548,8 +536,8 @@ pub static WLCOMP_R3_DENY: AtomicU64 = AtomicU64::new(0);
 /// 态闸：kbd 环属 ring3 驱动（[`crate::kbd::aux_elf_owned`]——双轨回
 /// 归锚纪律，内核车道持有期驱动无生产资格）。kind 0 = motion（a =
 /// x<<32|y）；kind 1 = button（a = 按钮码<<32|键态）。生产核与任务语
-/// 境面同心出口（[`ptr_motion_produce`]/[`ptr_button_produce`]——IN_MU
-/// 串行化 + 光标随批 + 唤醒链同谱）。返回 0 = 受理，1 = 拒收（计数
+/// 境面同心出口（[`ptr_motion_produce`]/[`ptr_button_produce`]——MPMC
+/// 零锁直推 + 光标随批 + 唤醒链同谱）。返回 0 = 受理，1 = 拒收（计数
 /// 域随行）。
 pub fn sys_ptr_inject(kind: u64, a: u64) -> u64 {
     let me = task::current_task_id();
@@ -591,13 +579,12 @@ pub fn input_pointer_motion(x: i32, y: i32) -> bool {
 }
 
 /// 指针移动生产核（M42-AUXR3 笔㉚抽取面——[`input_pointer_motion`] 与
-/// ring3 授权车道 [`sys_ptr_inject`] 同心出口）：IN_MU 锁窗 send 即放
+/// ring3 授权车道 [`sys_ptr_inject`] 同心出口）：MPMC 直推受理
 /// + 光标状态随批 + 唤醒链锁外域。
 fn ptr_motion_produce(x: i32, y: i32) -> bool {
     let raw = (((x as u32) as u64) << 32) | ((y as u32) as u64 & 0xFFFF_FFFF);
-    // 多产者串行化窗（M42-WAYCOMP16——input_key 同谱）
+    // MPMC 零锁直推（M45-MPMC46——input_key 同谱）
     let accepted = {
-        let _g = IN_MU.lock();
         WLCOMP_MPS.fetch_add(1, Ordering::AcqRel);
         PTR_Q.send(raw & !(1u64 << 63)).is_ok() // bit63 = 0（移动域）
     };
@@ -617,7 +604,6 @@ fn ptr_motion_produce(x: i32, y: i32) -> bool {
 fn ptr_button_produce(button: u32, state: u32) -> bool {
     let raw = (1u64 << 63) | ((button as u64) << 32) | (state as u64 & 0xFFFF_FFFF);
     let accepted = {
-        let _g = IN_MU.lock();
         WLCOMP_MPS.fetch_add(1, Ordering::AcqRel);
         PTR_Q.send(raw).is_ok() // bit63 = 1（按钮域）
     };
@@ -655,9 +641,8 @@ pub fn input_pointer_axis(axis: u32, value: i32, source: u32) -> bool {
         | ((u64::from(source) & 0x3) << 34)
         | ((u64::from(axis) & 0x3) << 32)
         | ((value as u32) as u64 & 0xFFFF_FFFF);
-    // 多产者串行化窗（M42-WAYCOMP16——input_key 同谱）
+    // MPMC 零锁直推（M45-MPMC46——input_key 同谱）
     let accepted = {
-        let _g = IN_MU.lock();
         WLCOMP_MPS.fetch_add(1, Ordering::AcqRel);
         AXIS_Q.send(raw).is_ok()
     };
@@ -665,7 +650,7 @@ pub fn input_pointer_axis(axis: u32, value: i32, source: u32) -> bool {
         task::wake_tasks(|w| matches!(w, task::WaitWhat::CompIn { .. }));
         true
     } else {
-        false // 队满丢弃（SPSC 环纪律——KBD_DROP 同谱）
+        false // 队满丢弃（MPMC 环纪律——KBD_DROP 同谱）
     }
 }
 
@@ -682,9 +667,8 @@ pub fn input_pointer_axis_stop(axis: u32) -> bool {
     }
     let raw = (1u64 << 36) // 手势终结旗
         | ((u64::from(axis) & 0x3) << 32);
-    // 多产者串行化窗（M42-WAYCOMP16——input_key 同谱）
+    // MPMC 零锁直推（M45-MPMC46——input_key 同谱）
     let accepted = {
-        let _g = IN_MU.lock();
         WLCOMP_MPS.fetch_add(1, Ordering::AcqRel);
         AXIS_Q.send(raw).is_ok()
     };
@@ -700,45 +684,24 @@ pub fn input_pointer_axis_stop(axis: u32) -> bool {
 /// kbd IRQ1 桩体 scancode 键态语义直传（释放位剥离与 state 0/1 编码
 /// 由 kbd 转接臂车道承载——臂面收键态语义原字）。**内核语境旗随批**
 /// （[`IN_ISR_CTX`] per-cpu 置位/复位——守护门禁旗快路径放行，任务
-/// 查询免除）+ **[`IN_MU`] try_lock 有界退避随批**（ISR 语境禁自旋
-/// ——持锁者可能为被打断任务，同核自旋永不推进死锁窗；退避耗尽即
-/// 丢弃 + [`WLCOMP_ISR_DROP`] fail-visible；锁窗受理同谱计
-/// [`WLCOMP_MPS`]，队满 [`WLCOMP_ISR_FULL`] 显形）。受理入环唤醒链
-/// 同任务语境面（锁外域——wake_tasks 自带 IntWindow，wall_hook
-/// SCHED 慢路径同谱先例；ISR 语境可达）。返回受理（入环成功）。
+/// 查询免除）+ **MPMC 零锁直推随批**（M45-MPMC46——v0 [`IN_MU`]
+/// try_lock 有界退避口径退役：MPMC 环生产域无锁，ISR 语境零自旋窗
+/// 零退避窗；受理同谱计 [`WLCOMP_MPS`]，队满 [`WLCOMP_ISR_FULL`]
+/// fail-visible 显形，[`WLCOMP_ISR_DROP`] 退役戳恒零）。受理入环唤
+/// 醒链同任务语境面（wake_tasks 自带 IntWindow，wall_hook SCHED 慢
+/// 路径同谱先例；ISR 语境可达）。返回受理（入环成功）。
 pub fn input_key_isr(sc: u8, state: u32) -> bool {
     let cpu = task::current_cpu_slot();
     let prev = IN_ISR_CTX[cpu].swap(true, Ordering::AcqRel);
     let ok = if input_guard() {
         let raw = ((u64::from(sc)) << 32) | (u64::from(state) & 0xFFFF_FFFF);
-        // ISR 臂锁窗：try_lock 有界退避随批（M42-WAYCOMP17——禁自旋；
-        // 退避窗 = PAUSE 提示重试，非等锁自旋——零挂起重试窗微秒级）
-        let mut tries = 0u32;
-        let accepted = loop {
-            match IN_MU.try_lock() {
-                Some(g) => {
-                    WLCOMP_MPS.fetch_add(1, Ordering::AcqRel);
-                    let ok = KEY_Q.send(raw).is_ok();
-                    if !ok {
-                        WLCOMP_ISR_FULL.fetch_add(1, Ordering::AcqRel);
-                    }
-                    drop(g);
-                    break ok;
-                }
-                None => {
-                    tries += 1;
-                    if tries >= ISR_LOCK_TRIES {
-                        WLCOMP_ISR_DROP.fetch_add(1, Ordering::AcqRel);
-                        break false; // 退避耗尽丢弃（fail-visible——零静默）
-                    }
-                    core::hint::spin_loop();
-                }
-            }
-        };
+        // MPMC 零锁直推（M45-MPMC46——v0 try_lock 有界退避随批口径
+        // 退役：MPMC 环生产域无锁，ISR 臂与任务产者同谱直推）
+        let accepted = isr_arm_send(|| KEY_Q.send(raw).is_ok());
         if accepted {
-            // 唤醒链锁外域（IN_MU → SCHED 锁序单向——任务语境面同谱；
-            // wake_tasks 自带 IntWindow，ISR 语境可达——wall_hook
-            // SCHED 慢路径同谱先例）
+            // 唤醒链锁外域（MPMC 零锁域——任务语境面同谱；wake_tasks
+            // 自带 IntWindow，ISR 语境可达——wall_hook SCHED 慢路径
+            // 同谱先例）
             task::wake_tasks(|w| matches!(w, task::WaitWhat::CompIn { .. }));
         }
         accepted
@@ -747,15 +710,6 @@ pub fn input_key_isr(sc: u8, state: u32) -> bool {
     };
     IN_ISR_CTX[cpu].store(prev, Ordering::Release);
     ok
-}
-
-/// ISR 臂争用装置面（M42-WAYCOMP17——t118 (c) 争用域承载）：闭包运
-/// 行期持 [`IN_MU`]——臂 try_lock 有界退避耗尽域活体（任务语境持锁
-/// × 臂语境 try_lock 同核交叠窗——ISR 语境禁自旋纪律的确定性证据
-/// 窗）。仅自检装置使用。
-pub fn in_mu_hold<R>(f: impl FnOnce() -> R) -> R {
-    let _g = IN_MU.lock();
-    f()
 }
 
 /// 输入链生产面：帧界标记（M42-WAYCOMP17 揭雷③收口——官方 frame
@@ -770,7 +724,6 @@ pub fn input_pointer_frame() -> bool {
     }
     let raw = 1u64 << 38; // 帧界标记旗（零 axis/stop/source 载荷）
     let accepted = {
-        let _g = IN_MU.lock();
         WLCOMP_MPS.fetch_add(1, Ordering::AcqRel);
         AXIS_Q.send(raw).is_ok()
     };
@@ -788,9 +741,10 @@ pub fn input_pointer_frame() -> bool {
 // axis_stop/frame 全谱 ISR 语境面。**PS/2 aux（IRQ12）电气源挂账**：
 // 臂面先在环（inject 同谱自检入口承载——t124），kbd.rs 双车道接线随
 // aux 驱动批次。臂样板对 = [`isr_arm_enter`]/[`isr_arm_exit`] 旗随批
-// + [`isr_arm_send`] try_lock 有界退避核——锁窗 send 即放、退避耗尽
-// [`WLCOMP_ISR_DROP`] fail-visible、队满 [`WLCOMP_ISR_FULL`] 显形、
-// 受理唤醒链锁外域——[`input_key_isr`] 全谱同语义（t118 断言面稳定）。）
+// + [`isr_arm_send`] **MPMC 零锁直推核**（M45-MPMC46——v0 try_lock
+// 有界退避核口径退役）——直推受理、队满 [`WLCOMP_ISR_FULL`] 显形、
+// [`WLCOMP_ISR_DROP`] 退役戳恒零、受理唤醒链锁外域——
+// [`input_key_isr`] 全谱同语义（t118 断言面随行升级）。）
 
 /// ISR 臂旗随批进入（per-cpu 置位——守护门禁旗快路径放行前批）。
 /// 返回 (cpu 槽号, 前值)——[`isr_arm_exit`] 配对复位（嵌套安全）。
@@ -805,44 +759,27 @@ fn isr_arm_exit(cpu: usize, prev: bool) {
     IN_ISR_CTX[cpu].store(prev, Ordering::Release);
 }
 
-/// ISR 臂通用锁窗核（try_lock 有界退避随批——[`input_key_isr`] 同谱
-/// 语义单点化）：`IN_MU.try_lock()` 锁窗内 `send()` 即放 +
-/// [`WLCOMP_MPS`] 计数；队满 [`WLCOMP_ISR_FULL`] 显形；退避窗 =
-/// spin_loop 提示重试（非等锁自旋——ISR 语境禁自旋纪律），耗尽
-/// [`WLCOMP_ISR_DROP`] fail-visible。返回受理。
+/// ISR 臂通用直推核（M45-MPMC46——[`input_key_isr`] 同谱语义单点化；
+/// v0 `IN_MU.try_lock()` 有界退避核口径退役）：MPMC 环生产域零锁直
+/// 推 + [`WLCOMP_MPS`] 计数；队满 [`WLCOMP_ISR_FULL`] fail-visible
+/// 显形；[`WLCOMP_ISR_DROP`] 退役戳恒零（退避窗不存在——生产域无锁）。返回受理。
 fn isr_arm_send(send: impl FnOnce() -> bool) -> bool {
-    let mut tries = 0u32;
-    loop {
-        match IN_MU.try_lock() {
-            Some(g) => {
-                WLCOMP_MPS.fetch_add(1, Ordering::AcqRel);
-                let ok = send();
-                if !ok {
-                    WLCOMP_ISR_FULL.fetch_add(1, Ordering::AcqRel);
-                }
-                drop(g);
-                return ok;
-            }
-            None => {
-                tries += 1;
-                if tries >= ISR_LOCK_TRIES {
-                    WLCOMP_ISR_DROP.fetch_add(1, Ordering::AcqRel);
-                    return false; // 退避耗尽丢弃（fail-visible——零静默）
-                }
-                core::hint::spin_loop();
-            }
-        }
+    WLCOMP_MPS.fetch_add(1, Ordering::AcqRel);
+    let ok = send();
+    if !ok {
+        WLCOMP_ISR_FULL.fetch_add(1, Ordering::AcqRel);
     }
+    ok
 }
 
-/// ISR 臂受理唤醒链（锁外域——IN_MU → SCHED 锁序单向；wake_tasks 自
-/// 带 IntWindow，ISR 语境可达）。
+/// ISR 臂受理唤醒链（锁外域——MPMC 零锁域；wake_tasks 自带
+/// IntWindow，ISR 语境可达）。
 fn isr_arm_wake() {
     task::wake_tasks(|w| matches!(w, task::WaitWhat::CompIn { .. }));
 }
 
 /// ISR 臂：指针移动（屏幕坐标——bit63=0 移动域，[`input_pointer_motion`]
-/// 同谱载荷编码）。旗随批 + try_lock 有界退避 + 受理唤醒锁外。
+/// 同谱载荷编码）。旗随批 + MPMC 零锁直推 + 受理唤醒锁外。
 pub fn input_pointer_motion_isr(x: i32, y: i32) -> bool {
     let (cpu, prev) = isr_arm_enter();
     let ok = if input_guard() {

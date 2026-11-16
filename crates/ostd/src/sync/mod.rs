@@ -4,6 +4,7 @@
 //! API 对调用方完全 safe——unsafe 被封装在 `unsafe impl Sync` 与内部原子操作中，
 //! 这是 OSTD「unsafe 收口」原则的示范实现。
 
+pub mod mpmc;
 pub mod spsc;
 
 use core::cell::UnsafeCell;
