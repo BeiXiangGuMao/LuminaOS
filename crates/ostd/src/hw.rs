@@ -801,6 +801,57 @@ pub mod cpuid {
     pub fn leaf1_ecx() -> u32 {
         leaf1().ecx
     }
+
+    /// 叶子 1 ECX 逐位位义权威表（M45-BIT245 笔㊿——SDM Vol.2 Table 3-8
+    /// CPUID.01H:ECX 32 位逐目登记，bit0 → bit31 顺序；**bit24 =
+    /// tsc-deadline 主位**——真机窗口逐位对账判据主位〔真硬件恒
+    /// advertised，QEMU TCG 记录式〕；bit16/31 硬件保留域名义登记）。
+    /// 宿主可测（t144 AUTH 锚 + ostd 单元测试同谱）。
+    pub const LEAF1_ECX_FEATURES: [&str; 32] = [
+        "sse3",
+        "pclmulqdq",
+        "dtes64",
+        "monitor",
+        "ds-cpl",
+        "vmx",
+        "smx",
+        "eist",
+        "tm2",
+        "ssse3",
+        "cnxt-id",
+        "sdbg",
+        "fma",
+        "cmpxchg16b",
+        "xtpr",
+        "pdcm",
+        "reserved",
+        "pcid",
+        "dca",
+        "sse4.1",
+        "sse4.2",
+        "x2apic",
+        "movbe",
+        "popcnt",
+        "tsc-deadline",
+        "aesni",
+        "xsave",
+        "osxsave",
+        "avx",
+        "f16c",
+        "rdrand",
+        "reserved",
+    ];
+
+    /// 逐位判读（纯函数语义核——宿主可测）：ECX 32 位 → 位图（
+    /// `bitmap[bit]` = 该位现值，bit0 = LSB 顺序）。M45-BIT245 逐位
+    /// 对账语义核——t144 BITS/JUDGE 断言面与 ostd 单元测试同谱。
+    pub fn leaf1_ecx_bitmap(ecx: u32) -> [bool; 32] {
+        let mut m = [false; 32];
+        for (i, v) in m.iter_mut().enumerate() {
+            *v = ecx & (1u32 << i) != 0;
+        }
+        m
+    }
 }
 
 /// 本地 APIC（LAPIC）——HW-13（M5 申请新增：IPI 与 SMP 依赖）。
@@ -1581,7 +1632,7 @@ pub mod ata {
 
 #[cfg(test)]
 mod cpuid_tests {
-    use super::cpuid::{parse_leaf1, Leaf1};
+    use super::cpuid::{leaf1_ecx_bitmap, parse_leaf1, Leaf1, LEAF1_ECX_FEATURES};
 
     #[test]
     fn parse_extracts_apic_present_and_id() {
@@ -1599,5 +1650,41 @@ mod cpuid_tests {
             ..l
         };
         assert_eq!(parse_leaf1(l2), (false, 1));
+    }
+
+    // ---- M45-BIT245（笔㊿）：叶子 1 ECX 逐位位义权威表 + 逐位判读 ----
+
+    #[test]
+    fn leaf1_ecx_feature_table_is_full_spectrum() {
+        // 32 目全谱 + bit24 = tsc-deadline 主位（真机窗口逐位对账判据
+        // 主位）+ 非保留位义唯一（bit16/31 双保留域同名义豁免）
+        assert_eq!(LEAF1_ECX_FEATURES.len(), 32);
+        assert_eq!(LEAF1_ECX_FEATURES[24], "tsc-deadline");
+        assert_eq!(LEAF1_ECX_FEATURES[0], "sse3");
+        assert_eq!(LEAF1_ECX_FEATURES[31], "reserved");
+        for (i, name) in LEAF1_ECX_FEATURES.iter().enumerate() {
+            if *name == "reserved" {
+                continue;
+            }
+            for later in LEAF1_ECX_FEATURES.iter().skip(i + 1) {
+                assert_ne!(name, later, "位义重复 bit{i}");
+            }
+        }
+    }
+
+    #[test]
+    fn leaf1_ecx_bitmap_roundtrip() {
+        // 单位图（bit24 主位）+ 零图 + 全图三态逐位对账
+        let m24 = leaf1_ecx_bitmap(1 << 24);
+        assert!(m24.iter().filter(|b| **b).count() == 1);
+        assert!(m24[24]);
+        assert!(!m24[23] && !m24[25]);
+        let m0 = leaf1_ecx_bitmap(0);
+        assert!(m0.iter().all(|b| !*b));
+        let mall = leaf1_ecx_bitmap(u32::MAX);
+        assert!(mall.iter().all(|b| *b));
+        // 位序锚：bit0 = LSB（1 → bitmap[0]）
+        let m1 = leaf1_ecx_bitmap(1);
+        assert!(m1[0] && m1.iter().skip(1).all(|b| !*b));
     }
 }
