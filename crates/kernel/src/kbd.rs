@@ -48,6 +48,20 @@
 //! 扩展（态 4 = 轮增量字节——QEMU type3 口径：字节 3 = dz 8 位二补
 //! 〔铁 ±127〕；dz ≠ 0 → axis 事件生产〔120 轮单位——t115 同谱原字
 //! 口径〕+ frame 分组终结，dz = 0 零扰不出域）。
+//!
+//! **Explorer 型别链 + IMEX 族谱解码域**（M43-HWDW40 笔㊺）：
+//! [`aux_explorer_enable`]（击键 200/200/80 + 0xF2 identify + F4——
+//! **QEMU 10.0.13 判官实况：击键 200/200/80 实切 IMEX type4**
+//! 〔hw/input/ps2.c mouse_detect_state 0→1→3→4 域——v0 笔㉜
+//! 「mouse_type=3」记载与判官实况分立域随行揭雷如实落账〕）+ ID
+//! 门域（预算窗内非 ACK 字节 = 型别应答——[`AUX_ID_RET`] 捕获：
+//! 0x04 = IMEX 双旗武装 / 0x03 = wheel 单旗 / 其余 fail-visible）+
+//! 族谱解码 [`aux_wheel_family_decode`]（bit6 0x40 旗标域：置位 =
+//! dw 横轮 6 位二补 ±31〔QEMU 钳制域〕→ **HORIZONTAL axis** +
+//! frame；清零 = dz 竖轮 4 位二补 nibble ±7 + 按钮 4/5 位面
+//! bit4/5 → BTN_SIDE/BTN_EXTRA 沿域）——v0 8 位 dz 解码面
+//! [`aux_wheel_decode`] 原貌维持（t132/t135 判据面零扰动，双轨
+//! 并存；boot 接线切换挂账随 aux 驱动批次）。
 
 use morse::{is_release, shift_event, translate};
 use ostd::sync::spsc::SpscRing;
@@ -382,6 +396,98 @@ pub fn aux_wheel_counts() -> (bool, usize, usize, usize) {
     )
 }
 
+// ---- M43-HWDW40 笔㊺：Explorer 型别链 + IMEX 族谱解码域 ----
+
+/// Explorer 型别击键序列（QEMU 10.0.13 判官实况口径）：0xF6×3（Set
+/// Defaults——单 ACK 应答面）+ 0xF3,200/0xF3,200/0xF3,80（击键——
+/// **QEMU ps2.c mouse_detect_state 0→1→3→4 实切 IMEX type4**）+
+/// 0xF2（identify——应答 ACK + mouse_type 字节）+ 0xF4（重使能收
+/// 尾）。长度 11 = 击键笔数 = ACK 数（11 笔各一 ACK——F6×3 + F3/参
+/// 数×6 + F2 + F4；ID 应答字节无 ACK，经 ID 门域捕获）。
+pub const EXPLORER_KNOCK: [u8; 11] = [0xF6, 0xF6, 0xF6, 0xF3, 200, 0xF3, 200, 0xF3, 80, 0xF2, 0xF4];
+
+/// 设备 identify 应答字节（0x04 = IMEX Explorer / 0x03 = IMPS/2——
+/// QEMU AUX_GET_TYPE 应答面 ps2_queue_2(ACK, mouse_type)）。
+pub const AUX_ID_IMEX: u8 = 0x04;
+const AUX_ID_IMPS2: u8 = 0x03;
+
+/// IMEX 族谱模式旗（ID 门域武装——[`AUX_ID_RET`] = 0x04 时置位；
+/// 包态机态 4 分岔族谱解码面，v0 8 位 dz 口径默认 false 维持
+/// t132/t135 判据面）。
+static AUX_IMEX_MODE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// identify 应答待收旗（[`aux_explorer_enable`] 武装——1 笔应答字
+/// 节捕获即解除；预算窗收口随行解除 fail-visible）。
+pub static AUX_ID_EXPECT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// identify 应答字节捕获槽（0 = 未捕获——ID 0x03/0x04 非零值域）。
+pub static AUX_ID_RET: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// 横轮 dw 域 axis 生产笔数（dw ≠ 0 包的 HORIZONTAL axis 出域计数
+/// ——t139 断言面；dw = 0 零扰包不计）。
+pub static AUX_HWHEEL: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// 按钮 4/5 沿域计数（IMEX dz 域 bit4/5 → BTN_SIDE/BTN_EXTRA 沿出
+/// 线计数——t139 断言面）。
+pub static AUX_BTN_HI: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// 按钮 4/5 前态寄存（沿检测面——bit0 = BTN_SIDE / bit1 = BTN_EXTRA）。
+static AUX_BTN_HI_PREV: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// IMEX type4 第 4 字节族谱判读（QEMU 10.0.13 ps2.c 实况口径——纯
+/// 函数面，t139 锚单元）。返回 (kind, value, hi_btns)：kind 1 = dw
+/// 域（bit6 0x40 旗标置位——横轮 6 位二补 ±31〔QEMU 钳制域〕，按
+/// 钮位属 dw 值域无定义）；kind 0 = dz 域（竖轮 4 位二补 nibble
+/// ±7〔QEMU 钳制域〕+ 按钮 4/5 位面 bit4/5）。
+#[inline]
+pub fn aux_wheel_family_decode(b: u8) -> (u8, i32, u8) {
+    if b & 0x40 != 0 {
+        let v = i32::from(b & 0x3F);
+        let dw = if v & 0x20 != 0 { v - 64 } else { v };
+        (1, dw, 0)
+    } else {
+        let v = i32::from(b & 0x0F);
+        let dz = if v & 0x08 != 0 { v - 16 } else { v };
+        (0, dz, (b >> 4) & 0x03)
+    }
+}
+
+/// Explorer 型别链（M43-HWDW40 笔㊺）：控制器使能（0xA8 + 配置
+/// bit1）→ ACK 预算窗武装（击键 11 笔 = 11 ACK）+ ID 门域武装 →
+/// 击键逐笔写（0xD4 前缀）。型别武装随 ID 字节到达异步完成
+/// （[`aux_pump`] ID 门域捕获——预算窗收口随行解除 fail-visible）。
+/// 任一笔写超限即 false fail-visible（预算窗/ID 门解除——残窗零遗
+/// 留）。QEMU 10.0.13 判官实况：击键 200/200/80 实切 IMEX type4
+/// 〔v0 笔㉜「mouse_type=3」记载分立域随行揭雷如实落账〕，0xF2 应
+/// 答 0x04 → wheel + IMEX 双旗武装。真硬件 type3/4 设备对账域（
+/// identify ID 逐设备判读——双轨同谱）挂账远线。
+pub fn aux_explorer_enable() -> bool {
+    if !ostd::hw::ps2::aux_port_enable() {
+        return false;
+    }
+    AUX_ACK_BUDGET.store(EXPLORER_KNOCK.len(), core::sync::atomic::Ordering::Release);
+    AUX_ID_EXPECT.store(1, core::sync::atomic::Ordering::Release);
+    for &b in EXPLORER_KNOCK.iter() {
+        if !ostd::hw::ps2::aux_write(b) {
+            AUX_ACK_BUDGET.store(0, core::sync::atomic::Ordering::Release);
+            AUX_ID_EXPECT.store(0, core::sync::atomic::Ordering::Release);
+            return false;
+        }
+    }
+    true
+}
+
+/// Explorer 型别域计数读面（imex_mode, id_ret, hwheel, btn_hi——
+/// t139 对账）。
+pub fn aux_explorer_counts() -> (bool, usize, usize, usize) {
+    (
+        AUX_IMEX_MODE.load(core::sync::atomic::Ordering::Acquire),
+        AUX_ID_RET.load(core::sync::atomic::Ordering::Acquire),
+        AUX_HWHEEL.load(core::sync::atomic::Ordering::Acquire),
+        AUX_BTN_HI.load(core::sync::atomic::Ordering::Acquire),
+    )
+}
+
 /// 包出口公共臂（ 笔㉜ 重构面——态 2 三字节直出 / 态 4 四字节拓域
 /// 共用）：符号扩展 + 极性反转 + 屏域钳制 + 光标寄存 + motion 生产
 /// + 按钮沿检测。返回 (nx, ny)（对账面）。
@@ -468,7 +574,31 @@ pub fn aux_pump() -> usize {
             && (b == AUX_ACK_BYTE || b == AUX_NAK_BYTE)
         {
             AUX_ACK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            AUX_ACK_BUDGET.fetch_sub(1, core::sync::atomic::Ordering::Release);
+            let left = AUX_ACK_BUDGET.fetch_sub(1, core::sync::atomic::Ordering::Release) - 1;
+            if left == 0 {
+                // 预算窗收口 = 链收尾——ID 门随行解除（fail-visible：
+                // 应答字节未捕获即 [`AUX_ID_RET`] = 0 显形，零静默）。
+                AUX_ID_EXPECT.store(0, core::sync::atomic::Ordering::Release);
+            }
+            continue;
+        }
+        // ID 门域（M43-HWDW40 笔㊺——Explorer identify 应答捕获）：预
+        // 算窗内非 ACK 字节 = 型别应答字节（0x03/0x04——bit3=0 包头
+        // 契约外域），捕获即型别武装（0x04 = wheel + IMEX 双旗 / 0x03
+        // = wheel 单旗 v0 口径 / 其余 fail-visible 零武装）。
+        if AUX_ID_EXPECT.load(core::sync::atomic::Ordering::Acquire) > 0 {
+            AUX_ID_RET.store(usize::from(b), core::sync::atomic::Ordering::Release);
+            AUX_ID_EXPECT.store(0, core::sync::atomic::Ordering::Release);
+            match b {
+                AUX_ID_IMEX => {
+                    AUX_WHEEL_MODE.store(true, core::sync::atomic::Ordering::Release);
+                    AUX_IMEX_MODE.store(true, core::sync::atomic::Ordering::Release);
+                }
+                AUX_ID_IMPS2 => {
+                    AUX_WHEEL_MODE.store(true, core::sync::atomic::Ordering::Release);
+                }
+                _ => {}
+            }
             continue;
         }
         match AUX_ST.load(core::sync::atomic::Ordering::Acquire) {
@@ -526,25 +656,74 @@ pub fn aux_pump() -> usize {
                 }
             }
             _ => {
-                // 轮增量出包域（4，笔㉜）：dz 8 位二补解码 → 公共臂
-                // 出包〔真 dy——M43-AV12036 揭雷②收口：v0 dz 兼 dy 位
-                // 退役〕→ dz ≠ 0 axis 生产（120 轮单位原字 + wheel 源
-                // 前置声明 + frame 分组终结——t115 扫掠语义同谱：源
-                // 声明先于轴值，帧标记收束分组）；dz = 0 零扰不出域。
+                // 轮增量出包域（4，笔㉜）：公共臂出包〔真 dy——
+                // M43-AV12036 揭雷②收口：v0 dz 兼 dy 位退役〕→ 轮增
+                // 量域分岔（M43-HWDW40 笔㊺）：IMEX 族谱模式（ID 门
+                // 域 0x04 武装）→ [`aux_wheel_family_decode`] 族谱判
+                // 读〔bit6 0x40 旗标域：dw 横轮 6 位二补 → HORIZONTAL
+                // axis + frame + [`AUX_HWHEEL`]；dz 竖轮 nibble →
+                // VERTICAL axis + frame + [`AUX_WHEEL_AXIS`] + 按钮
+                // 4/5 沿域 BTN_SIDE/BTN_EXTRA + [`AUX_BTN_HI`]〕；v0
+                // wheel 模式（type3 口径判据面——t132/t135 同谱）→ dz
+                // 8 位二补解码 VERTICAL axis + frame。轮增量 ≠ 0 生产
+                // （120 轮单位原字 + wheel 源前置声明 + frame 分组终
+                // 结——t115 扫掠语义同谱：源声明先于轴值，帧标记收束
+                // 分组）；增量 = 0 零扰不出域。
                 let head = AUX_HEAD.load(core::sync::atomic::Ordering::Relaxed);
                 let dx_raw = AUX_DX.load(core::sync::atomic::Ordering::Relaxed);
                 let dy_raw = AUX_DY.load(core::sync::atomic::Ordering::Relaxed);
-                let dz = aux_wheel_decode(b);
                 let _ = aux_emit_packet(head, dx_raw, dy_raw);
-                if dz != 0 {
-                    use prism::wayland::{AXIS_SOURCE_WHEEL, AXIS_VERTICAL_SCROLL};
-                    let _ = crate::waycomp::input_pointer_axis(
-                        AXIS_VERTICAL_SCROLL,
-                        dz * WHEEL_NOTCH_RAW,
-                        AXIS_SOURCE_WHEEL,
-                    );
-                    let _ = crate::waycomp::input_pointer_frame();
-                    AUX_WHEEL_AXIS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                if AUX_IMEX_MODE.load(core::sync::atomic::Ordering::Acquire) {
+                    let (kind, val, hi) = aux_wheel_family_decode(b);
+                    if kind == 1 {
+                        // dw 横轮域（bit6 旗标——按钮位属 dw 值域无
+                        // 定义，沿域零触碰）。
+                        if val != 0 {
+                            use prism::wayland::{AXIS_HORIZONTAL_SCROLL, AXIS_SOURCE_WHEEL};
+                            let _ = crate::waycomp::input_pointer_axis(
+                                AXIS_HORIZONTAL_SCROLL,
+                                val * WHEEL_NOTCH_RAW,
+                                AXIS_SOURCE_WHEEL,
+                            );
+                            let _ = crate::waycomp::input_pointer_frame();
+                            AUX_HWHEEL.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                        }
+                    } else {
+                        // dz 竖轮 nibble 域 + 按钮 4/5 沿域。
+                        if val != 0 {
+                            use prism::wayland::{AXIS_SOURCE_WHEEL, AXIS_VERTICAL_SCROLL};
+                            let _ = crate::waycomp::input_pointer_axis(
+                                AXIS_VERTICAL_SCROLL,
+                                val * WHEEL_NOTCH_RAW,
+                                AXIS_SOURCE_WHEEL,
+                            );
+                            let _ = crate::waycomp::input_pointer_frame();
+                            AUX_WHEEL_AXIS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                        }
+                        let prev_hi = AUX_BTN_HI_PREV.load(core::sync::atomic::Ordering::Acquire);
+                        for bit in 0..2u32 {
+                            let mask = 1u8 << bit;
+                            if hi & mask != prev_hi & mask {
+                                let code = if bit == 0 { 0x113u32 } else { 0x114u32 };
+                                let state = if hi & mask != 0 { 1 } else { 0 };
+                                let _ = crate::waycomp::input_pointer_button(code, state);
+                                AUX_BTN_HI.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                        AUX_BTN_HI_PREV.store(hi, core::sync::atomic::Ordering::Release);
+                    }
+                } else {
+                    let dz = aux_wheel_decode(b);
+                    if dz != 0 {
+                        use prism::wayland::{AXIS_SOURCE_WHEEL, AXIS_VERTICAL_SCROLL};
+                        let _ = crate::waycomp::input_pointer_axis(
+                            AXIS_VERTICAL_SCROLL,
+                            dz * WHEEL_NOTCH_RAW,
+                            AXIS_SOURCE_WHEEL,
+                        );
+                        let _ = crate::waycomp::input_pointer_frame();
+                        AUX_WHEEL_AXIS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    }
                 }
                 AUX_PACKETS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                 produced += 1;

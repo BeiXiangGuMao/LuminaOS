@@ -237,6 +237,9 @@ pub static WLCOMP_AXIS_BAD: AtomicU64 = AtomicU64::new(0);
 /// 离散步进不随行，value=0 零步进不随行——官方语义域闸，t135 断言
 /// 面）。
 pub static WLCOMP_V120: AtomicU64 = AtomicU64::new(0);
+/// 水平滚轮 axis 出域数（M43-HWDW40 笔㊺——AXIS_HORIZONTAL_SCROLL
+/// 域 axis 事件出域计数；竖轮域零计入——t139 断言面）。
+pub static WLCOMP_HAXES: AtomicU64 = AtomicU64::new(0);
 /// 键重复出域数（M43-KBREP37 笔㊷——repeat 泵重复 key 事件出域计
 /// 数，t136 断言面）。
 pub static WLCOMP_REPS: AtomicU64 = AtomicU64::new(0);
@@ -1446,6 +1449,11 @@ fn drain_input(session: &mut CompSession, windows: &[u64]) {
             }
         } else if session.pointer_axis(axis, value).is_ok() {
             WLCOMP_AXES.fetch_add(1, Ordering::AcqRel);
+            // 水平滚轮域分账（M43-HWDW40 笔㊺——AXIS_HORIZONTAL_SCROLL
+            // 域 axis 出域计数，t139 断言面）。
+            if axis == prism::wayland::AXIS_HORIZONTAL_SCROLL {
+                WLCOMP_HAXES.fetch_add(1, Ordering::AcqRel);
+            }
             // 离散步进随行声明（M43-AV12036——官方语义：wheel 源
             // frame 域 axis 事件随行 axis_value120；v0 口径 value =
             // dz × 120 原字〔120 倍轮单位〕，value120 同字派生透传
