@@ -61,7 +61,7 @@
 //! frame；清零 = dz 竖轮 4 位二补 nibble ±7 + 按钮 4/5 位面
 //! bit4/5 → BTN_SIDE/BTN_EXTRA 沿域）——v0 8 位 dz 解码面
 //! [`aux_wheel_decode`] 原貌维持（t132/t135 判据面零扰动，双轨
-//! 并存；boot 接线切换挂账随 aux 驱动批次）。
+//! 并存；boot 接线切换 M44-AUXW43 笔㊽落域——[`aux_boot_settle`]）。
 
 use morse::{is_release, shift_event, translate};
 use ostd::sync::spsc::SpscRing;
@@ -485,6 +485,40 @@ pub fn aux_explorer_counts() -> (bool, usize, usize, usize) {
         AUX_ID_RET.load(core::sync::atomic::Ordering::Acquire),
         AUX_HWHEEL.load(core::sync::atomic::Ordering::Acquire),
         AUX_BTN_HI.load(core::sync::atomic::Ordering::Acquire),
+    )
+}
+
+// ---- M44-AUXW43 笔㊽：boot wheel/explorer 接线切换域 ----
+
+/// boot 接线切换域（M44-AUXW43 笔㊽——笔㊺挂账「boot wheel/explorer
+/// 链接线切换（随 aux 驱动 ring3 批次）」兑现任务面）：Explorer 型别
+/// 链 boot 武装（[`aux_explorer_enable`]——0xA8 端口使能 + 击键 11 笔
+/// 与 identify 与 F4 重使能）+ 应答窗收口泵（kmain 语境有界泵窗——
+/// ACK 预算窗 11 与 ID 门域捕获经 IRQ12 异步入环，本泵排空至预算窗
+/// 收口且 ID 门解除；v0「无 boot 使能——真实鼠标 boot 期离线」口径
+/// 退役：boot 起鼠标即 type4 IMEX 族谱流式上报在环）。返回
+/// (armed, id) 双值：armed = wheel 与 IMEX 双旗武装实况（预算窗收口
+/// 且 ID 捕获后读）；id = 型别应答字节（0x04 = IMEX、0x03 = IMPS/2、
+/// 零值 = 未捕获 fail-visible——预算窗超限即残窗零武装显形零静默）。
+/// 调用域 = kmain boot 语境（中断已在环——IRQ12 出字承接；内核车道
+/// 持有期 [`AUX_ELF_OWNED`] = false 原貌，ring3 驱动 idle 让步环零
+/// 争抢）。
+pub fn aux_boot_settle(ms_budget: u64) -> (bool, usize) {
+    let ok = aux_explorer_enable();
+    if !ok {
+        return (false, 0);
+    }
+    let dl = ostd::time::now_ms() + ms_budget;
+    while (AUX_ACK_BUDGET.load(core::sync::atomic::Ordering::Acquire) > 0
+        || AUX_ID_EXPECT.load(core::sync::atomic::Ordering::Acquire) > 0)
+        && ostd::time::now_ms() < dl
+    {
+        aux_pump();
+    }
+    (
+        AUX_WHEEL_MODE.load(core::sync::atomic::Ordering::Acquire)
+            && AUX_IMEX_MODE.load(core::sync::atomic::Ordering::Acquire),
+        AUX_ID_RET.load(core::sync::atomic::Ordering::Acquire),
     )
 }
 

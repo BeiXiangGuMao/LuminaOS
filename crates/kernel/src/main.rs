@@ -86,8 +86,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126；M42-DMG27 t127（联合域上限细化活体）起 127；M42-DMG28 t128（指针 16px 粗粒度域联动活体）起 128；M42-SPRITE29 笔㉙ t129（光标 sprite 渲染面活体：compose 执行器顶层 sprite 平面 + 热点对位联动）起 129；M42-AUXR3 笔㉚ t130（ring3 aux 驱动进程活体：SYS_AUX_READ/SYS_PTR_INJECT 车道 + 接管态仲裁）起 130；M42-PTRLINK 笔㉛ t131（Enter/Leave 域联动活体：焦点切换取证计数 + 光标格直标强制入账）起 131；M42-WHEEL32 笔㉜ t132（IntelliMouse 轮询命令链 + wl_pointer axis 电气源活体）起 132；M42-CLICKF33 笔㉝ t133（click-to-focus 焦点迁移联动面活体：纯针直迁 + 键盘迁移取证戳 + 幂等/release 闸）起 133；M42-KBREP34 笔㉞ t134（wl_keyboard.repeat_info 键重复公告面活体：键盘派生域 keymap 后随行 + v0 关闭声明口径 + 域闸负例）起 134；M43-AV12036 笔㊱ t135（wl_pointer.axis_value120 离散步进语义活体：wheel 源 frame 域随行 + 流内序锚 + 零步进不随行域闸）起 135；M43-KBREP37 笔㊷ t136（键重复生产域 + set_cursor 请求域活体：repeat_info 真值公告 + delay/rate 重复窗 + 释放撤销 + 修饰键零登记 + 在册面/默认回退双臂）起 136；M43-PRIO38 笔电解 t137（产者优先级域活体：boot 代执面 + waycomp 0/aux 3 级序 + 越界 clamp 语义核）起 137；M43-TSC39 笔㊹ t138（TSC deadline one-shot 定时器活体：CPUID 特性锚 + LVT deadline 使能 + one-shot 交付 + 不再武装零增）起 138；M43-HWDW40 笔㊺ t139（Explorer 型别链 + IMEX 族谱解码活体：ID 0x04 双旗武装 + dw 横轮 HORIZONTAL axis + dz nibble 域 + 按钮 4/5 沿）起 139；M43-CURSOR41 笔㊻ t140（光标直迁域活体：窗亡重排域 stationary 光标位 hit-test 直迁 + 创建期 v0 口径钉住 + 幂等零扰）起 140；M44-MAP42 笔㊼ t141（创建期/map 域直迁活体：首映射批 stationary 光标位 hit-test 直迁零 motion 前提 + wire enter 出域取证 + map 域幂等零扰 + 跨窗直迁/窗亡回迁分戳分域）起 141）。
-const SELFTEST_TOTAL: usize = 141;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126；M42-DMG27 t127（联合域上限细化活体）起 127；M42-DMG28 t128（指针 16px 粗粒度域联动活体）起 128；M42-SPRITE29 笔㉙ t129（光标 sprite 渲染面活体：compose 执行器顶层 sprite 平面 + 热点对位联动）起 129；M42-AUXR3 笔㉚ t130（ring3 aux 驱动进程活体：SYS_AUX_READ/SYS_PTR_INJECT 车道 + 接管态仲裁）起 130；M42-PTRLINK 笔㉛ t131（Enter/Leave 域联动活体：焦点切换取证计数 + 光标格直标强制入账）起 131；M42-WHEEL32 笔㉜ t132（IntelliMouse 轮询命令链 + wl_pointer axis 电气源活体）起 132；M42-CLICKF33 笔㉝ t133（click-to-focus 焦点迁移联动面活体：纯针直迁 + 键盘迁移取证戳 + 幂等/release 闸）起 133；M42-KBREP34 笔㉞ t134（wl_keyboard.repeat_info 键重复公告面活体：键盘派生域 keymap 后随行 + v0 关闭声明口径 + 域闸负例）起 134；M43-AV12036 笔㊱ t135（wl_pointer.axis_value120 离散步进语义活体：wheel 源 frame 域随行 + 流内序锚 + 零步进不随行域闸）起 135；M43-KBREP37 笔㊷ t136（键重复生产域 + set_cursor 请求域活体：repeat_info 真值公告 + delay/rate 重复窗 + 释放撤销 + 修饰键零登记 + 在册面/默认回退双臂）起 136；M43-PRIO38 笔电解 t137（产者优先级域活体：boot 代执面 + waycomp 0/aux 3 级序 + 越界 clamp 语义核）起 137；M43-TSC39 笔㊹ t138（TSC deadline one-shot 定时器活体：CPUID 特性锚 + LVT deadline 使能 + one-shot 交付 + 不再武装零增）起 138；M43-HWDW40 笔㊺ t139（Explorer 型别链 + IMEX 族谱解码活体：ID 0x04 双旗武装 + dw 横轮 HORIZONTAL axis + dz nibble 域 + 按钮 4/5 沿）起 139；M43-CURSOR41 笔㊻ t140（光标直迁域活体：窗亡重排域 stationary 光标位 hit-test 直迁 + 创建期 v0 口径钉住 + 幂等零扰）起 140；M44-MAP42 笔㊼ t141（创建期/map 域直迁活体：首映射批 stationary 光标位 hit-test 直迁零 motion 前提 + wire enter 出域取证 + map 域幂等零扰 + 跨窗直迁/窗亡回迁分戳分域）起 141；M44-AUXW43 笔㊽ t142（boot wheel/explorer 接线切换活体：Explorer 链 boot 武装 + 应答窗收口泵 + boot 态族谱解码全谱 + v0 负向误读域退役对账）起 142）。
+const SELFTEST_TOTAL: usize = 142;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -961,6 +961,20 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     // 纪律对齐——阻塞读零 CPU，生产事件由 IRQ 唤醒承接）。
     let aux_pid = procs::boot_service_spawn("aux-svc-elf", &user::AUX_SVC_ELF, 3);
     procs::set_aux_svc_boot_pid(aux_pid);
+
+    // M44-AUXW43（笔㊽）boot wheel/explorer 接线切换落域（笔㊺挂账
+    // 「boot wheel/explorer 链接线切换（随 aux 驱动 ring3 批次）」兑
+    // 现）：Explorer 型别链 boot 武装 + 应答窗收口泵（kmain 语境有界
+    // 泵窗——ACK 预算窗 11 + ID 门域 0x04 捕获经 IRQ12 异步入环）。
+    // v0「无 boot 使能——真实鼠标 boot 期离线」口径退役：boot 起鼠
+    // 标即 type4 IMEX 族谱流式上报在环（内核车道持有期原貌——接管
+    // 态默认 false，t125/t130 断言面不变）。取证行 fail-visible：
+    // armed=false/id=0 = 链失败显形（零静默——xtask required 面域）。
+    let (aux_armed, aux_id) = kbd::aux_boot_settle(600);
+    let _ = writeln!(
+        log,
+        "LUMINA-AUX-BOOT-EXPLORER armed={aux_armed} id={aux_id:#04x}（boot wheel/explorer 接线切换——M44-AUXW43）"
+    );
 
     // 25) swap 预留位：唯一性 / LIFO 复用 / 统计自洽
     let t25 = {
@@ -7532,6 +7546,15 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     //       LUMINA-T141-OPEN/IDEMP/CROSS/BACK/OK。
     let t141 = t141_run(&mut log);
     report(&mut log, t141, "map-domain-relink");
+
+    // t142) boot wheel/explorer 接线切换活体（M44-AUXW43 笔㊽）：〔BOOT
+    //       ——boot 接线收口态对账（双旗武装 + ID 0x04 + 预算窗收口 +
+    //       环零残留）〕→〔FAMILY——boot 态族谱解码全谱（dw 横轮
+    //       HORIZONTAL + dz nibble VERTICAL + 按钮 4/5 双沿）〕→
+    //       〔V0——v0 负向误读域退役对账（单元面 vs 活体面分立域）〕
+    //       →〔卫生收场〕。LUMINA-T142-BOOT/FAMILY/V0/OK。
+    let t142 = t142_run(&mut log);
+    report(&mut log, t142, "aux-boot-wiring");
 
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
@@ -14740,20 +14763,25 @@ fn t125_run(log: &mut DualLog) -> bool {
         "LUMINA-T125-AUX imr=(m={m_imr:#04x},s={s_imr:#04x}) pk={pk0} cur=({},{}), mps={mps0}",
         cur0.0, cur0.1
     );
-    ok &= irq0 == pk0 * 3; // 电气车道零外溢（每包三字节全对账）
+    ok &= irq0 >= pk0 * 4; // 电气车道零外溢（每包四字节全对账——M44-AUXW43 boot 接线后包口径；irq0 含 boot Explorer 链 12 电气字节〔11 ACK + ID〕——boot 链失败域 fail-visible 取证行显形）
 
-    // (b) inject_aux 包全谱（按下包 + 释放包——光标增量 + 按钮沿）：
+    // (b) inject_aux 包全谱（按下包 + 释放包——光标增量 + 按钮沿；
+    //     M44-AUXW43 boot 接线后包口径 = 四字节 IMEX——第 4 字节 dz
+    //     0x00 零步进零扰）：
     //     包 1 head=0x29（bit3 恒 1 + bit0 左钮 + bit5 dy 符号）dx=+5
-    //     dy 原字 0xFD（9 位二补 -3 → 屏 y +3）→ 光标 (0,0)→(5,3)
-    //     + 左钮按下沿；包 2 head=0x08（bit3 恒 1 零符号零按钮）dx=dy=0
-    //     → 左钮释放沿（0x28 揭雷随行——bit5 即 dy 符号位，首割误用作
-    //     零符号包头 dy=0 误读 -256 光标 y 翻 259，0x08 收口）。
+    //     dy 原字 0xFD（9 位二补 -3 → 屏 y +3）dz nibble 0 → 光标
+    //     (0,0)→(5,3) + 左钮按下沿；包 2 head=0x08（bit3 恒 1 零符号
+    //     零按钮）dx=dy=0 → 左钮释放沿（0x28 揭雷随行——bit5 即 dy
+    //     符号位，首割误用作零符号包头 dy=0 误读 -256 光标 y 翻
+    //     259，0x08 收口）。
     kbd::inject_aux(0x29);
     kbd::inject_aux(5);
     kbd::inject_aux(0xFD);
+    kbd::inject_aux(0x00); // dz 0x00——族谱域 nibble 0 零步进零扰
     kbd::inject_aux(0x08);
     kbd::inject_aux(0);
     kbd::inject_aux(0);
+    kbd::inject_aux(0x00); // dz 0x00
     let produced = kbd::aux_pump();
     let cur = kbd::aux_cursor();
     let mps1 = waycomp::WLCOMP_MPS.load(Ordering::Acquire);
@@ -14772,11 +14800,13 @@ fn t125_run(log: &mut DualLog) -> bool {
     );
 
     // (c) 边界钳制（屏域 x 钳 1919）：16 包右移 127（当前 x=5，
-    //     5+16×127 = 2037 > 1919 → 屏域钳制显形）。
+    //     5+16×127 = 2037 > 1919 → 屏域钳制显形；四字节口径——dz
+    //     0x00 零步进随行）。
     for _ in 0..16 {
         kbd::inject_aux(0x08);
         kbd::inject_aux(127);
         kbd::inject_aux(0);
+        kbd::inject_aux(0x00); // dz 0x00
     }
     let _ = kbd::aux_pump();
     let cur2 = kbd::aux_cursor();
@@ -14791,12 +14821,14 @@ fn t125_run(log: &mut DualLog) -> bool {
     );
 
     // (d) 负例域：溢出整包丢弃（bit6 在场 head=0x48——包计/光标零扰
-    //     动）+ 等头杂码重同步（bit3 缺席 0x05）。
+    //     动；轮询模式吞字节窗 = dx/dy/dz 三字节）+ 等头杂码重同步
+    //     （bit3 缺席 0x05）。
     let (pk3, _, rsy3, _, _) = kbd::aux_counts();
     kbd::inject_aux(0x48);
     kbd::inject_aux(0x01);
     kbd::inject_aux(0x02);
-    kbd::inject_aux(0x05); // 等头杂码（bit3 缺席）
+    kbd::inject_aux(0x05); // 溢出吞字节窗第 3 字节（dz 槽——吞没）
+    kbd::inject_aux(0x05); // 等头杂码（bit3 缺席——重同步）
     let _ = kbd::aux_pump();
     let (pk4, ovf4, rsy4, _, _) = kbd::aux_counts();
     let cur3 = kbd::aux_cursor();
@@ -15368,9 +15400,10 @@ fn t130_run(log: &mut DualLog) -> bool {
     let deny0 = waycomp::WLCOMP_R3_DENY.load(Ordering::Acquire);
     ok &= waycomp::sys_ptr_inject(0, 0) == 1; // kmain ≠ aux pid——fail-visible
     ok &= waycomp::WLCOMP_R3_DENY.load(Ordering::Acquire) == deny0 + 1;
-    crate::kbd::inject_aux(0x19); // press 包：head=0x09|0x10（sx）dx raw=0xFC→−4 dy raw=0x02→+2
+    crate::kbd::inject_aux(0x19); // press 包：head=0x09|0x10（sx）dx raw=0xFC→−4 dy raw=0x02→+2（M44-AUXW43 四字节口径——dz 0x00 零步进随行）
     crate::kbd::inject_aux(0xFC);
     crate::kbd::inject_aux(0x02);
+    crate::kbd::inject_aux(0x00); // dz 0x00
     crate::kbd::aux_pump(); // 内核车道直驱（t125 同谱）
     let (pk1, _, _, _, _) = crate::kbd::aux_counts();
     ok &= pk1 == pk0 + 1;
@@ -15415,9 +15448,10 @@ fn t130_run(log: &mut DualLog) -> bool {
 
     // release → 内核车道回归（sx 符号扩展负增量 + 极性反转对账）
     crate::kbd::aux_elf_claim(false);
-    crate::kbd::inject_aux(0x18); // head=0x08|0x10（sx）dx raw=0xFF→−1 dy raw=0x01→+1
+    crate::kbd::inject_aux(0x18); // head=0x08|0x10（sx）dx raw=0xFF→−1 dy raw=0x01→+1（四字节口径——dz 0x00 随行）
     crate::kbd::inject_aux(0xFF);
     crate::kbd::inject_aux(0x01);
+    crate::kbd::inject_aux(0x00); // dz 0x00
     crate::kbd::aux_pump(); // 内核车道直驱
     let (pk2, _, _, _, _) = crate::kbd::aux_counts();
     ok &= pk2 == pk1 + 1; // 内核计数回归
@@ -15890,10 +15924,15 @@ fn t132_run(log: &mut DualLog) -> bool {
         ax1.2 - ax0.2,
     );
 
-    // (d) 符号域 + 零扰：dz=0xFE(−2) → axis(−240)；dz=0 → 零扰不出
-    // 域（AXES/FRAMES 零增 + 包计数 +1——四字节包仍计）；光标零推进
-    // 全程对账（dx=dy=0 两包）。
+    // (d) 符号域 + 零扰（M44-AUXW43 笔㊽族谱口径改写——boot 接线切换
+    //     后 IMEX 族谱武装：0xFE bit6 0x40 旗标域 → dw −2 → HORIZONTAL
+    //     −240〔v0 8 位 dz 负向误读域退役——0xFE→−2 VERTICAL 口径随
+    //     族谱域武装收口〕；0x00 零步进 → 零扰不出域（AXES/FRAMES 零
+    //     增 + 包计数 +1——四字节包仍计）；光标零推进全程对账（dx=dy=0
+    //     两包）；WHEEL_AXIS 零增域闸（dw 域 HAXES/HWHEEL 分账）。
     let ptrs1 = waycomp::WLCOMP_PTRS.load(Ordering::Acquire);
+    let hw0 = kbd::aux_explorer_counts().2;
+    let haxes0 = waycomp::WLCOMP_HAXES.load(Ordering::Acquire);
     kbd::inject_aux(0x08);
     kbd::inject_aux(0x00);
     kbd::inject_aux(0x00);
@@ -15914,17 +15953,21 @@ fn t132_run(log: &mut DualLog) -> bool {
         waycomp::WLCOMP_FRAMES.load(Ordering::Acquire),
     );
     let (pk_d, _, _, axw2) = kbd::aux_wheel_counts();
+    let hw1 = kbd::aux_explorer_counts().2;
+    let haxes1 = waycomp::WLCOMP_HAXES.load(Ordering::Acquire);
     let (cx1, cy1) = kbd::aux_cursor();
     let sign_ok = pk_d
         && ax2.0 == ax1.0 + 1
         && ax2.1 == ax1.1 + 1
         && ax2.2 == ax1.2 + 1
-        && axw2 == axw1 + 1
+        && axw2 == axw1
+        && hw1 == hw0 + 1
+        && haxes1 == haxes0 + 1
         && (cx1, cy1) == (cx0, cy0);
     ok &= sign_ok;
     let _ = writeln!(
         log,
-        "LUMINA-T132-SIGN dz=-2 val=-240 axes=+{} zero_noise=true cur=({cx1},{cy1}) static_ok={}",
+        "LUMINA-T132-SIGN dw=-2 val=-240 haxes=+1 wheel_axis=+0 hwheel=+1 axes=+{} zero_noise=true cur=({cx1},{cy1}) static_ok={}",
         ax2.0 - ax1.0,
         (cx1, cy1) == (cx0, cy0),
     );
@@ -16706,8 +16749,10 @@ fn t135_run(log: &mut DualLog) -> bool {
         ptrs_probe - ptrs0,
     );
 
-    // (c) 符号域 + 零扰：dz=0xFE(−2) → axis(−240)+value120(−240) 随行；
-    // dz=0 零步进不随行（AXES/V120/FRAMES 零增 + 包计数 +1——域闸在环）
+    // (c) 符号域 + 零扰（M44-AUXW43 笔㊽族谱口径随行——0xFE bit6 旗
+    //     标域 → dw −2 → HORIZONTAL −240〔v0 dz −2 VERTICAL 口径退役；
+    //     AXES/V120/FRAMES 轴旗无关计数域不变〕；0x00 零步进不随行
+    //     （AXES/V120/FRAMES 零增 + 包计数 +1——域闸在环）
     let ptrs1 = waycomp::WLCOMP_PTRS.load(Ordering::Acquire);
     kbd::inject_aux(0x08);
     kbd::inject_aux(0x00);
@@ -17977,6 +18022,110 @@ fn t141_run(log: &mut DualLog) -> bool {
     let _ = crate::vfs::sys_close(hc as u64);
     if ok {
         let _ = writeln!(log, "LUMINA-T141-OK");
+    }
+    ok
+}
+
+/// t142 boot wheel/explorer 接线切换活体（M44-AUXW43 笔㊽）——四相位：
+/// 〔(a) BOOT——boot 接线收口态对账（零 test-knock 前提——boot 取证
+///     行随行）：Explorer 链 boot 武装实况 wheel+IMEX 双旗 + ID
+///     0x04 捕获 + ACK 预算窗收口 budget=0 + ID 门解除 expect=0 +
+///     环零残留 pending=0〕→〔(b) FAMILY——boot 态族谱解码全谱：
+///     dw=+1 包（0x41 bit6 旗标域）→ HORIZONTAL +120 + AUX_HWHEEL
+///     +1〔v0 8 位口径 0x41→+65 VERTICAL 分立域——活体路径族谱分岔
+///     实锤〕；dz nibble −2（0x0E）→ VERTICAL −240 + WHEEL_AXIS +1；
+///     按钮 4/5 双沿（0x10 BTN_SIDE press → 0x00 release）→ BTN_HI
+///     +2；包计数 +4〔kbd 侧生产戳分账——wire 侧 HAXES 面随 t139
+///     (c) 会话活体承载〕〕→
+///     〔(c) V0——v0 负向误读域退役对账：aux_wheel_decode 纯函数面
+///     原貌维持（0x0E→+14 / 0x41→+65——t132 判据面单元锚）而活体
+///     泵路径族谱分岔（family decode 0x0E→(0,−2,0) / 0x41→(1,+1,0)
+///     ——(b) 活体戳实证）——单元面 vs 活体面分立域如实落账〕→
+///     〔(d) 卫生收场——队列排水 + 计数稳定〕。
+/// LUMINA-T142-BOOT / T142-FAMILY / T142-V0 / T142-OK。
+fn t142_run(log: &mut DualLog) -> bool {
+    let mut ok = true;
+
+    // (a) BOOT 收口态对账（boot 接线实况——零 test-knock 前提）
+    let (imex, id_ret, _, _) = kbd::aux_explorer_counts();
+    let (wheel_mode, budget, _, _) = kbd::aux_wheel_counts();
+    let pending0 = kbd::aux_pending();
+    let expect0 = kbd::AUX_ID_EXPECT.load(Ordering::Acquire);
+    let boot_ok = imex
+        && id_ret == usize::from(kbd::AUX_ID_IMEX)
+        && wheel_mode
+        && budget == 0
+        && expect0 == 0
+        && pending0 == 0;
+    ok &= boot_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T142-BOOT imex={imex} id={id_ret:#04x} wheel={wheel_mode} budget={budget} expect={expect0} pending={pending0}（boot 接线收口态——M44-AUXW43）"
+    );
+
+    // (b) FAMILY——boot 态族谱解码全谱（dw 横轮 / dz nibble / 按钮 4/5）
+    let hw0 = kbd::aux_explorer_counts().2;
+    let bh0 = kbd::aux_explorer_counts().3;
+    let axw0 = kbd::AUX_WHEEL_AXIS.load(Ordering::Acquire);
+    let pk0 = kbd::AUX_PACKETS.load(Ordering::Acquire);
+    // dw=+1 包（0x41——bit6 旗标域横轮右旋一格）
+    kbd::inject_aux(0x08);
+    kbd::inject_aux(0x00);
+    kbd::inject_aux(0x00);
+    kbd::inject_aux(0x41);
+    kbd::aux_pump();
+    // dz nibble −2 包（0x0E——竖轮下旋两格）
+    kbd::inject_aux(0x08);
+    kbd::inject_aux(0x00);
+    kbd::inject_aux(0x00);
+    kbd::inject_aux(0x0E);
+    kbd::aux_pump();
+    // 按钮 4/5 双沿（0x10 BTN_SIDE press → 0x00 release）
+    kbd::inject_aux(0x08);
+    kbd::inject_aux(0x00);
+    kbd::inject_aux(0x00);
+    kbd::inject_aux(0x10);
+    kbd::aux_pump();
+    kbd::inject_aux(0x08);
+    kbd::inject_aux(0x00);
+    kbd::inject_aux(0x00);
+    kbd::inject_aux(0x00);
+    kbd::aux_pump();
+    let (hw1, bh1) = (kbd::aux_explorer_counts().2, kbd::aux_explorer_counts().3);
+    let axw1 = kbd::AUX_WHEEL_AXIS.load(Ordering::Acquire);
+    let pk1 = kbd::AUX_PACKETS.load(Ordering::Acquire);
+    let family_ok = hw1 == hw0 + 1
+        && axw1 == axw0 + 1
+        && bh1 == bh0 + 2
+        && pk1 == pk0 + 4
+        && kbd::aux_pending() == 0;
+    ok &= family_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T142-FAMILY dw=+1 hwheel=+1 dz_nib=-2 wheel_axis=+1 btn_hi=+2 pk=+4 pending=0（boot 态族谱解码全谱——零 test-knock；kbd 侧生产戳分账——wire 侧 HAXES 面随 t139 (c) 会话活体承载）"
+    );
+
+    // (c) V0——v0 负向误读域退役对账（单元面 vs 活体面分立域）
+    let v0_0e = kbd::aux_wheel_decode(0x0E); // 纯函数面原貌 = +14（t132 判据面单元锚）
+    let v0_41 = kbd::aux_wheel_decode(0x41); // 纯函数面原貌 = +65
+    let fam_0e = kbd::aux_wheel_family_decode(0x0E); // 活体面 = (0, −2, 0) dz nibble 域
+    let fam_41 = kbd::aux_wheel_family_decode(0x41); // 活体面 = (1, +1, 0) dw 横轮域
+    let v0_ok = v0_0e == 14 && v0_41 == 65 && fam_0e == (0, -2, 0) && fam_41 == (1, 1, 0);
+    ok &= v0_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T142-V0 unit=(0x0E→{v0_0e},0x41→{v0_41}) live=(0x0E→{fam_0e:?},0x41→{fam_41:?})（v0 误读域退役——单元面维持 + 活体面族谱分立域）"
+    );
+
+    // (d) 卫生收场——队列排水 + 计数稳定
+    waycomp::input_queue_flush();
+    let stable = kbd::aux_pending() == 0
+        && kbd::aux_explorer_counts().2 == hw1
+        && kbd::AUX_WHEEL_AXIS.load(Ordering::Acquire) == axw1
+        && kbd::aux_explorer_counts().3 == bh1;
+    ok &= stable;
+    if ok {
+        let _ = writeln!(log, "LUMINA-T142-OK");
     }
     ok
 }
