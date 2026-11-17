@@ -166,11 +166,82 @@ pub fn directive_for(state: PowerState) -> Option<Directive> {
     }
 }
 
+// ── 背光语义面（M46-DPMS51 笔57——真机窗口背光实测回填挂账远线；
+//    纯语义登记面零电气改动——kernel::fb DpmsLevel 电气域挂接既有）──
+
+/// 背光斜坡步粒度（百分点——平滑调光域固定粒度，定容计划面承载）。
+pub const BACKLIGHT_RAMP_STEP: u8 = 10;
+
+/// 背光斜坡步数上限（0-100 百分点 / 10 粒度 = 10 步满域；定容 16 留
+/// 余量——粒度细化批次缓冲）。
+pub const BACKLIGHT_RAMP_MAX: usize = 16;
+
+/// 面板供电语义四态（VESA DPMS 口径——`kernel::fb` DpmsLevel 电气域
+/// 同谱映射：On/Standby/Suspend/Off；纯语义登记面，真机背光电气效应
+/// 挂账真机窗口不虚报）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelPower {
+    /// 供电全谱（显示活跃域）。
+    On,
+    /// 待机（hsync 极性域——DPMS Standby）。
+    Standby,
+    /// 挂起（vsync 极性域——DPMS Suspend）。
+    Suspend,
+    /// 熄屏（消隐位域——DPMS Off）。
+    Off,
+}
+
+/// 显示状态 → 面板供电语义（**Dim 为亮度域不切供电**——Dim 态供电
+/// 全谱 On，仅背光百分比下降；Blank → Off 熄屏供电域）。
+pub fn panel_power_for(state: DisplayState) -> PanelPower {
+    match state {
+        DisplayState::On | DisplayState::Dim => PanelPower::On,
+        DisplayState::Blank => PanelPower::Off,
+    }
+}
+
+/// 背光百分比（显示状态 + 亮度登记值 → 背光语义值）：On = 100 /
+/// Blank = 0 / Dim = 登记亮度（[`DIM_STEPS`] 档位域——`DisplayPower`
+/// 亮度契约不变式随行）；真机背光实测回填挂账远线（登记面 ≠ 实测面，
+/// 不虚报）。
+pub fn backlight_pct(state: DisplayState, brightness: u8) -> u8 {
+    match state {
+        DisplayState::On => 100,
+        DisplayState::Blank => 0,
+        DisplayState::Dim => brightness,
+    }
+}
+
+/// 背光斜坡计划（from → to 平滑调光步序——步粒度
+/// [`BACKLIGHT_RAMP_STEP`] 定容上取整）：返值 = (步序数组, 有效步数)；
+/// from == to → 零步零扰动；越 [`BACKLIGHT_RAMP_MAX`] 容量域
+/// fail-visible（步数封顶显形）。真机背光调光执行面挂账（计划面在环，
+/// 电气斜坡随真机窗口）。
+pub fn backlight_ramp(from: u8, to: u8) -> ([u8; BACKLIGHT_RAMP_MAX], usize) {
+    let mut steps = [0u8; BACKLIGHT_RAMP_MAX];
+    if from == to {
+        return (steps, 0);
+    }
+    let mut n = 0usize;
+    let mut cur = from;
+    while cur != to && n < BACKLIGHT_RAMP_MAX {
+        if from < to {
+            cur = cur.saturating_add(BACKLIGHT_RAMP_STEP).min(to);
+        } else {
+            cur = cur.saturating_sub(BACKLIGHT_RAMP_STEP).max(to);
+        }
+        steps[n] = cur;
+        n += 1;
+    }
+    (steps, n)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{
-        can_transition_display, directive_for, Directive, DisplayError, DisplayPower, DisplayState,
+        backlight_pct, backlight_ramp, can_transition_display, directive_for, panel_power_for,
+        Directive, DisplayError, DisplayPower, DisplayState, PanelPower, BACKLIGHT_RAMP_STEP,
         DIM_STEPS,
     };
     use crate::{can_transition, decide, Action, Observation, PowerState, Thresholds};
@@ -308,5 +379,43 @@ mod tests {
         dp.apply(Directive::Restore).unwrap();
         assert_eq!(dp.state(), DisplayState::On);
         assert_eq!(dp.brightness(), 100);
+    }
+    /// M46-DPMS51 笔57：背光语义面全谱——面板供电映射（Dim 不切供
+    /// 电）、背光百分比契约（On=100/Blank=0/Dim=登记值）、斜坡计划
+    /// （升/降/等值/非整除钳制——步粒度 10 定容承载）。
+    #[test]
+    fn backlight_semantics_face() {
+        // 面板供电映射：Dim 为亮度域不切供电
+        assert_eq!(panel_power_for(DisplayState::On), PanelPower::On);
+        assert_eq!(panel_power_for(DisplayState::Dim), PanelPower::On);
+        assert_eq!(panel_power_for(DisplayState::Blank), PanelPower::Off);
+        // 背光百分比契约（DisplayPower 亮度不变式随行）
+        assert_eq!(backlight_pct(DisplayState::On, 100), 100);
+        assert_eq!(backlight_pct(DisplayState::Blank, 0), 0);
+        let mut dp = DisplayPower::new();
+        dp.apply(Directive::DimTo(25)).unwrap();
+        assert_eq!(backlight_pct(dp.state(), dp.brightness()), 25);
+        // 斜坡步粒度锚
+        assert_eq!(BACKLIGHT_RAMP_STEP, 10);
+        // 升斜坡：0 → 100 = [10,20,...,100] 十步（含目标不含起点）
+        let (s1, n1) = backlight_ramp(0, 100);
+        assert_eq!(n1, 10);
+        assert_eq!(&s1[..n1], &[10, 20, 30, 40, 50, 60, 70, 80, 90, 100]);
+        // 降斜坡：100 → 0 = [90,80,...,0] 十步（含目标 0）
+        let (s2, n2) = backlight_ramp(100, 0);
+        assert_eq!(n2, 10);
+        assert_eq!(&s2[..n2], &[90, 80, 70, 60, 50, 40, 30, 20, 10, 0]);
+        // 等值零步零扰动
+        let (s3, n3) = backlight_ramp(50, 50);
+        assert_eq!(n3, 0);
+        assert!(s3.iter().all(|&b| b == 0));
+        // 非整除钳制：0 → 45 = [10,20,30,40,45] 五步（末步钳到目标）
+        let (s4, n4) = backlight_ramp(0, 45);
+        assert_eq!(n4, 5);
+        assert_eq!(&s4[..n4], &[10, 20, 30, 40, 45]);
+        // Dim(25) → On 斜坡对账（Restore 全亮路径）
+        let (s5, n5) = backlight_ramp(25, 100);
+        assert_eq!(n5, 8);
+        assert_eq!(s5[n5 - 1], 100);
     }
 }
