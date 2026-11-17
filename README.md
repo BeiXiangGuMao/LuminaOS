@@ -10,15 +10,22 @@ SMP、抢占式调度、ring3 用户进程、SYSCALL/SYSRET、能力化 IPC、sw
 
 | 指标 | 现值 |
 |---|---|
-| 裸机自检 | **146 项全绿**（QEMU 退出码 33 自动验收） |
+| 裸机自检 | **147 项全绿**（QEMU 退出码 33 自动验收） |
 | CI 门禁 | CI-OK 11 阶段（宿主七阶段 + IDL/lint + 内核构建 + 冒烟 + 报告） |
 | syscall ABI | v0.23（SYS_AUX_READ/SYS_PTR_INJECT 新收录） |
 | 编译进程链 | 九形（协议/shm/服务环/常驻/合成器/契约标本/argv/解析/驱动） |
-| 双面板标记 | 195（S8 required + longrun 双面同步） |
+| 双面板标记 | 201（S8 required + longrun 双面同步） |
 
 ## 当前状态
 
-已定版 **v0.37.0**（M45 关账定版）。**M43/M44/M45 三里程碑连续落账**（M43 六批 + M44 三批 + M45 四笔含**笔52 沙箱回收事故复刻批次** + 收尾关账）：真机窗口 bit24=1 实测对账全谱（CPUID 逐位对账 + ReconWindow 二态判读核 + 0x6E0 路由复证）、输入域零锁化（Vyukov 无锁 MPMC 环替换 SpinLock）、harbor 动态链接族开工（harbor::ld 语义核判读族 v0）。此前 **M42「用户态桌面进程/Wayland 合成器」里程碑**已逐笔落账 **35 笔**（四笔收官：滚轮/扩展包 + click-to-focus + repeat_info + 收尾对账）：
+已定版 **v0.38.0**（M46 关账定版）。**M46 四笔落账**（harbor 机械执行面
+ld-lumina.so 交付批〔harbor::ld::exec——ET_DYN 结构判读 + 装载映射 +
+GNU 哈希桶链 + 重定位四类写面 + TLS Variant II + init/fini 序 + dlopen
+族 + H-P03 四段打点 + auxv 入口契约，t147 活体五相位〕+ 真机窗口实测
+回填执行面〔ostd ReconRecord 双纪律闸——Recorded 锚窗拒收零虚构〕+
+DPMS 背光语义面〔power PanelPower/backlight_pct/BACKLIGHT_RAMP〕+ 长
+稳正式记录底稿〔docs/LONGRUN-RECORD-TEMPLATE.md〕；真机窗四项实测回填
+挂账远线不变）。此前 **M43/M44/M45 三里程碑连续落账**（M43 六批 + M44 三批 + M45 四笔含**笔52 沙箱回收事故复刻批次** + 收尾关账）：真机窗口 bit24=1 实测对账全谱（CPUID 逐位对账 + ReconWindow 二态判读核 + 0x6E0 路由复证）、输入域零锁化（Vyukov 无锁 MPMC 环替换 SpinLock）、harbor 动态链接族开工（harbor::ld 语义核判读族 v0）。此前 **M42「用户态桌面进程/Wayland 合成器」里程碑**已逐笔落账 **35 笔**（四笔收官：滚轮/扩展包 + click-to-focus + repeat_info + 收尾对账）：
 
 - **阶段一**：用户态 fb 驱动进程移交链（SYS_DEV_PIO 端口裁量 + 常驻 fbdev 服务化）；
 - **阶段二**：unix socket 域 + Wayland 协议语义面（AF_UNIX 流套接字 + wire 解析壳
@@ -99,6 +106,11 @@ unsafe 全仓仅四层白名单（ostd / harbor 分配器契约 / kernel::boot /
   + 焦点切换 Enter/Leave 域联动（格直标强制入账）
 - 损伤域：联合域 SYNC 矩形 + commit 批尾单合成 + 上限近邻吸附细化 + 指针 16px 联动
 - 时间域：TSC 校准毫秒源（lfence 序列化读）+ wire 事件毫秒戳
+- **harbor 机械执行面（M46）**：harbor::ld::exec 机械执行语义核 v0
+  （ET_DYN 结构判读 + 装载映射计划面 + 分级缓冲 + GNU 哈希桶链决议 +
+  重定位四类写面〔RELATIVE/GLOB_DAT/JUMP_SLOT 惰性/COPY〕+ TLS
+  Variant II 布点 + init/fini 互逆序 + dlopen 族 + H-P03 四段打点 +
+  auxv 入口契约——t147 活体 147/147）
 
 **可靠性 · 取证**
 - #PF 专项取证面（五级现场分级）+ pf-hunt 大批次守候（断点续跑 + 时间预算收批）
@@ -271,10 +283,12 @@ lumina-build/              ← 编译产物 + 日志 + 报告（源码树外，�
 | v0.26.0 | M29–M31 | Harbor libc 首版 → 桌面骨架（Loom/Cascade/Glyph）→ 自举预备 |
 | v0.27.0 | M32–M41 | 九里程碑连发（Aurora SDK → busybox 兼容 → 服务化 → TCP → fb 电气化 → 竞态根治）+ M41 收官 + 八步发布流水线闭环 |
 | 开发线 | M42 用户态桌面链 | **35 笔逐笔落账**（三阶段 + 卫生/损伤/光标/驱动/滚轮/焦点/键盘语义批次）；自检 100→134，ABI v0.23，双面板 130 标记 |
+| 开发线 | M43–M45 | **M43 六批 + M44 三批 + M45 四笔**（输入链收口/真机窗口对账/MPMC 零锁化/harbor 语义核开工）；自检 134→146，双面板 130→195，v0.37.0 定版 |
+| 开发线 | M46 harbor 机械执行面 | **四笔落账**（LDEXEC49 交付批 + RECON50 回填执行面 + DPMS51 背光语义面 + LONGRUN52 记录底稿）；自检 146→**147**，双面板 195→**201**，v0.38.0 定版 |
 
-最新发布：**[Release v0.27.0](../../releases)**——src / artifacts / RELEASE_NOTES /
-SHA256SUMS 四资产。M42 桌面链进度随里程碑收口定版（当前 31 笔落账，HEAD 门禁
-CI-OK 全绿，冒烟 134/134）。
+最新发布：**[Release v0.38.0](../../releases)**——src / artifacts / RELEASE_NOTES /
+SHA256SUMS 四资产。M42–M46 桌面链与机械执行面进度随里程碑收口定版
+（HEAD 门禁 CI-OK 全绿，冒烟 147/147）。
 
 ## 工程纪律
 
