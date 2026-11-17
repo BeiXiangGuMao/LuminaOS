@@ -10,16 +10,15 @@ SMP、抢占式调度、ring3 用户进程、SYSCALL/SYSRET、能力化 IPC、sw
 
 | 指标 | 现值 |
 |---|---|
-| 裸机自检 | **134 项全绿**（QEMU 退出码 33 自动验收） |
+| 裸机自检 | **146 项全绿**（QEMU 退出码 33 自动验收） |
 | CI 门禁 | CI-OK 11 阶段（宿主七阶段 + IDL/lint + 内核构建 + 冒烟 + 报告） |
 | syscall ABI | v0.23（SYS_AUX_READ/SYS_PTR_INJECT 新收录） |
 | 编译进程链 | 九形（协议/shm/服务环/常驻/合成器/契约标本/argv/解析/驱动） |
-| 双面板标记 | 144（S8 required + longrun 双面同步） |
+| 双面板标记 | 195（S8 required + longrun 双面同步） |
 
 ## 当前状态
 
-已定版 **v0.36.0**（M42 收官定版）。**M42「用户态桌面进程/Wayland 合成
-器」里程碑**，已逐笔落账 **35 笔**（四笔收官：滚轮/扩展包 + click-to-focus + repeat_info + 收尾对账）：
+已定版 **v0.37.0**（M45 关账定版）。**M43/M44/M45 三里程碑连续落账**（M43 六批 + M44 三批 + M45 四笔含**笔52 沙箱回收事故复刻批次** + 收尾关账）：真机窗口 bit24=1 实测对账全谱（CPUID 逐位对账 + ReconWindow 二态判读核 + 0x6E0 路由复证）、输入域零锁化（Vyukov 无锁 MPMC 环替换 SpinLock）、harbor 动态链接族开工（harbor::ld 语义核判读族 v0）。此前 **M42「用户态桌面进程/Wayland 合成器」里程碑**已逐笔落账 **35 笔**（四笔收官：滚轮/扩展包 + click-to-focus + repeat_info + 收尾对账）：
 
 - **阶段一**：用户态 fb 驱动进程移交链（SYS_DEV_PIO 端口裁量 + 常驻 fbdev 服务化）；
 - **阶段二**：unix socket 域 + Wayland 协议语义面（AF_UNIX 流套接字 + wire 解析壳
@@ -37,9 +36,9 @@ SMP、抢占式调度、ring3 用户进程、SYSCALL/SYSRET、能力化 IPC、sw
   号 + WaitWhat::AuxRead 阻塞读 + 接管态仲裁）、Enter/Leave 域联动（焦点切换
   取证计数 + 光标格直标强制入账）。
 
-每笔带活体自检（t1-t134 续编）、双面板标记与 CI-OK 11 阶段门禁；取证证据链
-全程落账，ADR 八项裁决在库（docs/adr/），五维成熟度 v4 = 6.7/10
-（docs/MATURITY.md，v5 复评随 M42 收口）。
+每笔带活体自检（t1-t146 续编）、双面板标记与 CI-OK 11 阶段门禁；取证证据链
+全程落账，ADR 八项裁决在库（docs/adr/），五维成熟度 v7 = 7.0/10
+（docs/MATURITY.md，v6 6.9 → v7 随 M45-收尾记分）。
 
 ## 系统架构
 
