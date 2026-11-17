@@ -27,6 +27,11 @@ interactive = []
 longrun = []
 
 [dependencies]
+# M46-LDEXEC49 笔55：t147 活体消费 harbor::ld::exec 机械执行面
+#（ET_DYN 结构判读 + 装载映射 + 重定位写面 + TLS 布点 + 初始化序 +
+# dlopen 族 + H-P03 四段打点——harbor 纯函数组件面零内核依赖单向，
+# t79 prism/loom/cascade/glyph 消费先例同谱）
+harbor.workspace = true
 # ADR-0002 迁移步（M26）：SYS 文件面改道 meridian::vfs（挂载策略 + 门面聚合）
 meridian.workspace = true
 # M34-D2 旁路缩编批次二：终端文本规程纯函数面（console 翻译核 + tty 行分类核外移）

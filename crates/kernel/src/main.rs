@@ -86,8 +86,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126；M42-DMG27 t127（联合域上限细化活体）起 127；M42-DMG28 t128（指针 16px 粗粒度域联动活体）起 128；M42-SPRITE29 笔㉙ t129（光标 sprite 渲染面活体：compose 执行器顶层 sprite 平面 + 热点对位联动）起 129；M42-AUXR3 笔㉚ t130（ring3 aux 驱动进程活体：SYS_AUX_READ/SYS_PTR_INJECT 车道 + 接管态仲裁）起 130；M42-PTRLINK 笔㉛ t131（Enter/Leave 域联动活体：焦点切换取证计数 + 光标格直标强制入账）起 131；M42-WHEEL32 笔㉜ t132（IntelliMouse 轮询命令链 + wl_pointer axis 电气源活体）起 132；M42-CLICKF33 笔㉝ t133（click-to-focus 焦点迁移联动面活体：纯针直迁 + 键盘迁移取证戳 + 幂等/release 闸）起 133；M42-KBREP34 笔㉞ t134（wl_keyboard.repeat_info 键重复公告面活体：键盘派生域 keymap 后随行 + v0 关闭声明口径 + 域闸负例）起 134；M43-AV12036 笔㊱ t135（wl_pointer.axis_value120 离散步进语义活体：wheel 源 frame 域随行 + 流内序锚 + 零步进不随行域闸）起 135；M43-KBREP37 笔㊷ t136（键重复生产域 + set_cursor 请求域活体：repeat_info 真值公告 + delay/rate 重复窗 + 释放撤销 + 修饰键零登记 + 在册面/默认回退双臂）起 136；M43-PRIO38 笔电解 t137（产者优先级域活体：boot 代执面 + waycomp 0/aux 3 级序 + 越界 clamp 语义核）起 137；M43-TSC39 笔㊹ t138（TSC deadline one-shot 定时器活体：CPUID 特性锚 + LVT deadline 使能 + one-shot 交付 + 不再武装零增）起 138；M43-HWDW40 笔㊺ t139（Explorer 型别链 + IMEX 族谱解码活体：ID 0x04 双旗武装 + dw 横轮 HORIZONTAL axis + dz nibble 域 + 按钮 4/5 沿）起 139；M43-CURSOR41 笔㊻ t140（光标直迁域活体：窗亡重排域 stationary 光标位 hit-test 直迁 + 创建期 v0 口径钉住 + 幂等零扰）起 140；M44-MAP42 笔㊼ t141（创建期/map 域直迁活体：首映射批 stationary 光标位 hit-test 直迁零 motion 前提 + wire enter 出域取证 + map 域幂等零扰 + 跨窗直迁/窗亡回迁分戳分域）起 141；M44-AUXW43 笔㊽ t142（boot wheel/explorer 接线切换活体：Explorer 链 boot 武装 + 应答窗收口泵 + boot 态族谱解码全谱 + v0 负向误读域退役对账）起 142；M44-TSCRG44 笔㊾ t143（真机窗口 TSC deadline 全谱对账活体：交付后解除武装 + one-shot 零增判据 + 再武装语义 + 解除武装域）起 143；M45-BIT245 笔㊿ t144（真机窗口 bit24=1 CPUID 逐位对账活体：SDM 权威位义表 32 目 + 逐位判读语义核 + 探测面同源一致）起 144；M45-MPMC46 笔51 t145（MPMC 环替换 SpinLock 串行化活体：ostd MpmcRing 无锁环 + waycomp 输入域零锁直推 + ISR 臂退避域退役 + 三源并发零丢失）起 145；M45-RECON47 笔52 t146（真机窗口 bit24=1 实测对账活体：ReconWindow 二态判定核三源一致 + RECON_SEGMENTS 四段全谱装载计划面 + MSR 0x6E0 路由复证——标记四件 T146-WINDOW/PLAN/ROUTE/OK，双面板 191→195）起 146）。
-const SELFTEST_TOTAL: usize = 146;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126；M42-DMG27 t127（联合域上限细化活体）起 127；M42-DMG28 t128（指针 16px 粗粒度域联动活体）起 128；M42-SPRITE29 笔㉙ t129（光标 sprite 渲染面活体：compose 执行器顶层 sprite 平面 + 热点对位联动）起 129；M42-AUXR3 笔㉚ t130（ring3 aux 驱动进程活体：SYS_AUX_READ/SYS_PTR_INJECT 车道 + 接管态仲裁）起 130；M42-PTRLINK 笔㉛ t131（Enter/Leave 域联动活体：焦点切换取证计数 + 光标格直标强制入账）起 131；M42-WHEEL32 笔㉜ t132（IntelliMouse 轮询命令链 + wl_pointer axis 电气源活体）起 132；M42-CLICKF33 笔㉝ t133（click-to-focus 焦点迁移联动面活体：纯针直迁 + 键盘迁移取证戳 + 幂等/release 闸）起 133；M42-KBREP34 笔㉞ t134（wl_keyboard.repeat_info 键重复公告面活体：键盘派生域 keymap 后随行 + v0 关闭声明口径 + 域闸负例）起 134；M43-AV12036 笔㊱ t135（wl_pointer.axis_value120 离散步进语义活体：wheel 源 frame 域随行 + 流内序锚 + 零步进不随行域闸）起 135；M43-KBREP37 笔㊷ t136（键重复生产域 + set_cursor 请求域活体：repeat_info 真值公告 + delay/rate 重复窗 + 释放撤销 + 修饰键零登记 + 在册面/默认回退双臂）起 136；M43-PRIO38 笔电解 t137（产者优先级域活体：boot 代执面 + waycomp 0/aux 3 级序 + 越界 clamp 语义核）起 137；M43-TSC39 笔㊹ t138（TSC deadline one-shot 定时器活体：CPUID 特性锚 + LVT deadline 使能 + one-shot 交付 + 不再武装零增）起 138；M43-HWDW40 笔㊺ t139（Explorer 型别链 + IMEX 族谱解码活体：ID 0x04 双旗武装 + dw 横轮 HORIZONTAL axis + dz nibble 域 + 按钮 4/5 沿）起 139；M43-CURSOR41 笔㊻ t140（光标直迁域活体：窗亡重排域 stationary 光标位 hit-test 直迁 + 创建期 v0 口径钉住 + 幂等零扰）起 140；M44-MAP42 笔㊼ t141（创建期/map 域直迁活体：首映射批 stationary 光标位 hit-test 直迁零 motion 前提 + wire enter 出域取证 + map 域幂等零扰 + 跨窗直迁/窗亡回迁分戳分域）起 141；M44-AUXW43 笔㊽ t142（boot wheel/explorer 接线切换活体：Explorer 链 boot 武装 + 应答窗收口泵 + boot 态族谱解码全谱 + v0 负向误读域退役对账）起 142；M44-TSCRG44 笔㊾ t143（真机窗口 TSC deadline 全谱对账活体：交付后解除武装 + one-shot 零增判据 + 再武装语义 + 解除武装域）起 143；M45-BIT245 笔㊿ t144（真机窗口 bit24=1 CPUID 逐位对账活体：SDM 权威位义表 32 目 + 逐位判读语义核 + 探测面同源一致）起 144；M45-MPMC46 笔51 t145（MPMC 环替换 SpinLock 串行化活体：ostd MpmcRing 无锁环 + waycomp 输入域零锁直推 + ISR 臂退避域退役 + 三源并发零丢失）起 145；M45-RECON47 笔52 t146（真机窗口 bit24=1 实测对账活体：ReconWindow 二态判定核三源一致 + RECON_SEGMENTS 四段全谱装载计划面 + MSR 0x6E0 路由复证——标记四件 T146-WINDOW/PLAN/ROUTE/OK，双面板 191→195）起 146；M46-LDEXEC49 笔55 t147（harbor 机械执行面 ld-lumina.so 交付批活体：ET_DYN 结构判读 + 装载映射计划面/分级缓冲 + GNU 哈希决议链 + 重定位四类写面〔RELATIVE/GLOB_DAT/JUMP_SLOT 惰性/COPY〕+ TLS Variant II 三模块布点 + DTV 扩容 + init/fini 互逆序 + dlopen 族 + H-P03 四段打点——标记六件 T147-MAP/RELOC/TLS/INIT/BUDGET/OK，双面板 195→201）起 147）。
+const SELFTEST_TOTAL: usize = 147;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7593,6 +7593,21 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     //       LUMINA-T146-WINDOW/PLAN/ROUTE/OK。
     let t146 = t146_run(&mut log);
     report(&mut log, t146, "recon-window-plan");
+
+    // t147) harbor 机械执行面 ld-lumina.so 交付批活体（M46-LDEXEC49
+    //       笔55）：〔MAP——ET_DYN 结构判读 + 装载映射计划面（页对齐
+    //       双区）+ 分级缓冲（BSS 尾零）——load-map 段〕→〔RELOC——
+    //       GNU 哈希桶链决议（libstart→sym1）+ 重定位四类写面
+    //       （RELATIVE/GLOB_DAT/JUMP_SLOT 惰性/COPY 源搬运）——reloc
+    //       段〕→〔TLS——Variant II 三模块布点（tp 前域 + surplus
+    //       上域）+ DTV 扩容判读——tls-init 段〕→〔INIT——依赖先序
+    //       init / 逆序 fini + dlopen 族（error 一次性消费）——
+    //       init-exec 段〕→〔BUDGET——H-P03 四段打点（0.1 ms 定点
+    //       上取整 + 预算判读——QEMU TCG 记录式锚窗，真机窗实测
+    //       回填挂账远线）〕→〔OK 收口〕。
+    //       LUMINA-T147-MAP/RELOC/TLS/INIT/BUDGET/OK。
+    let t147 = t147_run(&mut log);
+    report(&mut log, t147, "harbor-ld-exec");
 
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
@@ -18699,6 +18714,352 @@ fn t146_run(log: &mut DualLog) -> bool {
 
     if ok {
         let _ = writeln!(log, "LUMINA-T146-OK");
+    }
+    ok
+}
+
+/// t147 合成 ET_DYN 共享对象标本（ld-lumina.so 形态——宿主 exec/tests
+/// synth_so 同谱金值）：RX 段 @0x2000（0x400：代码 + strtab + symtab +
+/// gnu_hash + rela）、RW 段 @0x3000（filesz 0x200：GOT/数组 + memsz
+/// 0x2000 BSS 尾 + 0x110 PT_DYNAMIC）、PT_TLS（memsz 32 / align 16）。
+/// 对齐同余式 p_offset ≡ p_vaddr (mod PAGE) 全程保持。
+fn t147_synth_so() -> alloc::vec::Vec<u8> {
+    use harbor::ld::exec as xe;
+    let mut v = alloc::vec![0u8; 0x3400];
+    // ELF 头
+    v[0..4].copy_from_slice(&[0x7F, b'E', b'L', b'F']);
+    v[4] = 2;
+    v[5] = 1;
+    v[6] = 1;
+    v[0x10..0x12].copy_from_slice(&xe::ET_DYN.to_le_bytes());
+    v[0x12..0x14].copy_from_slice(&62u16.to_le_bytes());
+    v[0x18..0x20].copy_from_slice(&0x2000u64.to_le_bytes());
+    v[0x20..0x28].copy_from_slice(&(64u64).to_le_bytes());
+    v[0x36..0x38].copy_from_slice(&56u16.to_le_bytes());
+    v[0x38..0x3A].copy_from_slice(&4u16.to_le_bytes());
+    let ph = |i: usize| 64 + i * 56;
+    // ① PT_LOAD RX @0x2000 len 0x400
+    v[ph(0)..ph(0) + 4].copy_from_slice(&xe::PT_LOAD.to_le_bytes());
+    v[ph(0) + 4..ph(0) + 8].copy_from_slice(&5u32.to_le_bytes());
+    v[ph(0) + 8..ph(0) + 16].copy_from_slice(&0x2000u64.to_le_bytes());
+    v[ph(0) + 16..ph(0) + 24].copy_from_slice(&0x2000u64.to_le_bytes());
+    v[ph(0) + 32..ph(0) + 40].copy_from_slice(&0x400u64.to_le_bytes());
+    v[ph(0) + 40..ph(0) + 48].copy_from_slice(&0x400u64.to_le_bytes());
+    // ② PT_LOAD RW @0x3000 filesz 0x200 memsz 0x2000
+    v[ph(1)..ph(1) + 4].copy_from_slice(&xe::PT_LOAD.to_le_bytes());
+    v[ph(1) + 4..ph(1) + 8].copy_from_slice(&6u32.to_le_bytes());
+    v[ph(1) + 8..ph(1) + 16].copy_from_slice(&0x3000u64.to_le_bytes());
+    v[ph(1) + 16..ph(1) + 24].copy_from_slice(&0x3000u64.to_le_bytes());
+    v[ph(1) + 32..ph(1) + 40].copy_from_slice(&0x200u64.to_le_bytes());
+    v[ph(1) + 40..ph(1) + 48].copy_from_slice(&0x2000u64.to_le_bytes());
+    // ③ PT_TLS @0x3000 memsz 32 align 16
+    v[ph(2)..ph(2) + 4].copy_from_slice(&xe::PT_TLS.to_le_bytes());
+    v[ph(2) + 8..ph(2) + 16].copy_from_slice(&0x3000u64.to_le_bytes());
+    v[ph(2) + 16..ph(2) + 24].copy_from_slice(&0x3000u64.to_le_bytes());
+    v[ph(2) + 40..ph(2) + 48].copy_from_slice(&32u64.to_le_bytes());
+    v[ph(2) + 48..ph(2) + 56].copy_from_slice(&16u64.to_le_bytes());
+    // ④ PT_DYNAMIC @0x3180 filesz 0x110
+    v[ph(3)..ph(3) + 4].copy_from_slice(&xe::PT_DYNAMIC.to_le_bytes());
+    v[ph(3) + 8..ph(3) + 16].copy_from_slice(&0x3180u64.to_le_bytes());
+    v[ph(3) + 16..ph(3) + 24].copy_from_slice(&0x3180u64.to_le_bytes());
+    v[ph(3) + 32..ph(3) + 40].copy_from_slice(&0x110u64.to_le_bytes());
+    // RX：代码 + strtab + symtab + gnu_hash + rela
+    v[0x2000..0x2010].copy_from_slice(&[
+        0x48, 0x89, 0xF8, 0xC3, 0x90, 0x90, 0x90, 0x90, 0x48, 0x89, 0xF8, 0xC3, 0x90, 0x90, 0x90,
+        0x90,
+    ]);
+    let strtab: &[u8] = b"\0libstart\0libhelp\0libdyn.so\0";
+    v[0x2040..0x2040 + strtab.len()].copy_from_slice(strtab);
+    let sym = |i: usize| 0x2080 + i * 24;
+    v[sym(1)..sym(1) + 4].copy_from_slice(&1u32.to_le_bytes());
+    v[sym(1) + 8..sym(1) + 16].copy_from_slice(&0x2040u64.to_le_bytes());
+    v[sym(1) + 16..sym(1) + 24].copy_from_slice(&8u64.to_le_bytes());
+    v[sym(2)..sym(2) + 4].copy_from_slice(&10u32.to_le_bytes());
+    v[sym(2) + 8..sym(2) + 16].copy_from_slice(&0x2008u64.to_le_bytes());
+    v[sym(2) + 16..sym(2) + 24].copy_from_slice(&4u64.to_le_bytes());
+    let h1 = harbor::ld::dl_new_hash(b"libstart");
+    let h2 = harbor::ld::dl_new_hash(b"libhelp");
+    v[0x20C0..0x20C4].copy_from_slice(&2u32.to_le_bytes());
+    v[0x20C4..0x20C8].copy_from_slice(&1u32.to_le_bytes());
+    v[0x20C8..0x20CC].copy_from_slice(&1u32.to_le_bytes());
+    v[0x20CC..0x20D0].copy_from_slice(&8u32.to_le_bytes());
+    let mut bloom = 0u64;
+    bloom |= 1u64 << (h1 % 64);
+    bloom |= 1u64 << ((h1 >> 8) % 64);
+    bloom |= 1u64 << (h2 % 64);
+    bloom |= 1u64 << ((h2 >> 8) % 64);
+    v[0x20D0..0x20D8].copy_from_slice(&bloom.to_le_bytes());
+    let b1 = (h1 % 2) as usize;
+    let b2 = (h2 % 2) as usize;
+    v[0x20D8 + 4 * b1..0x20D8 + 4 * b1 + 4].copy_from_slice(&1u32.to_le_bytes());
+    if b2 != b1 {
+        v[0x20D8 + 4 * b2..0x20D8 + 4 * b2 + 4].copy_from_slice(&2u32.to_le_bytes());
+    }
+    let c1 = if b1 == b2 { h1 & !1 } else { h1 | 1 };
+    let c2 = h2 | 1;
+    v[0x20E0..0x20E4].copy_from_slice(&c1.to_le_bytes());
+    v[0x20E4..0x20E8].copy_from_slice(&c2.to_le_bytes());
+    let wr_rela = |v: &mut alloc::vec::Vec<u8>, i: usize, off: u64, sym: u32, ty: u32, add: i64| {
+        let base = 0x2200 + i * 24;
+        v[base..base + 8].copy_from_slice(&off.to_le_bytes());
+        let info = ((sym as u64) << 32) | ty as u64;
+        v[base + 8..base + 16].copy_from_slice(&info.to_le_bytes());
+        v[base + 16..base + 24].copy_from_slice(&(add as u64).to_le_bytes());
+    };
+    wr_rela(&mut v, 0, 0x3000, 0, xe::R_X86_64_RELATIVE, 0x40);
+    wr_rela(&mut v, 1, 0x3008, 1, xe::R_X86_64_GLOB_DAT, 0);
+    wr_rela(&mut v, 2, 0x3010, 2, xe::R_X86_64_JUMP_SLOT, 0);
+    wr_rela(&mut v, 3, 0x3018, 2, xe::R_X86_64_COPY, 0);
+    // RW：GOT 0xEE 初值 + init/fini 数组
+    for i in 0..4 {
+        v[0x3000 + i * 8..0x3000 + i * 8 + 8].fill(0xEE);
+    }
+    v[0x30C0..0x30C8].copy_from_slice(&0x2000u64.to_le_bytes());
+    v[0x30C8..0x30D0].copy_from_slice(&0x2008u64.to_le_bytes());
+    v[0x30E0..0x30E8].copy_from_slice(&0x2000u64.to_le_bytes());
+    // 动态表 17 目 + DT_NULL 收尾
+    let dyn_entries: [(u64, u64); 17] = [
+        (xe::DT_NEEDED, 19),
+        (xe::DT_STRTAB, 0x2040),
+        (xe::DT_STRSZ, 40),
+        (xe::DT_SYMTAB, 0x2080),
+        (xe::DT_SYMENT, 24),
+        (xe::DT_GNU_HASH, 0x20C0),
+        (xe::DT_RELA, 0x2200),
+        (xe::DT_RELASZ, 96),
+        (xe::DT_RELAENT, 24),
+        (xe::DT_INIT_ARRAY, 0x30C0),
+        (xe::DT_INIT_ARRAYSZ, 16),
+        (xe::DT_FINI_ARRAY, 0x30E0),
+        (xe::DT_FINI_ARRAYSZ, 8),
+        (xe::DT_INIT, 0x2000),
+        (xe::DT_FINI, 0x2008),
+        (xe::DT_SONAME, 19),
+        (xe::DT_FLAGS, 0),
+    ];
+    for (i, (tag, val)) in dyn_entries.iter().enumerate() {
+        let base = 0x3180 + i * 16;
+        v[base..base + 8].copy_from_slice(&tag.to_le_bytes());
+        v[base + 8..base + 16].copy_from_slice(&val.to_le_bytes());
+    }
+    v
+}
+
+/// t147 harbor 机械执行面 ld-lumina.so 交付批活体（M46-LDEXEC49 笔55）
+/// ——五相位：〔(a) MAP——ET_DYN 结构判读 + 装载映射计划面（页对齐
+/// 双区）+ 分级缓冲（BSS 尾零）——load-map 段〕→〔(b) RELOC——GNU
+/// 哈希桶链决议（libstart→sym1→0x2040 绝对化）+ 重定位四类写面
+/// （RELATIVE 直写 / GLOB_DAT 决议写 / JUMP_SLOT 惰性跳过 / COPY 源
+/// 搬运）——reloc 段〕→〔(c) TLS——Variant II 三模块布点（模块 1 tp
+/// 前域 -32 / surplus 上域 +16/+24）+ DTV 扩容判读——tls-init 段〕→
+/// 〔(d) INIT——依赖先序 init（4 调用点）/ 逆序 fini（4 调用点）+
+/// dlopen 族（缺席 error 一次性消费 + RTLD_GLOBAL 插入序）——init-exec
+/// 段〕→〔(e) BUDGET——H-P03 四段打点（0.1 ms 定点上取整 + 预算判读
+/// ——QEMU TCG 记录式锚窗打点，真机窗 bit24=1 实测回填挂账远线）〕→
+/// 〔OK 收口〕。
+/// LUMINA-T147-MAP/RELOC/TLS/INIT/BUDGET/OK。
+#[allow(clippy::manual_map)]
+fn t147_run(log: &mut DualLog) -> bool {
+    use harbor::ld::exec as xe;
+    let mut ok = true;
+    let blob = t147_synth_so();
+    let base = 0x1000_0000u64;
+
+    // (a) MAP——ET_DYN 结构判读 + 装载映射计划面 + 分级缓冲
+    let t0 = ostd::time::tsc_clock::now_ns().unwrap_or(0);
+    let img = match xe::dyn_parse(&blob) {
+        Ok(i) => i,
+        Err(_) => {
+            let _ = writeln!(
+                log,
+                "LUMINA-T147-MAP err=parse（结构判读拒收——fail-visible）"
+            );
+            return false;
+        }
+    };
+    let plan = xe::load_plan(base, &img).unwrap_or_default();
+    let staged = xe::stage_image(base, &img)
+        .ok()
+        .map(|s| (s.base, s.bytes.len()));
+    let t1 = ostd::time::tsc_clock::now_ns().unwrap_or(0);
+    let seg_load_map = xe::ns_to_tenths(t1.saturating_sub(t0));
+    let map_ok = img.load_count == 2
+        && plan.len() == 2
+        && plan[0] == xe::MapRegion {
+            va_start: base + 0x2000,
+            va_end: base + 0x3000,
+            flags: 5, // PF_R | PF_X
+        }
+        && plan[1].flags == 6 // PF_R | PF_W
+        && staged == Some((base + 0x2000, 0x3000));
+    ok &= map_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T147-MAP loads={} regions={} staged={:#x}（load-map 段——页对齐计划面 + 分级缓冲 BSS 尾零在环）",
+        img.load_count,
+        plan.len(),
+        staged.map(|(_, l)| l).unwrap_or(0),
+    );
+
+    // (b) RELOC——GNU 哈希决议 + 重定位四类写面
+    let t2 = ostd::time::tsc_clock::now_ns().unwrap_or(0);
+    let hit = xe::gnu_hash_lookup(&img, b"libstart");
+    let resolved = [None, Some(base + 0x2040), None];
+    let sizes = [0u64, 8, 4];
+    let mut st_body = match xe::stage_image(base, &img) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let entries = xe::rela_entries(&img).unwrap_or_default();
+    let env = xe::RelocEnv::new(&resolved, &sizes, false);
+    let rep1 = if entries.len() == 4 {
+        xe::reloc_apply(&mut st_body, base, &entries[0..3], &env).ok()
+    } else {
+        None
+    };
+    let resolved_c = [None, Some(base + 0x2040), Some(base + 0x2008)];
+    let src_image = match xe::stage_image(base, &img) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let env_c = xe::RelocEnv::new(&resolved_c, &sizes, false)
+        .with_copy_src(&src_image.bytes, src_image.base);
+    let rep2 = xe::reloc_apply(&mut st_body, base, &entries[3..4], &env_c).ok();
+    let t3 = ostd::time::tsc_clock::now_ns().unwrap_or(0);
+    let seg_reloc = xe::ns_to_tenths(t3.saturating_sub(t2));
+    let idx0 = (base + 0x3000 - st_body.base) as usize;
+    let rd = |st: &xe::StagedImage, off: usize| -> u64 {
+        u64::from_le_bytes(st.bytes[off..off + 8].try_into().unwrap_or([0; 8]))
+    };
+    let reloc_ok = hit == Some(1)
+        && rep1
+            == Some(xe::RelocReport {
+                relative: 1,
+                glob_dat: 1,
+                jump_slot: 0,
+                jump_lazy: 1,
+                copy: 0,
+            })
+        && rep2
+            == Some(xe::RelocReport {
+                relative: 0,
+                glob_dat: 0,
+                jump_slot: 0,
+                jump_lazy: 0,
+                copy: 1,
+            })
+        && rd(&st_body, idx0) == base + 0x40
+        && rd(&st_body, idx0 + 8) == base + 0x2040
+        && st_body.bytes[idx0 + 16..idx0 + 24]
+            .iter()
+            .all(|&b| b == 0xEE)
+        && st_body.bytes[idx0 + 24..idx0 + 28] == [0x48, 0x89, 0xF8, 0xC3];
+    ok &= reloc_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T147-RELOC rel={} dat={} jump={} lazy={} copy={} hash=libstart->{}（reloc 段——四类写面 + PLT/GOT 延迟绑定域在环）",
+        rep1.map(|r| r.relative).unwrap_or(0),
+        rep1.map(|r| r.glob_dat).unwrap_or(0),
+        rep1.map(|r| r.jump_slot).unwrap_or(0),
+        rep1.map(|r| r.jump_lazy).unwrap_or(0),
+        rep2.map(|r| r.copy).unwrap_or(0),
+        hit.map(|i| i as u32).unwrap_or(0),
+    );
+
+    // (c) TLS——Variant II 三模块布点 + DTV 扩容判读
+    let t4 = ostd::time::tsc_clock::now_ns().unwrap_or(0);
+    let mut tls = xe::TlsSpace::new(16);
+    let m1 = tls.alloc(32, 16, 1).ok();
+    let m2 = tls.alloc(8, 8, 2).ok();
+    let m3 = tls.alloc(4, 4, 3).ok();
+    let dtv = tls.dtv_needs(2, 3);
+    let t5 = ostd::time::tsc_clock::now_ns().unwrap_or(0);
+    let seg_tls = xe::ns_to_tenths(t5.saturating_sub(t4));
+    let tls_ok = m1.map(|m| m.tp_offset) == Some(-32)
+        && m2.map(|m| m.tp_offset) == Some(16)
+        && m3.map(|m| m.tp_offset) == Some(24)
+        && dtv;
+    ok &= tls_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T147-TLS tpo1={} tpo2={} tpo3={} dtv3={}（tls-init 段——Variant II tp 前域 + surplus 上域布点在环）",
+        m1.map(|m| m.tp_offset).unwrap_or(0),
+        m2.map(|m| m.tp_offset).unwrap_or(0),
+        m3.map(|m| m.tp_offset).unwrap_or(0),
+        dtv as u8,
+    );
+
+    // (d) INIT——依赖先序 init / 逆序 fini + dlopen 族
+    let t6 = ostd::time::tsc_clock::now_ns().unwrap_or(0);
+    let faces = [
+        xe::ModInitFaces {
+            dt_init: true,
+            init_array_len: 2,
+            fini_array_len: 2,
+            dt_fini: true,
+        },
+        xe::ModInitFaces {
+            dt_init: false,
+            init_array_len: 1,
+            fini_array_len: 1,
+            dt_fini: false,
+        },
+    ];
+    let order = [0u32, 1];
+    let init = xe::init_order(&faces, &order).unwrap_or_default();
+    let fini = xe::fini_order(&faces, &order).unwrap_or_default();
+    let mut dl = xe::DlState::new();
+    let dl_miss = dl.dlopen(false, false);
+    let dl_err1 = dl.dlerror();
+    let dl_err2 = dl.dlerror();
+    let _ = dl.dlopen(true, false);
+    let g = dl.dlopen(true, true);
+    let t7 = ostd::time::tsc_clock::now_ns().unwrap_or(0);
+    let seg_init = xe::ns_to_tenths(t7.saturating_sub(t6));
+    let init_ok = init.len() == 4
+        && fini.len() == 4
+        && matches!(init.first(), Some(xe::CallSite::DtInit(0)))
+        && matches!(fini.first(), Some(xe::CallSite::FiniArray(1, 0)))
+        && dl_miss.is_none()
+        && dl_err1 == Some(xe::DL_ERR_CANNOT_OPEN)
+        && dl_err2.is_none()
+        && g == Some(2)
+        && dl.global_scope() == alloc::vec![2];
+    ok &= init_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T147-INIT init={} fini={} dl=3 err_once=1（init-exec 段——依赖先序/逆序 fini + dlopen 族 error 一次性消费在环）",
+        init.len(),
+        fini.len(),
+    );
+
+    // (e) BUDGET——H-P03 四段打点（QEMU TCG 记录式锚窗）：**判据 = 语义
+    //     锚**（预算判读面确定性金值对账——满预算绿/单段超支定位/上取
+    //     整定点），TCG 实测 tenths 降记录面**不设闸**（TCG 数值只作回
+    //     归基线，H-P03 绝对值判读随真机窗 bit24=1 实测回填——
+    //     recon_backfill 窗态纪律同源〔笔56〕，锚窗零宣称不虚报）
+    let tenths = [seg_load_map, seg_reloc, seg_tls, seg_init];
+    let anchor_full =
+        xe::recon_budget_judge(&[12, 10, 5, 3]) == ([false, false, false, false], true);
+    let anchor_over =
+        xe::recon_budget_judge(&[13, 10, 5, 3]) == ([true, false, false, false], false);
+    let anchor_ns = xe::ns_to_tenths(1) == 1
+        && xe::ns_to_tenths(100_000) == 1
+        && xe::ns_to_tenths(100_001) == 2
+        && xe::ns_to_tenths(0) == 0;
+    let bud_ok = anchor_full && anchor_over && anchor_ns;
+    ok &= bud_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T147-BUDGET tenths=({},{},{},{}) anchor=ok（H-P03 四段打点——QEMU TCG 记录式锚窗降记录面不设闸，真机窗 bit24=1 实测回填挂账远线——recon_backfill 窗态纪律同源）",
+        tenths[0],
+        tenths[1],
+        tenths[2],
+        tenths[3],
+    );
+
+    if ok {
+        let _ = writeln!(log, "LUMINA-T147-OK");
     }
     ok
 }

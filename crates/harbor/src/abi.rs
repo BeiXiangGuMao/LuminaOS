@@ -8,7 +8,7 @@
 //!   块步进防 LLVM 内建替换自递归 + fail-visible null/重叠/越界显形）；
 //!   本层 crate 级 `forbid(unsafe_code)` 承诺不破——薄壳零 unsafe 块；
 //! - **签名 = C ABI 指针形**（`extern "C"` + `*mut/*const c_void/u8`）；
-//! - **导出面**：`target_os = "none"`（内核目标）`#[no_mangle]` 导出——
+//! - **导出面**：`target_os = "none"`（内核目标）`#[unsafe(no_mangle)]` 导出（**cabi 特性门控**——rustc 1.99 把 no_mangle 划入 unsafe_code lint 域，forbid 与导出面全量冲突揭雷收口；默认关，启用窗挂账）——
 //!   用户态链接面成形后的 C 工具链对接位；宿主测试面 cfg 隔离（无导出，
 //!   与宿主 libc 零符号冲突——S4 测试车道不受扰）；
 //! - **fail-visible 语义**：C 契约中 UB 域（null dst、重叠 memcpy）以
@@ -27,7 +27,7 @@ use ostd::capi;
 pub const STRLEN_UNBOUNDED: usize = usize::MAX;
 
 /// memcpy：非重叠复制（重叠域显形拒绝——返回 NULL，偏差即对账）。
-#[cfg_attr(target_os = "none", no_mangle)]
+#[cfg_attr(all(target_os = "none", feature = "cabi"), unsafe(no_mangle))]
 pub extern "C" fn memcpy(dst: *mut c_void, src: *const c_void, n: usize) -> *mut c_void {
     if capi::raw_copy(dst.cast(), src.cast(), n) {
         dst
@@ -37,7 +37,7 @@ pub extern "C" fn memcpy(dst: *mut c_void, src: *const c_void, n: usize) -> *mut
 }
 
 /// memmove：重叠安全移动。
-#[cfg_attr(target_os = "none", no_mangle)]
+#[cfg_attr(all(target_os = "none", feature = "cabi"), unsafe(no_mangle))]
 pub extern "C" fn memmove(dst: *mut c_void, src: *const c_void, n: usize) -> *mut c_void {
     if capi::raw_move(dst.cast(), src.cast(), n) {
         dst
@@ -47,7 +47,7 @@ pub extern "C" fn memmove(dst: *mut c_void, src: *const c_void, n: usize) -> *mu
 }
 
 /// memset：置值（null → NULL）。
-#[cfg_attr(target_os = "none", no_mangle)]
+#[cfg_attr(all(target_os = "none", feature = "cabi"), unsafe(no_mangle))]
 pub extern "C" fn memset(dst: *mut c_void, val: i32, n: usize) -> *mut c_void {
     if capi::raw_set(dst.cast(), val as u8, n) {
         dst
@@ -57,13 +57,13 @@ pub extern "C" fn memset(dst: *mut c_void, val: i32, n: usize) -> *mut c_void {
 }
 
 /// memcmp：字典序差符号（null → 显形非零码；C 契约 UB 域防御化）。
-#[cfg_attr(target_os = "none", no_mangle)]
+#[cfg_attr(all(target_os = "none", feature = "cabi"), unsafe(no_mangle))]
 pub extern "C" fn memcmp(a: *const c_void, b: *const c_void, n: usize) -> i32 {
     capi::raw_cmp(a.cast(), b.cast(), n).unwrap_or(i32::MIN)
 }
 
 /// memchr：有界查找（未命中 → NULL）。
-#[cfg_attr(target_os = "none", no_mangle)]
+#[cfg_attr(all(target_os = "none", feature = "cabi"), unsafe(no_mangle))]
 pub extern "C" fn memchr(p: *const c_void, byte: i32, n: usize) -> *mut c_void {
     match capi::raw_chr(p.cast(), n, byte as u8) {
         // safe 指针偏移（wrapping_add——界内偏移，off < n 契约域）
@@ -74,13 +74,13 @@ pub extern "C" fn memchr(p: *const c_void, byte: i32, n: usize) -> *mut c_void {
 
 /// strlen：有界 NUL 扫描（C 全域口径 = [`STRLEN_UNBOUNDED`] 界；
 /// 界内未遇 NUL → 0 显形，偏差即对账）。
-#[cfg_attr(target_os = "none", no_mangle)]
+#[cfg_attr(all(target_os = "none", feature = "cabi"), unsafe(no_mangle))]
 pub extern "C" fn strlen(p: *const core::ffi::c_char) -> usize {
     capi::raw_strlen(p as *const u8, STRLEN_UNBOUNDED).unwrap_or(0)
 }
 
 /// strcpy：复制 NUL 终止串（null/无界 → dst 原样返回显形，偏差即对账）。
-#[cfg_attr(target_os = "none", no_mangle)]
+#[cfg_attr(all(target_os = "none", feature = "cabi"), unsafe(no_mangle))]
 pub extern "C" fn strcpy(
     dst: *mut core::ffi::c_char,
     src: *const core::ffi::c_char,
@@ -97,7 +97,7 @@ pub extern "C" fn strcpy(
 }
 
 /// strncpy：定界复制（n 界内不足补 NUL——C 语义；null → dst 原样）。
-#[cfg_attr(target_os = "none", no_mangle)]
+#[cfg_attr(all(target_os = "none", feature = "cabi"), unsafe(no_mangle))]
 pub extern "C" fn strncpy(
     dst: *mut core::ffi::c_char,
     src: *const core::ffi::c_char,
@@ -118,7 +118,7 @@ pub extern "C" fn strncpy(
 }
 
 /// strcat：追加（null → dst 原样显形）。
-#[cfg_attr(target_os = "none", no_mangle)]
+#[cfg_attr(all(target_os = "none", feature = "cabi"), unsafe(no_mangle))]
 pub extern "C" fn strcat(
     dst: *mut core::ffi::c_char,
     src: *const core::ffi::c_char,
@@ -130,7 +130,7 @@ pub extern "C" fn strcat(
 }
 
 /// strncat：定界追加（追加 n 内字符 + 终 NUL）。
-#[cfg_attr(target_os = "none", no_mangle)]
+#[cfg_attr(all(target_os = "none", feature = "cabi"), unsafe(no_mangle))]
 pub extern "C" fn strncat(
     dst: *mut core::ffi::c_char,
     src: *const core::ffi::c_char,
@@ -146,7 +146,7 @@ pub extern "C" fn strncat(
 }
 
 /// strcmp：字典序比较（null → i32::MIN 显形）。
-#[cfg_attr(target_os = "none", no_mangle)]
+#[cfg_attr(all(target_os = "none", feature = "cabi"), unsafe(no_mangle))]
 pub extern "C" fn strcmp(a: *const core::ffi::c_char, b: *const core::ffi::c_char) -> i32 {
     let alen = capi::raw_strlen(a as *const u8, STRLEN_UNBOUNDED).unwrap_or(0);
     let blen = capi::raw_strlen(b as *const u8, STRLEN_UNBOUNDED).unwrap_or(0);
@@ -155,7 +155,7 @@ pub extern "C" fn strcmp(a: *const core::ffi::c_char, b: *const core::ffi::c_cha
 }
 
 /// strncmp：定界字典序比较。
-#[cfg_attr(target_os = "none", no_mangle)]
+#[cfg_attr(all(target_os = "none", feature = "cabi"), unsafe(no_mangle))]
 pub extern "C" fn strncmp(
     a: *const core::ffi::c_char,
     b: *const core::ffi::c_char,

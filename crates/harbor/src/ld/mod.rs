@@ -39,6 +39,8 @@
 //! - [`dtv_needs_resize`] **DTV 动态扩展判读核**（modid 单调铸号越出现长
 //!   即扩容）。
 
+pub mod exec;
+
 use core::num::NonZeroU32;
 
 /// H-P03 总预算（0.1 ms 定点单位）：四段合计 ≤ 30 = 3.0 ms（启动日志单列

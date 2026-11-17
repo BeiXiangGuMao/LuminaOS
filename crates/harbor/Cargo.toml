@@ -9,5 +9,13 @@ authors.workspace = true
 [dependencies]
 ostd.workspace = true
 
+[features]
+# M46-LDEXEC49 笔55 揭雷收口：rustc 1.99 把 no_mangle 划入 unsafe_code
+# lint 域（裸写与 unsafe() 包装形同罚）——crate 级 forbid(unsafe_code)
+# 与内核目标 C 导出面全量冲突；导出面降级 cabi 特性门控（默认关——
+# t147 机械执行面零导出需求；启用窗需 crate 级 deny+abi 单点 allow
+# 收口，挂账如实登记）
+cabi = []
+
 [lints]
 workspace = true
