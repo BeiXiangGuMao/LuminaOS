@@ -2632,15 +2632,17 @@ pub fn log_cpu_mask() -> usize {
     LOG_CPU_MASK.load(Ordering::Acquire)
 }
 
-/// 终结当前任务（系统调用 EXIT 路径）：记录退出码 → 僵尸留证 →
-/// 唤醒等待本任务的父任务 → 切换到下一就绪任务或 idle（永不返回）；
-/// 两者皆无则停机等待唤醒。
+/// 终结当前任务（系统调用 EXIT 路径）：僵尸留证 → 退出码随僵尸锁窗
+/// 同窗登记 → 唤醒等待本任务的父任务 → 切换到下一就绪任务或 idle
+/// （永不返回）；两者皆无则停机等待唤醒。
+/// **M45-RECON47 笔52 随行揭雷收口**：v0 退出码通知早于状态登记
+/// （exit_current 先存后切）——零锁轮询面可观察「码已见/态未殭」
+/// 中间态（t95 撞窗七连实录 s1=2 ∧ exit=0x7，exit=u64::MAX 变体实
+/// 锤更早中间态；kbd AuxRead 阻塞化同源先例——调度洪水拉宽竞窗）。
+/// 收口：通知随 Zombie+SWITCHING 锁窗同窗落账（见
+/// [`finish_and_switch_away`]），观察面单点收敛无中间态，装置形态
+/// 不变。
 pub fn exit_current(code: u64) -> ! {
-    USER_EXIT_CODE.store(code, Ordering::Relaxed);
-    // 每核槽位（M8-A 自检 28）：终结发生在终结者所在核，钉扎派发下
-    // 槽位即任务身份；自由派发时取「最后终结者所在核」语义（取证面）。
-    let cpu = my_cpu();
-    USER_EXIT_CODES[cpu].store(code, Ordering::Release);
     finish_and_switch_away(code)
 }
 
@@ -2694,6 +2696,18 @@ fn finish_and_switch_away(code: u64) -> ! {
                 // 杜绝「收割→复用→boot_new 交错→死者鬼影保存写入复用槽
                 // ctx」的跨任务上下文污染（Type A 簇败族根因）。
                 SWITCHING[cur].store(1, Ordering::Release);
+                // M45-RECON47 笔52 随行揭雷收口：退出码通知域随 Zombie
+                // +SWITCHING 锁窗同窗落账（v0 exit_current 先存后切——
+                // 通知早于状态登记，零锁轮询面可观察中间态；t95 撞窗七
+                // 连实录 s1=2 ∧ exit=0x7，exit=u64::MAX 变体实锤更早
+                // 中间态）。收口后观察面单点收敛：码可见 ⟹ 态已殭 +
+                // 护槽握手已置——收割面经 SWITCHING 门控安全交错。入口
+                // 返回无码终结（u64::MAX 哨兵）不落槽位，语义原貌。
+                if code != u64::MAX {
+                    USER_EXIT_CODE.store(code, Ordering::Release);
+                    let cpu = my_cpu();
+                    USER_EXIT_CODES[cpu].store(code, Ordering::Release);
+                }
                 // M12-d 孤儿链 re-parent：退出任务的全部子任务改挂无主
                 // （parent = None）——Unix 孤儿语义的内核侧等价；孤儿
                 // Zombie 由 idle 附加工作自动收割（见 reap_orphans），

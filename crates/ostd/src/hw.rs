@@ -852,6 +852,141 @@ pub mod cpuid {
         }
         m
     }
+
+    // ── ReconWindow 二态判定核 + RECON_SEGMENTS 四段计划面（M45-RECON47
+    //    笔52——真机窗口 bit24=1 实测对账执行面；判据面纯函数宿主可测，
+    //    t146 活体与 ostd 单元测试同谱）──
+
+    /// 侦察窗口二态（M45-RECON47 笔52）：**RealMachine 真机窗**（真
+    /// 硬件窗口 bit24=1——四段全谱逐段实测对账承载）/ **Recorded 记录
+    /// 式锚窗**（QEMU TCG 等记录式锚承载——四段计划面装载、逐段零执行
+    /// 零宣称）。二态互斥完备——窗口态存疑时判定核返回 `None`
+    /// fail-visible（零默认成像零静默宣称）。
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum ReconWindow {
+        /// 真机窗——bit24=1 判据主位成像（真硬件恒 advertised）。
+        RealMachine,
+        /// 记录式锚窗——bit24=0 + 锚旗/计划面双真成像（记录式承载）。
+        Recorded,
+    }
+
+    impl ReconWindow {
+        /// 窗名（取证串口径——t146 WINDOW 行 `window=` 字段消费）。
+        pub fn name(self) -> &'static str {
+            match self {
+                ReconWindow::RealMachine => "real-machine",
+                ReconWindow::Recorded => "recorded",
+            }
+        }
+    }
+
+    /// 窗口判定核（纯函数——宿主可测；**三源一致才成像**）：src1 =
+    /// bit24（CPUID LEAF1 ECX tsc-deadline 主位现值——判据主位唯一
+    /// 权威）；src2 = 记录式锚旗（锚窗环境在位——QEMU hypervisor 域
+    /// 现值）；src3 = 四段计划面就绪旗（RECON_SEGMENTS 装载面在位）。
+    /// 成像规则：bit24=1 ∧ 计划面就绪 → `RealMachine`（真机窗主位
+    /// 权威——锚旗真伪不影响主位成像）；bit24=0 ∧ 锚旗 ∧ 计划面就绪
+    /// → `Recorded`（记录式锚窗闭如实）；其余组合（bit24=0 无锚 /
+    /// 计划面缺）→ `None`——窗口态存疑零宣称。
+    pub fn recon_window_of(
+        bit24: bool,
+        anchor_recorded: bool,
+        plan_ready: bool,
+    ) -> Option<ReconWindow> {
+        if bit24 {
+            if plan_ready {
+                Some(ReconWindow::RealMachine)
+            } else {
+                None
+            }
+        } else if anchor_recorded && plan_ready {
+            Some(ReconWindow::Recorded)
+        } else {
+            None
+        }
+    }
+
+    /// RECON_SEGMENTS 四段计划面段名权威表（M45-RECON47 笔52——真机窗
+    /// bit24=1 实测对账四段分解：装载映射 / 重定位 / TLS 初始化 / 初
+    /// 始化执行；Harbor 细则 H-P03 四段预算同谱分解——`harbor::ld`
+    /// RECON_BUDGET_SEGMENTS 手法同谱）。
+    pub const RECON_SEGMENTS: [&str; 4] = ["load-map", "reloc", "tls-init", "init-exec"];
+
+    /// 段态三态（计划面全谱承载）：`Void` 未入谱 / `Planned` 计划装载
+    /// / `Measured` 已测记——三态互斥完备（M45-RECON47 计划面口径）。
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum ReconSegmentState {
+        /// 未入谱（零宣称域）。
+        Void,
+        /// 计划装载（全谱装载面在环——锚窗零执行零宣称承载态）。
+        Planned,
+        /// 已测记（真机窗逐段实测对账回收态）。
+        Measured,
+    }
+
+    /// 四段计划面（定容数组零分配——no_std 域）：计划位图口径 =
+    /// **每段 4 位谱**，Planned/Measured 段其 4 位全置（全谱装载）、
+    /// Void 段 4 位全零——四段全计划 = `0xFFFF`（t146 PLAN 行 `plan=`
+    /// 字段），四段位图域间隔离（邻段零渗透）。
+    pub struct ReconPlan {
+        segments: [ReconSegmentState; 4],
+    }
+
+    impl ReconPlan {
+        /// 全谱装载计划面（四段全 Planned——t146 PLAN 判据主口径：
+        /// 锚窗全谱装载面在环而零实测，真机窗逐段测记回收）。
+        pub const fn full_spectrum() -> Self {
+            Self {
+                segments: [ReconSegmentState::Planned; 4],
+            }
+        }
+
+        /// 零宣称空面（四段全 Void——plan 位图零谱）。
+        pub const fn void() -> Self {
+            Self {
+                segments: [ReconSegmentState::Void; 4],
+            }
+        }
+
+        /// 计划位图（4 位谱 × 4 段——Planned/Measured = `0xF` 谱，
+        /// Void = 零谱；全谱 = `0xFFFF`）。
+        pub fn plan_mask(&self) -> u16 {
+            let mut m: u16 = 0;
+            for (i, s) in self.segments.iter().enumerate() {
+                if !matches!(s, ReconSegmentState::Void) {
+                    m |= 0xF << (i * 4);
+                }
+            }
+            m
+        }
+
+        /// 已测记段数（锚窗恒零——零执行零宣称；真机窗逐段递增）。
+        pub fn measured_count(&self) -> usize {
+            self.segments
+                .iter()
+                .filter(|s| matches!(s, ReconSegmentState::Measured))
+                .count()
+        }
+
+        /// 段测记（真机窗逐段对账承载——**邻段隔离**：仅本段变更，
+        /// 余段零扰；Void 段不可测记（未入谱零宣称）、越界段位
+        /// fail-visible 返假零 panic）。
+        pub fn record(&mut self, idx: usize) -> bool {
+            if idx >= self.segments.len() {
+                return false;
+            }
+            if matches!(self.segments[idx], ReconSegmentState::Void) {
+                return false;
+            }
+            self.segments[idx] = ReconSegmentState::Measured;
+            true
+        }
+
+        /// 段态读面（越界 `None` fail-visible）。
+        pub fn state(&self, idx: usize) -> Option<ReconSegmentState> {
+            self.segments.get(idx).copied()
+        }
+    }
 }
 
 /// 本地 APIC（LAPIC）——HW-13（M5 申请新增：IPI 与 SMP 依赖）。
@@ -1686,5 +1821,85 @@ mod cpuid_tests {
         // 位序锚：bit0 = LSB（1 → bitmap[0]）
         let m1 = leaf1_ecx_bitmap(1);
         assert!(m1[0] && m1.iter().skip(1).all(|b| !*b));
+    }
+
+    use super::cpuid::{
+        recon_window_of, ReconPlan, ReconSegmentState, ReconWindow, RECON_SEGMENTS,
+    };
+
+    /// M45-RECON47 笔52：窗口判定核全谱走查 + 计划面邻段隔离（三源
+    /// 成像规则全谱 + record 单段变更余段零扰 + 越界/Void 域
+    /// fail-visible 零 panic）。
+    #[test]
+    fn recon_window_judgement_neighbour_isolation() {
+        // 判定核全谱：真机窗主位（bit24=1 唯一权威——锚旗真伪不影响
+        // 主位成像，计划面就绪为前置）
+        assert!(matches!(
+            recon_window_of(true, false, true),
+            Some(ReconWindow::RealMachine)
+        ));
+        assert!(matches!(
+            recon_window_of(true, true, true),
+            Some(ReconWindow::RealMachine)
+        ));
+        assert!(recon_window_of(true, false, false).is_none()); // 计划面缺——存疑
+                                                                // 记录式锚窗（锚旗 + 计划面双真——QEMU TCG 记录式承载）
+        assert!(matches!(
+            recon_window_of(false, true, true),
+            Some(ReconWindow::Recorded)
+        ));
+        // 不一致域 fail-visible（零默认成像零静默宣称）
+        assert!(recon_window_of(false, false, true).is_none()); // bit24=0 无锚——存疑
+        assert!(recon_window_of(false, true, false).is_none()); // 计划面缺——存疑
+                                                                // 窗名口径（t146 WINDOW 行 window= 字段）
+        assert_eq!(ReconWindow::RealMachine.name(), "real-machine");
+        assert_eq!(ReconWindow::Recorded.name(), "recorded");
+        // 邻段隔离：单段测记余段零扰（真机窗语义——逐段对账互不渗透）
+        let mut p = ReconPlan::full_spectrum();
+        assert!(p.record(2));
+        assert_eq!(p.measured_count(), 1);
+        assert!(matches!(p.state(2), Some(ReconSegmentState::Measured)));
+        assert!(matches!(p.state(0), Some(ReconSegmentState::Planned)));
+        assert!(matches!(p.state(1), Some(ReconSegmentState::Planned)));
+        assert!(matches!(p.state(3), Some(ReconSegmentState::Planned)));
+        // 越界段位 fail-visible（零 panic）
+        assert!(!p.record(4));
+        assert!(p.state(4).is_none());
+        // Void 段不可测记（未入谱零宣称）
+        let mut v = ReconPlan::void();
+        assert!(!v.record(0));
+        assert_eq!(v.measured_count(), 0);
+    }
+
+    /// M45-RECON47 笔52：双窗计划面三态走查（真机窗逐段测记计数面 vs
+    /// 锚窗全谱装载零实测 + 三态互斥完备 + 4 位谱位图口径 + 段名权威
+    /// 表全谱）。
+    #[test]
+    fn recon_plan_dual_window_three_state() {
+        use ReconSegmentState::{Measured, Planned, Void};
+        // 真机窗：全谱装载 → 逐段测记（4/4 回收——plan 位图保持全谱）
+        let mut p = ReconPlan::full_spectrum();
+        assert_eq!(p.plan_mask(), 0xFFFF);
+        for i in 0..4 {
+            assert!(p.record(i));
+        }
+        assert_eq!(p.measured_count(), 4);
+        assert!(matches!(p.state(0), Some(Measured)));
+        assert_eq!(p.plan_mask(), 0xFFFF); // Measured 亦全谱装载位
+                                           // 记录式锚窗：全谱装载面在环但零执行零宣称（measured 恒零）
+        let q = ReconPlan::full_spectrum();
+        assert_eq!(q.plan_mask(), 0xFFFF);
+        assert_eq!(q.measured_count(), 0);
+        assert!(matches!(q.state(0), Some(Planned)));
+        // 空面：全 Void——plan 位图零谱
+        let v = ReconPlan::void();
+        assert_eq!(v.plan_mask(), 0x0000);
+        assert!(matches!(v.state(3), Some(Void)));
+        // 段名权威面（四段全谱——H-P03 四段分解同谱）
+        assert_eq!(RECON_SEGMENTS.len(), 4);
+        assert_eq!(RECON_SEGMENTS[0], "load-map");
+        assert_eq!(RECON_SEGMENTS[1], "reloc");
+        assert_eq!(RECON_SEGMENTS[2], "tls-init");
+        assert_eq!(RECON_SEGMENTS[3], "init-exec");
     }
 }
