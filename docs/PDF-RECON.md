@@ -101,7 +101,7 @@
 |---|---|---|---|
 | H-P01 | POSIX 符号覆盖 P2 末 ≥ 150（P0） | 落库 | harbor 158 符号机检双端在环（h_p01_symbol_inventory ≥150 闸——M35-H1a…H1d 兑现；METRICS H-P01 行）；M39-HBI abi 族扩记随本里程碑 |
 | H-P02 | 小对象分配 ≤ 80 ns（P1） | 挂账 | 分配器在 `ostd::heap`（ADR-0003）；数值留环境 B |
-| H-P03 | 动态链接启动 ≤ 3 ms（P2） | 挂账 | ld-lumina.so 动态链接器未落（用户态链接面成形前置——M39-HBI 落 C ABI 指针/链接层为前置步） |
+| H-P03 | 动态链接启动 ≤ 3 ms（P2） | 挂账 | ld-lumina.so 动态链接器未落（用户态链接面成形前置——M39-HBI 落 C ABI 指针/链接层为前置步）——M45-HARBOR48 笔53 随行注：harbor::ld 语义核判读族 v0 落域（四段预算分解 ≤1.2/1.0/0.5/0.3 ms 合计 ≤3 ms + 超支定位 + GNU 式符号哈希/bloom 两级 + 装载率告警 + 装载序/环检测 + 查找序三段 + 重定位四类/惰性绑定 + TLS 四模型/DTV 扩展——宿主 12 例全绿）；机械执行面挂账不变（ELF 装载映射/重定位写面/TLS 布点/初始化执行/dlopen 族/实机四段打点——随 ld-lumina.so 交付批次落域） |
 | H-P04 | libc-test 通过率 ≥ 90%（P1） | 挂账 | libc-test 套件未移植 |
 | H-P05 | printf 引擎吞吐 ≥ 200 MB/s（P2） | 挂账 | stdio 引擎未落（宿主消费面经 musl） |
 | H-P06 | 静态 hello ≤ 1.5 MB（P2） | 挂账 | 介质基线 busybox ~1 MiB 在案；hello 构建链未立 |

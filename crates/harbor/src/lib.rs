@@ -27,7 +27,12 @@
 //! - string/stdlib 扩容 28 符号（M35-H1c——复制/追加/分词/legacy mem 族
 //!   + strtoimax 族/mb 面/qsort_r/rand_r/atof）；
 //! - [`wchar`]：宽字符分类与宽串 37 符号（M35-H1d 补齐——isw 族/tow 族/
-//!   wctype/wctrans/towctrans 描述符面 + wcs/wmem 族切片语义）。
+//!   wctype/wctrans/towctrans 描述符面 + wcs/wmem 族切片语义）；
+//! - [`ld`]：动态链接语义核判读族（M45-HARBOR48——H-P03 四段预算分解 +
+//!   GNU 式符号哈希/bloom 两级 + 装载率告警 + DT_NEEDED 装载序/环检测 +
+//!   查找序三段 + 重定位家族四类/惰性绑定 + TLS 四模型/DTV 扩展判读；
+//!   v0 语义面零 POSIX 函数符号——机械执行面挂账随 ld-lumina.so 交付
+//!   批次落域）。
 //!
 //! # v0 范围界定（偏差登记，见 ROADMAP §四 M29 计划注）
 //!
@@ -57,6 +62,7 @@ extern crate alloc;
 pub mod abi;
 pub mod ctype;
 pub mod errno;
+pub mod ld;
 pub mod search;
 pub mod stdlib;
 pub mod string;
