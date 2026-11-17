@@ -987,6 +987,86 @@ pub mod cpuid {
             self.segments.get(idx).copied()
         }
     }
+
+    // ── ReconRecord 回填执行面（M46-RECON50 笔56——真机窗口 bit24=1
+    //    实测数据回填执行面；窗态纪律 + 预算判据纯函数宿主可测）──
+
+    /// H-P03 四段预算权威表（0.1 ms 定点——`harbor::ld`
+    /// RECON_BUDGET_SEGMENTS 同谱承载：load-map ≤12 / reloc ≤10 /
+    /// tls-init ≤5 / init-exec ≤3；ostd 零外引——依赖方向单向，同源
+    /// 常量复制口径，宿主对账逐目断言兜底）。
+    pub const RECON_BUDGET_TENTHS: [u32; 4] = [12, 10, 5, 3];
+
+    /// H-P03 总预算（0.1 ms 定点）= 30 = 3.0 ms（启动日志单列打点
+    /// 口径——`harbor::ld` H_P03_TOTAL_BUDGET_TENTHS 同源）。
+    pub const RECON_BUDGET_TOTAL_TENTHS: u32 = 30;
+
+    /// 回填记录（真机窗四段实测 + 预算判读——窗态权威随行，零默认
+    /// 成像零静默宣称）。
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub struct ReconRecord {
+        /// 窗态（真机窗回填——回填纪律主位；记录式锚窗拒收）。
+        pub window: ReconWindow,
+        /// 四段实测值（0.1 ms 定点，序 = [`RECON_SEGMENTS`]）。
+        pub tenths: [u32; 4],
+        /// 逐段超支旗（实测 > 段预算——段位直接定位零聚合遮蔽）。
+        pub overruns: [bool; 4],
+        /// 总闸判读（四段合计 ≤ [`RECON_BUDGET_TOTAL_TENTHS`]）。
+        pub total_ok: bool,
+    }
+
+    /// 实测回填核（纯函数宿主可测——**双纪律闸**）：① 窗态纪律——
+    /// 仅 RealMachine 真机窗可回填（bit24=1 判据主位唯一权威；
+    /// Recorded 记录式锚窗拒收 `None`——锚窗零执行零宣称纪律不破）；
+    /// ② 计划面纪律——四段全谱装载（非 Void）才可回填（Void 段在册
+    /// = 计划面未就绪 `None`）。回填成功 = [`ReconRecord`] 成像
+    /// （预算判读随行：逐段超支旗 + 总闸）。
+    pub fn recon_backfill(
+        plan: &ReconPlan,
+        window: ReconWindow,
+        tenths: [u32; 4],
+    ) -> Option<ReconRecord> {
+        if window != ReconWindow::RealMachine {
+            return None;
+        }
+        for i in 0..4 {
+            if plan.state(i)? == ReconSegmentState::Void {
+                return None;
+            }
+        }
+        let mut overruns = [false; 4];
+        let mut total: u32 = 0;
+        for i in 0..4 {
+            overruns[i] = tenths[i] > RECON_BUDGET_TENTHS[i];
+            total = total.saturating_add(tenths[i]);
+        }
+        Some(ReconRecord {
+            window,
+            tenths,
+            overruns,
+            total_ok: total <= RECON_BUDGET_TOTAL_TENTHS,
+        })
+    }
+
+    /// 回填证据行写出（单行取证格式——`LUMINA-RECON-BACKFILL
+    /// window=<窗名> tenths=(a,b,c,d) overruns=<n> total_ok=<0|1>`；
+    /// 真机窗回填后随关账报文入档）。
+    pub fn recon_backfill_write<W: core::fmt::Write>(
+        rec: &ReconRecord,
+        w: &mut W,
+    ) -> core::fmt::Result {
+        writeln!(
+            w,
+            "LUMINA-RECON-BACKFILL window={} tenths=({},{},{},{}) overruns={} total_ok={}",
+            rec.window.name(),
+            rec.tenths[0],
+            rec.tenths[1],
+            rec.tenths[2],
+            rec.tenths[3],
+            rec.overruns.iter().filter(|&&o| o).count(),
+            rec.total_ok as u8,
+        )
+    }
 }
 
 /// 本地 APIC（LAPIC）——HW-13（M5 申请新增：IPI 与 SMP 依赖）。
@@ -1901,5 +1981,47 @@ mod cpuid_tests {
         assert_eq!(RECON_SEGMENTS[1], "reloc");
         assert_eq!(RECON_SEGMENTS[2], "tls-init");
         assert_eq!(RECON_SEGMENTS[3], "init-exec");
+    }
+
+    use super::cpuid::{
+        recon_backfill, recon_backfill_write, RECON_BUDGET_TENTHS, RECON_BUDGET_TOTAL_TENTHS,
+    };
+
+    /// M46-RECON50 笔56：实测回填核三例——真机窗受理 + 记录式锚窗
+    /// 拒收（锚窗零执行零宣称纪律）+ 计划面 Void 段拒收 + 预算判据
+    /// （满预算绿/超支定位/总闸红）+ 证据行格式锚。
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    #[test]
+    fn recon_backfill_window_discipline_and_budget() {
+        // 预算权威表同谱对账（harbor::ld RECON_BUDGET_SEGMENTS 同源）
+        assert_eq!(RECON_BUDGET_TENTHS, [12, 10, 5, 3]);
+        assert_eq!(RECON_BUDGET_TOTAL_TENTHS, 30);
+        let plan = ReconPlan::full_spectrum();
+        // 真机窗受理：满预算全绿
+        let rec = recon_backfill(&plan, ReconWindow::RealMachine, [12, 10, 5, 3])
+            .expect("真机窗回填受理");
+        assert_eq!(rec.overruns, [false, false, false, false]);
+        assert!(rec.total_ok);
+        assert_eq!(rec.window.name(), "real-machine");
+        // 真机窗超支定位：单段超 + 总闸红
+        let rec2 = recon_backfill(&plan, ReconWindow::RealMachine, [13, 10, 5, 3])
+            .expect("真机窗回填受理二");
+        assert_eq!(rec2.overruns, [true, false, false, false]);
+        assert!(!rec2.total_ok);
+        // 边界：贴线 12 = 不超（严格大于口径）
+        let rec3 = recon_backfill(&plan, ReconWindow::RealMachine, [12, 10, 5, 3]).expect("贴线");
+        assert!(!rec3.overruns[0]);
+        // 记录式锚窗拒收（None——锚窗零执行零宣称纪律不破）
+        assert!(recon_backfill(&plan, ReconWindow::Recorded, [12, 10, 5, 3]).is_none());
+        // 计划面 Void 段拒收（计划面未就绪）
+        let void_plan = ReconPlan::void();
+        assert!(recon_backfill(&void_plan, ReconWindow::RealMachine, [1, 1, 1, 1]).is_none());
+        // 证据行格式锚（单行取证格式）
+        let mut buf = alloc::string::String::new();
+        recon_backfill_write(&rec, &mut buf).expect("证据行写出");
+        assert_eq!(
+            buf,
+            "LUMINA-RECON-BACKFILL window=real-machine tenths=(12,10,5,3) overruns=0 total_ok=1\n"
+        );
     }
 }
