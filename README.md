@@ -10,15 +10,15 @@ SMP、抢占式调度、ring3 用户进程、SYSCALL/SYSRET、能力化 IPC、sw
 
 | 指标 | 现值 |
 |---|---|
-| 裸机自检 | **148 项全绿**（QEMU 退出码 33 自动验收） |
+| 裸机自检 | **149 项全绿**（QEMU 退出码 33 自动验收） |
 | CI 门禁 | CI-OK 11 阶段（宿主七阶段 + IDL/lint + 内核构建 + 冒烟 + 报告） |
 | syscall ABI | v0.24（SYS_MMAP/SYS_MPROTECT 装载计划消费面双新号） |
 | 编译进程链 | 九形（协议/shm/服务环/常驻/合成器/契约标本/argv/解析/驱动） |
-| 双面板标记 | 207（S8 required + longrun 双面同步） |
+| 双面板标记 | 213（S8 required + longrun 双面同步） |
 
 ## 当前状态
 
-已定版 **v0.38.0**（M46 关账定版）。**M46 四笔落账**（harbor 机械执行面
+已定版 **v0.39.0**（M47 关账定版）。**M47 三笔落账**（装载计划消费面 + ld-lumina.so 本体交付批 + dlopen 真消费面〔harbor::ld::exec——DT_NEEDED 装载序真消费 + ring3 自装载链〕
 ld-lumina.so 交付批〔harbor::ld::exec——ET_DYN 结构判读 + 装载映射 +
 GNU 哈希桶链 + 重定位四类写面 + TLS Variant II + init/fini 序 + dlopen
 族 + H-P03 四段打点 + auxv 入口契约，t147 活体五相位〕+ 真机窗口实测
@@ -282,14 +282,16 @@ lumina-build/              ← 编译产物 + 日志 + 报告（源码树外，�
 | v0.25.0 | M25–M27 | Conduit 20 结构双闸 → Crystal FS 首割 → 网络栈收口（UDP/TCP） |
 | v0.26.0 | M29–M31 | Harbor libc 首版 → 桌面骨架（Loom/Cascade/Glyph）→ 自举预备 |
 | v0.27.0 | M32–M41 | 九里程碑连发（Aurora SDK → busybox 兼容 → 服务化 → TCP → fb 电气化 → 竞态根治）+ M41 收官 + 八步发布流水线闭环 |
+| v0.38.0 | M46 | harbor 机械执行面四笔（ld-lumina.so 交付批 + 真机回填执行面 + DPMS 背光语义面 + 长稳记录底稿）；自检 146→147，双面板 195→201 |
+| v0.39.0 | M47 | 装载计划消费面 + ld-lumina.so 本体 + dlopen 真消费面三笔；自检 148→149，ABI v0.24，双面板 207→213 |
 | 开发线 | M42 用户态桌面链 | **35 笔逐笔落账**（三阶段 + 卫生/损伤/光标/驱动/滚轮/焦点/键盘语义批次）；自检 100→134，ABI v0.23，双面板 130 标记 |
 | 开发线 | M43–M45 | **M43 六批 + M44 三批 + M45 四笔**（输入链收口/真机窗口对账/MPMC 零锁化/harbor 语义核开工）；自检 134→146，双面板 130→195，v0.37.0 定版 |
 | 开发线 | M46 harbor 机械执行面 | **四笔落账**（LDEXEC49 交付批 + RECON50 回填执行面 + DPMS51 背光语义面 + LONGRUN52 记录底稿）；自检 146→**147**，双面板 195→**201**，v0.38.0 定版 |
-| 开发线 | M47 装载计划消费面 | **笔60 落账**（LDCONS53——SYS_MMAP(46)/SYS_MPROTECT(47) 双电气域 ABI v0.24 + harbor exec_plan 消费面 + ld-lumina.so 本体真件入库）；自检 147→**148**，双面板 201→**207** |
+| 开发线 | M47 装载计划消费面 + dlopen 真消费面 | **两笔落账**（LDCONS53 双电气域 ABI v0.24 + exec_plan 消费面 + ld-lumina.so 本体真件 + DLOPEN54 dlopen 真消费面〔DT_NEEDED 装载序 + ring3 自装载链〕+ liblumina-core.so 依赖库真件）；自检 148→**149**，双面板 207→**213**，v0.39.0 定版 |
 
-最新发布：**[Release v0.38.0](../../releases)**——src / artifacts / RELEASE_NOTES /
-SHA256SUMS 四资产。M42–M46 桌面链与机械执行面进度随里程碑收口定版
-（HEAD 门禁 CI-OK 全绿，冒烟 148/148）。
+最新发布：**[Release v0.39.0](../../releases)**——src / artifacts / RELEASE_NOTES /
+SHA256SUMS 四资产。M42–M47 桌面链与用户态链接面进度随里程碑收口定版
+（HEAD 门禁 CI-OK 全绿，冒烟 149/149）。
 
 ## 工程纪律
 
