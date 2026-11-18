@@ -59,6 +59,10 @@
 
 extern crate alloc;
 
+/// std 仅测试域引入（meridian 先例同谱——宿主基准打点面 std::time）。
+#[cfg(test)]
+extern crate std;
+
 pub mod abi;
 pub mod ctype;
 pub mod errno;

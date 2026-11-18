@@ -24,6 +24,9 @@
 #![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+/// std 仅测试域引入（meridian/harbor 先例同谱——宿主基准打点面 std::time）。
+#[cfg(test)]
+extern crate std;
 // mm 模块的空闲表/帧段管理使用 core alloc（内核堆之上，不属于 unsafe 面）。
 extern crate alloc;
 

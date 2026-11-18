@@ -206,3 +206,62 @@ mod tests {
         assert!(!h.rebind(ARENA_BYTES.0.as_ptr() as *mut u8, ARENA));
     }
 }
+
+// ---- H-P05 分配器基准（M49-BENCH61 笔70——宿主微基线 M-P01 同谱骨架
+// ——数值登记 METRICS.md 对照；环境 B 绝对门禁挂账不变） ----
+
+#[cfg(test)]
+mod bench {
+    use super::{AllocStats, Bump};
+    use alloc::vec::Vec;
+    use core::alloc::{GlobalAlloc, Layout};
+
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    const ARENA: usize = 64 * 1024;
+    #[repr(align(16))]
+    struct Aligned([u8; ARENA]);
+    static ARENA_BYTES: Aligned = Aligned([0; ARENA]);
+
+    /// H-P05 Bump 分配基准（64 B 槽 ×N——bump 指针推进快路径均值/p99）。
+    #[test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    fn bench_bump_alloc() {
+        // 64 KiB 容 64 B 槽 = 1024 发/轮——ARENA 用满后重铸（bump 无
+        // free——轮替重铸口径如实记档）。
+        let round = || {
+            let h = Bump::new(ARENA_BYTES.0.as_ptr() as *mut u8, ARENA);
+            let layout = Layout::from_size_align(64, 8).unwrap();
+            for _ in 0..1_024 {
+                let p = unsafe { h.alloc(layout) };
+                assert!(!p.is_null());
+            }
+            let st: AllocStats = h.stats();
+            st
+        };
+        // 预热 100 轮。
+        for _ in 0..100 {
+            let _ = round();
+        }
+        // 主测 500 轮 × 1024 发：均值 ns/alloc。
+        const ROUNDS: usize = 500;
+        let t0 = std::time::Instant::now();
+        for _ in 0..ROUNDS {
+            let _ = round();
+        }
+        let mean_ns = t0.elapsed().as_nanos() / (ROUNDS * 1_024) as u128;
+        // 尾部采样 200 发取 p99。
+        let mut samples: Vec<u128> = Vec::with_capacity(200);
+        for _ in 0..200 {
+            let h = Bump::new(ARENA_BYTES.0.as_ptr() as *mut u8, ARENA);
+            let layout = Layout::from_size_align(64, 8).unwrap();
+            let t = std::time::Instant::now();
+            let _ = unsafe { h.alloc(layout) };
+            samples.push(t.elapsed().as_nanos());
+        }
+        samples.sort_unstable();
+        let p99_ns = samples[samples.len() * 99 / 100];
+        std::println!("H-P05 bump alloc mean = {mean_ns} ns/op (host, 64B slot)");
+        std::println!("H-P05 bump alloc p99  = {p99_ns} ns (host, per-call)");
+        assert!(mean_ns > 0 && p99_ns >= mean_ns, "基准打点结构性判读");
+    }
+}

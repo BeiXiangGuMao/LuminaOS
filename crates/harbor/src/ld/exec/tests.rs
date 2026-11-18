@@ -13,6 +13,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::num::NonZeroU32;
 
+#[cfg(test)]
+use std::println;
+
 use super::*;
 use crate::ld::dl_new_hash;
 
@@ -1881,4 +1884,175 @@ fn tls_exec_domain_face() {
         LdExecError::RelocTargetRange,
         "GD 双 qword 越界 fail-visible"
     );
+}
+
+// ---- H-P02/H-P03 基准族（M49-BENCH61 笔70——宿主微基线 M-P01 同谱
+// 骨架：预热 + 主测均值 + 尾部采样 p99 打点；数值登记 METRICS.md 对照
+// ——环境 B 绝对门禁挂账不变，宿主回归基线制）----
+
+/// H-P02 链接器装载决议基准（真件全链——dyn_parse + load_plan +
+/// stage_image + reloc_apply 四步均值/p99 + 链式 open/close 对均值）。
+#[test]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+fn bench_ld_load_and_resolve() {
+    let ld: &[u8] = include_bytes!("../../../../../artifacts/ld-lumina.so");
+    let core: &[u8] = include_bytes!("../../../../../artifacts/liblumina-core.so");
+    const BASE: u64 = 0x4000_0000;
+
+    // t148 同谱 env（JUMP_SLOT 决议 BASE+0x4000 + COPY 源 BASE+0x3040
+    // size 4——真件重定位四类全谱守恒；COPY 源镜像独立分级缓冲——借冲
+    // 收口同款 body 可变写面 / src 只读源面分立）。
+    let img0 = dyn_parse(ld).expect("parse");
+    let src_staged = stage_image(BASE, &img0).expect("src stage");
+    let one_cycle = || {
+        let img = dyn_parse(ld).expect("parse");
+        let plan = load_plan(BASE, &img).expect("plan");
+        let mut staged = stage_image(BASE, &img).expect("stage");
+        let entries = rela_entries(&img).expect("rela");
+        let resolved: Vec<Option<u64>> = vec![None, None, Some(BASE + 0x4000), Some(BASE + 0x3040)];
+        let sizes = vec![0u64, 0, 0, 4];
+        let env = RelocEnv::new(&resolved, &sizes, false)
+            .with_copy_src(&src_staged.bytes, src_staged.base);
+        let rep = reloc_apply(&mut staged, BASE, &entries, &env).expect("reloc");
+        (plan, rep)
+    };
+
+    // 预热 1k（页缓存/分支预测器稳定）。
+    for _ in 0..1_000 {
+        let _ = one_cycle();
+    }
+    // 主测 5k：均值。
+    const N: usize = 5_000;
+    let t0 = std::time::Instant::now();
+    for _ in 0..N {
+        let _ = one_cycle();
+    }
+    let mean_ns = t0.elapsed().as_nanos() / N as u128;
+
+    // 尾部采样 500（逐发独立计时，取 p99）。
+    let mut samples: Vec<u128> = Vec::with_capacity(500);
+    for _ in 0..500 {
+        let t = std::time::Instant::now();
+        let _ = one_cycle();
+        samples.push(t.elapsed().as_nanos());
+    }
+    samples.sort_unstable();
+    let p99_ns = samples[samples.len() * 99 / 100];
+
+    // 结构金值（t148 同谱——rel=(1,1,1,0,1) + 装载计划 2 段）。
+    let (plan, rep) = one_cycle();
+    assert_eq!(plan.len(), 2, "装载计划双段金值");
+    assert_eq!(
+        rep,
+        RelocReport {
+            relative: 1,
+            glob_dat: 1,
+            jump_slot: 1,
+            jump_lazy: 0,
+            copy: 1
+        },
+        "真件重定位四类金值（基准体同谱守恒）"
+    );
+
+    // 链式 open/close 对基准（双真件——ChainRegistry + dl_open_chain +
+    // dl_close_chain_ledger 全谱）。
+    let chain_cycle = || {
+        let mut reg = ChainRegistry::new();
+        reg.add(b"ld-lumina.so", ld).expect("add");
+        reg.add(b"liblumina-core.so", core).expect("add");
+        let mut dl = DlState::new();
+        let ids = dl_open_chain(&mut dl, &reg, b"ld-lumina.so", false).expect("open");
+        let _ = dl_close_chain_ledger(&mut dl, &ids, &[], &[], &[], &[]).is_err();
+        ids
+    };
+    for _ in 0..1_000 {
+        let _ = chain_cycle();
+    }
+    const M: usize = 2_000;
+    let t1 = std::time::Instant::now();
+    for _ in 0..M {
+        let _ = chain_cycle();
+    }
+    let chain_ns = t1.elapsed().as_nanos() / M as u128;
+
+    println!("H-P02 ld load+reloc mean = {mean_ns} ns/op (host)");
+    println!("H-P02 ld load+reloc p99  = {p99_ns} ns (host, per-call)");
+    println!("H-P02 dl open+close pair mean = {chain_ns} ns/pair (host)");
+    assert!(mean_ns > 0 && p99_ns >= mean_ns, "基准打点结构性判读");
+}
+
+/// H-P03 四段打点基准（load-map / reloc / tls-init / init-exec——真件
+/// 分段计时 0.1 ms 定点 → recon_budget_judge 预算闸零超支断言——H-P03
+/// 权威预算表 ≤1.2/1.0/0.5/0.3 ms 同谱）。
+#[test]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+fn bench_h_p03_four_segments() {
+    let ld: &[u8] = include_bytes!("../../../../../artifacts/ld-lumina.so");
+    const BASE: u64 = 0x4000_0000;
+    const N: usize = 2_000;
+
+    let img = dyn_parse(ld).expect("parse");
+    let entries = rela_entries(&img).expect("rela");
+    let resolved: Vec<Option<u64>> = vec![None, None, Some(BASE + 0x4000), Some(BASE + 0x3040)];
+    let sizes = vec![0u64, 0, 0, 4];
+    let env = RelocEnv::new(&resolved, &sizes, false);
+
+    // 预热。
+    for _ in 0..500 {
+        let _ = load_plan(BASE, &img);
+        let mut s = stage_image(BASE, &img).expect("stage");
+        let _ = reloc_apply(&mut s, BASE, &entries, &env);
+        let mut tls = TlsSpace::new(16);
+        let seg = img.tls.expect("PT_TLS");
+        let _ = tls.alloc(seg.mem_len, seg.align, 1);
+        let _ = tls.alloc(32, 16, 2);
+        let faces = vec![init_faces_of(&img)];
+        let staged = stage_image(BASE, &img).expect("stage2");
+        let _ = init_exec_ledger(&faces, &[0u32], &staged, &img, BASE);
+    }
+
+    // 四段分测（均值 ns → 0.1 ms 定点）。
+    let mut acc = [0u128; 4];
+    for _ in 0..N {
+        let t = std::time::Instant::now();
+        let _ = load_plan(BASE, &img);
+        acc[0] += t.elapsed().as_nanos();
+    }
+    for _ in 0..N {
+        let mut s = stage_image(BASE, &img).expect("stage");
+        let t = std::time::Instant::now();
+        let _ = reloc_apply(&mut s, BASE, &entries, &env);
+        acc[1] += t.elapsed().as_nanos();
+    }
+    for _ in 0..N {
+        let mut tls = TlsSpace::new(16);
+        let seg = img.tls.expect("PT_TLS");
+        let t = std::time::Instant::now();
+        let _ = tls.alloc(seg.mem_len, seg.align, 1);
+        let _ = tls.alloc(32, 16, 2);
+        acc[2] += t.elapsed().as_nanos();
+    }
+    for _ in 0..N {
+        let faces = vec![init_faces_of(&img)];
+        let staged = stage_image(BASE, &img).expect("stage2");
+        let t = std::time::Instant::now();
+        let _ = init_exec_ledger(&faces, &[0u32], &staged, &img, BASE);
+        acc[3] += t.elapsed().as_nanos();
+    }
+    let actual: [u32; 4] = [
+        ns_to_tenths((acc[0] / N as u128) as u64),
+        ns_to_tenths((acc[1] / N as u128) as u64),
+        ns_to_tenths((acc[2] / N as u128) as u64),
+        ns_to_tenths((acc[3] / N as u128) as u64),
+    ];
+    let (overruns, total_ok) = recon_budget_judge(&actual);
+    println!(
+        "H-P03 four segments = ({}, {}, {}, {}) tenths (host mean of {N})",
+        actual[0], actual[1], actual[2], actual[3]
+    );
+    assert!(
+        !overruns.iter().any(|&o| o),
+        "H-P03 四段零超支（权威预算表 ≤12/10/5/3 tenths）"
+    );
+    assert!(total_ok, "H-P03 总闸通过");
 }

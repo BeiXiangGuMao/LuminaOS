@@ -482,3 +482,59 @@ mod free_list_tests {
         }
     }
 }
+
+// ---- H-P05 分配器基准（M49-BENCH61 笔70——宿主微基线 M-P01 同谱骨架
+// ——数值登记 METRICS.md 对照；环境 B 绝对门禁挂账不变） ----
+
+#[cfg(test)]
+mod bench {
+    use super::FreeList;
+    use alloc::vec::Vec;
+    use core::alloc::{GlobalAlloc, Layout};
+    use core::cell::UnsafeCell;
+
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    const ARENA: usize = 64 * 1024;
+    // SAFETY: arena 恰被本测试独占使用（freelist tests 装置同款）。
+    #[repr(align(16))]
+    struct ArenaB(UnsafeCell<[u8; ARENA]>);
+    unsafe impl Sync for ArenaB {}
+    static ARENA_BYTES: ArenaB = ArenaB(UnsafeCell::new([0; ARENA]));
+
+    /// H-P05 FreeList 分配/回收基准（64 B 槽 alloc+dealloc 循环——
+    /// 空闲链 push/pop 全路径均值/p99）。
+    #[test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    fn bench_freelist_alloc_free() {
+        let h = FreeList::new(ARENA_BYTES.0.get() as *mut u8, ARENA);
+        let layout = Layout::from_size_align(64, 8).unwrap();
+        let cycle = || {
+            let p = unsafe { h.alloc(layout) };
+            assert!(!p.is_null());
+            unsafe { h.dealloc(p, layout) };
+        };
+        // 预热 5k。
+        for _ in 0..5_000 {
+            cycle();
+        }
+        // 主测 50k：均值 ns/cycle（alloc+dealloc 对）。
+        const N: usize = 50_000;
+        let t0 = std::time::Instant::now();
+        for _ in 0..N {
+            cycle();
+        }
+        let mean_ns = t0.elapsed().as_nanos() / N as u128;
+        // 尾部采样 1k（逐发独立计时，取 p99）。
+        let mut samples: Vec<u128> = Vec::with_capacity(1_000);
+        for _ in 0..1_000 {
+            let t = std::time::Instant::now();
+            cycle();
+            samples.push(t.elapsed().as_nanos());
+        }
+        samples.sort_unstable();
+        let p99_ns = samples[samples.len() * 99 / 100];
+        std::println!("H-P05 freelist alloc+free mean = {mean_ns} ns/pair (host, 64B slot)");
+        std::println!("H-P05 freelist alloc+free p99  = {p99_ns} ns (host, per-call)");
+        assert!(mean_ns > 0 && p99_ns >= mean_ns, "基准打点结构性判读");
+    }
+}
