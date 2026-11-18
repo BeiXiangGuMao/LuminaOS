@@ -11,7 +11,7 @@ OS=/home/z/my-project/lumina-os
 BUILD=/home/z/my-project/lumina-build
 OUT=/home/z/my-project/lumina-build/artifacts/release-v0.39.0
 V=v0.39.0
-SUMMARY_EPOCH=1794989884   # 最终绿灯 ci-summary（CI-OK 十一阶段 149/149 定版树复跑）
+SUMMARY_EPOCH=1794991888   # 最终绿灯 ci-summary（CI-OK 十一阶段 149/149 定版树复跑）
 
 mkdir -p "$OUT/artifacts/logs"
 cd "$OS"
