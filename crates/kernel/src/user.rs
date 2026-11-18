@@ -45,6 +45,9 @@ include!("exec_images_m48a.rs");
 // 再生成——ring3 跨模块查找电气探针；artifacts/ 单一事实源——
 // gen_m47b core 本体单源锚随行）。
 include!("exec_images_m48b.rs");
+// M48-INIT57 init_array 执行域批交付件（勿手改：scripts/gen_m48c_init.py
+// 再生成——liblumina-init.so 初始化域模块；artifacts/ 单一事实源）。
+include!("exec_images_m48c.rs");
 
 /// 用户代码段虚拟基址（PT[0]）。
 pub const USER_CODE_VIRT: u64 = 0x40_0000;

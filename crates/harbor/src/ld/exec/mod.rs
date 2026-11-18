@@ -1588,6 +1588,60 @@ impl DlState {
     }
 }
 
+// ---- init_array 执行域面（M48-INIT57 笔65——harbor 第⑥族初始化域
+// 桩→真：faces 手工组装域升级 DynImage 直收域 + 执行台账（CallSite →
+// 地址兑现——DT_INIT VA 直取 + .init_array 指针自分级缓冲读回〔兑现后
+// 基址域——reloc_apply RELATIVE 已把 base+va 烘入〕）。零 unsafe 零
+// panic，fail-visible 全显形）----
+
+/// init 域收取（DynImage 直收——DT_INIT 在场位 + .init_array/.fini_array
+/// 长度（DT_*ARRAYSZ/8）——手工组装域升级真收取域）。
+pub fn init_faces_of(img: &DynImage<'_>) -> ModInitFaces {
+    ModInitFaces {
+        dt_init: img.dyn_val(DT_INIT).is_some(),
+        init_array_len: (img.dyn_val(DT_INIT_ARRAYSZ).unwrap_or(0) / 8) as usize,
+        fini_array_len: (img.dyn_val(DT_FINI_ARRAYSZ).unwrap_or(0) / 8) as usize,
+        dt_fini: img.dyn_val(DT_FINI).is_some(),
+    }
+}
+
+/// init_array 执行台账（执行域——faces + 装载序 + 分级缓冲 →
+/// [`init_order`] 调用点序逐点地址兑现：DT_INIT = base + VA 直取；
+/// .init_array[i] = 分级缓冲指针读回〔reloc_apply RELATIVE 已烘 base+va
+/// ——兑现后基址域〕；.fini_array[i] 同域）。返回 (调用点, 兑现地址) 序
+/// = 执行域台账（依赖先序——装载序即 init 序）。
+pub fn init_exec_ledger(
+    faces: &[ModInitFaces],
+    load_order: &[u32],
+    staged: &StagedImage,
+    img: &DynImage<'_>,
+    base: u64,
+) -> Result<Vec<(CallSite, u64)>, LdExecError> {
+    let sites = init_order(faces, load_order)?;
+    let mut out = Vec::new();
+    for cs in sites {
+        let addr = match cs {
+            CallSite::DtInit(_) => base + img.dyn_val(DT_INIT).unwrap_or(0),
+            CallSite::InitArray(_, i) => {
+                let arr_va = img.dyn_val(DT_INIT_ARRAY).unwrap_or(0);
+                let off = (base + arr_va + 8 * i as u64 - staged.base) as usize;
+                let end = off + 8;
+                if end > staged.bytes.len() {
+                    return Err(LdExecError::RelocTargetRange);
+                }
+                u64::from_le_bytes(
+                    staged.bytes[off..end]
+                        .try_into()
+                        .map_err(|_| LdExecError::RelocTargetRange)?,
+                )
+            }
+            _ => 0,
+        };
+        out.push((cs, addr));
+    }
+    Ok(out)
+}
+
 // ---- PLT/GOT 惰性绑定电气执行面（M48-PLTGOT55 笔63——harbor 第④族
 // 桩→真：M46/M47 惰性跳过记账域（jump_lazy 记账）升级为**真执行域**——
 // 接线（wire）→ 首调解析（resolver 步兑现 GOT 槽）→ 直达（已决议槽直
