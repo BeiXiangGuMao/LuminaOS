@@ -3,7 +3,8 @@
 //! 重定位四类写面 / 惰性绑定 / GNU 哈希桶链 / TLS Variant II 布点 /
 //! init/fini 互逆序 / dlopen 族状态机 / auxv 入口契约 / 四段打点 /
 //! NonZero 类型码；M47-DLOPEN54 笔61 起 +1 例——dlopen 真消费面
-//! 链式装载全谱 = 14 例）。
+//! 链式装载全谱 = 14 例；M48-PLTGOT55 笔63 起 +1 例——PLT/GOT 惰性
+//! 绑定电气执行面全谱 = 15 例）。
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -957,4 +958,99 @@ fn dl_chain_consumer_face() {
         LdExecError::RegistryRange,
         "定容超限拒收（8 件满）"
     );
+}
+
+/// PLT/GOT 惰性绑定电气执行面全谱（M48-PLTGOT55 笔63）——七域对账：
+/// 接线（PLT 存根初值 = plt0+stride×(idx+1) 经典布局）；首调解析兑现
+/// （Stub→Resolved 槽值翻转）；次调幂等（已决议槽 resolve = Ok(false)
+/// 零增）；未接线槽拒收（LazyUnbound）；槽号越界拒收（LazySlotRange
+/// ——rel_idx ≥ LAZY_SLOT_CAP）；容量闸（16 槽满 + 第 17 槽拒收）；
+/// lazy_wire 记账对账（wired = jump_lazy 同镜像守恒 + bound = 立即域）。
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[test]
+fn pltgot_lazy_bind_exec_face() {
+    const PLT0: u64 = 0x4000_1000;
+    const GOT3: u64 = 0x2_0000_0018;
+    const GOT4: u64 = 0x2_0000_0020;
+    const TARGET: u64 = 0x4000_2000;
+
+    // ① 接线：PLT 存根初值 = plt0 + stride × (rel_idx + 1)
+    let mut got = LazyGot::new(PLT0);
+    let s1 = got.wire(GOT3, 0).expect("接线 slot0");
+    assert_eq!(s1, PLT0 + 0x10, "存根地址 = plt0 + 16×(0+1)");
+    assert_eq!(got.state(GOT3), Some(LazySlotState::Stub(s1)));
+    assert_eq!(got.value(GOT3), Some(s1), "首调前槽值 = PLT 存根");
+    assert_eq!(got.len(), 1);
+    // 重复接线幂等（同槽同存根覆写）
+    assert_eq!(got.wire(GOT3, 0).expect("重复接线"), s1, "接线幂等域");
+    assert_eq!(got.len(), 1, "同槽不重复入册");
+
+    // ② 首调解析兑现：Stub → Resolved
+    assert!(got.resolve(GOT3, TARGET).expect("首调解析"));
+    assert_eq!(got.state(GOT3), Some(LazySlotState::Resolved(TARGET)));
+    assert_eq!(got.value(GOT3), Some(TARGET), "首调后槽值 = 决议地址");
+    assert_eq!(got.resolved_count(), 1);
+
+    // ③ 次调幂等：已决议槽 resolve = Ok(false)（直达域——resolver 零重入）
+    assert!(!got.resolve(GOT3, TARGET).expect("次调幂等"));
+    assert_eq!(got.resolved_count(), 1, "重复解析零增");
+
+    // ④ 未接线槽拒收：LazyUnbound
+    assert_eq!(
+        got.resolve(GOT4, TARGET).unwrap_err(),
+        LdExecError::LazyUnbound,
+        "未接线槽 resolver 步 fail-visible"
+    );
+    assert_eq!(got.value(GOT4), None);
+
+    // ⑤ 槽号越界拒收：LazySlotRange（rel_idx ≥ LAZY_SLOT_CAP）
+    let mut got2 = LazyGot::new(PLT0);
+    assert_eq!(
+        got2.wire(GOT3, LAZY_SLOT_CAP).unwrap_err(),
+        LdExecError::LazySlotRange,
+        "槽号越界 fail-visible"
+    );
+    assert!(got2.is_empty(), "拒收域零残留");
+
+    // ⑥ 容量闸：16 槽满 + 第 17 槽拒收
+    for i in 0..LAZY_SLOT_CAP {
+        got2.wire(0x2_0000_1000 + 8 * i as u64, i)
+            .expect("容量内接线");
+    }
+    assert_eq!(got2.len(), LAZY_SLOT_CAP);
+    assert_eq!(
+        got2.wire(0x2_0000_2000, LAZY_SLOT_CAP - 1).unwrap_err(),
+        LdExecError::LazySlotRange,
+        "容量超限拒收（16 槽满）"
+    );
+
+    // ⑦ lazy_wire 记账对账：wired = jump_lazy 同镜像守恒 + bound = 立即域
+    // 标本 RELA：[0] RELATIVE / [1] JUMP_SLOT 未决议（lazy）/ [2]
+    // JUMP_SLOT 已决议（bound）/ [3] GLOB_DAT（非族跳过）
+    let mk = |off: u64, sym: u32, typ: u32| RelaEntry {
+        r_offset: off,
+        r_sym: sym,
+        r_type: typ,
+        r_addend: 0,
+    };
+    let entries = vec![
+        mk(0x100, 0, R_X86_64_RELATIVE),
+        mk(0x108, 2, R_X86_64_JUMP_SLOT),
+        mk(0x110, 3, R_X86_64_JUMP_SLOT),
+        mk(0x118, 4, R_X86_64_GLOB_DAT),
+    ];
+    let resolved = vec![None, None, None, Some(TARGET), None];
+    // 惰性域（bind_now = false）：wired=1（slot1 未决议）/ bound=1（slot3 已决议）
+    let rep = lazy_wire(&entries, &resolved, false).expect("接线判读");
+    assert_eq!(
+        rep,
+        LazyWireReport { wired: 1, bound: 1 },
+        "lazy_wire 惰性/立即分账"
+    );
+    // bind_now 域：全 JUMP_SLOT 立即（wired=0 / bound=2）
+    let rep_now = lazy_wire(&entries, &resolved, true).expect("立即判读");
+    assert_eq!(rep_now, LazyWireReport { wired: 0, bound: 2 });
+    // 空表：零账
+    let rep0 = lazy_wire(&[], &resolved, false).expect("空表");
+    assert_eq!(rep0, LazyWireReport::default());
 }

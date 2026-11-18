@@ -212,6 +212,11 @@ pub enum LdExecError {
     NeededCycle,
     /// 注册表域越界（root 下标越界 / 定容超限 / 重名登记——真消费面输入域）。
     RegistryRange,
+    /// 惰性槽未接线（resolver 步命中未 wire 槽——PLT/GOT 惰性绑定域）。
+    LazyUnbound,
+    /// 惰性槽号越界（JUMP_SLOT 相对号越出 [`LAZY_SLOT_CAP`]——resolver
+    /// 越界拒收）。
+    LazySlotRange,
 }
 
 /// 单个 PT_LOAD 段描述（ET_DYN 解析产物——文件偏移保持原值，装载基址
@@ -1496,6 +1501,157 @@ pub fn dl_open_chain(
         }
     }
     Ok(modids)
+}
+
+// ---- PLT/GOT 惰性绑定电气执行面（M48-PLTGOT55 笔63——harbor 第④族
+// 桩→真：M46/M47 惰性跳过记账域（jump_lazy 记账）升级为**真执行域**——
+// 接线（wire）→ 首调解析（resolver 步兑现 GOT 槽）→ 直达（已决议槽直
+// 呼）。经典 x86_64 PLT/GOT 布局同谱：GOT[1] = link_map 描述子、
+// GOT[2] = resolver 入口、GOT[3+i] = 第 i 个 JUMP_SLOT 槽（初值 =
+// PLT 存根地址——push rel_idx; jmp PLT0），首调经 PLT0 → resolver 写
+// 槽（GOT[3+i] = 决议地址），次调直达。零 unsafe 零 panic，fail-visible
+// 全显形）----
+
+/// 惰性槽容量（单模块 JUMP_SLOT 惰性槽定容——16 槽，RELA_MAX 同谱纪律）。
+pub const LAZY_SLOT_CAP: usize = 16;
+
+/// 经典 PLT 存根步长（x86_64 gABI 同谱——PLT0 + 每槽 16 B）。
+pub const PLT_STUB_STRIDE: u64 = 16;
+
+/// 惰性槽状态（PLT/GOT 延迟绑定两态机）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LazySlotState {
+    /// 未决议——槽值 = PLT 存根地址（首调经 PLT0 → resolver）。
+    Stub(u64),
+    /// 已决议——槽值 = 决议地址（次调直达）。
+    Resolved(u64),
+}
+
+/// PLT/GOT 惰性绑定表（GOT 槽两态机——wire/resolve/value 全显形；
+/// 槽键 = GOT 槽虚地址，定容 [`LAZY_SLOT_CAP`] fail-visible）。
+#[derive(Debug)]
+pub struct LazyGot {
+    plt0: u64,
+    slots: Vec<(u64, LazySlotState)>,
+}
+
+impl LazyGot {
+    /// 构造（`plt0` = PLT0 入口虚地址——存根地址 = plt0 + stride×(idx+1)
+    /// 经典布局）。
+    pub fn new(plt0: u64) -> Self {
+        Self {
+            plt0,
+            slots: Vec::new(),
+        }
+    }
+
+    fn slot_pos(&self, got_va: u64) -> Option<usize> {
+        self.slots.iter().position(|(va, _)| *va == got_va)
+    }
+
+    /// 接线（JUMP_SLOT 惰性槽初值 = PLT 存根地址——`rel_idx` = JUMP_SLOT
+    /// 相对号〔0 基，resolver push 值同域〕；重复接线幂等——同槽同存根
+    /// 覆写返值；槽号/容量越界 = [`LdExecError::LazySlotRange`]；返值 =
+    /// 存根虚地址）。
+    pub fn wire(&mut self, got_va: u64, rel_idx: usize) -> Result<u64, LdExecError> {
+        if rel_idx >= LAZY_SLOT_CAP {
+            return Err(LdExecError::LazySlotRange);
+        }
+        let stub = self
+            .plt0
+            .checked_add(PLT_STUB_STRIDE * (rel_idx as u64 + 1))
+            .ok_or(LdExecError::LazySlotRange)?;
+        match self.slot_pos(got_va) {
+            Some(pos) => self.slots[pos].1 = LazySlotState::Stub(stub),
+            None => {
+                if self.slots.len() >= LAZY_SLOT_CAP {
+                    return Err(LdExecError::LazySlotRange);
+                }
+                self.slots.push((got_va, LazySlotState::Stub(stub)));
+            }
+        }
+        Ok(stub)
+    }
+
+    /// 首调解析（resolver 步——`got_va` 槽写入决议地址 `addr`；未接线槽
+    /// = [`LdExecError::LazyUnbound`]；已决议槽 = Ok(false) 幂等域
+    /// 〔次调直达不走 resolver——重复解析零增〕；返 Ok(true) = 本步兑现）。
+    pub fn resolve(&mut self, got_va: u64, addr: u64) -> Result<bool, LdExecError> {
+        let pos = self.slot_pos(got_va).ok_or(LdExecError::LazyUnbound)?;
+        match self.slots[pos].1 {
+            LazySlotState::Resolved(_) => Ok(false),
+            LazySlotState::Stub(_) => {
+                self.slots[pos].1 = LazySlotState::Resolved(addr);
+                Ok(true)
+            }
+        }
+    }
+
+    /// 槽值判读（Stub(v)/Resolved(v) → v——调用面经 GOT 间呼口径同值）。
+    pub fn value(&self, got_va: u64) -> Option<u64> {
+        self.slot_pos(got_va).map(|pos| match self.slots[pos].1 {
+            LazySlotState::Stub(v) | LazySlotState::Resolved(v) => v,
+        })
+    }
+
+    /// 槽两态判读。
+    pub fn state(&self, got_va: u64) -> Option<LazySlotState> {
+        self.slot_pos(got_va).map(|pos| self.slots[pos].1)
+    }
+
+    /// 已决议槽数（resolver 兑现记账）。
+    pub fn resolved_count(&self) -> usize {
+        self.slots
+            .iter()
+            .filter(|(_, s)| matches!(s, LazySlotState::Resolved(_)))
+            .count()
+    }
+
+    /// 在册槽数。
+    pub fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// 空表判读。
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+}
+
+/// 惰性绑定接线报告（t150 SO 相位记账域——与 [`RelocReport::jump_lazy`]
+/// 对账：惰性跳过数 = 接线数〔同批同镜像口径〕）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LazyWireReport {
+    /// 接线槽数（JUMP_SLOT × !bind_now × 未决议——PLT 存根初值域）。
+    pub wired: usize,
+    /// 立即绑定槽数（bind_now ∨ 已决议——决议值直写域）。
+    pub bound: usize,
+}
+
+/// PLT/GOT 惰性绑定接线判读面（真件消费序——[`rela_entries`] JUMP_SLOT
+/// 族逐条判读）：lazy 条目〔[`crate::ld::lazy_bind`] 同源语义——JUMP_SLOT
+/// × !bind_now × 未决议〕→ wired 计数（PLT 存根初值域）；立即条目
+/// 〔bind_now ∨ 已决议〕→ bound 计数（决议值直写域）。与
+/// [`RelocReport::jump_lazy`] 对账口径：同批同镜像下 wired =
+/// jump_lazy（惰性跳过域升级为接线执行域——记账守恒）。
+pub fn lazy_wire(
+    entries: &[RelaEntry],
+    resolved: &[Option<u64>],
+    bind_now: bool,
+) -> Result<LazyWireReport, LdExecError> {
+    let mut rep = LazyWireReport::default();
+    for e in entries {
+        if e.r_type != R_X86_64_JUMP_SLOT {
+            continue;
+        }
+        let hit = resolved.get(e.r_sym as usize).copied().flatten().is_some();
+        if bind_now || hit {
+            rep.bound += 1;
+        } else {
+            rep.wired += 1;
+        }
+    }
+    Ok(rep)
 }
 
 #[cfg(test)]

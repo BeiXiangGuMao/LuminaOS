@@ -37,6 +37,10 @@ include!("exec_images_m47.rs");
 // 再生成——liblumina-core.so 依赖库 + ring3 自装载链探针；artifacts/
 // 单一事实源——gen_m47_ldlumina 单源锚随行）。
 include!("exec_images_m47b.rs");
+// M48-PLTGOT55 PLT/GOT 惰性绑定电气执行批交付件（勿手改：
+// scripts/gen_m48a_pltgot.py 再生成——ring3 惰性绑定电气探针；
+// artifacts/ 单一事实源）。
+include!("exec_images_m48a.rs");
 
 /// 用户代码段虚拟基址（PT[0]）。
 pub const USER_CODE_VIRT: u64 = 0x40_0000;
