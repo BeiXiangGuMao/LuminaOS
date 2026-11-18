@@ -2,7 +2,8 @@
 //! 13 例：ET_DYN 结构判读 / 拒收矩阵 / 装载映射并权 / 分级缓冲 BSS /
 //! 重定位四类写面 / 惰性绑定 / GNU 哈希桶链 / TLS Variant II 布点 /
 //! init/fini 互逆序 / dlopen 族状态机 / auxv 入口契约 / 四段打点 /
-//! NonZero 类型码）。
+//! NonZero 类型码；M47-DLOPEN54 笔61 起 +1 例——dlopen 真消费面
+//! 链式装载全谱 = 14 例）。
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -665,4 +666,295 @@ fn reloc_family_nz_face() {
     );
     assert_eq!(reloc_family(NonZeroU32::new(9).expect("9")), None);
     assert_eq!(reloc_family(NonZeroU32::new(u32::MAX).expect("MAX")), None);
+}
+
+// ---- M47-DLOPEN54 笔61：dlopen 真消费面（链式装载机械消费） ----
+
+/// 链标本组件开关（声明域 / UNDEF 闭包域 / 定义域可选装配）。
+struct ChainSoSpec<'a> {
+    /// dynstr 字节面（"\0soname\0...\0" 形——offset 由调用方换算）。
+    strtab: &'a [u8],
+    /// DT_SONAME strtab 偏移。
+    soname_off: u64,
+    /// DT_NEEDED strtab 偏移（None = 声明域空——UNDEF 闭包单域判读）。
+    needed_off: Option<u64>,
+    /// UNDEF 闭包域组件（sym1 = UNDEF 名 + strtab 偏移——RELA GLOB_DAT
+    /// 引用 + GNU 哈希零覆盖）。
+    undef: Option<(&'a [u8], u64)>,
+    /// 定义域组件（sym1 = DEFINED 名 + strtab 偏移——GNU 哈希覆盖
+    /// st_value 0x1000 / FUNC / 8B——UNDEF 闭包供给方）。
+    def: Option<(&'a [u8], u64)>,
+}
+
+/// 链标本合成器（最小 ET_DYN——RX 页 dynstr/dynsym/gnu_hash/rela +
+/// RW 页 dynamic；同余式/页槽互斥过 `dyn_parse` 结构闸——链式装载
+/// 宿主对账域）。
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+fn synth_chain_so(spec: &ChainSoSpec<'_>) -> Vec<u8> {
+    let mut v = vec![0u8; 0x2100];
+    // ---- ELF 头（EHDR + 3 PHDR：LOAD RX / LOAD RW / PT_DYNAMIC） ----
+    v[0..4].copy_from_slice(&[0x7F, b'E', b'L', b'F']);
+    v[4] = 2;
+    v[5] = 1;
+    v[6] = 1;
+    v[0x10..0x12].copy_from_slice(&ET_DYN.to_le_bytes());
+    v[0x12..0x14].copy_from_slice(&62u16.to_le_bytes());
+    v[0x20..0x28].copy_from_slice(&(EHDR_LEN as u64).to_le_bytes());
+    v[0x36..0x38].copy_from_slice(&(PHDR_LEN as u16).to_le_bytes());
+    v[0x38..0x3A].copy_from_slice(&3u16.to_le_bytes());
+    let ph = |i: usize| EHDR_LEN + i * PHDR_LEN;
+    // ① PT_LOAD RX @0x1000 filesz=memsz=0x100（内容页）
+    v[ph(0)..ph(0) + 4].copy_from_slice(&PT_LOAD.to_le_bytes());
+    v[ph(0) + 4..ph(0) + 8].copy_from_slice(&(PF_R | PF_X).to_le_bytes());
+    v[ph(0) + 8..ph(0) + 16].copy_from_slice(&0x1000u64.to_le_bytes());
+    v[ph(0) + 16..ph(0) + 24].copy_from_slice(&0x1000u64.to_le_bytes());
+    v[ph(0) + 32..ph(0) + 40].copy_from_slice(&0x100u64.to_le_bytes());
+    v[ph(0) + 40..ph(0) + 48].copy_from_slice(&0x100u64.to_le_bytes());
+    // ② PT_LOAD RW @0x3000 filesz=memsz=0x100（dynamic 页）
+    v[ph(1)..ph(1) + 4].copy_from_slice(&PT_LOAD.to_le_bytes());
+    v[ph(1) + 4..ph(1) + 8].copy_from_slice(&(PF_R | PF_W).to_le_bytes());
+    v[ph(1) + 8..ph(1) + 16].copy_from_slice(&0x2000u64.to_le_bytes());
+    v[ph(1) + 16..ph(1) + 24].copy_from_slice(&0x3000u64.to_le_bytes());
+    v[ph(1) + 32..ph(1) + 40].copy_from_slice(&0x100u64.to_le_bytes());
+    v[ph(1) + 40..ph(1) + 48].copy_from_slice(&0x100u64.to_le_bytes());
+    // ③ PT_DYNAMIC @0x3000 filesz 0x100
+    v[ph(2)..ph(2) + 4].copy_from_slice(&PT_DYNAMIC.to_le_bytes());
+    v[ph(2) + 4..ph(2) + 8].copy_from_slice(&(PF_R | PF_W).to_le_bytes());
+    v[ph(2) + 8..ph(2) + 16].copy_from_slice(&0x2000u64.to_le_bytes());
+    v[ph(2) + 16..ph(2) + 24].copy_from_slice(&0x3000u64.to_le_bytes());
+    v[ph(2) + 32..ph(2) + 40].copy_from_slice(&0x100u64.to_le_bytes());
+    // ---- RX 页内容 @0x1000：dynstr → dynsym → gnu_hash → rela ----
+    v[0x1000..0x1000 + spec.strtab.len()].copy_from_slice(spec.strtab);
+    let mut have_gnu = false;
+    if spec.undef.is_some() || spec.def.is_some() {
+        // dynsym @0x1040：sym0 null（零槽）+ sym1 @0x1058（UNDEF 或 DEFINED）
+        let (name_off, info, shndx, val, size) = match (spec.undef, spec.def) {
+            (Some((_, off)), None) => (off, 0x10u8, 0u16, 0u64, 0u64), // UNDEF GLOBAL
+            (None, Some((_, off))) => (off, 0x12u8, 1u16, 0x1000u64, 8u64), // DEFINED GLOBAL|FUNC
+            _ => unreachable!("undef/def 单域装配"),
+        };
+        v[0x1058..0x1058 + 4].copy_from_slice(&(name_off as u32).to_le_bytes()); // st_name
+        v[0x1058 + 4] = info; // st_info
+        v[0x1058 + 5] = 0; // st_other
+        v[0x1058 + 6..0x1058 + 8].copy_from_slice(&shndx.to_le_bytes()); // st_shndx
+        v[0x1058 + 8..0x1058 + 16].copy_from_slice(&val.to_le_bytes()); // st_value
+        v[0x1058 + 16..0x1058 + 24].copy_from_slice(&size.to_le_bytes()); // st_size
+                                                                          // gnu_hash @0x1080：header + bloom(8B) + buckets[1]（+ chains[1]
+                                                                          // 定义域单符号）——UNDEF 域 bloom 零位零桶（零覆盖判读域）
+        let hdr = 0x1080;
+        v[hdr..hdr + 4].copy_from_slice(&1u32.to_le_bytes()); // nbuckets
+        v[hdr + 4..hdr + 8].copy_from_slice(&1u32.to_le_bytes()); // symoffset
+        v[hdr + 8..hdr + 12].copy_from_slice(&1u32.to_le_bytes()); // bloom_size
+        v[hdr + 12..hdr + 16].copy_from_slice(&0u32.to_le_bytes()); // bloom_shift
+        let mut bloom = 0u64;
+        let mut bucket0 = 0u32;
+        let mut chain0 = 0u32;
+        if let Some((nm, _)) = spec.def {
+            let h = dl_new_hash(nm);
+            bloom |= 1u64 << (h % 64); // 双位同位（bloom_shift = 0——单位即双位，语义同生成器）
+            bucket0 = 1;
+            chain0 = h | 1;
+        }
+        v[hdr + 16..hdr + 24].copy_from_slice(&bloom.to_le_bytes());
+        v[hdr + 24..hdr + 28].copy_from_slice(&bucket0.to_le_bytes());
+        v[hdr + 28..hdr + 32].copy_from_slice(&chain0.to_le_bytes());
+        have_gnu = true;
+        // rela @0x10C0：UNDEF 域 = GLOB_DAT(sym1)；定义域零 RELA
+        if spec.undef.is_some() {
+            let r = 0x10C0;
+            v[r..r + 8].copy_from_slice(&0x3000u64.to_le_bytes()); // GOT 槽
+            let info = (1u64 << 32) | R_X86_64_GLOB_DAT as u64;
+            v[r + 8..r + 16].copy_from_slice(&info.to_le_bytes());
+            v[r + 16..r + 24].copy_from_slice(&0u64.to_le_bytes());
+        }
+    }
+    // ---- RW 页内容（文件偏移 0x2000——p_offset ≡ p_vaddr mod PAGE） ----
+    let mut dyn_entries: Vec<(u64, u64)> = Vec::new();
+    if let Some(off) = spec.needed_off {
+        dyn_entries.push((DT_NEEDED, off));
+    }
+    dyn_entries.push((DT_STRTAB, 0x1000));
+    dyn_entries.push((DT_STRSZ, spec.strtab.len() as u64));
+    if have_gnu {
+        dyn_entries.push((DT_SYMTAB, 0x1040));
+        dyn_entries.push((DT_SYMENT, 24));
+        dyn_entries.push((DT_GNU_HASH, 0x1080));
+        if spec.undef.is_some() {
+            dyn_entries.push((DT_RELA, 0x10C0));
+            dyn_entries.push((DT_RELASZ, 24));
+            dyn_entries.push((DT_RELAENT, 24));
+        }
+    }
+    dyn_entries.push((DT_SONAME, spec.soname_off));
+    for (i, (tag, val)) in dyn_entries.iter().enumerate() {
+        let base = 0x2000 + i * 16;
+        v[base..base + 8].copy_from_slice(&tag.to_le_bytes());
+        v[base + 8..base + 16].copy_from_slice(&val.to_le_bytes());
+    }
+    v
+}
+
+/// dlopen 真消费面全谱（M47-DLOPEN54 笔61）——八域对账：
+/// 注册表登记/重名/越界拒收；DT_NEEDED 声明域实边；UNDEF 决议闭包
+/// as-needed 派生实边；BFS 装载序；dlopen 真消费链（群组插序/幂等域/
+/// error 槽一次性消费）；依赖环；声明域缺件；root 越界——fail-visible
+/// 全显形。
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[test]
+fn dl_chain_consumer_face() {
+    // 标本族：app --DT_NEEDED--> dyn（声明域实边）；appu --UNDEF
+    // 闭包--> depu（"shared_fn" 名匹配派生实边——GNU 哈希定义者查边）；
+    // 闭环对 cya<->cyb（三色判读域）；缺件对 ghosty→libnowhere。
+    let app = synth_chain_so(&ChainSoSpec {
+        strtab: b"\0libapp.so\0libdyn.so\0",
+        soname_off: 1,
+        needed_off: Some(11), // "libdyn.so"
+        undef: None,
+        def: None,
+    });
+    let dep = synth_chain_so(&ChainSoSpec {
+        strtab: b"\0libdyn.so\0",
+        soname_off: 1,
+        needed_off: None,
+        undef: None,
+        def: None,
+    });
+    let appu = synth_chain_so(&ChainSoSpec {
+        strtab: b"\0appu.so\0shared_fn\0",
+        soname_off: 1,
+        needed_off: None, // 声明域空——UNDEF 闭包单域派生
+        undef: Some((b"shared_fn", 9)),
+        def: None,
+    });
+    let depu = synth_chain_so(&ChainSoSpec {
+        strtab: b"\0depu.so\0shared_fn\0",
+        soname_off: 1,
+        needed_off: None,
+        undef: None,
+        def: Some((b"shared_fn", 9)),
+    });
+    let cyc_a = synth_chain_so(&ChainSoSpec {
+        strtab: b"\0cya.so\0cyb.so\0",
+        soname_off: 1,
+        needed_off: Some(8), // "cyb.so"
+        undef: None,
+        def: None,
+    });
+    let cyc_b = synth_chain_so(&ChainSoSpec {
+        strtab: b"\0cyb.so\0cya.so\0",
+        soname_off: 1,
+        needed_off: Some(8), // "cya.so"
+        undef: None,
+        def: None,
+    });
+    let ghost = synth_chain_so(&ChainSoSpec {
+        strtab: b"\0ghosty.so\0libnowhere.so\0",
+        soname_off: 1,
+        needed_off: Some(10), // "libnowhere.so"（注册表缺席）
+        undef: None,
+        def: None,
+    });
+
+    // ① 注册表：登记 + 重名拒收 + root 越界
+    let mut reg = ChainRegistry::new();
+    assert_eq!(reg.add(b"libapp.so", &app).expect("登记 app"), 0);
+    assert_eq!(reg.add(b"libdyn.so", &dep).expect("登记 dyn"), 1);
+    assert_eq!(
+        reg.add(b"libapp.so", &dep).unwrap_err(),
+        LdExecError::RegistryRange,
+        "重名拒收 fail-visible"
+    );
+    assert_eq!(reg.len(), 2);
+    assert_eq!(reg.find(b"libdyn.so"), Some(1));
+    assert_eq!(reg.find(b"libghost.so"), None);
+    assert_eq!(
+        dl_chain_order(&reg, 9).unwrap_err(),
+        LdExecError::RegistryRange,
+        "root 越界 fail-visible"
+    );
+
+    // ② 邻接派生：声明域实边 app→dyn + dyn 零边（双域并集）
+    let adj = dl_adjacency(&reg).expect("邻接派生");
+    assert_eq!(adj, vec![vec![1], vec![]], "DT_NEEDED 声明域实边派生");
+
+    // ③ DT_NEEDED 装载序：BFS 层序 [0,1]（语义核机械消费）
+    assert_eq!(
+        dl_chain_order(&reg, 0).expect("装载序"),
+        vec![0, 1],
+        "BFS 装载序（root 居首 + 依赖随行）"
+    );
+
+    // ④ dlopen 真消费链：modid 序 + RTLD_GLOBAL 群组插序 + 幂等域 +
+    //    error 槽一次性消费
+    let mut dl = DlState::new();
+    let ids = dl_open_chain(&mut dl, &reg, b"libapp.so", true).expect("消费链");
+    assert_eq!(ids, vec![1, 2], "modid 序 = 装载序同谱");
+    assert_eq!(dl.len(), 2);
+    assert_eq!(dl.global_scope(), vec![1, 2], "群组插序（RTLD_GLOBAL 域）");
+    assert_eq!(dl.ref_open(ids[0]), Some(2), "幂等域（二次 open 引用递增）");
+    assert_eq!(dl.dlclose(ids[0]), DlClose::Kept, "引用仍在——册保留");
+    assert_eq!(
+        dl.dlclose(ids[0]),
+        DlClose::Unloaded(ids[0]),
+        "计数归零出册"
+    );
+    assert_eq!(
+        dl_open_chain(&mut dl, &reg, b"libghost.so", false).unwrap_err(),
+        LdExecError::NeededMissing,
+        "根名缺件 fail-visible"
+    );
+    assert_eq!(dl.dlerror(), Some(DL_ERR_CANNOT_OPEN), "error 槽落账");
+    assert_eq!(dl.dlerror(), None, "一次性消费（POSIX 口径）");
+
+    // ⑤ UNDEF 决议闭包：声明域空 × "shared_fn" 名匹配 → as-needed 实边
+    let mut reg2 = ChainRegistry::new();
+    reg2.add(b"appu.so", &appu).expect("登记 appu");
+    reg2.add(b"depu.so", &depu).expect("登记 depu");
+    let adj2 = dl_adjacency(&reg2).expect("闭包派生");
+    assert_eq!(
+        adj2,
+        vec![vec![1], vec![]],
+        "UNDEF 闭包 as-needed 实边（GNU 哈希定义者查边）"
+    );
+    assert_eq!(dl_chain_order(&reg2, 0).expect("闭包装载序"), vec![0, 1]);
+
+    // ⑥ 依赖环：三色判读 NeededCycle
+    let mut reg3 = ChainRegistry::new();
+    reg3.add(b"cya.so", &cyc_a).expect("登记 cya");
+    reg3.add(b"cyb.so", &cyc_b).expect("登记 cyb");
+    assert_eq!(
+        dl_chain_order(&reg3, 0).unwrap_err(),
+        LdExecError::NeededCycle,
+        "依赖环 fail-visible（三色判读）"
+    );
+
+    // ⑦ 声明域缺件：needed 名注册表缺席 NeededMissing
+    let mut reg4 = ChainRegistry::new();
+    reg4.add(b"ghosty.so", &ghost).expect("登记 ghosty");
+    assert_eq!(
+        dl_chain_order(&reg4, 0).unwrap_err(),
+        LdExecError::NeededMissing,
+        "声明域缺件 fail-visible（ELF 装载一次语义零容忍）"
+    );
+
+    // ⑧ 定容闸：8 件满 + 第 9 件拒收
+    const CAP_NAMES: [&[u8]; CHAIN_REG_CAP] = [
+        b"m0.so", b"m1.so", b"m2.so", b"m3.so", b"m4.so", b"m5.so", b"m6.so", b"m7.so",
+    ];
+    let cap_blob = synth_chain_so(&ChainSoSpec {
+        strtab: b"\0m.so\0",
+        soname_off: 1,
+        needed_off: None,
+        undef: None,
+        def: None,
+    });
+    let mut reg5 = ChainRegistry::new();
+    for nm in CAP_NAMES {
+        reg5.add(nm, &cap_blob).expect("定容内登记");
+    }
+    assert_eq!(
+        reg5.add(b"overflow.so", &dep).unwrap_err(),
+        LdExecError::RegistryRange,
+        "定容超限拒收（8 件满）"
+    );
 }

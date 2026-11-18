@@ -38,6 +38,13 @@
 //! - **dlopen 族外壳** [`DlState`]：注册表 refcount + RTLD_GLOBAL
 //!   插入序 + [`DlState::dlsym`] 查找序三段复用（`crate::ld::scope_lookup`）
 //!   + [`DlState::dlerror`] 一次性消费语义（POSIX dlerror 口径）；
+//! - **dlopen 真消费面** [`ChainRegistry`] / [`dl_adjacency`] /
+//!   [`dl_chain_order`] / [`dl_open_chain`]（M47-DLOPEN54 笔61——
+//!   dlopen 族外壳 `present` 布尔挂账域兑现）：链式装载注册表
+//!   （SONAME → 映像字节）+ 依赖闭包邻接派生（DT_NEEDED 声明域走查
+//!   ∪ UNDEF 决议闭包 as-needed 派生）+ DT_NEEDED 装载序
+//!   （`crate::ld::needed_load_order` BFS 语义核机械消费 + 三色环
+//!   判读）+ dlopen 族真消费链（群组插序 + 幂等域 + error 槽）；
 //! - **H-P03 四段打点面** [`ns_to_tenths`]：纳秒实测 → 0.1 ms 定点
 //!   上取整（预算判读归 `crate::ld::{budget_overruns, budget_total_ok}`
 //!   同源）；
@@ -199,6 +206,12 @@ pub enum LdExecError {
     BadModid,
     /// 计划面下标越出表长（init/fini 展开域）。
     FaceOutOfRange,
+    /// 依赖闭包缺件（DT_NEEDED 名 / dlopen 根名注册表缺席——真消费面）。
+    NeededMissing,
+    /// 依赖环（DT_NEEDED 环——`crate::ld::needs_cycle` 三色判读）。
+    NeededCycle,
+    /// 注册表域越界（root 下标越界 / 定容超限 / 重名登记——真消费面输入域）。
+    RegistryRange,
 }
 
 /// 单个 PT_LOAD 段描述（ET_DYN 解析产物——文件偏移保持原值，装载基址
@@ -1308,6 +1321,181 @@ pub fn exec_plan(plan: &[MapRegion], staged: &StagedImage) -> Result<Vec<MapActi
     actions.append(&mut copies);
     actions.append(&mut protects);
     Ok(actions)
+}
+
+// ---- dlopen 真消费面（M47-DLOPEN54 笔61——链式装载机械消费） ----
+
+/// 链式装载注册表容量（真消费面输入域定容——8 件）。
+pub const CHAIN_REG_CAP: usize = 8;
+
+/// 链式装载注册表项（SONAME 名 → ET_DYN 映像字节）。
+#[derive(Clone, Copy)]
+pub struct ChainEntry<'a> {
+    /// 注册名（SONAME 域——dlopen 根名 / DT_NEEDED 名查键）。
+    pub name: &'a [u8],
+    /// ET_DYN 映像字节面（交付件单一事实源——artifacts/ 同源）。
+    pub blob: &'a [u8],
+}
+
+/// 链式装载注册表（dlopen 真消费面输入域——重名拒收 + 定容
+/// [`CHAIN_REG_CAP`] fail-visible；零 unsafe 零 panic）。
+pub struct ChainRegistry<'a> {
+    entries: Vec<ChainEntry<'a>>,
+}
+
+impl Default for ChainRegistry<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<'a> ChainRegistry<'a> {
+    /// 构造（空册）。
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// 登记（重名/超容拒收 [`LdExecError::RegistryRange`]——返注册表序）。
+    pub fn add(&mut self, name: &'a [u8], blob: &'a [u8]) -> Result<usize, LdExecError> {
+        if self.entries.len() >= CHAIN_REG_CAP || self.find(name).is_some() {
+            return Err(LdExecError::RegistryRange);
+        }
+        self.entries.push(ChainEntry { name, blob });
+        Ok(self.entries.len() - 1)
+    }
+
+    /// 名查序（dlopen 根名 / DT_NEEDED 名查键——注册表序返值）。
+    pub fn find(&self, name: &[u8]) -> Option<usize> {
+        self.entries.iter().position(|e| e.name == name)
+    }
+
+    /// 注册表序取项。
+    pub fn get(&self, idx: usize) -> Option<&ChainEntry<'a>> {
+        self.entries.get(idx)
+    }
+
+    /// 在册件数。
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// 空册判读。
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// 模块定义者判读（GNU 哈希覆盖域 = 定义符号族——命中即定义；
+/// 无 DT_GNU_HASH 模块零定义域——判读 None fail-visible 同口径）。
+fn module_defines(img: &DynImage<'_>, name: &[u8]) -> bool {
+    gnu_hash_lookup(img, name).is_some()
+}
+
+/// 依赖闭包邻接派生（真消费面邻接核）：逐模块 `dyn_parse` →
+/// ① **DT_NEEDED 声明域**——[`DynImage::needed`] 名走查（声明序）
+/// → 注册表名查边（声明域实边——ELF 装载一次语义零容忍：名注册表
+/// 缺席 = [`LdExecError::NeededMissing`] fail-visible）；
+/// ② **UNDEF 决议闭包**——RELA `r_sym ≠ 0` 名 → 本模块 GNU 哈希缺席
+/// （定义域覆盖 = 定义符号族——缺席即 UNDEF 判读）→ 注册表定义者
+/// 名查边（as-needed 派生域——COPY/跨模块决议供给方显形；无定义者
+/// UNDEF 不产边——决议域由绑定登记面/惰性跳过承接，fail-visible 由
+/// [`reloc_apply`] 域承担）。
+/// 双域并集逐目标去重（声明序在前）。返回邻接表（下标 = 注册表序）。
+pub fn dl_adjacency(reg: &ChainRegistry<'_>) -> Result<Vec<Vec<u32>>, LdExecError> {
+    let n = reg.len();
+    let mut imgs: Vec<DynImage<'_>> = Vec::new();
+    for i in 0..n {
+        let blob = reg.get(i).ok_or(LdExecError::RegistryRange)?.blob;
+        imgs.push(dyn_parse(blob)?);
+    }
+    let mut adj: Vec<Vec<u32>> = vec![Vec::new(); n];
+    for (i, img) in imgs.iter().enumerate() {
+        // ① DT_NEEDED 声明域（名走查 → 注册表名查边——声明序）
+        let strtab = img.dyn_val(DT_STRTAB).unwrap_or(0);
+        for off in img.needed() {
+            let nm = img.str_at(strtab, off).ok_or(LdExecError::NeededMissing)?;
+            let j = reg.find(nm).ok_or(LdExecError::NeededMissing)?;
+            if j != i && !adj[i].contains(&(j as u32)) {
+                adj[i].push(j as u32);
+            }
+        }
+        // ② UNDEF 决议闭包（RELA 符号名 → 本模块缺席 → 注册表定义者边）
+        let symtab = img.dyn_val(DT_SYMTAB);
+        for e in rela_entries(img)? {
+            if e.r_sym == 0 {
+                continue; // 无符号重定位（RELATIVE 域）
+            }
+            let Some(st) = symtab else {
+                continue; // symtab 缺席——闭包域跳过（决议域承担）
+            };
+            let Some(sym) = img.sym_get(st, e.r_sym as u64) else {
+                continue; // 符号越界——闭包域跳过（决议域承担）
+            };
+            let Some(nm) = img.str_at(strtab, sym.0 as u64) else {
+                continue;
+            };
+            if module_defines(img, nm) {
+                continue; // 本模块已定义——非 UNDEF
+            }
+            for (j, oth) in imgs.iter().enumerate() {
+                if j != i && module_defines(oth, nm) {
+                    if !adj[i].contains(&(j as u32)) {
+                        adj[i].push(j as u32);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    Ok(adj)
+}
+
+/// DT_NEEDED 装载序（真消费面——BFS 层序 + 去重幂等 + 三色环判读
+/// ——`crate::ld::needed_load_order` / `crate::ld::needs_cycle`
+/// 语义核机械消费）：`root` 注册表序居首（可执行文件居首同谱）。
+/// root 越界 = [`LdExecError::RegistryRange`]；依赖环 =
+/// [`LdExecError::NeededCycle`]；邻接派生失败随行显形。
+pub fn dl_chain_order(reg: &ChainRegistry<'_>, root: usize) -> Result<Vec<u32>, LdExecError> {
+    if root >= reg.len() {
+        return Err(LdExecError::RegistryRange);
+    }
+    let adj = dl_adjacency(reg)?;
+    let refs: Vec<&[u32]> = adj.iter().map(|v| v.as_slice()).collect();
+    if crate::ld::needs_cycle(&[root as u32], &refs) == Some(true) {
+        return Err(LdExecError::NeededCycle);
+    }
+    crate::ld::needed_load_order(&[root as u32], &refs).ok_or(LdExecError::NeededCycle)
+}
+
+/// dlopen 真消费链（注册表 + 装载序 → dlopen 族机械消费）：根名查册
+/// （缺席 = error 槽 [`DL_ERR_CANNOT_OPEN`] 落账 +
+/// [`LdExecError::NeededMissing`]）→ [`dl_chain_order`] 装载序 →
+/// 按序逐模块 [`DlState::dlopen`]（群组插序语义——全链成员随 root 旗
+/// 同册；RTLD_GLOBAL 群组域）→ modid 序返值（下标 = 装载序）。
+pub fn dl_open_chain(
+    state: &mut DlState,
+    reg: &ChainRegistry<'_>,
+    root_name: &[u8],
+    rtld_global: bool,
+) -> Result<Vec<u32>, LdExecError> {
+    let root = match reg.find(root_name) {
+        Some(i) => i,
+        None => {
+            state.error = Some(DL_ERR_CANNOT_OPEN);
+            return Err(LdExecError::NeededMissing);
+        }
+    };
+    let order = dl_chain_order(reg, root)?;
+    let mut modids = Vec::new();
+    for _ in order {
+        match state.dlopen(true, rtld_global) {
+            Some(m) => modids.push(m),
+            None => return Err(LdExecError::NeededMissing),
+        }
+    }
+    Ok(modids)
 }
 
 #[cfg(test)]

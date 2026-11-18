@@ -33,6 +33,10 @@ include!("exec_images_gen_m42_elf.rs");
 // M47-LDCONS53 装载计划消费面批交付件（勿手改：scripts/gen_m47_ldlumina.py
 // 再生成——ld-lumina.so 本体 + ring3 消费探针；artifacts/ 单一事实源）。
 include!("exec_images_m47.rs");
+// M47-DLOPEN54 dlopen 真消费面批交付件（勿手改：scripts/gen_m47b_dlopen.py
+// 再生成——liblumina-core.so 依赖库 + ring3 自装载链探针；artifacts/
+// 单一事实源——gen_m47_ldlumina 单源锚随行）。
+include!("exec_images_m47b.rs");
 
 /// 用户代码段虚拟基址（PT[0]）。
 pub const USER_CODE_VIRT: u64 = 0x40_0000;

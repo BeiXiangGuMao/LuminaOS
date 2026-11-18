@@ -82,6 +82,22 @@ pub fn rows_total() -> usize {
     REG.lock().len()
 }
 
+/// 登记面 GC 域（M47-DLOPEN54 笔61 揭雷收口）：清收**属主已殁**任务
+/// 的登记行，返清除行数。揭雷实录（t149 首割）——pid 槽复用 × 登记行
+/// 持久化：t148 探针（pid 10，`sys_wait_pid` 已收殁）登记行仍在册，
+/// t149 探针复用 pid 10 → 首个 mmap 同任务重叠拒收（BAD）→ 探针
+/// bail 90 显形。行属主存殁判读 GC（`task_alive` 否即清）= 槽复用域
+/// 收口：跨探针/跨进程行域零泄漏，同任务重叠判据回到纯当轮语义。
+/// 「无 munmap/无 reap」设计注随行更新：活体行保持持久（sys_mmap
+/// 零 munmap 不变），GC 仅收割殁者行域——收割时机由调用方裁定
+/// （自检活体播种前）。锁序契约同登记面（单取 REG）。
+pub fn rows_gc() -> usize {
+    let mut reg = REG.lock();
+    let before = reg.len();
+    reg.retain(|r| crate::task::task_alive(r.pid));
+    before - reg.len()
+}
+
 /// (mmap, mprotect) 受理计数读面（census 对账面）。
 pub fn call_counts() -> (u64, u64) {
     (
