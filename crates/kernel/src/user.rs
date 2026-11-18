@@ -41,6 +41,10 @@ include!("exec_images_m47b.rs");
 // scripts/gen_m48a_pltgot.py 再生成——ring3 惰性绑定电气探针；
 // artifacts/ 单一事实源）。
 include!("exec_images_m48a.rs");
+// M48-DLSYM56 dlsym 跨模块查找电气批交付件（勿手改：scripts/gen_m48b_dlsym.py
+// 再生成——ring3 跨模块查找电气探针；artifacts/ 单一事实源——
+// gen_m47b core 本体单源锚随行）。
+include!("exec_images_m48b.rs");
 
 /// 用户代码段虚拟基址（PT[0]）。
 pub const USER_CODE_VIRT: u64 = 0x40_0000;

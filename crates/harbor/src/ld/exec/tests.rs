@@ -4,7 +4,8 @@
 //! init/fini 互逆序 / dlopen 族状态机 / auxv 入口契约 / 四段打点 /
 //! NonZero 类型码；M47-DLOPEN54 笔61 起 +1 例——dlopen 真消费面
 //! 链式装载全谱 = 14 例；M48-PLTGOT55 笔63 起 +1 例——PLT/GOT 惰性
-//! 绑定电气执行面全谱 = 15 例）。
+//! 绑定电气执行面全谱 = 15 例；M48-DLSYM56 笔64 起 +1 例——dlsym 跨
+//! 模块查找电气面全谱 = 16 例）。
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -1053,4 +1054,240 @@ fn pltgot_lazy_bind_exec_face() {
     // 空表：零账
     let rep0 = lazy_wire(&[], &resolved, false).expect("空表");
     assert_eq!(rep0, LazyWireReport::default());
+}
+
+/// dlsym 跨模块查找电气面全谱（M48-DLSYM56 笔64）——七域对账：
+/// root 域命中（exe 域先见者胜）；依赖域命中（BFS 序段位定位）；
+/// 全链缺席 Ok(None)（决议零虚构）；error 槽一次性消费（POSIX 口径）；
+/// root 越界拒收；bases 欠长拒收；决议地址 = base + st_value 兑现。
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[test]
+fn dl_sym_chain_face() {
+    // 标本族（synth_chain_so 同谱）：appu 定义 "shared_fn" @0x1000 /
+    // depu 定义 "shared_fn" @0x2000 + "dep_only" @0x2008——同名先见者胜
+    // 域 + 依赖独占域。
+    let mk_so = |name: &[u8], needed: Option<&[u8]>, syms: &[(&[u8], u64)]| -> Vec<u8> {
+        // strtab = \0 name \0 sym...；dynsym 3 目内；RELA 空；GNU 头 +
+        // bloom + 桶链。布局：RX@0x2000（代码 0x40 + strtab + dynsym +
+        // gnu）；RW@0x3000（dynamic）。vaddr = 文件偏移同余式。
+        let mut strtab: Vec<u8> = b"\0".to_vec();
+        strtab.extend_from_slice(name);
+        strtab.push(0);
+        // needed 名前置（DT_NEEDED 名偏移域——本模块 dynstr 必含依赖名）
+        let needed_off = if needed.is_some() {
+            let off = strtab.len() as u32;
+            strtab.extend_from_slice(needed.unwrap_or(b""));
+            strtab.push(0);
+            off
+        } else {
+            0
+        };
+        let mut name_offs = Vec::new();
+        for (s, _) in syms {
+            name_offs.push(strtab.len() as u32);
+            strtab.extend_from_slice(s);
+            strtab.push(0);
+        }
+        let mut dynsym: Vec<u8> = vec![0u8; 24 * (1 + syms.len())];
+        for (k, (_, value)) in syms.iter().enumerate() {
+            // gABI 布局写：name u32 / info u8 / other u8 / shndx u16 /
+            // value u64 / size u64
+            let o = 24 + k * 24;
+            let mut e = vec![0u8; 24];
+            e[0..4].copy_from_slice(&name_offs[k].to_le_bytes());
+            e[4] = 0x12; // GLOBAL|FUNC
+            e[6..8].copy_from_slice(&1u16.to_le_bytes());
+            e[8..16].copy_from_slice(&value.to_le_bytes());
+            dynsym[o..o + 24].copy_from_slice(&e);
+        }
+        // GNU 哈希（全符号覆盖——nbuckets = syms.len().max(1)）
+        let n = syms.len();
+        let hashes: Vec<u32> = syms.iter().map(|(s, _)| dl_new_hash(s)).collect();
+        let mut bloom = 0u64;
+        for h in &hashes {
+            bloom |= 1u64 << (h % 64);
+            bloom |= 1u64 << (h % 64); // bloom_shift = 0——bit1 == bit2 域
+        }
+        let nbuckets = n.max(1) as u32;
+        let mut buckets = vec![0u32; nbuckets as usize];
+        let mut chains = vec![0u32; n];
+        // 同桶末符号判读（定容小域线性扫——no_std 零容器外引）
+        let mut last_in_bucket = vec![0usize; nbuckets as usize];
+        for (k, h) in hashes.iter().enumerate() {
+            last_in_bucket[(h % nbuckets) as usize] = k;
+        }
+        for (k, h) in hashes.iter().enumerate() {
+            let b = (h % nbuckets) as usize;
+            if buckets[b] == 0 {
+                buckets[b] = (k + 1) as u32;
+            }
+            chains[k] = if last_in_bucket[b] == k {
+                h | 1
+            } else {
+                h & !1
+            };
+        }
+        let gnu = {
+            let mut v = Vec::new();
+            v.extend_from_slice(&nbuckets.to_le_bytes());
+            v.extend_from_slice(&1u32.to_le_bytes()); // symoffset
+            v.extend_from_slice(&1u32.to_le_bytes()); // bloom_size
+            v.extend_from_slice(&0u32.to_le_bytes()); // bloom_shift
+            v.extend_from_slice(&bloom.to_le_bytes());
+            for b in &buckets {
+                v.extend_from_slice(&b.to_le_bytes());
+            }
+            for c in &chains {
+                v.extend_from_slice(&c.to_le_bytes());
+            }
+            v
+        };
+        // RX 布局：0x2000 代码留白 0x40 → strtab → dynsym → gnu
+        let rx_base = 0x2000usize;
+        let strtab_va = (rx_base + 0x40) as u64;
+        let dynsym_va = strtab_va + strtab.len() as u64;
+        let gnu_va = dynsym_va + dynsym.len() as u64;
+        let mut text: Vec<u8> = vec![0x90; 0x40];
+        text.extend_from_slice(&strtab);
+        text.extend_from_slice(&dynsym);
+        text.extend_from_slice(&gnu);
+        // dynamic（RW@0x3000）
+        let mut dyn_ent: Vec<u8> = Vec::new();
+        if needed.is_some() {
+            // DT_NEEDED（needed 名偏移——strtab needed 域）
+            dyn_ent.extend_from_slice(&DT_NEEDED.to_le_bytes());
+            dyn_ent.extend_from_slice(&(needed_off as u64).to_le_bytes());
+        }
+        for (t, v) in [
+            (DT_STRTAB, strtab_va),
+            (DT_STRSZ, strtab.len() as u64),
+            (DT_SYMTAB, dynsym_va),
+            (DT_SYMENT, 24),
+            (DT_GNU_HASH, gnu_va),
+            (DT_NULL, 0),
+        ] {
+            dyn_ent.extend_from_slice(&t.to_le_bytes());
+            dyn_ent.extend_from_slice(&v.to_le_bytes());
+        }
+        let mut blob = vec![0u8; 0x4000];
+        blob[0..4].copy_from_slice(&[0x7F, b'E', b'L', b'F']);
+        blob[4] = 2;
+        blob[5] = 1;
+        blob[6] = 1;
+        let phnum = 3;
+        // 手写 ehdr（gen 同款——e_phoff 0x40 / phentsize 56）
+        let e_type_dyn: u16 = 3; // ET_DYN
+        blob[0x10..0x12].copy_from_slice(&e_type_dyn.to_le_bytes());
+        blob[0x12..0x14].copy_from_slice(&62u16.to_le_bytes());
+        blob[0x20..0x28].copy_from_slice(&64u64.to_le_bytes()); // e_phoff
+        blob[0x36..0x38].copy_from_slice(&56u16.to_le_bytes()); // e_phentsize
+        blob[0x38..0x3A].copy_from_slice(&(phnum as u16).to_le_bytes());
+        // PT_LOAD RX
+        macro_rules! ph {
+            ($off:expr, $pt:expr, $fl:expr, $foff:expr, $va:expr, $fsz:expr) => {{
+                blob[$off..$off + 4].copy_from_slice(&($pt).to_le_bytes());
+                blob[$off + 4..$off + 8].copy_from_slice(&($fl).to_le_bytes());
+                blob[$off + 8..$off + 16].copy_from_slice(&($foff).to_le_bytes());
+                blob[$off + 16..$off + 24].copy_from_slice(&($va).to_le_bytes());
+                blob[$off + 24..$off + 32].copy_from_slice(&($va).to_le_bytes());
+                blob[$off + 32..$off + 40].copy_from_slice(&($fsz).to_le_bytes());
+                blob[$off + 40..$off + 48].copy_from_slice(&($fsz).to_le_bytes());
+                blob[$off + 48..$off + 56].copy_from_slice(&0x1000u64.to_le_bytes());
+            }};
+        }
+        ph!(
+            64,
+            1u32,
+            5u32,
+            rx_base as u64,
+            rx_base as u64,
+            text.len() as u64
+        ); // R|X
+        blob[rx_base..rx_base + text.len()].copy_from_slice(&text);
+        ph!(
+            64 + 56,
+            1u32,
+            6u32,
+            0x3000u64,
+            0x3000u64,
+            dyn_ent.len() as u64
+        ); // R|W
+        ph!(
+            64 + 112,
+            2u32,
+            6u32,
+            0x3000u64,
+            0x3000u64,
+            dyn_ent.len() as u64
+        ); // PT_DYNAMIC
+        blob[0x3000..0x3000 + dyn_ent.len()].copy_from_slice(&dyn_ent);
+        blob
+    };
+
+    let appu = mk_so(b"libapp.so", Some(b"libdep.so"), &[(b"shared_fn", 0x1000)]);
+    let depu = mk_so(
+        b"libdep.so",
+        None,
+        &[(b"shared_fn", 0x2000), (b"dep_only", 0x2008)],
+    );
+    let mut reg = ChainRegistry::new();
+    reg.add(b"libapp.so", &appu).expect("登记 appu");
+    reg.add(b"libdep.so", &depu).expect("登记 depu");
+    let bases = [0x10_0000u64, 0x20_0000];
+
+    // ① root 域命中：appu "shared_fn"（exe 域先见者胜——addr = base+st_value）
+    let hit = dl_sym_chain(&reg, 0, &bases, b"shared_fn")
+        .expect("链查找")
+        .expect("命中");
+    assert_eq!(hit.reg_idx, 0, "root 域先见者胜");
+    assert_eq!(hit.addr, 0x10_0000 + 0x1000, "决议地址 = base + st_value");
+
+    // ② 依赖域命中："dep_only"（BFS 序段位定位——depu 独占）
+    let hit2 = dl_sym_chain(&reg, 0, &bases, b"dep_only")
+        .expect("链查找")
+        .expect("命中");
+    assert_eq!(hit2.reg_idx, 1, "依赖域段位定位");
+    assert_eq!(hit2.addr, 0x20_0000 + 0x2008);
+
+    // ③ 全链缺席 = Ok(None)（决议零虚构）
+    assert_eq!(
+        dl_sym_chain(&reg, 0, &bases, b"nosuch").expect("链查找"),
+        None,
+        "全链缺席零虚构"
+    );
+
+    // ④ DlState::dlsym_chain error 槽一次性消费（POSIX 口径）
+    let mut dl = DlState::new();
+    let a = dl.dlsym_chain(&reg, 0, &bases, b"dep_only");
+    assert_eq!(a, Some(0x20_0000 + 0x2008));
+    assert_eq!(dl.dlerror(), None, "命中域零 error 落账");
+    let miss = dl.dlsym_chain(&reg, 0, &bases, b"ghost");
+    assert_eq!(miss, None);
+    assert_eq!(dl.dlerror(), Some(DL_ERR_UNDEFINED), "缺席 error 槽落账");
+    assert_eq!(dl.dlerror(), None, "一次性消费");
+
+    // ⑤ root 越界拒收
+    assert_eq!(
+        dl_sym_chain(&reg, 2, &bases, b"shared_fn").unwrap_err(),
+        LdExecError::RegistryRange,
+        "root 越界 fail-visible"
+    );
+
+    // ⑥ bases 欠长拒收
+    assert_eq!(
+        dl_sym_chain(&reg, 0, &[0x10_0000], b"shared_fn").unwrap_err(),
+        LdExecError::RegistryRange,
+        "bases 欠长 fail-visible"
+    );
+
+    // ⑦ 依赖环域（闭环标本——查找前环判读随行显形）
+    let cyc_a = mk_so(b"cya.so", None, &[(b"cfn", 0x1000)]);
+    let mut reg2 = ChainRegistry::new();
+    reg2.add(b"cya.so", &cyc_a).expect("登记 cya");
+    let b2 = [0x30_0000u64];
+    // 单模块零依赖——查找直返 root 域命中
+    let hit3 = dl_sym_chain(&reg2, 0, &b2, b"cfn")
+        .expect("链查找")
+        .expect("命中");
+    assert_eq!(hit3.addr, 0x30_0000 + 0x1000);
 }

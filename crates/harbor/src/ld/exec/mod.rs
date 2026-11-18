@@ -1503,6 +1503,91 @@ pub fn dl_open_chain(
     Ok(modids)
 }
 
+// ---- dlsym 跨模块查找电气面（M48-DLSYM56 笔64——harbor 第⑤族核心
+// 成员桩→真：M47 dl_open_chain 装载序真消费面之上，**符号名→地址跨模
+// 块决议**落域——walk 装载序（root 居首 = exe 域 → 依赖 BFS 序 = dep
+// 域），逐模块 GNU 哈希查找（`gnu_hash_lookup` 机械面），命中即决议
+// base + st_value；全链缺席 = Ok(None)（error 槽由 DlState::dlsym_chain
+// 消费面落账——POSIX dlsym 口径）。零 unsafe 零 panic，fail-visible
+// 全显形）----
+
+/// dlsym 跨模块命中面（符号名决议产物——段位直接定位 + 地址兑现）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SymHit {
+    /// 注册表序（0 = root/exe 域，1.. = 依赖 BFS 序段位）。
+    pub reg_idx: usize,
+    /// 符号号（模块 dynsym 表内号——GNU 哈希命中产物）。
+    pub sym_idx: usize,
+    /// 决议地址（base + st_value——装载基址兑现域）。
+    pub addr: u64,
+}
+
+/// dlsym 跨模块查找链（真消费面——`root` 注册表序居首〔exe 域〕→ 依赖
+/// BFS 序〔`dl_chain_order` 机械消费〕逐模块 `dyn_parse` +
+/// `gnu_hash_lookup` 名查 → `sym_get` 符号取值 → `bases[reg_idx] +
+/// st_value` 地址兑现）。全链缺席 = Ok(None)（决议零虚构——error 槽
+/// 由调用面落账）；`bases` 长度 < 注册表数 = RegistryRange；装载序/
+/// 闭包派生失败随行显形。
+pub fn dl_sym_chain(
+    reg: &ChainRegistry<'_>,
+    root: usize,
+    bases: &[u64],
+    name: &[u8],
+) -> Result<Option<SymHit>, LdExecError> {
+    if root >= reg.len() {
+        return Err(LdExecError::RegistryRange);
+    }
+    if bases.len() < reg.len() {
+        return Err(LdExecError::RegistryRange);
+    }
+    let order = dl_chain_order(reg, root)?;
+    for idx in order {
+        let idx = idx as usize;
+        let blob = reg.get(idx).ok_or(LdExecError::RegistryRange)?.blob;
+        let img = dyn_parse(blob)?;
+        if let Some(sym_idx) = gnu_hash_lookup(&img, name) {
+            let symtab = img.dyn_val(DT_SYMTAB).ok_or(LdExecError::NoDynamic)?;
+            let (_name_off, value, _size) = img
+                .sym_get(symtab, sym_idx as u64)
+                .ok_or(LdExecError::UndefinedSymbol)?;
+            let base = bases[idx];
+            return Ok(Some(SymHit {
+                reg_idx: idx,
+                sym_idx,
+                addr: base + value,
+            }));
+        }
+    }
+    Ok(None)
+}
+
+/// DlState::dlsym_chain 落账域（POSIX dlsym 口径——命中 = 决议地址；
+/// 全链缺席 = error 槽 [`DL_ERR_UNDEFINED`] 落账 + None 返值）。
+impl DlState {
+    /// dlsym 跨模块真消费（`dl_sym_chain` 决议 + error 槽落账——v0 查找
+    /// 域 = 装载序全链〔root 居首 + 依赖 BFS 序〕；RTLD_GLOBAL 垫底段
+    /// 随装载序群组插序语义并入——v0 全链同查口径如实记档）。
+    pub fn dlsym_chain(
+        &mut self,
+        reg: &ChainRegistry<'_>,
+        root: usize,
+        bases: &[u64],
+        name: &[u8],
+    ) -> Option<u64> {
+        match dl_sym_chain(reg, root, bases, name) {
+            Ok(Some(hit)) => Some(hit.addr),
+            Ok(None) => {
+                self.error = Some(DL_ERR_UNDEFINED);
+                None
+            }
+            Err(_) => {
+                self.error = Some(DL_ERR_UNDEFINED);
+                None
+            }
+        }
+    }
+}
+
 // ---- PLT/GOT 惰性绑定电气执行面（M48-PLTGOT55 笔63——harbor 第④族
 // 桩→真：M46/M47 惰性跳过记账域（jump_lazy 记账）升级为**真执行域**——
 // 接线（wire）→ 首调解析（resolver 步兑现 GOT 槽）→ 直达（已决议槽直
