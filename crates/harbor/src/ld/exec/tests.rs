@@ -6,7 +6,8 @@
 //! 链式装载全谱 = 14 例；M48-PLTGOT55 笔63 起 +1 例——PLT/GOT 惰性
 //! 绑定电气执行面全谱 = 15 例；M48-DLSYM56 笔64 起 +1 例——dlsym 跨
 //! 模块查找电气面全谱 = 16 例；M49-DLCLOSE58 笔67 起 +1 例——dlclose
-//! 真消费链执行域全谱 = 17 例）。
+//! 真消费链执行域全谱 = 17 例；M49-TLS60 笔69 起 +1 例——TLS 执行域
+//! 全谱 = 18 例）。
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -1687,4 +1688,197 @@ fn exit_fini_ledger_face() {
     // ⑦ exit_clear 空册域：fresh state → 空序
     let mut dl2 = DlState::new();
     assert!(dl2.exit_clear().is_empty(), "空册清算 = 空序");
+}
+
+/// TLS 执行域全谱（M49-TLS60 笔69）——七域对账：四模型写面（TPOFF64/
+/// GOTTPOFF/TLSGD/TLSLD 槽值金值——布点表直映域）；__tls_get_addr 语义
+/// 核（DTV 块基址 + ti_offset 兑现）；DTV 扩展真做（扩容世代记账 +
+/// needs 判读同源）；LE/IE 直算域（tp + tp_offset + offset）；未布点槽
+/// 拒收（TlsDtvMiss）；零号/越容拒收（TlsModidRange——set 与布点查域
+/// 双面）；GD 双 qword 槽越界拒收（RelocTargetRange）。
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[test]
+fn tls_exec_domain_face() {
+    const BASE: u64 = 0x4000_0000;
+
+    // ① 四模型写面域：三模块布点（t147 金值同谱：-32/+16/+24）+ 四型
+    //    重定位槽写（r_sym = modid 直映域）
+    let mut tls = TlsSpace::new(16);
+    let l1 = tls.alloc(32, 16, 1).expect("布点 1");
+    let l2 = tls.alloc(8, 8, 2).expect("布点 2");
+    let l3 = tls.alloc(4, 4, 3).expect("布点 3");
+    assert_eq!(
+        (l1.tp_offset, l2.tp_offset, l3.tp_offset),
+        (-32, 16, 24),
+        "t147 金值同谱"
+    );
+    let layouts = vec![
+        TlsLayout {
+            modid: 0,
+            tp_offset: 0,
+            memsz: 0,
+            align: 1,
+        }, // [0] 空
+        l1,
+        l2,
+        l3,
+    ];
+    let mut staged = StagedImage {
+        base: BASE,
+        bytes: vec![0xEE; 0x100],
+    };
+    let ents = vec![
+        RelaEntry {
+            r_offset: 0x10,
+            r_sym: 1,
+            r_type: R_X86_64_TPOFF64,
+            r_addend: 0,
+        },
+        RelaEntry {
+            r_offset: 0x18,
+            r_sym: 2,
+            r_type: R_X86_64_GOTTPOFF,
+            r_addend: 0,
+        },
+        RelaEntry {
+            r_offset: 0x20,
+            r_sym: 2,
+            r_type: R_X86_64_TLSGD,
+            r_addend: 8,
+        },
+        RelaEntry {
+            r_offset: 0x30,
+            r_sym: 3,
+            r_type: R_X86_64_TLSLD,
+            r_addend: 0,
+        },
+    ];
+    let rep = tls_reloc_apply(&mut staged, BASE, &ents, &layouts).expect("TLS 写面");
+    assert_eq!(
+        rep,
+        TlsRelocReport {
+            tpoff64: 1,
+            gottppoff: 1,
+            tlsgd: 1,
+            tlsld: 1
+        },
+        "四模型计数全谱"
+    );
+    let rd = |off: usize| -> u64 {
+        u64::from_le_bytes(staged.bytes[off..off + 8].try_into().expect("槽读"))
+    };
+    assert_eq!(rd(0x10) as i64, -32, "TPOFF64 = tp_offset（LE i64 域）");
+    assert_eq!(rd(0x18) as i64, 16, "GOTTPOFF = tp_offset");
+    assert_eq!(rd(0x20), 2, "TLSGD ti_module");
+    assert_eq!(rd(0x28), 8, "TLSGD ti_offset = addend");
+    assert_eq!(rd(0x30), 3, "TLSLD = modid");
+
+    // ② __tls_get_addr 语义核域：DTV 块基址 + ti_offset 兑现
+    let mut dtv = Dtv::new();
+    assert!(dtv.is_empty() && dtv.generation() == 0, "空表零世代");
+    dtv.set(1, BASE + 0x1000).expect("DTV 布点 1");
+    dtv.set(2, BASE + 0x2000).expect("DTV 布点 2");
+    assert_eq!(dtv.len(), 2);
+    assert_eq!(
+        tls_get_addr(
+            &dtv,
+            TlsIndex {
+                ti_module: 1,
+                ti_offset: 0x40
+            }
+        )
+        .expect("get_addr"),
+        BASE + 0x1040,
+        "GD 兑现 = DTV 块基址 + ti_offset"
+    );
+    assert_eq!(
+        tls_get_addr(
+            &dtv,
+            TlsIndex {
+                ti_module: 2,
+                ti_offset: 0x18
+            }
+        )
+        .expect("get_addr"),
+        BASE + 0x2018,
+        "GD 兑现第二域"
+    );
+
+    // ③ DTV 扩展真做域：新槽扩容世代递增 + needs 同源 + 覆写不扩容
+    assert!(dtv.needs(3), "needs(3) 判读（现覆盖 2 对新铸号 3）");
+    let g0 = dtv.generation();
+    dtv.set(3, BASE + 0x3000).expect("DTV 布点 3");
+    assert_eq!(dtv.generation(), g0 + 1, "扩容世代 +1");
+    let g1 = dtv.generation();
+    dtv.set(3, BASE + 0x3008).expect("同槽覆写");
+    assert_eq!(dtv.generation(), g1, "覆写不扩容（世代不变）");
+
+    // ④ LE/IE 直算域：tp + tp_offset + offset（u64 回绕域）
+    let tp = 0x2000u64;
+    assert_eq!(
+        tls_addr_of(tp, l1, 8),
+        (0x2000i64 - 32 + 8) as u64,
+        "LE 直算 = tp + tp_offset + offset"
+    );
+
+    // ⑤ 未布点槽拒收域：TlsDtvMiss（懒分配挂账 fail-visible）
+    assert_eq!(
+        tls_get_addr(
+            &dtv,
+            TlsIndex {
+                ti_module: 9,
+                ti_offset: 0
+            }
+        )
+        .unwrap_err(),
+        LdExecError::TlsDtvMiss,
+        "DTV 未布点槽 fail-visible"
+    );
+
+    // ⑥ 零号/越容拒收域：TlsModidRange（set 与布点查域双面）
+    assert_eq!(
+        dtv.set(0, BASE).unwrap_err(),
+        LdExecError::TlsModidRange,
+        "零号拒收（set 面）"
+    );
+    assert_eq!(
+        dtv.set(DTV_CAP, BASE).unwrap_err(),
+        LdExecError::TlsModidRange,
+        "越容拒收（DTV_CAP 64 槽）"
+    );
+    let bad = vec![RelaEntry {
+        r_offset: 0x40,
+        r_sym: 0,
+        r_type: R_X86_64_TPOFF64,
+        r_addend: 0,
+    }];
+    assert_eq!(
+        tls_reloc_apply(&mut staged, BASE, &bad, &layouts).unwrap_err(),
+        LdExecError::TlsModidRange,
+        "零号拒收（布点查域）"
+    );
+    let oob = vec![RelaEntry {
+        r_offset: 0x50,
+        r_sym: 9,
+        r_type: R_X86_64_TLSGD,
+        r_addend: 0,
+    }];
+    assert_eq!(
+        tls_reloc_apply(&mut staged, BASE, &oob, &layouts).unwrap_err(),
+        LdExecError::TlsModidRange,
+        "越布点表拒收"
+    );
+
+    // ⑦ GD 双 qword 槽越界域：槽尾 8 字节不足 → RelocTargetRange
+    let tail = vec![RelaEntry {
+        r_offset: (0x100 - 8) as u64, // 尾槽——双 qword 越出缓冲
+        r_sym: 1,
+        r_type: R_X86_64_TLSGD,
+        r_addend: 0,
+    }];
+    assert_eq!(
+        tls_reloc_apply(&mut staged, BASE, &tail, &layouts).unwrap_err(),
+        LdExecError::RelocTargetRange,
+        "GD 双 qword 越界 fail-visible"
+    );
 }

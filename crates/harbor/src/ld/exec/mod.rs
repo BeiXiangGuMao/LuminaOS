@@ -162,6 +162,14 @@ pub const R_X86_64_GLOB_DAT: u32 = 6;
 pub const R_X86_64_JUMP_SLOT: u32 = 7;
 /// R_X86_64_RELATIVE。
 pub const R_X86_64_RELATIVE: u32 = 8;
+/// R_X86_64_TLSGD = 19（general-dynamic 描述子槽——双 qword）。
+pub const R_X86_64_TLSGD: u32 = 19;
+/// R_X86_64_TLSLD = 20（local-dynamic 模块槽——单 qword）。
+pub const R_X86_64_TLSLD: u32 = 20;
+/// R_X86_64_GOTTPOFF = 22（initial-exec tp 相对 GOT 槽）。
+pub const R_X86_64_GOTTPOFF: u32 = 22;
+/// R_X86_64_TPOFF64 = 24（local-exec tp 相对槽）。
+pub const R_X86_64_TPOFF64: u32 = 24;
 
 /// 机械执行面错误（fail-visible 全显形——零 panic 零默认成像）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,6 +227,10 @@ pub enum LdExecError {
     LazySlotRange,
     /// dlclose 链消费句柄无效（卸载域命中不在册 modid——真消费面输入域）。
     DlCloseInvalid,
+    /// TLS 模块铸号越界（0 号非铸号域 / 越布点表 / 超 DTV 定容——TLS 执行域）。
+    TlsModidRange,
+    /// DTV 槽未布点（__tls_get_addr 命中空槽——v0 懒分配挂账 fail-visible）。
+    TlsDtvMiss,
 }
 
 /// 单个 PT_LOAD 段描述（ET_DYN 解析产物——文件偏移保持原值，装载基址
@@ -900,6 +912,184 @@ impl TlsSpace {
     pub fn dtv_needs(&self, dtv_len: usize, modid: usize) -> bool {
         dtv_needs_resize(dtv_len, modid)
     }
+}
+
+// ---- TLS 执行域面（M49-TLS60 笔69——harbor 第⑥族 TLS 执行域桩→真：
+// M45 四模型判读〔tls_model_of〕+ M46 Variant II 布点〔TlsSpace〕之上，
+// **TLS 重定位写面 + DTV 扩展真做 + __tls_get_addr 语义核**落域。
+// 零 unsafe 零 panic，fail-visible 全显形）----
+
+/// DTV 定容（单线程 DTV 槽上限——64 槽，LAZY_SLOT_CAP 同谱纪律）。
+pub const DTV_CAP: usize = 64;
+
+/// tls_index（GD/LD 描述子——gABI 双 qword：模块铸号 + 模块内偏移）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TlsIndex {
+    /// 模块铸号（DTV 1 基口径）。
+    pub ti_module: u64,
+    /// 模块内偏移（DTPREL 域——st_value + addend 域）。
+    pub ti_offset: u64,
+}
+
+/// DTV（动态线程向量——gABI 口径：内部槽 0 = 世代记账保留，槽 m =
+/// 模块 m 块基址〔1 基〕；`set` 自动扩容〔`dtv_needs_resize` 语义同源
+/// ——新槽扩容世代递增〕；定容 [`DTV_CAP`] fail-visible）。
+#[derive(Debug)]
+pub struct Dtv {
+    entries: Vec<Option<u64>>,
+    generation: u64,
+}
+
+impl Default for Dtv {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Dtv {
+    /// 构造（空表——槽 0 世代保留位）。
+    pub fn new() -> Self {
+        Self {
+            entries: vec![None],
+            generation: 0,
+        }
+    }
+
+    /// 布点（modid 1 基——零号/越容 [`DTV_CAP`] = [`LdExecError::TlsModidRange`]；
+    /// 新槽扩容世代递增，覆写同槽不扩容）。
+    pub fn set(&mut self, modid: usize, base: u64) -> Result<(), LdExecError> {
+        if modid == 0 || modid >= DTV_CAP {
+            return Err(LdExecError::TlsModidRange);
+        }
+        if modid >= self.entries.len() {
+            self.entries.resize(modid + 1, None);
+            self.generation += 1; // 扩容世代记账
+        }
+        self.entries[modid] = Some(base);
+        Ok(())
+    }
+
+    /// 取值（未布点 = None——[`tls_get_addr`] 消费面
+    /// [`LdExecError::TlsDtvMiss`] 承接）。
+    pub fn get(&self, modid: usize) -> Option<u64> {
+        self.entries.get(modid).copied().flatten()
+    }
+
+    /// 世代快照（扩容记账）。
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// 布点覆盖长（槽 0 世代位除外）。
+    pub fn len(&self) -> usize {
+        self.entries.len() - 1
+    }
+
+    /// 空表判读。
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// 扩容判读（`dtv_needs_resize` 同源——现覆盖长对新铸号）。
+    pub fn needs(&self, modid: usize) -> bool {
+        dtv_needs_resize(self.entries.len() - 1, modid)
+    }
+}
+
+/// TLS 重定位写面报告（四模型计数）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TlsRelocReport {
+    /// R_X86_64_TPOFF64（local-exec）写面数。
+    pub tpoff64: usize,
+    /// R_X86_64_GOTTPOFF（initial-exec）写面数。
+    pub gottppoff: usize,
+    /// R_X86_64_TLSGD（general-dynamic）双 qword 描述子数。
+    pub tlsgd: usize,
+    /// R_X86_64_TLSLD（local-dynamic）单 qword 模块槽数。
+    pub tlsld: usize,
+}
+
+/// TLS 布点查域（v0 r_sym 域 = 模块铸号直映〔1 基——synthetic/probe
+/// 域口径；真实 sym → modid 决议由调用面承接〕；零号/越布点表 =
+/// [`LdExecError::TlsModidRange`]）。
+fn tls_layout_of(layouts: &[TlsLayout], r_sym: u32) -> Result<TlsLayout, LdExecError> {
+    let m = r_sym as usize;
+    if m == 0 || m >= layouts.len() {
+        return Err(LdExecError::TlsModidRange);
+    }
+    Ok(layouts[m])
+}
+
+/// TLS 重定位写面（四模型真做——[`tls_model_of`] 判读同谱权威映射）：
+/// TPOFF64 = tp 相对槽写 `tp_offset`（LE i64 域）；GOTTPOFF = GOT 槽写
+/// `tp_offset`；TLSGD = 双 qword 描述子写 {ti_module = modid, ti_offset
+/// = addend}；TLSLD = 单 qword 写 modid。`layouts` 下标 = 模块铸号
+/// （[0] 空——1 基）；写目标越出分级缓冲 = [`LdExecError::RelocTargetRange`]；
+/// 非 TLS 型 = [`LdExecError::UndefinedSymbol`] 域外拒收。
+pub fn tls_reloc_apply(
+    staged: &mut StagedImage,
+    base: u64,
+    entries: &[RelaEntry],
+    layouts: &[TlsLayout],
+) -> Result<TlsRelocReport, LdExecError> {
+    let mut rep = TlsRelocReport::default();
+    for e in entries {
+        let target = base
+            .checked_add(e.r_offset)
+            .and_then(|t| t.checked_sub(staged.base))
+            .ok_or(LdExecError::RelocTargetRange)?;
+        let idx = target as usize;
+        let end = idx.checked_add(8).ok_or(LdExecError::RelocTargetRange)?;
+        if end > staged.bytes.len() {
+            return Err(LdExecError::RelocTargetRange);
+        }
+        match e.r_type {
+            R_X86_64_TPOFF64 => {
+                let l = tls_layout_of(layouts, e.r_sym)?;
+                staged.bytes[idx..end].copy_from_slice(&l.tp_offset.to_le_bytes());
+                rep.tpoff64 += 1;
+            }
+            R_X86_64_GOTTPOFF => {
+                let l = tls_layout_of(layouts, e.r_sym)?;
+                staged.bytes[idx..end].copy_from_slice(&l.tp_offset.to_le_bytes());
+                rep.gottppoff += 1;
+            }
+            R_X86_64_TLSGD => {
+                let end2 = idx.checked_add(16).ok_or(LdExecError::RelocTargetRange)?;
+                if end2 > staged.bytes.len() {
+                    return Err(LdExecError::RelocTargetRange);
+                }
+                let l = tls_layout_of(layouts, e.r_sym)?;
+                staged.bytes[idx..idx + 8].copy_from_slice(&(l.modid as u64).to_le_bytes());
+                staged.bytes[idx + 8..end2].copy_from_slice(&(e.r_addend as u64).to_le_bytes());
+                rep.tlsgd += 1;
+            }
+            R_X86_64_TLSLD => {
+                let l = tls_layout_of(layouts, e.r_sym)?;
+                staged.bytes[idx..end].copy_from_slice(&(l.modid as u64).to_le_bytes());
+                rep.tlsld += 1;
+            }
+            _ => return Err(LdExecError::UndefinedSymbol),
+        }
+    }
+    Ok(rep)
+}
+
+/// LE/IE 直接地址（tp 相对——`tls_addr_of(tp, layout, offset)` =
+/// tp + tp_offset + offset，u64 回绕域零 panic）。
+pub fn tls_addr_of(tp: u64, layout: TlsLayout, offset: u64) -> u64 {
+    (tp.wrapping_add(layout.tp_offset as u64)).wrapping_add(offset)
+}
+
+/// __tls_get_addr 语义核（GD/LD 迟绑域——`dtv[ti_module]` 块基址 +
+/// `ti_offset` 兑现；未布点槽 = [`LdExecError::TlsDtvMiss`] fail-visible
+/// ——v0 懒分配挂账域，零虚构）。
+pub fn tls_get_addr(dtv: &Dtv, idx: TlsIndex) -> Result<u64, LdExecError> {
+    let base = dtv
+        .get(idx.ti_module as usize)
+        .ok_or(LdExecError::TlsDtvMiss)?;
+    base.checked_add(idx.ti_offset)
+        .ok_or(LdExecError::RelocTargetRange)
 }
 
 // ---- 初始化执行序面 ----
