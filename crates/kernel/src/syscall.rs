@@ -549,6 +549,26 @@ extern "C" fn lumina_syscall_dispatch(frame: &mut SyscallFrame) -> u64 {
             // 双闸（仅 boot 常驻 aux 驱动进程可达——fail-visible 计数域）
             crate::waycomp::sys_ptr_inject(kind, a)
         }
+        Syscall::Mmap {
+            va,
+            len,
+            prot,
+            flags,
+            fd,
+        } => {
+            task::count_syscall(2);
+            // M47-LDCONS53 笔60 装载计划消费面电气域：native 匿名映射
+            // （harbor::ld::exec load_plan 计划区 ring3 承接位——
+            // kernel::mmap 承接面：游标/定点窗域 + 登记面 + 页立映射）
+            crate::mmap::sys_mmap(va, len, prot, flags, fd)
+        }
+        Syscall::Mprotect { va, len, prot } => {
+            task::count_syscall(2);
+            // M47-LDCONS53 笔60 页保护改旗：登记行域内单行覆盖语义
+            // （逐叶 RW 位改写 + invlpg 击落 + 行分裂真值保持——
+            // kernel::mmap 承接面）
+            crate::mmap::sys_mprotect(va, len, prot)
+        }
         Syscall::Pipe { op } => {
             task::count_syscall(2);
             // M24-A1 shell 管道/分页面：捕获武装/排水/分页重放/弃置

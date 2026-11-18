@@ -531,6 +531,52 @@ pub const PTR_INJECT_MOTION: u64 = 0;
 /// [`SYS_PTR_INJECT`] kind：指针按键（a = 按钮码 << 32 | 键态）。
 pub const PTR_INJECT_BUTTON: u64 = 1;
 
+/// native 匿名映射面（v0.24，M47-LDCONS53 笔60；装载计划消费面
+/// 电气域——harbor::ld::exec `load_plan` 计划区的 ring3 承接位）。
+///
+/// 参数 = （rdi = 映射基址提示 / rsi = 映射长 / rdx = prot / r10 =
+/// flags / r8 = fd）。返回：映射基址（提示非零 = 回显原值；提示
+/// 0 = 内核线性游标分配）；错误 = [`ERR_NOMEM`] / [`ERR_CAP`] /
+/// `u64::MAX-1`（BadArgs）。
+///
+/// v0 口径（如实记档）：① 匿名私有域 —— fd 必须 = `u64::MAX`
+/// （Linux `MAP_ANONYMOUS` 的 fd = -1 同源语义），文件映射随后续
+/// 批次；② 窗域 [`MMAP_ANON_BASE`]..[`MMAP_ANON_LIMIT`]（256 MiB
+/// ——与 SHM 窗 / swap 数据区 / FRESH 窗 / 增长栈零碰撞）；③ 提示
+/// 基址页对齐且落窗内，0 = 内核游标自窗基线性分配；④ 页立映射
+/// （[`Entry::PRESENT`]，零页清底——[`SYS_SHM`] MAP 臂同谱），无
+/// 延迟映射/回收；⑤ 每次映射入登记面（kernel::mmap 行登记——同
+/// 任务重叠拒收，定容 64 行）；⑥ [`PROT_EXEC`] v0 为记账位
+/// （EFER.NXE 未启用，bit63 属保留位不落表——全页可执行如实记
+/// 档，NX 随 EFER.NXE 批次收口）。
+pub const SYS_MMAP: u64 = 46;
+/// [`SYS_MMAP`] fd 哨兵：匿名私有域（Linux fd = -1 同源）。
+pub const MMAP_ANON_FD: u64 = u64::MAX;
+/// [`SYS_MMAP`] 匿名映射窗基（256 MiB 窗——用户 VA 高位独立分支）。
+pub const MMAP_ANON_BASE: u64 = 0x2_0000_0000;
+/// [`SYS_MMAP`] 匿名映射窗上界（开区间）。
+pub const MMAP_ANON_LIMIT: u64 = 0x2_1000_0000;
+
+/// 页保护位族（v0.24，M47-LDCONS53 笔60——POSIX mmap/mprotect 同谱）：
+/// [`PROT_READ`] = 1 / [`PROT_WRITE`] = 2 / [`PROT_EXEC`] = 4。
+/// 语义域（内核侧复审）：W ⇒ R、X ⇒ R（x86 RW 位组合语义——无 R
+/// 伴生拒收）；[`PROT_EXEC`] v0 为记账位（见 [`SYS_MMAP`] 注⑥）。
+pub const PROT_READ: u64 = 0x1;
+/// 页保护位：可写（含可读）。
+pub const PROT_WRITE: u64 = 0x2;
+/// 页保护位：可执行（v0 记账位——全页可执行，NX 随 EFER.NXE 批次）。
+pub const PROT_EXEC: u64 = 0x4;
+/// 保护位全域掩码（parse 层结构闸）。
+pub const PROT_MASK: u64 = PROT_READ | PROT_WRITE | PROT_EXEC;
+
+/// 页保护改旗面（v0.24，M47-LDCONS53 笔60；rdi = 基址 / rsi = 长 /
+/// rdx = prot 新旗）。语义：[`SYS_MMAP`] 登记行域内改旗——区间必须
+/// 被调用方单行登记覆盖（子区间合法，跨行/越行拒收）；逐叶
+/// RW 位改写（[`Entry::WRITABLE`] set/clear）+ invlpg 逐页击落；
+/// 登记行按需分裂（前/改/后三段——登记面真值保持）。成功返回 0。
+/// PROT_EXEC 语义同 [`SYS_MMAP`] 注⑥（记账位不落表）。
+pub const SYS_MPROTECT: u64 = 47;
+
 /// 套接字名词法校验（fail-visible 注册面）：1..=[`USOCK_NAME_MAX`]
 /// 字节，ASCII 可打印域（0x21..=0x7E——空格/控制域拒收；平名命名域
 /// v0 无路径解析，斜杠词法域放行如实记档）。宿主可测纯函数
@@ -612,7 +658,13 @@ pub const OPEN_MODE_MASK: u64 = 0b1_1111;
 /// 无独立用户空间 → `ERR_CAP`；帧耗尽 → `ERR_NOMEM(9)`。
 pub const SYS_EXEC: u64 = 17;
 
-/// 系统调用 ABI 版本（v0.22 = M42-ELF5：新增 SYS_SHM(43) wl_shm
+/// 系统调用 ABI 版本（v0.24 = M47-LDCONS53 笔60：新增 SYS_MMAP(46)
+/// native 匿名映射面 + SYS_MPROTECT(47) 页保护改旗面——装载计划消费面
+/// 电气域〔harbor::ld::exec load_plan 计划区 ring3 承接位——PROT_READ/
+/// WRITE/EXEC 位族 + MMAP_ANON_BASE 0x2_0000_0000 256 MiB 映射窗 +
+/// MMAP_ANON_FD 匿名哨兵；PROT_EXEC v0 记账位——EFER.NXE 未启用不落
+/// 表如实记档〕；v0.23 = M42-AUXR3 笔㉚：新增 SYS_AUX_READ(44)/
+/// SYS_PTR_INJECT(45) ring3 辅助驱动双车道；v0.22 = M42-ELF5：新增 SYS_SHM(43) wl_shm
 /// 共享内存池域（CREATE/MAP 双 op——对象 id 段 0xC0DE…003X +
 /// SHM_VA_BASE 0x7000_0000 映射窗）+ SYS_UNIXSOCK op 面扩容
 /// SEND_FD(8)/RECV_FD(9)〔fd 附带数据传递——SCM_RIGHTS 语义面〕；
@@ -642,7 +694,7 @@ pub const SYS_EXEC: u64 = 17;
 /// v0.16 = M15：目录面五落点 MKDIR/REMOVE/READDIR/MOUNT/UMOUNT +
 /// 句柄面深化 DUP/FCNTL（CLOEXEC）+ NANOSLEEP 参数语义升级为 TSC 纳秒。
 /// v0.8 = SYS_QUOTA；v0.7 = 文件面六落点 + NANOSLEEP + 统一句柄面）。
-pub const ABI_VERSION: (u16, u16) = (0, 23);
+pub const ABI_VERSION: (u16, u16) = (0, 24);
 
 /// ---------------------------------------------------------------------------
 /// LXE1 v0 错误码表（具名化事实源，M25-C1）：
@@ -1011,6 +1063,28 @@ pub enum Syscall {
         /// 事件载荷（motion：x<<32|y；button：按钮码<<32|键态）。
         a: u64,
     },
+    /// native 匿名映射（v0.24，M47-LDCONS53 笔60；见 [`SYS_MMAP`]）。
+    Mmap {
+        /// 映射基址提示（0 = 内核线性游标分配；非零 = 页对齐窗内定点）。
+        va: u64,
+        /// 映射长（字节；页对齐域内核侧复审，0 拒收）。
+        len: u64,
+        /// 保护位族（[`PROT_MASK`] 子集；W ⇒ R、X ⇒ R 语义域内核侧复审）。
+        prot: u64,
+        /// 旗标保留（v0 必须为 0——匿名私有域单一语义）。
+        flags: u64,
+        /// fd 哨兵（必须 = [`MMAP_ANON_FD`]——匿名私有域）。
+        fd: u64,
+    },
+    /// 页保护改旗（v0.24，M47-LDCONS53 笔60；见 [`SYS_MPROTECT`]）。
+    Mprotect {
+        /// 改旗基址（页对齐窗内——语义域内核侧复审）。
+        va: u64,
+        /// 改旗长（字节；覆盖登记行域内——内核侧复审）。
+        len: u64,
+        /// 保护位新旗（[`PROT_MASK`] 子集）。
+        prot: u64,
+    },
 }
 
 /// 从寄存器快照解析调用意图。只做结构校验，不做内存访问（由慢路径完成）。
@@ -1174,8 +1248,32 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
         SYS_AUX_READ => Err(AbiError::BadArgs),
         SYS_PTR_INJECT if a0 <= PTR_INJECT_BUTTON => Ok(Syscall::PtrInject { kind: a0, a: a1 }),
         SYS_PTR_INJECT => Err(AbiError::BadArgs),
+        SYS_MMAP if a1 > 0 && a3 == 0 && a4 == MMAP_ANON_FD && mmap_prot_ok(a2) => {
+            Ok(Syscall::Mmap {
+                va: a0,
+                len: a1,
+                prot: a2,
+                flags: a3,
+                fd: a4,
+            })
+        }
+        SYS_MMAP => Err(AbiError::BadArgs),
+        SYS_MPROTECT if a1 > 0 && mmap_prot_ok(a2) => Ok(Syscall::Mprotect {
+            va: a0,
+            len: a1,
+            prot: a2,
+        }),
+        SYS_MPROTECT => Err(AbiError::BadArgs),
         _ => Err(AbiError::UnknownSyscall),
     }
+}
+
+/// [`SYS_MMAP`]/[`SYS_MPROTECT`] 保护位族域闸（parse 层结构校验）：
+/// 位集必须 ⊆ [`PROT_MASK`]；语义域 W ⇒ R、X ⇒ R（x86 RW 位组合语义
+/// ——无 R 伴生拒收；PROT_NONE = 0 拒收——v0 无无权页口径）。
+/// 宿主可测纯函数（[`unixsock_len_ok`] 同款——词法域与语义域分立）。
+pub fn mmap_prot_ok(prot: u64) -> bool {
+    prot & !PROT_MASK == 0 && prot != 0 && prot & PROT_READ != 0 // R 必含位：W ⇒ R、X ⇒ R——否则拒
 }
 
 /// [`SYS_UNIXSOCK`] 长度域闸（parse 层结构校验）：BIND/CONNECT = 名字
@@ -1577,7 +1675,7 @@ mod tests {
         assert_eq!(super::SYS_DUP, 31);
         assert_eq!(super::SYS_FCNTL, 32);
         assert_eq!(super::SYS_IMAGE_ENUM, 33);
-        assert_eq!(super::ABI_VERSION, (0, 23));
+        assert_eq!(super::ABI_VERSION, (0, 24));
         assert_eq!(super::SYS_TTY_GETCH, 34);
         assert_eq!(
             super::parse(super::SyscallRegs {
@@ -2176,10 +2274,176 @@ mod svc_abi_tests {
             "op 2 越域拒收"
         );
         assert_eq!(
-            super::parse(r(super::SYS_SHM + 3, [0; 5])),
+            super::parse(r(super::SYS_SHM + 5, [0; 5])),
             Err(super::AbiError::UnknownSyscall),
-            "号域 46 未注册拒收（编号冻结只增不改域探针——44/45 = M42-AUXR3 \
-             SYS_AUX_READ/SYS_PTR_INJECT 收录后探针顺延）"
+            "号域 48 未注册拒收（编号冻结只增不改域探针——46/47 = M47-LDCONS53 \
+             SYS_MMAP/SYS_MPROTECT 收录后探针顺延）"
         );
+    }
+
+    /// SYS_MMAP(46)/SYS_MPROTECT(47) parse 域（v0.24，M47-LDCONS53
+    /// 笔60）：匿名哨兵/旗标保留/保护位族域闸 + 负例矩阵（装载计划
+    /// 消费面电气域结构面）。
+    #[test]
+    fn parse_mmap_mprotect() {
+        let r = |num: u64, args: [u64; 5]| super::SyscallRegs { num, args };
+        // MMAP 金值：定点基址 + R|W + 匿名哨兵
+        assert_eq!(
+            super::parse(r(
+                super::SYS_MMAP,
+                [
+                    super::MMAP_ANON_BASE,
+                    0x2000,
+                    super::PROT_READ | super::PROT_WRITE,
+                    0,
+                    super::MMAP_ANON_FD
+                ]
+            )),
+            Ok(super::Syscall::Mmap {
+                va: super::MMAP_ANON_BASE,
+                len: 0x2000,
+                prot: super::PROT_READ | super::PROT_WRITE,
+                flags: 0,
+                fd: super::MMAP_ANON_FD,
+            }),
+            "MMAP：定点 R|W 匿名收录"
+        );
+        assert_eq!(
+            super::parse(r(
+                super::SYS_MMAP,
+                [
+                    0,
+                    0x1000,
+                    super::PROT_READ | super::PROT_EXEC,
+                    0,
+                    super::MMAP_ANON_FD
+                ]
+            )),
+            Ok(super::Syscall::Mmap {
+                va: 0,
+                len: 0x1000,
+                prot: super::PROT_READ | super::PROT_EXEC,
+                flags: 0,
+                fd: super::MMAP_ANON_FD,
+            }),
+            "MMAP：游标 R|X 收录"
+        );
+        // MMAP 负例矩阵
+        assert_eq!(
+            super::parse(r(
+                super::SYS_MMAP,
+                [0, 0x1000, super::PROT_READ | super::PROT_WRITE, 0, 0]
+            )),
+            Err(super::AbiError::BadArgs),
+            "MMAP：fd ≠ 匿名哨兵拒收（文件映射后续批次）"
+        );
+        assert_eq!(
+            super::parse(r(
+                super::SYS_MMAP,
+                [
+                    0,
+                    0x1000,
+                    super::PROT_READ | super::PROT_WRITE,
+                    1,
+                    super::MMAP_ANON_FD
+                ]
+            )),
+            Err(super::AbiError::BadArgs),
+            "MMAP：flags ≠ 0 拒收（匿名私有单一语义）"
+        );
+        assert_eq!(
+            super::parse(r(
+                super::SYS_MMAP,
+                [
+                    0,
+                    0,
+                    super::PROT_READ | super::PROT_WRITE,
+                    0,
+                    super::MMAP_ANON_FD
+                ]
+            )),
+            Err(super::AbiError::BadArgs),
+            "MMAP：len 0 拒收"
+        );
+        assert_eq!(
+            super::parse(r(
+                super::SYS_MMAP,
+                [0, 0x1000, super::PROT_WRITE, 0, super::MMAP_ANON_FD]
+            )),
+            Err(super::AbiError::BadArgs),
+            "MMAP：W 无 R 伴生拒收"
+        );
+        assert_eq!(
+            super::parse(r(
+                super::SYS_MMAP,
+                [0, 0x1000, super::PROT_EXEC, 0, super::MMAP_ANON_FD]
+            )),
+            Err(super::AbiError::BadArgs),
+            "MMAP：X 无 R 伴生拒收"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_MMAP, [0, 0x1000, 0, 0, super::MMAP_ANON_FD])),
+            Err(super::AbiError::BadArgs),
+            "MMAP：PROT_NONE 拒收"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_MMAP, [0, 0x1000, 0x8, 0, super::MMAP_ANON_FD])),
+            Err(super::AbiError::BadArgs),
+            "MMAP：越 PROT_MASK 位拒收"
+        );
+        // MPROTECT 金值 + 负例
+        assert_eq!(
+            super::parse(r(
+                super::SYS_MPROTECT,
+                [
+                    super::MMAP_ANON_BASE,
+                    0x1000,
+                    super::PROT_READ | super::PROT_EXEC,
+                    0,
+                    0
+                ]
+            )),
+            Ok(super::Syscall::Mprotect {
+                va: super::MMAP_ANON_BASE,
+                len: 0x1000,
+                prot: super::PROT_READ | super::PROT_EXEC,
+            }),
+            "MPROTECT：RW→RX 改旗收录"
+        );
+        assert_eq!(
+            super::parse(r(
+                super::SYS_MPROTECT,
+                [super::MMAP_ANON_BASE, 0, super::PROT_READ, 0, 0]
+            )),
+            Err(super::AbiError::BadArgs),
+            "MPROTECT：len 0 拒收"
+        );
+        assert_eq!(
+            super::parse(r(
+                super::SYS_MPROTECT,
+                [super::MMAP_ANON_BASE, 0x1000, super::PROT_WRITE, 0, 0]
+            )),
+            Err(super::AbiError::BadArgs),
+            "MPROTECT：W 无 R 伴生拒收"
+        );
+        // 词法闸对账：mmap_prot_ok 全谱
+        assert!(super::mmap_prot_ok(super::PROT_READ));
+        assert!(super::mmap_prot_ok(super::PROT_READ | super::PROT_WRITE));
+        assert!(super::mmap_prot_ok(super::PROT_READ | super::PROT_EXEC));
+        assert!(super::mmap_prot_ok(super::PROT_MASK));
+        assert!(!super::mmap_prot_ok(0), "PROT_NONE 拒收");
+        assert!(!super::mmap_prot_ok(super::PROT_WRITE), "W 单位拒收");
+        assert!(!super::mmap_prot_ok(super::PROT_EXEC), "X 单位拒收");
+        assert!(
+            !super::mmap_prot_ok(super::PROT_WRITE | super::PROT_EXEC),
+            "W|X 无 R 拒收"
+        );
+        assert!(!super::mmap_prot_ok(0x8), "越掩码位拒收");
+        // 窗常量锚（256 MiB + 与 SHM/swap/FRESH 域零碰撞面——值域锚）
+        assert_eq!(super::MMAP_ANON_BASE, 0x2_0000_0000);
+        assert_eq!(super::MMAP_ANON_LIMIT - super::MMAP_ANON_BASE, 0x1000_0000);
+        // 窗零碰撞面：编译期常量域（clippy assertions_on_constants 收口——
+        // const 块判读）
+        const _: () = assert!(super::MMAP_ANON_BASE > super::SHM_VA_LIMIT, "SHM 窗零碰撞");
     }
 }

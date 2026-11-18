@@ -550,6 +550,108 @@ fn ns_to_tenths_and_budget_judge() {
     );
 }
 
+/// 装载计划消费面（M47-LDCONS53 笔60）：prot_of 翻译域 + exec_plan
+/// 三段式动作序列（Mmap R|W 分级窗 ×N → CopyTo 交集拷贝 ×N →
+/// Mprotect 终旗 ×N′——同旗区零动作）+ 空计划/无 R 区 fail-visible。
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[test]
+fn exec_plan_consumer_face() {
+    // prot_of：gABI 旗 → PROT 位族（R 必含位语义）
+    assert_eq!(prot_of(4), Ok(PROT_READ)); // PF_R
+    assert_eq!(prot_of(6), Ok(PROT_READ | PROT_WRITE)); // PF_R|PF_W
+    assert_eq!(prot_of(5), Ok(PROT_READ | PROT_EXEC)); // PF_R|PF_X
+    assert_eq!(prot_of(7), Ok(PROT_READ | PROT_WRITE | PROT_EXEC)); // 全谱
+    assert_eq!(prot_of(2), Err(LdExecError::BadSeg)); // PF_W 无 R 拒收
+    assert_eq!(prot_of(1), Err(LdExecError::BadSeg)); // PF_X 无 R 拒收
+    assert_eq!(prot_of(0), Err(LdExecError::BadSeg)); // 零旗拒收
+                                                      // exec_plan 金值：双区计划（RX 前段 + RW 后段——t147 同谱布局）
+    let base = 0x1000_0000u64;
+    let plan = vec![
+        MapRegion {
+            va_start: base,
+            va_end: base + 0x2000,
+            flags: 5, // PF_R|PF_X
+        },
+        MapRegion {
+            va_start: base + 0x2000,
+            va_end: base + 0x3000,
+            flags: 6, // PF_R|PF_W
+        },
+    ];
+    let staged = StagedImage {
+        base,
+        bytes: vec![0xAB; 0x3000],
+    };
+    let acts = exec_plan(&plan, &staged).expect("动作序列");
+    // 三段式：Mmap×2（R|W 分级窗）→ CopyTo×2（交集 0x2000 + 0x1000）→
+    // Mprotect×1（RX 区终旗；RW 区同旗零动作）
+    assert_eq!(
+        acts,
+        vec![
+            MapAction::Mmap {
+                va: base,
+                len: 0x2000,
+                prot: PROT_READ | PROT_WRITE,
+            },
+            MapAction::Mmap {
+                va: base + 0x2000,
+                len: 0x1000,
+                prot: PROT_READ | PROT_WRITE,
+            },
+            MapAction::CopyTo {
+                va: base,
+                src_off: 0,
+                len: 0x2000,
+            },
+            MapAction::CopyTo {
+                va: base + 0x2000,
+                src_off: 0x2000,
+                len: 0x1000,
+            },
+            MapAction::Mprotect {
+                va: base,
+                len: 0x2000,
+                prot: PROT_READ | PROT_EXEC,
+            },
+        ],
+        "消费序 = 先全量映射、再统一拷贝、后逐区终旗（Linux 共享页序）"
+    );
+    // 空计划 fail-visible
+    let empty: Vec<MapRegion> = vec![];
+    assert_eq!(
+        exec_plan(&empty, &staged),
+        Err(LdExecError::TooManyLoads),
+        "空计划显形（load_plan 已闸 0 段——复闸收口）"
+    );
+    // 无 R 区 fail-visible（prot_of 结构闸透传）
+    let no_r = vec![MapRegion {
+        va_start: base,
+        va_end: base + 0x1000,
+        flags: 2, // PF_W 无 PF_R——装载器同款拒收
+    }];
+    assert_eq!(
+        exec_plan(&no_r, &staged),
+        Err(LdExecError::BadSeg),
+        "无 R 区拒收（Linux 装载器同款）"
+    );
+    // 间隙零拷贝：计划区后段脱离镜像覆盖域 → 零 CopyTo 动作
+    let gap = vec![MapRegion {
+        va_start: base + 0x10000,
+        va_end: base + 0x11000,
+        flags: 6, // PF_R|PF_W——与 staged 零交集
+    }];
+    let acts_gap = exec_plan(&gap, &staged).expect("间隙计划");
+    assert_eq!(
+        acts_gap,
+        vec![MapAction::Mmap {
+            va: base + 0x10000,
+            len: 0x1000,
+            prot: PROT_READ | PROT_WRITE,
+        }],
+        "零交集 = 零 CopyTo 零 Mprotect（间隙零拷贝语义）"
+    );
+}
+
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 #[test]
 fn reloc_family_nz_face() {

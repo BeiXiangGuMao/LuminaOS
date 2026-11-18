@@ -30,6 +30,9 @@ include!("exec_images_gen_m23.rs");
 include!("exec_images_gen_m42.rs");
 // M42-ELF5 用户态 ELF 播种 lane 映像（勿手改：scripts/gen_m42_elf_lane.py 再生成）。
 include!("exec_images_gen_m42_elf.rs");
+// M47-LDCONS53 装载计划消费面批交付件（勿手改：scripts/gen_m47_ldlumina.py
+// 再生成——ld-lumina.so 本体 + ring3 消费探针；artifacts/ 单一事实源）。
+include!("exec_images_m47.rs");
 
 /// 用户代码段虚拟基址（PT[0]）。
 pub const USER_CODE_VIRT: u64 = 0x40_0000;

@@ -10,11 +10,11 @@ SMP、抢占式调度、ring3 用户进程、SYSCALL/SYSRET、能力化 IPC、sw
 
 | 指标 | 现值 |
 |---|---|
-| 裸机自检 | **147 项全绿**（QEMU 退出码 33 自动验收） |
+| 裸机自检 | **148 项全绿**（QEMU 退出码 33 自动验收） |
 | CI 门禁 | CI-OK 11 阶段（宿主七阶段 + IDL/lint + 内核构建 + 冒烟 + 报告） |
-| syscall ABI | v0.23（SYS_AUX_READ/SYS_PTR_INJECT 新收录） |
+| syscall ABI | v0.24（SYS_MMAP/SYS_MPROTECT 装载计划消费面双新号） |
 | 编译进程链 | 九形（协议/shm/服务环/常驻/合成器/契约标本/argv/解析/驱动） |
-| 双面板标记 | 201（S8 required + longrun 双面同步） |
+| 双面板标记 | 207（S8 required + longrun 双面同步） |
 
 ## 当前状态
 
@@ -285,10 +285,11 @@ lumina-build/              ← 编译产物 + 日志 + 报告（源码树外，�
 | 开发线 | M42 用户态桌面链 | **35 笔逐笔落账**（三阶段 + 卫生/损伤/光标/驱动/滚轮/焦点/键盘语义批次）；自检 100→134，ABI v0.23，双面板 130 标记 |
 | 开发线 | M43–M45 | **M43 六批 + M44 三批 + M45 四笔**（输入链收口/真机窗口对账/MPMC 零锁化/harbor 语义核开工）；自检 134→146，双面板 130→195，v0.37.0 定版 |
 | 开发线 | M46 harbor 机械执行面 | **四笔落账**（LDEXEC49 交付批 + RECON50 回填执行面 + DPMS51 背光语义面 + LONGRUN52 记录底稿）；自检 146→**147**，双面板 195→**201**，v0.38.0 定版 |
+| 开发线 | M47 装载计划消费面 | **笔60 落账**（LDCONS53——SYS_MMAP(46)/SYS_MPROTECT(47) 双电气域 ABI v0.24 + harbor exec_plan 消费面 + ld-lumina.so 本体真件入库）；自检 147→**148**，双面板 201→**207** |
 
 最新发布：**[Release v0.38.0](../../releases)**——src / artifacts / RELEASE_NOTES /
 SHA256SUMS 四资产。M42–M46 桌面链与机械执行面进度随里程碑收口定版
-（HEAD 门禁 CI-OK 全绿，冒烟 147/147）。
+（HEAD 门禁 CI-OK 全绿，冒烟 148/148）。
 
 ## 工程纪律
 

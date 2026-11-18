@@ -46,6 +46,7 @@ mod interrupts;
 mod ipc;
 mod kbd;
 mod linux;
+mod mmap;
 mod multiboot1;
 mod procs;
 mod selftest;
@@ -86,8 +87,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126；M42-DMG27 t127（联合域上限细化活体）起 127；M42-DMG28 t128（指针 16px 粗粒度域联动活体）起 128；M42-SPRITE29 笔㉙ t129（光标 sprite 渲染面活体：compose 执行器顶层 sprite 平面 + 热点对位联动）起 129；M42-AUXR3 笔㉚ t130（ring3 aux 驱动进程活体：SYS_AUX_READ/SYS_PTR_INJECT 车道 + 接管态仲裁）起 130；M42-PTRLINK 笔㉛ t131（Enter/Leave 域联动活体：焦点切换取证计数 + 光标格直标强制入账）起 131；M42-WHEEL32 笔㉜ t132（IntelliMouse 轮询命令链 + wl_pointer axis 电气源活体）起 132；M42-CLICKF33 笔㉝ t133（click-to-focus 焦点迁移联动面活体：纯针直迁 + 键盘迁移取证戳 + 幂等/release 闸）起 133；M42-KBREP34 笔㉞ t134（wl_keyboard.repeat_info 键重复公告面活体：键盘派生域 keymap 后随行 + v0 关闭声明口径 + 域闸负例）起 134；M43-AV12036 笔㊱ t135（wl_pointer.axis_value120 离散步进语义活体：wheel 源 frame 域随行 + 流内序锚 + 零步进不随行域闸）起 135；M43-KBREP37 笔㊷ t136（键重复生产域 + set_cursor 请求域活体：repeat_info 真值公告 + delay/rate 重复窗 + 释放撤销 + 修饰键零登记 + 在册面/默认回退双臂）起 136；M43-PRIO38 笔电解 t137（产者优先级域活体：boot 代执面 + waycomp 0/aux 3 级序 + 越界 clamp 语义核）起 137；M43-TSC39 笔㊹ t138（TSC deadline one-shot 定时器活体：CPUID 特性锚 + LVT deadline 使能 + one-shot 交付 + 不再武装零增）起 138；M43-HWDW40 笔㊺ t139（Explorer 型别链 + IMEX 族谱解码活体：ID 0x04 双旗武装 + dw 横轮 HORIZONTAL axis + dz nibble 域 + 按钮 4/5 沿）起 139；M43-CURSOR41 笔㊻ t140（光标直迁域活体：窗亡重排域 stationary 光标位 hit-test 直迁 + 创建期 v0 口径钉住 + 幂等零扰）起 140；M44-MAP42 笔㊼ t141（创建期/map 域直迁活体：首映射批 stationary 光标位 hit-test 直迁零 motion 前提 + wire enter 出域取证 + map 域幂等零扰 + 跨窗直迁/窗亡回迁分戳分域）起 141；M44-AUXW43 笔㊽ t142（boot wheel/explorer 接线切换活体：Explorer 链 boot 武装 + 应答窗收口泵 + boot 态族谱解码全谱 + v0 负向误读域退役对账）起 142；M44-TSCRG44 笔㊾ t143（真机窗口 TSC deadline 全谱对账活体：交付后解除武装 + one-shot 零增判据 + 再武装语义 + 解除武装域）起 143；M45-BIT245 笔㊿ t144（真机窗口 bit24=1 CPUID 逐位对账活体：SDM 权威位义表 32 目 + 逐位判读语义核 + 探测面同源一致）起 144；M45-MPMC46 笔51 t145（MPMC 环替换 SpinLock 串行化活体：ostd MpmcRing 无锁环 + waycomp 输入域零锁直推 + ISR 臂退避域退役 + 三源并发零丢失）起 145；M45-RECON47 笔52 t146（真机窗口 bit24=1 实测对账活体：ReconWindow 二态判定核三源一致 + RECON_SEGMENTS 四段全谱装载计划面 + MSR 0x6E0 路由复证——标记四件 T146-WINDOW/PLAN/ROUTE/OK，双面板 191→195）起 146；M46-LDEXEC49 笔55 t147（harbor 机械执行面 ld-lumina.so 交付批活体：ET_DYN 结构判读 + 装载映射计划面/分级缓冲 + GNU 哈希决议链 + 重定位四类写面〔RELATIVE/GLOB_DAT/JUMP_SLOT 惰性/COPY〕+ TLS Variant II 三模块布点 + DTV 扩容 + init/fini 互逆序 + dlopen 族 + H-P03 四段打点——标记六件 T147-MAP/RELOC/TLS/INIT/BUDGET/OK，双面板 195→201）起 147）。
-const SELFTEST_TOTAL: usize = 147;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126；M42-DMG27 t127（联合域上限细化活体）起 127；M42-DMG28 t128（指针 16px 粗粒度域联动活体）起 128；M42-SPRITE29 笔㉙ t129（光标 sprite 渲染面活体：compose 执行器顶层 sprite 平面 + 热点对位联动）起 129；M42-AUXR3 笔㉚ t130（ring3 aux 驱动进程活体：SYS_AUX_READ/SYS_PTR_INJECT 车道 + 接管态仲裁）起 130；M42-PTRLINK 笔㉛ t131（Enter/Leave 域联动活体：焦点切换取证计数 + 光标格直标强制入账）起 131；M42-WHEEL32 笔㉜ t132（IntelliMouse 轮询命令链 + wl_pointer axis 电气源活体）起 132；M42-CLICKF33 笔㉝ t133（click-to-focus 焦点迁移联动面活体：纯针直迁 + 键盘迁移取证戳 + 幂等/release 闸）起 133；M42-KBREP34 笔㉞ t134（wl_keyboard.repeat_info 键重复公告面活体：键盘派生域 keymap 后随行 + v0 关闭声明口径 + 域闸负例）起 134；M43-AV12036 笔㊱ t135（wl_pointer.axis_value120 离散步进语义活体：wheel 源 frame 域随行 + 流内序锚 + 零步进不随行域闸）起 135；M43-KBREP37 笔㊷ t136（键重复生产域 + set_cursor 请求域活体：repeat_info 真值公告 + delay/rate 重复窗 + 释放撤销 + 修饰键零登记 + 在册面/默认回退双臂）起 136；M43-PRIO38 笔电解 t137（产者优先级域活体：boot 代执面 + waycomp 0/aux 3 级序 + 越界 clamp 语义核）起 137；M43-TSC39 笔㊹ t138（TSC deadline one-shot 定时器活体：CPUID 特性锚 + LVT deadline 使能 + one-shot 交付 + 不再武装零增）起 138；M43-HWDW40 笔㊺ t139（Explorer 型别链 + IMEX 族谱解码活体：ID 0x04 双旗武装 + dw 横轮 HORIZONTAL axis + dz nibble 域 + 按钮 4/5 沿）起 139；M43-CURSOR41 笔㊻ t140（光标直迁域活体：窗亡重排域 stationary 光标位 hit-test 直迁 + 创建期 v0 口径钉住 + 幂等零扰）起 140；M44-MAP42 笔㊼ t141（创建期/map 域直迁活体：首映射批 stationary 光标位 hit-test 直迁零 motion 前提 + wire enter 出域取证 + map 域幂等零扰 + 跨窗直迁/窗亡回迁分戳分域）起 141；M44-AUXW43 笔㊽ t142（boot wheel/explorer 接线切换活体：Explorer 链 boot 武装 + 应答窗收口泵 + boot 态族谱解码全谱 + v0 负向误读域退役对账）起 142；M44-TSCRG44 笔㊾ t143（真机窗口 TSC deadline 全谱对账活体：交付后解除武装 + one-shot 零增判据 + 再武装语义 + 解除武装域）起 143；M45-BIT245 笔㊿ t144（真机窗口 bit24=1 CPUID 逐位对账活体：SDM 权威位义表 32 目 + 逐位判读语义核 + 探测面同源一致）起 144；M45-MPMC46 笔51 t145（MPMC 环替换 SpinLock 串行化活体：ostd MpmcRing 无锁环 + waycomp 输入域零锁直推 + ISR 臂退避域退役 + 三源并发零丢失）起 145；M45-RECON47 笔52 t146（真机窗口 bit24=1 实测对账活体：ReconWindow 二态判定核三源一致 + RECON_SEGMENTS 四段全谱装载计划面 + MSR 0x6E0 路由复证——标记四件 T146-WINDOW/PLAN/ROUTE/OK，双面板 191→195）起 146；M46-LDEXEC49 笔55 t147（harbor 机械执行面 ld-lumina.so 交付批活体：ET_DYN 结构判读 + 装载映射计划面/分级缓冲 + GNU 哈希决议链 + 重定位四类写面〔RELATIVE/GLOB_DAT/JUMP_SLOT 惰性/COPY〕+ TLS Variant II 三模块布点 + DTV 扩容 + init/fini 互逆序 + dlopen 族 + H-P03 四段打点——标记六件 T147-MAP/RELOC/TLS/INIT/BUDGET/OK，双面板 195→201）起 147；M47-LDCONS53 笔60 t148（装载计划消费面 + ld-lumina.so 本体交付批活体：本体真件机械链〔ET_DYN 判读 + exec_plan 消费动作序列 + GNU 哈希决议 + 真件 RELA 四类写面 + 真件 TLS 布点〕+ ring3 消费活体〔SYS_MMAP(46)/SYS_MPROTECT(47) 双车道 + 映射页代码 call + 负例三目〕+ 登记面断言——标记六件 T148-SO/LIVE/REG/OK + 探针面 PROBE/ELEC，双面板 201→207）起 148）。
+const SELFTEST_TOTAL: usize = 148;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7608,6 +7609,23 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     //       LUMINA-T147-MAP/RELOC/TLS/INIT/BUDGET/OK。
     let t147 = t147_run(&mut log);
     report(&mut log, t147, "harbor-ld-exec");
+
+    // t148) 装载计划消费面 + ld-lumina.so 本体交付批活体（M47-LDCONS53
+    //       笔60）：〔SO——本体真件机械链（LD_LUMINA_SO 真 ET_DYN 判读
+    //       → 装载映射计划面/分级缓冲 → exec_plan 消费动作序列
+    //       （Mmap×2 R|W 分级窗 + CopyTo×2 交集拷贝 + Mprotect×1 RX
+    //       终旗）→ GNU 哈希决议（ldlumina_boot→sym1）+ 真件 RELA 四类
+    //       写面（RELATIVE/GLOB_DAT/JUMP_SLOT 惰性/COPY）→ 真件 TLS
+    //       布点——soname/SONAME 链真值）——so 段〕→〔LIVE——ring3
+    //       消费活体（LDCONS_ELF 探针播种：SYS_MMAP(46) 两区 R|W 定点
+    //       回显 + 写样/读回 + SYS_MPROTECT(47) RW→RX 终旗 + **映射页内
+    //       代码 call**（PROT_EXEC 活体）+ 负例三目（未登记域/登记重叠/
+    //       fd 非匿名）→ EXIT(88) 收割对账〕——live 段〕→〔REG——登记面
+    //       断言（rows_for(pid) 双行 + 终旗真值保持 + 总数面）——reg
+    //       段〕→〔OK 收口〕。LUMINA-T148-SO/LIVE/REG/OK（+探针面
+    //       T148-PROBE/ELEC）。
+    let t148 = t148_run(&mut log);
+    report(&mut log, t148, "ldlumina-consumer");
 
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
@@ -19060,6 +19078,236 @@ fn t147_run(log: &mut DualLog) -> bool {
 
     if ok {
         let _ = writeln!(log, "LUMINA-T147-OK");
+    }
+    ok
+}
+
+/// t148 活体执行体（M47-LDCONS53 笔60——装载计划消费面 + ld-lumina.so
+/// 本体交付批）：独立函数承载（帧形态守恒纪律——t147 同款）。相位序：
+///
+/// (a) SO——**ld-lumina.so 本体真件机械链**（交付件字节面全链消费——
+///     笔55 机械执行语义核真件对账）：`LD_LUMINA_SO` 真 ET_DYN 判读
+///     （dyn_parse——2 PT_LOAD + PT_TLS 真值 + SONAME dynstr 读回）→
+///     装载映射计划面（load_plan——RX/RW 双区页对齐）+ 分级缓冲
+///     （stage_image——BSS 尾零真件面）→ **exec_plan 消费动作序列**
+///     （笔60 新面——Mmap×2 R|W 分级窗 + CopyTo×2 交集拷贝 +
+///     Mprotect×1 RX 终旗：三段式消费序 = Linux 装载器共享页序）→
+///     GNU 哈希决议（ldlumina_boot→sym1——真哈希表走查）→ 真件 RELA
+///     四类写面（RELATIVE/GLOB_DAT/JUMP_SLOT 惰性/COPY 源搬运——
+///     GOT[0] 绝对化 + GOT[1] 决议写 + GOT[2] 原貌 + COPY 四字节
+///     "LDLU" 落槽）→ 真件 TLS 布点（Variant II——tp 前域 -16 金值）
+///     ——so 段；
+/// (b) LIVE——**ring3 消费活体**（LDCONS_ELF 探针播种——原生 ABI
+///     lane）：SYS_MMAP(46) 两区 R|W 定点回显（MMAP_ANON_BASE 窗基）
+///     + 写样/读回 + SYS_MPROTECT(47) RW→RX 终旗 + **映射页内代码
+///     call**（mov eax,0x5A5A5A5A; ret——PROT_EXEC 活体电气证明）+
+///     负例三目（未登记域 mprotect / 登记重叠 mmap / fd 非匿名 mmap
+///     ——u64::MAX-1 显形）→ SYS_LOG 取证（T148-PROBE/ELEC 探针面
+///     标记）→ EXIT(88) 收割对账（WAITPID 协议 r>>32==1 + code==88 +
+///     !alive）——live 段；
+/// (c) REG——**登记面断言**：rows_for(pid) 双行（RX 行 prot=5 终旗
+///     真值保持 + RW 行 prot=3）+ rows_total ≥ 2 + call_counts 双计
+///     数读面（fail-visible 计数域）——reg 段。
+/// LUMINA-T148-SO/LIVE/REG/OK。
+fn t148_run(log: &mut DualLog) -> bool {
+    use harbor::ld::exec as xe;
+    let mut ok = true;
+    const BASE: u64 = 0x1000_0000;
+
+    // (a) SO——本体真件机械链
+    let img = match xe::dyn_parse(user::LD_LUMINA_SO) {
+        Ok(i) => i,
+        Err(e) => {
+            let _ = writeln!(
+                log,
+                "LUMINA-T148-SO err=parse({e:?})（本体判读拒收——fail-visible）"
+            );
+            return false;
+        }
+    };
+    // 结构锚：双 PT_LOAD + PT_TLS 真值 + SONAME 链读回
+    let soname_off = img.dyn_val(xe::DT_SONAME).unwrap_or(u64::MAX);
+    let strtab = img.dyn_val(xe::DT_STRTAB).unwrap_or(0);
+    let soname = img
+        .str_at(strtab, soname_off)
+        .map(|s| s == b"ld-lumina.so")
+        .unwrap_or(false);
+    let tls_ok = img.tls
+        == Some(xe::TlsSeg {
+            mem_len: 16,
+            align: 16,
+        });
+    let plan = xe::load_plan(BASE, &img).unwrap_or_default();
+    let staged = xe::stage_image(BASE, &img).ok();
+    let (st_base, st_len) = staged
+        .as_ref()
+        .map(|s| (s.base, s.bytes.len() as u64))
+        .unwrap_or((0, 0));
+    // exec_plan 消费动作序列（笔60 新面——真件三段式；金值面 = 期望序
+    // 列整体对账——MapAction PartialEq 逐位）
+    let acts = staged
+        .as_ref()
+        .and_then(|s| xe::exec_plan(&plan, s).ok())
+        .unwrap_or_default();
+    let acts_expect = alloc::vec![
+        xe::MapAction::Mmap {
+            va: BASE + 0x1000,
+            len: 0x1000,
+            prot: xe::PROT_READ | xe::PROT_WRITE,
+        },
+        xe::MapAction::Mmap {
+            va: BASE + 0x3000,
+            len: 0x2000,
+            prot: xe::PROT_READ | xe::PROT_WRITE,
+        },
+        xe::MapAction::CopyTo {
+            va: BASE + 0x1000,
+            src_off: 0,
+            len: 0x1000,
+        },
+        xe::MapAction::CopyTo {
+            va: BASE + 0x3000,
+            src_off: 0x2000,
+            len: 0x2000,
+        },
+        xe::MapAction::Mprotect {
+            va: BASE + 0x1000,
+            len: 0x1000,
+            prot: xe::PROT_READ | xe::PROT_EXEC,
+        },
+    ];
+    let acts_ok = plan.len() == 2
+        && plan[0].flags == 5 // PF_R|PF_X（RX 区）
+        && plan[1].flags == 6 // PF_R|PF_W（RW 区）
+        && acts == acts_expect;
+    // GNU 哈希决议（真哈希表走查）
+    let hit = xe::gnu_hash_lookup(&img, b"ldlumina_boot");
+    // 真件 RELA 四类写面（staged 分级缓冲上执行）
+    let mut body = match xe::stage_image(BASE, &img) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let entries = xe::rela_entries(&img).unwrap_or_default();
+    let resolved = [None, None, Some(BASE + 0x4000), Some(BASE + 0x3040)];
+    let sizes = [0u64, 0, 0, 4];
+    // COPY 源镜像独立分级缓冲（借冲收口——t147 同款：body 可变写面 /
+    // src 只读源面分立）
+    let src = match xe::stage_image(BASE, &img) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let env = xe::RelocEnv::new(&resolved, &sizes, false).with_copy_src(&src.bytes, src.base);
+    let rep = if entries.len() == 4 {
+        xe::reloc_apply(&mut body, BASE, &entries, &env).ok()
+    } else {
+        None
+    };
+    let off = |va: u64| (va - body.base) as usize;
+    let rd = |st: &xe::StagedImage, o: usize| -> u64 {
+        u64::from_le_bytes(st.bytes[o..o + 8].try_into().unwrap_or([0; 8]))
+    };
+    // 真件 TLS 布点（Variant II——模块 1 tp 前域）
+    let mut tls = xe::TlsSpace::new(16);
+    let tp = if let Some(t) = img.tls {
+        tls.alloc(t.mem_len, t.align, 1).ok()
+    } else {
+        None
+    };
+    let so_ok = img.load_count == 2
+        && soname
+        && tls_ok
+        && st_base == BASE + 0x1000
+        && st_len == 0x4000
+        && acts_ok
+        && hit == Some(1)
+        && rep
+            == Some(xe::RelocReport {
+                relative: 1,
+                glob_dat: 1,
+                jump_slot: 1, // JUMP_SLOT 已决议 → 即时写面（机械口径）
+                jump_lazy: 0, // 未决议 + !bind_now 才记账惰性跳过
+                copy: 1,
+            })
+        && rd(&body, off(BASE + 0x3000)) == BASE // GOT[0] RELATIVE 绝对化
+        && rd(&body, off(BASE + 0x3008)) == BASE + 0x4000 // GOT[1] 决议写
+        && rd(&body, off(BASE + 0x3010)) == BASE + 0x4000 // GOT[2] 已决议写面
+        && body.bytes[off(BASE + 0x3020)..off(BASE + 0x3024)] == *b"LDLU" // COPY 落槽
+        && tp.map(|m| m.tp_offset) == Some(-16); // 真件 TLS tp 前域金值
+    ok &= so_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T148-SO loads={} regions={} staged={:#x} acts={} rel={} dat={} jump={} lazy={} copy={} hash={} tls_tpo={} soname={} tls={}（so 段——本体真件机械链 + exec_plan 消费动作序列在环）",
+        img.load_count,
+        plan.len(),
+        st_len,
+        acts.len(),
+        rep.map(|r| r.relative).unwrap_or(0),
+        rep.map(|r| r.glob_dat).unwrap_or(0),
+        rep.map(|r| r.jump_slot).unwrap_or(0),
+        rep.map(|r| r.jump_lazy).unwrap_or(0),
+        rep.map(|r| r.copy).unwrap_or(0),
+        hit.map(|i| i as u32).unwrap_or(0),
+        tp.map(|m| m.tp_offset).unwrap_or(0),
+        soname as u8,
+        tls_ok as u8,
+    );
+
+    // (b) LIVE——ring3 消费活体（LDCONS_ELF 探针播种）
+    let pid = match procs::spawn_elf_seed("ldcons-probe", user::LDCONS_ELF, &["ldcons-probe"]) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = writeln!(log, "LUMINA-T148-LIVE spawn-failed ({e:?})");
+            return false;
+        }
+    };
+    let spawn_ok = pid != usize::MAX && !task::task_is_lin_abi(pid);
+    // 有界收割（480 拍 = 4.8 s——**按 pid 退出码轮询**——t106 同款；
+    // 每核全局 USER_EXIT_CODES 被早前探针退出码污染，不可作 wait 判据）
+    let dl = ostd::time::now() + 480;
+    while task::task_debug_exit_code(pid) == u64::MAX && ostd::time::now() < dl {
+        core::hint::spin_loop();
+    }
+    let st = task::task_debug_state(pid);
+    let code = task::task_debug_exit_code(pid);
+    let dhit = ostd::time::now() >= dl;
+    let mut live_ok = spawn_ok;
+    if st == 4 {
+        let r = procs::sys_wait_pid(pid as u64);
+        let rcode = r & 0xFFFF;
+        let reap_ok = r >> 32 == 1 && rcode == 88 && !task::task_alive(pid);
+        live_ok &= reap_ok;
+    } else {
+        live_ok = false; // 滞域 fail-visible（bail 显形——90..98 码族）
+    }
+    ok &= live_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T148-LIVE pid={pid} st={st} exit={code:#x} deadline-hit={dhit} native-abi={}（live 段——ring3 消费活体 mmap/mprotect/call/负例三目 + EXIT(88) 收割）",
+        spawn_ok,
+    );
+
+    // (c) REG——登记面断言（探针双行 + 终旗真值保持 + 总数/计数面）
+    let rows = crate::mmap::rows_for(pid);
+    let (mc, pc) = crate::mmap::call_counts();
+    let rows_ok = rows.len() == 2
+        && rows[0] == (0x2_0000_0000, 1, 5) // RX 行——mprotect 终旗真值
+        && rows[1] == (0x2_0000_1000, 1, 3) // RW 行
+        && crate::mmap::rows_total() >= 2
+        && mc >= 2 // mmap×2 成功受理（负例×2 拒收不计数）
+        && pc >= 1; // mprotect×1 成功受理（负例拒收不计数）
+    ok &= rows_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T148-REG rows=2 rx_prot={} rw_prot={} total={} calls=({},{})（reg 段——登记面双行 + 终旗真值保持）",
+        rows.first().map(|r| r.2).unwrap_or(0),
+        rows.get(1).map(|r| r.2).unwrap_or(0),
+        crate::mmap::rows_total(),
+        mc,
+        pc,
+    );
+
+    if ok {
+        let _ = writeln!(log, "LUMINA-T148-OK");
     }
     ok
 }

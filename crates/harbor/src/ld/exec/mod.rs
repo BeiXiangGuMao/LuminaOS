@@ -1182,5 +1182,133 @@ pub fn reloc_family(rtype: NonZeroU32) -> Option<u32> {
     }
 }
 
+// ---- 装载计划消费面（M47-LDCONS53 笔60——ring3 mmap/mprotect 电气域
+// 承接位：计划区 → mmap(R|W 分级窗) → 分级缓冲拷贝 → mprotect 终旗，
+// Linux 装载器共享页序同谱；电气执行 = kernel::mmap〔SYS_MMAP(46)/
+// SYS_MPROTECT(47)〕，本模块产**确定性动作序列**——环上执行面与宿主
+// 对账面共用单一事实源）----
+
+/// 页保护位：可读（bedrock::abi PROT_READ 同值——消费面对账断言域，
+/// harbor 零外引依赖方向单向：常量本地单点，内核侧 t148 逐目断言兜底）。
+pub const PROT_READ: u64 = 0x1;
+/// 页保护位：可写（bedrock::abi PROT_WRITE 同值）。
+pub const PROT_WRITE: u64 = 0x2;
+/// 页保护位：可执行（bedrock::abi PROT_EXEC 同值——内核侧 v0 记账位，
+/// EFER.NXE 未启用不落表如实记档）。
+pub const PROT_EXEC: u64 = 0x4;
+
+/// gABI 段旗 → 页保护位翻译（PF_R/PF_W/PF_X → PROT_READ/WRITE/EXEC）。
+/// R 必含位语义（Linux 装载器同款拒收：p_flags 无 PF_R 段不可装载
+/// ——BadSeg fail-visible）。
+pub fn prot_of(flags: u32) -> Result<u64, LdExecError> {
+    const PF_X: u32 = 1;
+    const PF_W: u32 = 2;
+    const PF_R: u32 = 4;
+    if flags & PF_R == 0 {
+        return Err(LdExecError::BadSeg); // 无 R 段拒收（装载器同款）
+    }
+    let mut prot = PROT_READ;
+    if flags & PF_W != 0 {
+        prot |= PROT_WRITE;
+    }
+    if flags & PF_X != 0 {
+        prot |= PROT_EXEC;
+    }
+    Ok(prot)
+}
+
+/// 消费动作（确定性电水单——环上执行器逐条消费：`Mmap` → ring3
+/// SYS_MMAP / `Mprotect` → ring3 SYS_MPROTECT / `CopyTo` → 环内拷贝；
+/// 宿主对账面同列断言）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapAction {
+    /// 匿名映射（分级窗——R|W 起手；va = 计划区起点，len = 页对齐区长）。
+    Mmap {
+        /// 映射基址（计划区绝对虚地址——页对齐）。
+        va: u64,
+        /// 映射长（字节；页对齐区长）。
+        len: u64,
+        /// 保护位族（分级窗 = R|W；终旗窗由 [`MapAction::Mprotect`] 承接）。
+        prot: u64,
+    },
+    /// 分级缓冲拷贝（staged 字节面 → 已映射窗——`src_off` 为
+    /// [`StagedImage`] 字节面内偏移，va = 目标窗虚地址）。
+    CopyTo {
+        /// 目标虚地址（= staged.base + src_off）。
+        va: u64,
+        /// 源偏移（[`StagedImage`] 字节面内）。
+        src_off: u64,
+        /// 拷贝字节数（区∩镜像交集——间隙零拷贝）。
+        len: u64,
+    },
+    /// 页保护改旗（终旗窗——R|W 起手后的最终保护位族；与分级窗同旗
+    /// 区零动作——Linux 装载器同款跳过）。
+    Mprotect {
+        /// 改旗基址（计划区起点）。
+        va: u64,
+        /// 改旗长（页对齐区长）。
+        len: u64,
+        /// 终旗保护位族（prot_of 翻译）。
+        prot: u64,
+    },
+}
+
+/// 装载计划消费面：[`load_plan`] 区族 + [`stage_image`] 镜像 → 确定性
+/// 消费动作序列（三段式——① 逐区 Mmap R|W 分级窗〔写使能拷贝域〕；
+/// ② 逐区 CopyTo 区∩镜像交集拷贝〔间隙零拷贝〕；③ 逐区 Mprotect
+/// 终旗〔与分级窗同旗区零动作〕）。基址相对区间已在 [`load_plan`]
+/// 绝对化（va_start/va_end 含 base）——动作序列虚地址即环上真值。
+/// 消费序 = Linux 装载器共享页序（先全量映射、再统一拷贝、后逐区
+/// 终旗——相邻区共享页拷贝免中间旗折腾）。
+///
+/// fail-visible：空计划 → `TooManyLoads` 域显形（load_plan 已闸 0 段
+/// ——本面零区计划复闸收口）；无 PF_R 区 → `BadSeg`（装载器同款拒收
+/// ——prot_of 结构闸）。staged 与计划区零交集 = 零 `CopyTo` 动作
+/// （间隙零拷贝语义——计划/镜像失配由消费执行器 fail-visible 显形，
+/// 非本面错误域）。
+pub fn exec_plan(plan: &[MapRegion], staged: &StagedImage) -> Result<Vec<MapAction>, LdExecError> {
+    if plan.is_empty() {
+        return Err(LdExecError::TooManyLoads); // 空计划显形（load_plan 已闸 0 段）
+    }
+    let staged_lo = staged.base;
+    let staged_hi = staged.base + staged.bytes.len() as u64;
+    let mut maps = Vec::new();
+    let mut copies = Vec::new();
+    let mut protects = Vec::new();
+    for r in plan {
+        let prot = prot_of(r.flags)?;
+        // ① 分级窗（写使能拷贝域）
+        maps.push(MapAction::Mmap {
+            va: r.va_start,
+            len: r.va_end - r.va_start,
+            prot: PROT_READ | PROT_WRITE,
+        });
+        // ② 区∩镜像交集拷贝（间隙零拷贝——staged 覆盖域外零动作）
+        let clo = r.va_start.max(staged_lo);
+        let chi = r.va_end.min(staged_hi);
+        if chi > clo {
+            copies.push(MapAction::CopyTo {
+                va: clo,
+                src_off: clo - staged_lo,
+                len: chi - clo,
+            });
+        }
+        // ③ 终旗（与分级窗同旗区零动作——Linux 装载器同款跳过）
+        if prot != PROT_READ | PROT_WRITE {
+            protects.push(MapAction::Mprotect {
+                va: r.va_start,
+                len: r.va_end - r.va_start,
+                prot,
+            });
+        }
+    }
+    // 三段式拼接（消费序 = 先全量映射、再统一拷贝、后逐区终旗——
+    // 相邻区共享页拷贝免中间旗折腾）
+    let mut actions = maps;
+    actions.append(&mut copies);
+    actions.append(&mut protects);
+    Ok(actions)
+}
+
 #[cfg(test)]
 mod tests;
