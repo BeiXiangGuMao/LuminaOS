@@ -1,5 +1,13 @@
 # Lumina OS 更新日志
 
+## v0.40.0（M48——PLT/GOT 惰性绑定电气执行 + dlsym 跨模块查找电气面 + init_array 执行域 + 真机窗口三实测开工）
+
+- M48 四域全落：**笔63 M48-PLTGOT55** PLT/GOT 惰性绑定电气执行（harbor 第④族桩→真——LazyGot 两态机 + lazy_wire 接线判读〔守恒律 wired+bound=JUMP_SLOT 族计数〕+ ldlumina-pltgot-probe.elf ring3 resolver 电水解活体〔首调兑现/次调直达零重入/负例电气 EXIT(91)〕——揭雷三域：FF 组 RIP 相对雷域 + REX 双雷 + je rel8 跨距雷）+ **笔64 M48-DLSYM56** dlsym 跨模块查找电气面（dl_sym_chain 三段决议〔root 域先见 + 依赖域 BFS 段位 + 全链缺席零虚构〕+ DlState::dlsym_chain error 槽 + ring3 哈希电算对账〔h=0xdeed9c69 真值——负例电气 EXIT(92)〕——揭雷五域如实落账：bloom 64 位加载/数据段截断/jcc 极性/取证域反噬/moffs64 半宽）+ **笔65 M48-INIT57** init_array 执行域（init_faces_of 直收 + init_exec_ledger 执行台账〔兑现序=依赖先序〕+ liblumina-init.so 交付件——揭雷两域：偏移溢出/DT_FINI 标签）+ **笔66 真机窗口三实测开工**（docs/REALHW-WINDOW-M48.md 模板 + scripts/realhw_window_tri.sh 脚手架——本环境模板先行零虚构，数值留真机回填）。
+- 三面同步：SELFTEST 149→**152**（t150/t151/t152 三新号）+ 双面板 213→**229**（T150 六件 + T151 六件 + T152 四件）+ ABI v0.24 维持零增量 + harbor 宿主 82→**84**。
+- docs 对账：ROADMAP §三 M48 行 ✅ 关账 + §四 四行 + README 事实位终同步 + MATURITY 随行注。
+- 门禁 CI-OK 11 阶段全绿（三笔各自冒烟 150/151/152 全绿实录随行）。
+- 实录：LUMINA-T150-PLT wired=1 bound=0 jump_slot=1 stub=0x40001010 resolve=1 idem=1 neg=(1,1) / LUMINA-T150-LIVE pid=10 st=4 exit=0x5b / LUMINA-T151-SYM order=(0,1) boot=(1,0x30001000) fn=(1,0x30011000) ghost=1 err_once=1 neg=(1,1) / LUMINA-T151-LIVE exit=0x5c / LUMINA-T152-LEDGER acts=3 addrs=(0x30021000,0x30021010) / LUMINA-T152-OK / LUMINA-SELFTEST-PASS 152/152 / LUMINA-CENSUS n152 p152 f0 ff0。
+
 版本语义：工作区里程碑版（0.x.y，x=里程碑，y=里程碑内迭代）。
 本文档记录源码树的对外可见变更；指标与规格变更见《指标与规范手册》修订记录。
 

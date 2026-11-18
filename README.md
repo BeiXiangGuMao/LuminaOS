@@ -14,7 +14,7 @@ SMP、抢占式调度、ring3 用户进程、SYSCALL/SYSRET、能力化 IPC、sw
 | CI 门禁 | CI-OK 11 阶段（宿主七阶段 + IDL/lint + 内核构建 + 冒烟 + 报告） |
 | syscall ABI | v0.24（SYS_MMAP/SYS_MPROTECT 装载计划消费面双新号） |
 | 编译进程链 | 九形（协议/shm/服务环/常驻/合成器/契约标本/argv/解析/驱动） |
-| 双面板标记 | 213（S8 required + longrun 双面同步） |
+| 双面板标记 | 229（S8 required + longrun 双面同步） |
 
 ## 当前状态
 
@@ -43,7 +43,7 @@ DPMS 背光语义面〔power PanelPower/backlight_pct/BACKLIGHT_RAMP〕+ 长
   号 + WaitWhat::AuxRead 阻塞读 + 接管态仲裁）、Enter/Leave 域联动（焦点切换
   取证计数 + 光标格直标强制入账）。
 
-每笔带活体自检（t1-t146 续编）、双面板标记与 CI-OK 11 阶段门禁；取证证据链
+每笔带活体自检（t1-t152 续编）、双面板标记与 CI-OK 11 阶段门禁；取证证据链
 全程落账，ADR 八项裁决在库（docs/adr/），五维成熟度 v7 = 7.0/10
 （docs/MATURITY.md，v6 6.9 → v7 随 M45-收尾记分）。
 
@@ -283,6 +283,7 @@ lumina-build/              ← 编译产物 + 日志 + 报告（源码树外，�
 | v0.26.0 | M29–M31 | Harbor libc 首版 → 桌面骨架（Loom/Cascade/Glyph）→ 自举预备 |
 | v0.27.0 | M32–M41 | 九里程碑连发（Aurora SDK → busybox 兼容 → 服务化 → TCP → fb 电气化 → 竞态根治）+ M41 收官 + 八步发布流水线闭环 |
 | v0.38.0 | M46 | harbor 机械执行面四笔（ld-lumina.so 交付批 + 真机回填执行面 + DPMS 背光语义面 + 长稳记录底稿）；自检 146→147，双面板 195→201 |
+| v0.40.0 | M48 | PLT/GOT 惰性绑定电气执行 + dlsym 跨模块查找电气面 + init_array 执行域 + 真机三实测开工；自检 149→152，ABI v0.24，双面板 213→229 |
 | v0.39.0 | M47 | 装载计划消费面 + ld-lumina.so 本体 + dlopen 真消费面三笔；自检 148→149，ABI v0.24，双面板 207→213 |
 | 开发线 | M42 用户态桌面链 | **35 笔逐笔落账**（三阶段 + 卫生/损伤/光标/驱动/滚轮/焦点/键盘语义批次）；自检 100→134，ABI v0.23，双面板 130 标记 |
 | 开发线 | M43–M45 | **M43 六批 + M44 三批 + M45 四笔**（输入链收口/真机窗口对账/MPMC 零锁化/harbor 语义核开工）；自检 134→146，双面板 130→195，v0.37.0 定版 |
@@ -291,7 +292,7 @@ lumina-build/              ← 编译产物 + 日志 + 报告（源码树外，�
 
 最新发布：**[Release v0.39.0](../../releases)**——src / artifacts / RELEASE_NOTES /
 SHA256SUMS 四资产。M42–M47 桌面链与用户态链接面进度随里程碑收口定版
-（HEAD 门禁 CI-OK 全绿，冒烟 149/149）。
+（HEAD 门禁 CI-OK 全绿，冒烟 152/152）。
 
 ## 工程纪律
 
