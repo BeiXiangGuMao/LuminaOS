@@ -1708,6 +1708,72 @@ pub fn dl_close_chain_ledger(
     Ok(ledger)
 }
 
+// ---- 终局 fini 执行域面（M49-FINI59 笔68——harbor 第⑥族终局域
+// 桩→真：进程退出路径的**全局终局序**落域——装载序全逆序逐模块 fini
+// 序展开（.fini_array 反向 → DT_FINI）+ 地址兑现（分级缓冲指针读回 /
+// base+VA 直取）+ DlState 终局清算（全册逆序出册——引用耗尽语义）。
+// 零 unsafe 零 panic，fail-visible 全显形）----
+
+/// 终局 fini 执行台账（进程退出路径——`load_order` 全逆序逐模块
+/// fini 序展开：.fini_array 反向 → DT_FINI，调用点序 = [`init_order`]
+/// 全局精确逆行〔依赖先 init ⇄ 依赖后 fini〕）。`faces` 下标 = 模块
+/// id（[`fini_order`] 同域）；`staged` / `imgs` / `bases` 下标 = 装载
+/// 序位（长度 = load_order 长度——失配
+/// [`LdExecError::RegistryRange`]）；faces 越界 = [`LdExecError::FaceOutOfRange`]。
+pub fn exit_fini_ledger(
+    faces: &[ModInitFaces],
+    load_order: &[u32],
+    staged: &[&StagedImage],
+    imgs: &[&DynImage<'_>],
+    bases: &[u64],
+) -> Result<Vec<(CallSite, u64)>, LdExecError> {
+    if load_order.len() != staged.len()
+        || load_order.len() != imgs.len()
+        || load_order.len() != bases.len()
+    {
+        return Err(LdExecError::RegistryRange);
+    }
+    let mut out = Vec::new();
+    for (pos, id) in load_order.iter().enumerate().rev() {
+        let f = faces.get(*id as usize).ok_or(LdExecError::FaceOutOfRange)?;
+        for i in (0..f.fini_array_len).rev() {
+            let cs = CallSite::FiniArray(*id, i);
+            let addr = fini_site_addr(staged[pos], imgs[pos], bases[pos], cs)?;
+            out.push((cs, addr));
+        }
+        if f.dt_fini {
+            let cs = CallSite::DtFini(*id);
+            let addr = fini_site_addr(staged[pos], imgs[pos], bases[pos], cs)?;
+            out.push((cs, addr));
+        }
+    }
+    Ok(out)
+}
+
+impl DlState {
+    /// 终局清算（进程退出路径——全册逆序出册：登记序逆序逐项
+    /// [`DlState::dlclose`] 引用耗尽语义〔refcount 递减至零方出册——
+    /// 终局清算不豁免引用〕；返值 = 出册 modid 序〔登记序逆序〕；
+    /// 空册幂等 = 空序）。
+    pub fn exit_clear(&mut self) -> Vec<u32> {
+        let ids: Vec<u32> = self.modules.iter().map(|m| m.modid).collect();
+        let mut out = Vec::new();
+        for mid in ids.into_iter().rev() {
+            loop {
+                match self.dlclose(mid) {
+                    DlClose::Unloaded(m) => {
+                        out.push(m);
+                        break;
+                    }
+                    DlClose::Kept => continue,
+                    DlClose::Invalid => break, // 防御域（登记序内不达）
+                }
+            }
+        }
+        out
+    }
+}
+
 // ---- init_array 执行域面（M48-INIT57 笔65——harbor 第⑥族初始化域
 // 桩→真：faces 手工组装域升级 DynImage 直收域 + 执行台账（CallSite →
 // 地址兑现——DT_INIT VA 直取 + .init_array 指针自分级缓冲读回〔兑现后

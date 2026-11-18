@@ -1542,3 +1542,149 @@ fn dlclose_chain_ledger_face() {
         "已出册 modid 重复 close 拒收"
     );
 }
+
+/// 终局 fini 执行域全谱（M49-FINI59 笔68）——七域对账：全局终局序
+/// （装载序全逆序——依赖后 fini）；fini 面内序（array 反向 → DT_FINI
+/// ——fini_order 同源）；地址兑现双域（读回原值域 + DT_FINI 直取域）；
+/// 零 fini 面 = 零台账（如实零）；faces 越界（FaceOutOfRange）；四面
+/// 失配（RegistryRange）；exit_clear 终局清算（登记序逆序 + 引用耗尽
+/// 语义 + 空册幂等）。
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[test]
+fn exit_fini_ledger_face() {
+    const BASE: u64 = 0x40_0000;
+    // 标本族：双 fini 件（synth_fini_so 双铸——独立无边）+ 零 fini 链
+    let blob_a = synth_fini_so();
+    let blob_b = synth_fini_so();
+    let img_a = dyn_parse(&blob_a).expect("fini A 判读");
+    let img_b = dyn_parse(&blob_b).expect("fini B 判读");
+    let b_a = BASE;
+    let b_b = BASE + 0x20_0000;
+    let mut staged_a = stage_image(BASE, &img_a).expect("A 分级");
+    let mut staged_b = stage_image(BASE + 0x20_0000, &img_b).expect("B 分级");
+    // RELATIVE×1 烘域（fini_array 指针兑现前提——双件同谱）
+    let entries_ab = rela_entries(&img_a).expect("A rela 解析");
+    let none: Vec<Option<u64>> = vec![None, None, None, None];
+    let sizes = vec![0u64, 0, 0, 0];
+    let env = RelocEnv::new(&none, &sizes, false);
+    let rep_a = reloc_apply(&mut staged_a, b_a, &entries_ab, &env).expect("A 烘域");
+    assert_eq!(rep_a.relative, 1, "A RELATIVE×1 烘域");
+    let entries_bb = rela_entries(&img_b).expect("B rela 解析");
+    let rep_b = reloc_apply(&mut staged_b, b_b, &entries_bb, &env).expect("B 烘域");
+    assert_eq!(rep_b.relative, 1, "B RELATIVE×1 烘域");
+    let f_a = init_faces_of(&img_a);
+    let f_b = init_faces_of(&img_b);
+    let faces = vec![f_a, f_b];
+
+    // ① 全局终局序域：装载序 [0,1] 全逆序 → 序位 1 先 fini（依赖后 fini）
+    let ledger = exit_fini_ledger(
+        &faces,
+        &[0, 1],
+        &[&staged_a, &staged_b],
+        &[&img_a, &img_b],
+        &[b_a, b_b],
+    )
+    .expect("终局台账");
+    assert_eq!(
+        ledger,
+        vec![
+            (CallSite::FiniArray(1, 0), b_b + 0x1008), // 序位 1（读回域——RELATIVE 已烘）
+            (CallSite::DtFini(1), b_b + 0x1008),       // 直取域
+            (CallSite::FiniArray(0, 0), b_a + 0x1008), // 序位 0 后 fini
+            (CallSite::DtFini(0), b_a + 0x1008),
+        ],
+        "全局终局序 = 装载序全逆序（依赖后 fini + 双域金值）"
+    );
+
+    // ② 面内序互逆域：synth_so（init[2]+fini[1]）——exit 调用点序 ≡
+    //    fini_order 同源（module 内 array 反向 → DT_FINI）
+    let blob_s = synth_so();
+    let img_s = dyn_parse(&blob_s).expect("synth 判读");
+    let staged_s = stage_image(BASE + 0x40_0000, &img_s).expect("S 分级");
+    let faces_s = vec![init_faces_of(&img_s)];
+    let ledger_s = exit_fini_ledger(&faces_s, &[0], &[&staged_s], &[&img_s], &[BASE + 0x40_0000])
+        .expect("终局台账");
+    let fini = fini_order(&faces_s, &[0u32]).expect("fini 序");
+    let sites_only: Vec<CallSite> = ledger_s.iter().map(|(c, _)| *c).collect();
+    assert_eq!(sites_only, fini, "exit 调用点序 ≡ fini_order（互逆同源）");
+    // 地址兑现：fini_array @0x30E0 原值域读回（synth_so 无 RELATIVE 烘域
+    // ——原值 0x2000 如实显形）+ DT_FINI 直取 base+0x2008
+    assert_eq!(
+        ledger_s,
+        vec![
+            (CallSite::FiniArray(0, 0), 0x2000), // 原值域（未烘——如实）
+            (CallSite::DtFini(0), BASE + 0x40_0000 + 0x2008),
+        ],
+        "synth_so 终局金值（读回原值域 + 直取域）"
+    );
+
+    // ③ 零 fini 面 = 零台账域（双件链——synth_chain_so 零 init/fini 面）
+    let app = synth_chain_so(&ChainSoSpec {
+        strtab: b"\0libapp.so\0libdyn.so\0",
+        soname_off: 1,
+        needed_off: Some(11),
+        undef: None,
+        def: None,
+    });
+    let dep = synth_chain_so(&ChainSoSpec {
+        strtab: b"\0libdyn.so\0",
+        soname_off: 1,
+        needed_off: None,
+        undef: None,
+        def: None,
+    });
+    let img_app = dyn_parse(&app).expect("app 判读");
+    let img_dep = dyn_parse(&dep).expect("dep 判读");
+    let staged_app = stage_image(BASE, &img_app).expect("app 分级");
+    let staged_dep = stage_image(BASE + 0x10_0000, &img_dep).expect("dep 分级");
+    let faces_z = vec![init_faces_of(&img_app), init_faces_of(&img_dep)];
+    assert!(
+        faces_z.iter().all(|f| f.fini_array_len == 0 && !f.dt_fini),
+        "链标本零 fini 面（如实零前提）"
+    );
+    let ledger_z = exit_fini_ledger(
+        &faces_z,
+        &[0, 1],
+        &[&staged_app, &staged_dep],
+        &[&img_app, &img_dep],
+        &[BASE, BASE + 0x10_0000],
+    )
+    .expect("终局台账");
+    assert!(ledger_z.is_empty(), "零 fini 面 = 零台账（如实零）");
+
+    // ④ faces 越界域：load_order [5] → FaceOutOfRange
+    assert_eq!(
+        exit_fini_ledger(&faces_z, &[5], &[&staged_app], &[&img_app], &[BASE]).unwrap_err(),
+        LdExecError::FaceOutOfRange,
+        "faces 越界 fail-visible"
+    );
+
+    // ⑤ 四面失配域：staged 欠位 → RegistryRange
+    assert_eq!(
+        exit_fini_ledger(
+            &faces,
+            &[0, 1],
+            &[&staged_a],
+            &[&img_a, &img_b],
+            &[b_a, b_b]
+        )
+        .unwrap_err(),
+        LdExecError::RegistryRange,
+        "staged 欠位拒收"
+    );
+
+    // ⑥ exit_clear 终局清算域：登记序逆序出册 + 引用耗尽 + 幂等
+    let mut dl = DlState::new();
+    dl.dlopen(true, false).expect("铸 1");
+    dl.ref_open(1).expect("1 引用递增");
+    dl.dlopen(true, true).expect("铸 2");
+    dl.dlopen(true, false).expect("铸 3");
+    assert_eq!(dl.len(), 3);
+    assert_eq!(dl.exit_clear(), vec![3, 2, 1], "登记序逆序出册（引用耗尽）");
+    assert_eq!(dl.len(), 0, "全册清空");
+    assert!(dl.exit_clear().is_empty(), "空册幂等（再清算 = 空序）");
+
+    // ⑦ exit_clear 空册域：fresh state → 空序
+    let mut dl2 = DlState::new();
+    assert!(dl2.exit_clear().is_empty(), "空册清算 = 空序");
+}
