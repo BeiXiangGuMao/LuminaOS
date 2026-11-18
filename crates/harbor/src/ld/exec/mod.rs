@@ -217,6 +217,8 @@ pub enum LdExecError {
     /// 惰性槽号越界（JUMP_SLOT 相对号越出 [`LAZY_SLOT_CAP`]——resolver
     /// 越界拒收）。
     LazySlotRange,
+    /// dlclose 链消费句柄无效（卸载域命中不在册 modid——真消费面输入域）。
+    DlCloseInvalid,
 }
 
 /// 单个 PT_LOAD 段描述（ET_DYN 解析产物——文件偏移保持原值，装载基址
@@ -1586,6 +1588,124 @@ impl DlState {
             }
         }
     }
+}
+
+// ---- dlclose 真消费链执行域（M49-DLCLOSE58 笔67——harbor 第⑤族收口
+// 域：M47 dl_open_chain 装载序真消费面 + M48 DlState::dlclose 结构域之
+// 上，**卸载序 + fini 互逆执行台账**落域——依赖先卸（装载序逆序）+ 归
+// 零出册成员 fini 序展开（.fini_array 反向 → DT_FINI）+ 地址兑现（分级
+// 缓冲指针读回 / base+VA 直取——init_exec_ledger 同谱绝对域差口径）。
+// 零 unsafe 零 panic，fail-visible 全显形）----
+
+/// 卸载项（dlclose 真消费链台账项——出册 modid + 卸载段位）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DlUnload {
+    /// 出册 modid。
+    pub modid: u32,
+    /// 卸载段位（0 = 首个出册——依赖最深处先卸）。
+    pub seq: usize,
+}
+
+/// dlclose 真消费链执行台账（卸载序 + fini 兑现序——init 序精确逆行
+/// 域；Kept 项〔引用仍在〕不入台账）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DlCloseLedger {
+    /// 卸载序（依赖先卸——装载序逆序中归零出册者随行）。
+    pub unloaded: Vec<DlUnload>,
+    /// fini 执行台账（(调用点, 兑现地址) 序——出册模块 .fini_array 反向
+    /// → DT_FINI；地址 = 分级缓冲指针读回〔RELATIVE 已烘域〕/ base+VA
+    /// 直取——读回原值域如实显形）。
+    pub fini_sites: Vec<(CallSite, u64)>,
+}
+
+/// fini 调用点地址兑现（fini 域单点——[`CallSite::FiniArray`] = 分级
+/// 缓冲指针读回〔偏移 = base + va + 8i − staged.base 绝对域差——init
+/// 域同谱〕；[`CallSite::DtFini`] = base + VA 直取；init 域调用点不在
+/// fini 台账 = [`LdExecError::RelocTargetRange`] 域外拒收）。
+pub fn fini_site_addr(
+    staged: &StagedImage,
+    img: &DynImage<'_>,
+    base: u64,
+    cs: CallSite,
+) -> Result<u64, LdExecError> {
+    match cs {
+        CallSite::FiniArray(_, i) => {
+            let arr_va = img.dyn_val(DT_FINI_ARRAY).unwrap_or(0);
+            let off64 = base
+                .checked_add(arr_va)
+                .and_then(|v| v.checked_add(8 * i as u64))
+                .and_then(|v| v.checked_sub(staged.base))
+                .ok_or(LdExecError::RelocTargetRange)?;
+            let end64 = off64.checked_add(8).ok_or(LdExecError::RelocTargetRange)?;
+            if end64 > staged.bytes.len() as u64 {
+                return Err(LdExecError::RelocTargetRange);
+            }
+            let off = off64 as usize;
+            Ok(u64::from_le_bytes(
+                staged.bytes[off..off + 8]
+                    .try_into()
+                    .map_err(|_| LdExecError::RelocTargetRange)?,
+            ))
+        }
+        CallSite::DtFini(_) => base
+            .checked_add(img.dyn_val(DT_FINI).unwrap_or(0))
+            .ok_or(LdExecError::RelocTargetRange),
+        _ => Err(LdExecError::RelocTargetRange),
+    }
+}
+
+/// dlclose 真消费链（装载序真消费的逆行域）：`modids` =
+/// [`dl_open_chain`] 返回值（下标 = 装载序——root 居首）逆序逐项
+/// [`DlState::dlclose`]（依赖先卸——BFS 层序末位 = 依赖最深处先卸）；
+/// 归零出册项随行 fini 序展开（该装载序位 .fini_array 反向 → DT_FINI
+/// 并逐点地址兑现）。`faces` / `staged` / `imgs` / `bases` 四面下标 =
+/// 装载序位（长度 = modids 长度——失配 [`LdExecError::RegistryRange`]）。
+/// Kept 项（引用仍在）零台账随行；无效句柄 =
+/// [`LdExecError::DlCloseInvalid`] fail-visible（error 槽由
+/// [`DlState::dlclose`] 落账）。
+pub fn dl_close_chain_ledger(
+    state: &mut DlState,
+    modids: &[u32],
+    faces: &[ModInitFaces],
+    staged: &[&StagedImage],
+    imgs: &[&DynImage<'_>],
+    bases: &[u64],
+) -> Result<DlCloseLedger, LdExecError> {
+    if modids.len() != faces.len()
+        || modids.len() != staged.len()
+        || modids.len() != imgs.len()
+        || modids.len() != bases.len()
+    {
+        return Err(LdExecError::RegistryRange);
+    }
+    let mut ledger = DlCloseLedger {
+        unloaded: Vec::new(),
+        fini_sites: Vec::new(),
+    };
+    for (pos, mid) in modids.iter().enumerate().rev() {
+        match state.dlclose(*mid) {
+            DlClose::Kept => {} // 引用仍在——零台账随行（幂等域）
+            DlClose::Unloaded(_) => {
+                ledger.unloaded.push(DlUnload {
+                    modid: *mid,
+                    seq: ledger.unloaded.len(),
+                });
+                let f = faces[pos];
+                for i in (0..f.fini_array_len).rev() {
+                    let cs = CallSite::FiniArray(*mid, i);
+                    let addr = fini_site_addr(staged[pos], imgs[pos], bases[pos], cs)?;
+                    ledger.fini_sites.push((cs, addr));
+                }
+                if f.dt_fini {
+                    let cs = CallSite::DtFini(*mid);
+                    let addr = fini_site_addr(staged[pos], imgs[pos], bases[pos], cs)?;
+                    ledger.fini_sites.push((cs, addr));
+                }
+            }
+            DlClose::Invalid => return Err(LdExecError::DlCloseInvalid),
+        }
+    }
+    Ok(ledger)
 }
 
 // ---- init_array 执行域面（M48-INIT57 笔65——harbor 第⑥族初始化域

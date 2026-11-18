@@ -5,7 +5,8 @@
 //! NonZero 类型码；M47-DLOPEN54 笔61 起 +1 例——dlopen 真消费面
 //! 链式装载全谱 = 14 例；M48-PLTGOT55 笔63 起 +1 例——PLT/GOT 惰性
 //! 绑定电气执行面全谱 = 15 例；M48-DLSYM56 笔64 起 +1 例——dlsym 跨
-//! 模块查找电气面全谱 = 16 例）。
+//! 模块查找电气面全谱 = 16 例；M49-DLCLOSE58 笔67 起 +1 例——dlclose
+//! 真消费链执行域全谱 = 17 例）。
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -1290,4 +1291,254 @@ fn dl_sym_chain_face() {
         .expect("链查找")
         .expect("命中");
     assert_eq!(hit3.addr, 0x30_0000 + 0x1000);
+}
+
+/// fini 域标本合成器（M49-DLCLOSE58 笔67——synth_chain_so 同谱骨架 +
+/// DT_FINI/DT_FINI_ARRAY 域 + RELATIVE 烘域 fini_array 指针）：RX@0x1000
+/// （strtab + rela）/ RW@0x3000（fini_array @0x3010 + dynamic）。
+/// fini_array[0] @va 0x3010 初值 = FINI_VA（0x1008 原值域）——RELA
+/// RELATIVE(off=0x3010, add=0x1008) 烘域后读回 = base+0x1008。
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+fn synth_fini_so() -> Vec<u8> {
+    let mut v = vec![0u8; 0x2100];
+    // ELF 头 + 3 PHDR（LOAD RX / LOAD RW / PT_DYNAMIC）
+    v[0..4].copy_from_slice(&[0x7F, b'E', b'L', b'F']);
+    v[4] = 2;
+    v[5] = 1;
+    v[6] = 1;
+    v[0x10..0x12].copy_from_slice(&ET_DYN.to_le_bytes());
+    v[0x12..0x14].copy_from_slice(&62u16.to_le_bytes());
+    v[0x20..0x28].copy_from_slice(&(EHDR_LEN as u64).to_le_bytes());
+    v[0x36..0x38].copy_from_slice(&(PHDR_LEN as u16).to_le_bytes());
+    v[0x38..0x3A].copy_from_slice(&3u16.to_le_bytes());
+    let ph = |i: usize| EHDR_LEN + i * PHDR_LEN;
+    // ① PT_LOAD RX @0x1000 filesz=memsz=0x100
+    v[ph(0)..ph(0) + 4].copy_from_slice(&PT_LOAD.to_le_bytes());
+    v[ph(0) + 4..ph(0) + 8].copy_from_slice(&(PF_R | PF_X).to_le_bytes());
+    v[ph(0) + 8..ph(0) + 16].copy_from_slice(&0x1000u64.to_le_bytes());
+    v[ph(0) + 16..ph(0) + 24].copy_from_slice(&0x1000u64.to_le_bytes());
+    v[ph(0) + 32..ph(0) + 40].copy_from_slice(&0x100u64.to_le_bytes());
+    v[ph(0) + 40..ph(0) + 48].copy_from_slice(&0x100u64.to_le_bytes());
+    // ② PT_LOAD RW @0x3000（file 0x2000）filesz=memsz=0x100
+    v[ph(1)..ph(1) + 4].copy_from_slice(&PT_LOAD.to_le_bytes());
+    v[ph(1) + 4..ph(1) + 8].copy_from_slice(&(PF_R | PF_W).to_le_bytes());
+    v[ph(1) + 8..ph(1) + 16].copy_from_slice(&0x2000u64.to_le_bytes());
+    v[ph(1) + 16..ph(1) + 24].copy_from_slice(&0x3000u64.to_le_bytes());
+    v[ph(1) + 32..ph(1) + 40].copy_from_slice(&0x100u64.to_le_bytes());
+    v[ph(1) + 40..ph(1) + 48].copy_from_slice(&0x100u64.to_le_bytes());
+    // ③ PT_DYNAMIC @0x3000（file 0x2000）
+    v[ph(2)..ph(2) + 4].copy_from_slice(&PT_DYNAMIC.to_le_bytes());
+    v[ph(2) + 4..ph(2) + 8].copy_from_slice(&(PF_R | PF_W).to_le_bytes());
+    v[ph(2) + 8..ph(2) + 16].copy_from_slice(&0x2000u64.to_le_bytes());
+    v[ph(2) + 16..ph(2) + 24].copy_from_slice(&0x3000u64.to_le_bytes());
+    v[ph(2) + 32..ph(2) + 40].copy_from_slice(&0x100u64.to_le_bytes());
+    // RX 页：strtab @0x1000 + rela @0x1040（RELATIVE×1——fini_array 烘域）
+    let strtab: &[u8] = b"\0libfini.so\0";
+    v[0x1000..0x1000 + strtab.len()].copy_from_slice(strtab);
+    let r = 0x1040;
+    v[r..r + 8].copy_from_slice(&0x3010u64.to_le_bytes()); // fini_array 槽
+    let info = R_X86_64_RELATIVE as u64;
+    v[r + 8..r + 16].copy_from_slice(&info.to_le_bytes());
+    v[r + 16..r + 24].copy_from_slice(&0x1008u64.to_le_bytes()); // addend = FINI_VA
+                                                                 // RW 页（file 0x2000）：dynamic @file 0x2000（va 0x3000）+
+                                                                 // fini_array @file 0x2010（va 0x3010）初值 = 0x1008（FINI_VA 原值域）
+    v[0x2010..0x2018].copy_from_slice(&0x1008u64.to_le_bytes());
+    let dyn_entries: [(u64, u64); 9] = [
+        (DT_STRTAB, 0x1000),
+        (DT_STRSZ, strtab.len() as u64),
+        (DT_RELA, 0x1040),
+        (DT_RELASZ, 24),
+        (DT_RELAENT, 24),
+        (DT_FINI, 0x1008),
+        (DT_FINI_ARRAY, 0x3010),
+        (DT_FINI_ARRAYSZ, 8),
+        (DT_SONAME, 1),
+    ];
+    for (i, (tag, val)) in dyn_entries.iter().enumerate() {
+        let base = 0x2000 + i * 16;
+        v[base..base + 8].copy_from_slice(&tag.to_le_bytes());
+        v[base + 8..base + 16].copy_from_slice(&val.to_le_bytes());
+    }
+    v
+}
+
+/// dlclose 真消费链执行域全谱（M49-DLCLOSE58 笔67）——七域对账：
+/// 链卸载序（依赖先卸——装载序逆序）；Kept 幂等域（引用仍在零台账）；
+/// fini 台账地址兑现（RELATIVE 烘域读回 + DT_FINI base+VA 直取）；
+/// fini 互逆序（.fini_array 反向 → DT_FINI——fini_order 同源）；无效
+/// 句柄拒收（DlCloseInvalid + error 槽一次性消费）；四面长度失配拒收
+/// （RegistryRange）；同链重复 close 拒收（已出册 Invalid 显形）。
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[test]
+fn dlclose_chain_ledger_face() {
+    // 标本族：app --DT_NEEDED--> dyn（声明域实边——卸载序域）+
+    // libfini.so（fini 面标本——烘域读回 + 直取双域）
+    let app = synth_chain_so(&ChainSoSpec {
+        strtab: b"\0libapp.so\0libdyn.so\0",
+        soname_off: 1,
+        needed_off: Some(11),
+        undef: None,
+        def: None,
+    });
+    let dep = synth_chain_so(&ChainSoSpec {
+        strtab: b"\0libdyn.so\0",
+        soname_off: 1,
+        needed_off: None,
+        undef: None,
+        def: None,
+    });
+    const BASE: u64 = 0x40_0000;
+
+    // ① 链卸载序域：open [1,2] → close 逆序 → 依赖先卸 (2,0)→(1,1)
+    let mut reg = ChainRegistry::new();
+    reg.add(b"libapp.so", &app).expect("登记 app");
+    reg.add(b"libdyn.so", &dep).expect("登记 dyn");
+    let mut dl = DlState::new();
+    let ids = dl_open_chain(&mut dl, &reg, b"libapp.so", false).expect("消费链");
+    assert_eq!(ids, vec![1, 2], "modid 序 = 装载序同谱");
+    let app_img = dyn_parse(&app).expect("app 判读");
+    let dep_img = dyn_parse(&dep).expect("dep 判读");
+    let app_staged = stage_image(BASE, &app_img).expect("app 分级");
+    let dep_staged = stage_image(BASE + 0x10_0000, &dep_img).expect("dep 分级");
+    let faces = vec![init_faces_of(&app_img), init_faces_of(&dep_img)];
+    // 双件零 init/fini 面（synth_chain_so 无 dynamic init/fini 域——如实零）
+    assert!(
+        faces
+            .iter()
+            .all(|f| !f.dt_init && f.init_array_len == 0 && f.fini_array_len == 0 && !f.dt_fini),
+        "链标本零 init/fini 面（如实零台账前提）"
+    );
+    let ledger = dl_close_chain_ledger(
+        &mut dl,
+        &ids,
+        &faces,
+        &[&app_staged, &dep_staged],
+        &[&app_img, &dep_img],
+        &[BASE, BASE + 0x10_0000],
+    )
+    .expect("close 链");
+    assert_eq!(
+        ledger.unloaded,
+        vec![DlUnload { modid: 2, seq: 0 }, DlUnload { modid: 1, seq: 1 }],
+        "卸载序 = 装载序逆序（依赖先卸）"
+    );
+    assert!(
+        ledger.fini_sites.is_empty(),
+        "零 fini 面 = 零台账（如实零）"
+    );
+    assert_eq!(dl.len(), 0, "全链出册");
+
+    // ② Kept 幂等域：ref_open(modid1) → close 链 → 仅依赖出册、root Kept
+    let mut dl2 = DlState::new();
+    let ids2 = dl_open_chain(&mut dl2, &reg, b"libapp.so", false).expect("消费链");
+    assert_eq!(dl2.ref_open(ids2[0]), Some(2), "root 引用递增");
+    let ledger2 = dl_close_chain_ledger(
+        &mut dl2,
+        &ids2,
+        &faces,
+        &[&app_staged, &dep_staged],
+        &[&app_img, &dep_img],
+        &[BASE, BASE + 0x10_0000],
+    )
+    .expect("close 链");
+    assert_eq!(
+        ledger2.unloaded,
+        vec![DlUnload { modid: 2, seq: 0 }],
+        "仅依赖出册（root 引用仍在——Kept 零台账）"
+    );
+    assert_eq!(dl2.len(), 1, "root 在册保持");
+    assert_eq!(dl2.dlclose(ids2[0]), DlClose::Unloaded(ids2[0]), "末次出册");
+
+    // ③ fini 台账域：烘域读回（RELATIVE 已烘 base+FINI_VA）+ DT_FINI 直取
+    let blob = synth_fini_so();
+    let mut reg3 = ChainRegistry::new();
+    reg3.add(b"libfini.so", &blob).expect("登记 fini 标本");
+    let mut dl3 = DlState::new();
+    let ids3 = dl_open_chain(&mut dl3, &reg3, b"libfini.so", false).expect("单件链");
+    assert_eq!(ids3, vec![1]);
+    let img = dyn_parse(&blob).expect("fini 标本判读");
+    let f = init_faces_of(&img);
+    assert!(
+        f.dt_fini && f.fini_array_len == 1 && !f.dt_init,
+        "fini 面直收"
+    );
+    let mut body = stage_image(BASE + 0x20_0000, &img).expect("fini 分级");
+    let entries = rela_entries(&img).expect("rela 解析");
+    let none: Vec<Option<u64>> = vec![None, None, None, None];
+    let sizes = vec![0u64, 0, 0, 0];
+    let env = RelocEnv::new(&none, &sizes, false);
+    let rep = reloc_apply(&mut body, BASE + 0x20_0000, &entries, &env).expect("烘域");
+    assert_eq!(
+        rep.relative, 1,
+        "RELATIVE×1 烘域（fini_array 指针兑现前提）"
+    );
+    let faces3 = vec![f];
+    let ledger3 = dl_close_chain_ledger(
+        &mut dl3,
+        &ids3,
+        &faces3,
+        &[&body],
+        &[&img],
+        &[BASE + 0x20_0000],
+    )
+    .expect("close 链");
+    let b3 = BASE + 0x20_0000;
+    assert_eq!(
+        ledger3.fini_sites,
+        vec![
+            (CallSite::FiniArray(1, 0), b3 + 0x1008), // 烘域读回（RELATIVE 已烘 base+FINI_VA）
+            (CallSite::DtFini(1), b3 + 0x1008),       // DT_FINI base+VA 直取
+        ],
+        "fini 台账金值（读回域 ≡ 直取域——双域同兑现）"
+    );
+    assert_eq!(ledger3.unloaded, vec![DlUnload { modid: 1, seq: 0 }]);
+
+    // ④ fini 互逆序域：fini_order 同源对账（模块内 array 反向 → DT_FINI）
+    let fini = fini_order(&faces3, &[0u32]).expect("fini 序");
+    assert_eq!(
+        fini,
+        vec![CallSite::FiniArray(0, 0), CallSite::DtFini(0)],
+        "fini 序展开（ledger 调用点同谱——modid 标签域差异）"
+    );
+
+    // ⑤ 无效句柄域：不在册 modid → DlCloseInvalid + error 槽一次性消费
+    let mut dl4 = DlState::new();
+    dl4.dlopen(true, false).expect("占位登记");
+    let app_img2 = dyn_parse(&app).expect("app 判读");
+    let staged2 = stage_image(BASE, &app_img2).expect("分级");
+    let faces4 = vec![init_faces_of(&app_img2)];
+    assert_eq!(
+        dl_close_chain_ledger(&mut dl4, &[9], &faces4, &[&staged2], &[&app_img2], &[BASE],)
+            .unwrap_err(),
+        LdExecError::DlCloseInvalid,
+        "无效句柄 fail-visible"
+    );
+    assert_eq!(dl4.dlerror(), Some(DL_ERR_INVALID_HANDLE), "error 槽落账");
+    assert_eq!(dl4.dlerror(), None, "一次性消费（POSIX 口径）");
+
+    // ⑥ 四面长度失配域：faces 欠长 → RegistryRange（输入域 fail-visible）
+    let mut dl5 = DlState::new();
+    dl5.dlopen(true, false).expect("占位登记");
+    assert_eq!(
+        dl_close_chain_ledger(&mut dl5, &[1], &[], &[&staged2], &[&app_img2], &[BASE]).unwrap_err(),
+        LdExecError::RegistryRange,
+        "faces 欠长拒收"
+    );
+
+    // ⑦ 同链重复 close 域：同 modid 双现 → 第二目 Invalid 显形
+    let mut dl6 = DlState::new();
+    dl6.dlopen(true, false).expect("占位登记");
+    assert_eq!(
+        dl_close_chain_ledger(
+            &mut dl6,
+            &[1, 1],
+            &[faces4[0], faces4[0]],
+            &[&staged2, &staged2],
+            &[&app_img2, &app_img2],
+            &[BASE, BASE],
+        )
+        .unwrap_err(),
+        LdExecError::DlCloseInvalid,
+        "已出册 modid 重复 close 拒收"
+    );
 }
