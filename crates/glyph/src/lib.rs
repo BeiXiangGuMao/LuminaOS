@@ -13,6 +13,9 @@
 
 pub mod raster;
 pub mod text;
+// M51-VECFONT74 笔85：矢量字体栅格化——TTF 真件（DejaVuSansMono）
+// sfnt/glyf/cmap 语义面 + 二次贝塞尔 + 4×4 超采样非零缠绕 8bpp AA。
+pub mod vecfont;
 
 /// 基准网格（逻辑像素）。
 pub const BASE_GRID: u32 = 24;

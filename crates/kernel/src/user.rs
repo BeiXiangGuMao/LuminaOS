@@ -49,6 +49,9 @@ include!("exec_images_m48b.rs");
 // M48-INIT57 init_array 执行域批交付件（勿手改：scripts/gen_m48c_init.py
 // 再生成——liblumina-init.so 初始化域模块；artifacts/ 单一事实源）。
 include!("exec_images_m48c.rs");
+// M51-EXECDYN73 SYS_EXEC 动态分流批交付件（勿手改：scripts/gen_m51_execdyn.py
+// 再生成——ring3 动态分流电气探针 + 迷你动态件；artifacts/ 单一事实源）。
+include!("exec_images_m51.rs");
 
 /// 用户代码段虚拟基址（PT[0]）。
 pub const USER_CODE_VIRT: u64 = 0x40_0000;
@@ -586,6 +589,20 @@ where
     })
 }
 
+/// M51-EXECDYN73 笔84：ELF 动态分流探针（语义核）——ELF blob 探针
+/// PT_INTERP 解释器路径串（NUL 已由 [`bedrock::elf::parse`] 剥离）：
+/// 在场且 UTF-8 = 动态车道 `Some(路径)`；缺席/解析失败/非 UTF-8 =
+/// 静态车道 `None`。[`crate::procs::exec_load_switch`] 分流臂唯一
+/// 消费面（sys_exec/lin_execve 双车道上游单一事实源）。
+pub fn elf_dyn_interp_path(blob: &[u8]) -> Option<&str> {
+    if !bedrock::elf::probe(blob) {
+        return None;
+    }
+    let img = bedrock::elf::parse(blob).ok()?;
+    let raw = img.interp?;
+    core::str::from_utf8(raw).ok()
+}
+
 /// SYS_EXEC 映像表（M14-① 扩容：内核内嵌字节表 → **VFS 路径表**；
 /// M16-② 再扩容：追加 Weave 包源映像 prog.lwp 与增长栈动态扩容映像
 /// deep.lxe）。索引即 SYS_EXEC 参数；越界 → ERR_IMAGE(10)。装载器经
@@ -593,12 +610,17 @@ where
 /// 文件面 syscall），LXE1 解析与放置策略见 [`build_user_space_lxe`]。
 /// **Weave 包源映像**（M16-②，EXEC 第 2+ 消费者）：.lwp 载荷经
 /// `weave::pkg` 解包后进入同一 LXE1 装载链（直接 .lxe 为第一消费者）。
-pub const EXEC_IMAGES: [&str; 5] = [
+/// **动态链尾槽**（M51-EXECDYN73 笔84）：第 6 槽 `/bin/busybox-dyn`
+/// = ELF 链首 EXEC 槽——PT_INTERP 在场即走动态分流臂（musl ldso
+/// ring3 真执行——t161 直呼面升 ring3 车道；既有五槽 LXE/LWP 面
+/// 零扰）。
+pub const EXEC_IMAGES: [&str; 6] = [
     "/files/selftest.lxe",
     "/files/prog.lxe",
     "/files/grow.lxe",
     "/files/prog.lwp",
     "/files/deep.lxe",
+    "/bin/busybox-dyn",
 ];
 
 /// SYS_IMAGE_ENUM 主体（M18-③）：[`EXEC_IMAGES`] ring3 查询面。

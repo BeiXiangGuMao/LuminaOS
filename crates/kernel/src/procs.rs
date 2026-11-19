@@ -706,7 +706,26 @@ pub(crate) fn exec_load_switch(
             for (i, b) in random.iter_mut().enumerate() {
                 *b = (t >> ((i % 8) * 8)) as u8 ^ (i as u8).rotate_left(3);
             }
-            crate::user::build_user_space_elf(blob, argv, envp, random, "main", &mut alloc)?
+            // M51-EXECDYN73 笔84：PT_INTERP 动态分流臂——ET_DYN ∧ 解释器
+            // 路径在场即走动态车道（interpreter blob 由 VFS 承载：PT_INTERP
+            // 串 = 命名空间路径——/lib/ld-musl-x86_64.so.1 播种域）。解释器
+            // 缺位/损件 → BadImage fail-visible（装载前置闸零 CR3 写——
+            // 错误域任务态零污染）。exec_fn = argv[0]（POSIX execve
+            // argv[0] 惯例——sys_exec 车道 argv[0] = 映像路径随行）。
+            match crate::user::elf_dyn_interp_path(blob) {
+                Some(ipath) => {
+                    let Some(interp) = crate::vfs::read_image(ipath) else {
+                        return Err(crate::user::UserSpaceError::BadImage);
+                    };
+                    let exec_fn = argv.first().copied().unwrap_or("main");
+                    crate::user::build_user_space_elf_dynamic(
+                        blob, &interp, argv, envp, random, exec_fn, &mut alloc,
+                    )?
+                }
+                None => {
+                    crate::user::build_user_space_elf(blob, argv, envp, random, "main", &mut alloc)?
+                }
+            }
         } else {
             crate::user::build_user_space_lxe(blob, &mut alloc)?
         }
@@ -766,7 +785,7 @@ pub fn sys_exec(image: u64, frame: &mut crate::syscall::SyscallFrame) -> u64 {
     EXEC_VFS_BYTES.store(0, Ordering::Release);
     EXEC_SEGS.store(0, Ordering::Release);
     EXEC_DATA_FRAME.store(0, Ordering::Release);
-    let Some(path) = crate::user::EXEC_IMAGES.get(image as usize) else {
+    let Some(path) = crate::user::EXEC_IMAGES.get(image as usize).copied() else {
         EXEC_RESULT.store(ERR_IMAGE, Ordering::Release);
         return ERR_IMAGE;
     };
@@ -775,9 +794,12 @@ pub fn sys_exec(image: u64, frame: &mut crate::syscall::SyscallFrame) -> u64 {
         return ERR_IMAGE;
     };
     EXEC_VFS_BYTES.store(blob.len() as u64, Ordering::Release);
-    // M33-E1：ELF 链缺省 argv/envp（execve 参数面随 M33-P1 经 linux::lin_execve 扩）
-    const ELF_DEFAULT_ARGV: &[&str] = &["main"];
-    match exec_load_switch(caller, &blob, ELF_DEFAULT_ARGV, &[], frame) {
+    // M51-EXECDYN73 笔84：argv[0] = 映像路径（POSIX execve argv[0] 同谱
+    // ——动态链消费面：musl ldso argv 透传 busybox；busybox-dyn 槽
+    // argv[1] 起 = applet 域——v0 sys_exec 无参列车道，busybox usage
+    // 退出如实对账；LXE1 链忽略 argv——既有槽零扰，M33-E1 口径维持）。
+    let argv0 = [path];
+    match exec_load_switch(caller, &blob, argv0.as_slice(), &[], frame) {
         Ok(_) => {
             EXEC_RESULT.store(0, Ordering::Release);
             EXEC_IMAGE.store(image, Ordering::Release);

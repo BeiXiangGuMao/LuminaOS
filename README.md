@@ -10,15 +10,15 @@ SMP、抢占式调度、ring3 用户进程、SYSCALL/SYSRET、能力化 IPC、sw
 
 | 指标 | 现值 |
 |---|---|
-| 裸机自检 | **161 项全绿**（QEMU 退出码 33 自动验收） |
+| 裸机自检 | **163 项全绿**（QEMU 退出码 33 自动验收） |
 | CI 门禁 | CI-OK 11 阶段（宿主七阶段 + IDL/lint + 内核构建 + 冒烟 + 报告） |
 | syscall ABI | v0.26（ERR_ACCES(16) 单码追加——exec 后进程组迁移禁令域 EACCES 语义面——M50-EEXEC65） |
 | 编译进程链 | 九形（协议/shm/服务环/常驻/合成器/契约标本/argv/解析/驱动） |
-| 双面板标记 | 265（S8 required + longrun 双面同步） |
+| 双面板标记 | 273（S8 required + longrun 双面同步） |
 
 ## 当前状态
 
-已定版 **v0.42.0**（M50 关账定版）。**M50 七笔落账**（EACCES exec 记账域〔**ABI v0.26**——ERR_ACCES(16)〕+ xdg_shell 电气闭环〔「合成器演示」→「可开应用窗」分水岭——真车道全生命周期 + 动态标题带〕+ 文本渲染面〔FONT8X16 双域同源〕+ musl 动态全链真件谱→真执行〔真实 musl ldso 机器码 ring3 电气贯通——ld-musl 1.2.4 + busybox-dynamic 1.36.1 双真件三模块媒体通道〕+ IOPB 挂 TSS 硬件面〔deny-by-default 端口白名单——ring3 直呼 in/out GP 零显形〕——t157-t161 五新号；真机 F/G/PR-P04 三项维持挂账；MATURITY v12 = 7.1/10〔等权合成公式复归——v10/v11 总评行勘误注在库〕）。此前已定版 v0.41.0（M49 关账定版）、v0.39.0（M47 关账定版）。**M47 三笔落账**（装载计划消费面 + ld-lumina.so 本体交付批 + dlopen 真消费面〔harbor::ld::exec——DT_NEEDED 装载序真消费 + ring3 自装载链〕
+**M51 开工批双笔落账**（用户点名两域）：笔84 EXECDYN73〔**ring3 SYS_EXEC 动态分流**——EXEC_IMAGES 尾槽 /bin/busybox-dyn（ELF 链首 EXEC 槽）+ exec_load_switch PT_INTERP 动态分流臂（elf_dyn_interp_path 语义核 → vfs 读解释器 → build_user_space_elf_dynamic）+ **同任务 CR3 替换** musl ldso ring3 真执行——t162；揭雷 exit=0/t62 探针顺延两例实录〕+ 笔85 VECFONT74〔**矢量字体栅格化**——DejaVu Sans Mono 1.16 真件入库（343 KB）+ multiboot module 3 媒体通道 + glyph::vecfont（sfnt/glyf/cmap 语义面 + 二次贝塞尔 8 段定点细分 + 4×4 超采样非零缠绕 8bpp AA 扫描线）——L@24 nz=72/sum=15352 python 同源金值逐字节一致——t163〕；t162/t163 八新标记，双面板 265→273）。已定版 **v0.42.0**（M50 关账定版）。**M50 七笔落账**（EACCES exec 记账域〔**ABI v0.26**——ERR_ACCES(16)〕+ xdg_shell 电气闭环〔「合成器演示」→「可开应用窗」分水岭——真车道全生命周期 + 动态标题带〕+ 文本渲染面〔FONT8X16 双域同源〕+ musl 动态全链真件谱→真执行〔真实 musl ldso 机器码 ring3 电气贯通——ld-musl 1.2.4 + busybox-dynamic 1.36.1 双真件三模块媒体通道〕+ IOPB 挂 TSS 硬件面〔deny-by-default 端口白名单——ring3 直呼 in/out GP 零显形〕——t157-t161 五新号；真机 F/G/PR-P04 三项维持挂账；MATURITY v12 = 7.1/10〔等权合成公式复归——v10/v11 总评行勘误注在库〕）。此前已定版 v0.41.0（M49 关账定版）、v0.39.0（M47 关账定版）。**M47 三笔落账**（装载计划消费面 + ld-lumina.so 本体交付批 + dlopen 真消费面〔harbor::ld::exec——DT_NEEDED 装载序真消费 + ring3 自装载链〕
 ld-lumina.so 交付批〔harbor::ld::exec——ET_DYN 结构判读 + 装载映射 +
 GNU 哈希桶链 + 重定位四类写面 + TLS Variant II + init/fini 序 + dlopen
 族 + H-P03 四段打点 + auxv 入口契约，t147 活体五相位〕+ 真机窗口实测
@@ -43,7 +43,7 @@ DPMS 背光语义面〔power PanelPower/backlight_pct/BACKLIGHT_RAMP〕+ 长
   号 + WaitWhat::AuxRead 阻塞读 + 接管态仲裁）、Enter/Leave 域联动（焦点切换
   取证计数 + 光标格直标强制入账）。
 
-每笔带活体自检（t1-t156 续编）、双面板标记与 CI-OK 11 阶段门禁；取证证据链
+每笔带活体自检（t1-t163 续编）、双面板标记与 CI-OK 11 阶段门禁；取证证据链
 全程落账，ADR 八项裁决在库（docs/adr/），五维成熟度 v7 = 7.0/10
 （docs/MATURITY.md，v6 6.9 → v7 随 M45-收尾记分）。
 

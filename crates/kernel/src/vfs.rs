@@ -297,6 +297,25 @@ pub fn init() {
                 });
         });
     }
+    // M51-VECFONT74 笔85：矢量字体真件播种——/lib/fonts/DejaVuSansMono.ttf
+    // （module 3——glyph::vecfont 语义面消费域；目录幂等同谱）。
+    if let Some(media) = take_media_font() {
+        let lib = fs
+            .lookup(files, "lib")
+            .or_else(|_| fs.create(files, "lib", NodeKind::Dir));
+        if let Ok(lib) = lib {
+            let fonts = fs
+                .lookup(lib, "fonts")
+                .or_else(|_| fs.create(lib, "fonts", NodeKind::Dir));
+            let _ = fonts.map(|fonts| {
+                let _ = fs
+                    .create(fonts, "DejaVuSansMono.ttf", NodeKind::File)
+                    .map(|h| {
+                        let _ = fs.write_at(h, 0, &media);
+                    });
+            });
+        }
+    }
     let mut ns = NAMESPACE.lock();
     *ns = Some(Namespace::new(fs));
     let mut tab = FILES.lock();
@@ -365,6 +384,10 @@ static STAGED_MEDIA_DYN: ostd::sync::SpinLock<Option<alloc::vec::Vec<u8>>> =
 /// ——PT_INTERP 串原样路径解析消费面）。
 static STAGED_MEDIA_INTERP: ostd::sync::SpinLock<Option<alloc::vec::Vec<u8>>> =
     ostd::sync::SpinLock::new(None);
+/// M51-VECFONT74 笔85：矢量字体真件暂存槽（module[3] = DejaVuSansMono.ttf
+/// 本体；init 一次性取走播种 `/lib/fonts/DejaVuSansMono.ttf`）。
+static STAGED_MEDIA_FONT: ostd::sync::SpinLock<Option<alloc::vec::Vec<u8>>> =
+    ostd::sync::SpinLock::new(None);
 
 /// 暂存制备介质（multiboot module 字节域拷贝产物；init 播种消费）。
 pub fn stage_media(bytes: alloc::vec::Vec<u8>) {
@@ -381,6 +404,12 @@ pub fn stage_media_interp(bytes: alloc::vec::Vec<u8>) {
     *STAGED_MEDIA_INTERP.lock() = Some(bytes);
 }
 
+/// M51-VECFONT74 笔85：暂存矢量字体真件（module[3] = DejaVuSansMono.ttf；
+/// init 一次性取走播种 `/lib/fonts/DejaVuSansMono.ttf`）。
+pub fn stage_media_font(bytes: alloc::vec::Vec<u8>) {
+    *STAGED_MEDIA_FONT.lock() = Some(bytes);
+}
+
 /// 取走暂存介质（[`init`] 一次性消费；None = 引导期无 module 介质）。
 fn take_media() -> Option<alloc::vec::Vec<u8>> {
     STAGED_MEDIA.lock().take()
@@ -390,6 +419,12 @@ fn take_media() -> Option<alloc::vec::Vec<u8>> {
 /// fail-visible 兑底）。
 fn take_media_dyn() -> Option<alloc::vec::Vec<u8>> {
     STAGED_MEDIA_DYN.lock().take()
+}
+
+/// 取走矢量字体真件（[`init`] 一次性消费；None = 引导期缺位——t163
+/// fail-visible 兑底）。
+fn take_media_font() -> Option<alloc::vec::Vec<u8>> {
+    STAGED_MEDIA_FONT.lock().take()
 }
 
 /// 取走解释器真件（[`init`] 一次性消费；None = 引导期缺位——t161
