@@ -537,6 +537,14 @@ pub const ELF_USER_BASE: u64 = 0x40_0000;
 pub const ELF_USER_LIMIT: u64 = 0x60_0000;
 /// 增长栈顶（PD6[1]→pt_stack 顶；pt_stack[511] 预映射首帧，rsp 起此）。
 pub const STACK_TOP_GROW: u64 = 0x1_8040_0000;
+/// 动态解释器槽域基址（M50-MUSLRUN72 笔82：PD6[2] 槽——PDPT[6] 全新
+/// 分支第三张 PT。布局雷区实录：PD[3+] = 0x600000+ 为内核堆恒等镜像
+/// 借根禁区（用户 CR3 supervisor 面不可拆位），PD6[0] = LXE 段区 /
+/// PD6[1] = 增长栈之外的双 MiB 空窗；ld-musl 真件 161 页（644 KiB）
+/// 在域。栈自 STACK_TOP_GROW 向下长入 PD6[1]，本域向上无碰撞）。
+pub const DYN_INTERP_BASE: u64 = 0x1_8040_0000;
+/// 动态解释器槽域上界（PD6[2] 2 MiB 窗口 = 512 槽）。
+pub const DYN_INTERP_LIMIT: u64 = DYN_INTERP_BASE + 0x20_0000;
 /// 增长栈窗口页数（#PF 可扩上限 = 增长配额；与 M14-② 配额治理呼应）。
 pub const STACK_GROW_WINDOW: usize = 32;
 /// prog.lxe 成功哨兵（gen 脚本 RESULT_MAGIC 对账；低 16 位 = 退出码 91）。
@@ -959,6 +967,7 @@ where
         phent: bedrock::elf::PHDR_LEN as u64,
         phnum: img.phnum,
         clktck: 100,
+        base: 0, // 静态域零 AT_BASE（动态车道归 build_user_space_elf_dynamic）
     };
     let region_base = STACK_TOP_GROW - FRAME_SIZE;
     let mut region = alloc::vec![0u8; FRAME_SIZE as usize];
@@ -978,6 +987,255 @@ where
     Ok(ExecSpace {
         root,
         entry: img.entry,
+        stack_top: STACK_TOP_GROW,
+        rsp,
+        seg_frames,
+        data_frame,
+    })
+}
+
+/// 动态映像装载（M50-MUSLRUN72 笔82）：ET_DYN 程序 + ET_DYN 解释器
+/// 双真件页域装载 + 解释器域初始栈——真实 musl 动态链的内核侧唯一
+/// 职责面（重定位/符号决议/init 序全部归解释器本体机器码在 ring3
+/// 自行执行，内核零代劳——bedrock::elf 模块口径注同源）。
+///
+/// 布局（busybox-dynamic 1.36.1 + ld-musl-x86_64.so.1 官方媒体实测
+/// 口径——双件结构探针锚：程序 4 PT_LOAD 跨 198 页 / PT_PHDR@0x40
+/// 含在首段 / PT_INTERP = "/lib/ld-musl-x86_64.so.1" / DT_NEEDED =
+/// libc.musl-x86_64.so.1 = ld-musl 自身 SONAME（自解域零文件访问）；
+/// 解释器 4 PT_LOAD 跨 161 页 / 自重定位 15 项 / 无 PT_TLS）：
+/// - 程序 = [`ELF_USER_BASE`]..[`ELF_USER_LIMIT`]（PD[2] 2 MiB——
+///   PIE vaddr 重基址 +ELF_USER_BASE，静态链同域先例）；
+/// - 解释器 = [`DYN_INTERP_BASE`]..[`DYN_INTERP_LIMIT`]（PD6[2] 槽）；
+/// - 栈 = [`STACK_TOP_GROW`]（PD6[1]，静态链同款顶帧 + 初始栈）；
+/// - auxv：AT_PHDR = 程序基 + phoff（musl 基式换算消费面）/ AT_BASE =
+///   解释器基 / AT_ENTRY = 程序基 + e_entry / AT_EXECFN / AT_RANDOM
+///   全谱（base 对动态域发射——静态链字节面零扰动回归锚 t82/t83）。
+///
+/// 入口 RIP = 解释器基 + 解释器 e_entry（musl _dlstart——Linux 同款
+/// 语义：内核进解释器，解释器进程序）。
+///
+/// 闸序（fail-visible，先于任何帧分配零泄漏）：程序须 ET_DYN ∧
+/// PT_INTERP 在场（静态 blob 误入动态车道即 BadImage 显形——t161
+/// NEG1）；解释器须 ET_DYN ∧ 入口落 X 段；双件放置域预检（越界/
+/// 页槽互斥/程序入口落 X 段）。
+pub fn build_user_space_elf_dynamic<F>(
+    prog: &[u8],
+    interp: &[u8],
+    argv: &[&str],
+    envp: &[&str],
+    random: [u8; 16],
+    exec_fn: &str,
+    alloc_frame: &mut F,
+) -> Result<ExecSpace, UserSpaceError>
+where
+    F: FnMut() -> Option<u64>,
+{
+    use bedrock::elf::{build_initial_stack, parse, AuxSys, ET_DYN, PF_W, PF_X};
+    // 结构解析 + 动态车道闸（ET_DYN ∧ PT_INTERP——静态 blob 拒收域）
+    let img = parse(prog).map_err(|_| UserSpaceError::BadImage)?;
+    if img.etype != ET_DYN || img.interp.is_none() {
+        return Err(UserSpaceError::BadImage);
+    }
+    let idef = parse(interp).map_err(|_| UserSpaceError::BadImage)?;
+    if idef.etype != ET_DYN {
+        return Err(UserSpaceError::BadImage);
+    }
+    // 放置域预检（帧分配前——闸序零泄漏）：程序 PIE 重基址 +ELF_USER_BASE
+    // 落 PD[2]；解释器重基址 +DYN_INTERP_BASE 落 PD6[2]；双域页槽互斥 +
+    // entry 落 X 段（页域式——非对齐 vaddr 首/尾部分页计入页账）。
+    let mut slots = [false; 512];
+    let mut entry_ok = false;
+    for seg in img.loads.iter().take(img.load_count) {
+        let va = ELF_USER_BASE + seg.vaddr;
+        let end = va + seg.mem_len;
+        if va < ELF_USER_BASE || end > ELF_USER_LIMIT {
+            return Err(UserSpaceError::BadImage);
+        }
+        let lo_page = va / FRAME_SIZE;
+        let pages_n = end.div_ceil(FRAME_SIZE) - lo_page;
+        for q in 0..pages_n {
+            let slot = (lo_page + q - ELF_USER_BASE / FRAME_SIZE) as usize;
+            if slots[slot] {
+                return Err(UserSpaceError::BadImage);
+            }
+            slots[slot] = true;
+        }
+        let entry_va = ELF_USER_BASE + img.entry;
+        if seg.flags & PF_X != 0 && entry_va >= va && entry_va < end {
+            entry_ok = true;
+        }
+    }
+    if !entry_ok {
+        return Err(UserSpaceError::BadImage);
+    }
+    let mut islots = [false; 512];
+    let mut ientry_ok = false;
+    for seg in idef.loads.iter().take(idef.load_count) {
+        let va = DYN_INTERP_BASE + seg.vaddr;
+        let end = va + seg.mem_len;
+        if va < DYN_INTERP_BASE || end > DYN_INTERP_LIMIT {
+            return Err(UserSpaceError::BadImage);
+        }
+        let lo_page = va / FRAME_SIZE;
+        let pages_n = end.div_ceil(FRAME_SIZE) - lo_page;
+        for q in 0..pages_n {
+            let slot = (lo_page + q - DYN_INTERP_BASE / FRAME_SIZE) as usize;
+            if islots[slot] {
+                return Err(UserSpaceError::BadImage);
+            }
+            islots[slot] = true;
+        }
+        let entry_va = DYN_INTERP_BASE + idef.entry;
+        if seg.flags & PF_X != 0 && entry_va >= va && entry_va < end {
+            ientry_ok = true;
+        }
+    }
+    if !ientry_ok {
+        return Err(UserSpaceError::BadImage);
+    }
+    // 4 表骨架 + PD6 栈支（静态链同款）+ PD6[2] 解释器支
+    let (root, pdpt, _pd, pt) = build_space_tables(alloc_frame)?;
+    let Some(pd6) = alloc_frame() else {
+        return Err(UserSpaceError::FramesExhausted);
+    };
+    ostd::hw::phys::write_zero(pd6, FRAME_SIZE);
+    let Some(pt_stack) = alloc_frame() else {
+        return Err(UserSpaceError::FramesExhausted);
+    };
+    ostd::hw::phys::write_zero(pt_stack, FRAME_SIZE);
+    let Some(pt_interp) = alloc_frame() else {
+        return Err(UserSpaceError::FramesExhausted);
+    };
+    ostd::hw::phys::write_zero(pt_interp, FRAME_SIZE);
+    let slot6 = (STACK_TOP_GROW >> 30) & 0x1FF;
+    ostd::hw::phys::write_u64(pdpt + slot6 * 8, Entry::table(pd6).bits() | Entry::USER);
+    ostd::hw::phys::write_u64(pd6 + 8, Entry::table(pt_stack).bits() | Entry::USER); // pd6[1]
+    ostd::hw::phys::write_u64(pd6 + 16, Entry::table(pt_interp).bits() | Entry::USER); // pd6[2]
+                                                                                       // 程序逐段逐页装载（页域交拷贝算法——静态链同款；file 拷贝 + bss
+                                                                                       // 清零零帧；PD[2] 槽域重基址覆盖恒等镜像）。
+    let mut seg_frames: Vec<(u64, u64)> = Vec::new();
+    let mut data_frame = 0u64;
+    for i in 0..img.load_count {
+        let seg = img.loads[i];
+        let bytes = img.seg_bytes(i);
+        let lo_page = (ELF_USER_BASE + seg.vaddr) / FRAME_SIZE;
+        let pages_n = (ELF_USER_BASE + seg.vaddr + seg.mem_len).div_ceil(FRAME_SIZE) - lo_page;
+        for k in 0..pages_n {
+            let page_va = (lo_page + k) * FRAME_SIZE;
+            let Some(f) = alloc_frame() else {
+                return Err(UserSpaceError::FramesExhausted);
+            };
+            ostd::hw::phys::write_zero(f, FRAME_SIZE);
+            let seg_va = ELF_USER_BASE + seg.vaddr;
+            let lo = page_va.max(seg_va);
+            let hi = (page_va + FRAME_SIZE).min(seg_va + seg.file_len);
+            if lo < hi {
+                let src = (lo - seg_va) as usize;
+                let n = (hi - lo) as usize;
+                let dst_phys = f + (lo - page_va);
+                ostd::hw::phys::write_bytes(dst_phys, &bytes[src..src + n]);
+            }
+            let flags = if seg.flags & PF_W != 0 {
+                Entry::USER | Entry::WRITABLE
+            } else {
+                Entry::USER
+            };
+            let slot = (lo_page + k - ELF_USER_BASE / FRAME_SIZE) as usize;
+            ostd::hw::phys::write_u64(pt + slot as u64 * 8, Entry::page(f, flags).bits());
+            if k == 0 {
+                seg_frames.push((seg_va, f));
+                if seg.flags & PF_W != 0 && data_frame == 0 {
+                    data_frame = f;
+                }
+            }
+        }
+    }
+    // 程序段间空洞显式清零（P=0；slots 账本覆盖域内未命中槽——静态链同款）
+    let lo = slots.iter().position(|&s| s).unwrap_or(0);
+    let hi = slots.iter().rposition(|&s| s).unwrap_or(0);
+    for (i, s) in slots.iter().enumerate().take(hi + 1).skip(lo) {
+        if !s {
+            ostd::hw::phys::write_u64(pt + i as u64 * 8, 0);
+        }
+    }
+    // 解释器逐段逐页装载（PD6[2] 槽域重基址；W 段可写——musl 自重定位
+    // 与 GOT 写面消费域；恒等镜像页表槽独立于内核借根分支零冲突）。
+    for i in 0..idef.load_count {
+        let seg = idef.loads[i];
+        let bytes = idef.seg_bytes(i);
+        let lo_page = (DYN_INTERP_BASE + seg.vaddr) / FRAME_SIZE;
+        let pages_n = (DYN_INTERP_BASE + seg.vaddr + seg.mem_len).div_ceil(FRAME_SIZE) - lo_page;
+        for k in 0..pages_n {
+            let page_va = (lo_page + k) * FRAME_SIZE;
+            let Some(f) = alloc_frame() else {
+                return Err(UserSpaceError::FramesExhausted);
+            };
+            ostd::hw::phys::write_zero(f, FRAME_SIZE);
+            let seg_va = DYN_INTERP_BASE + seg.vaddr;
+            let lo = page_va.max(seg_va);
+            let hi = (page_va + FRAME_SIZE).min(seg_va + seg.file_len);
+            if lo < hi {
+                let src = (lo - seg_va) as usize;
+                let n = (hi - lo) as usize;
+                let dst_phys = f + (lo - page_va);
+                ostd::hw::phys::write_bytes(dst_phys, &bytes[src..src + n]);
+            }
+            let flags = if seg.flags & PF_W != 0 {
+                Entry::USER | Entry::WRITABLE
+            } else {
+                Entry::USER
+            };
+            let slot = (lo_page + k - DYN_INTERP_BASE / FRAME_SIZE) as usize;
+            ostd::hw::phys::write_u64(pt_interp + slot as u64 * 8, Entry::page(f, flags).bits());
+        }
+    }
+    // 解释器段间空洞显式清零（islots 账本同款）
+    let ilo = islots.iter().position(|&s| s).unwrap_or(0);
+    let ihi = islots.iter().rposition(|&s| s).unwrap_or(0);
+    for (i, s) in islots.iter().enumerate().take(ihi + 1).skip(ilo) {
+        if !s {
+            ostd::hw::phys::write_u64(pt_interp + i as u64 * 8, 0);
+        }
+    }
+    // 增长栈顶帧预映射（静态链同款）
+    let Some(stack) = alloc_frame() else {
+        return Err(UserSpaceError::FramesExhausted);
+    };
+    ostd::hw::phys::write_zero(stack, FRAME_SIZE);
+    ostd::hw::phys::write_u64(
+        pt_stack + 511 * 8,
+        Entry::page(stack, Entry::USER | Entry::WRITABLE).bits(),
+    );
+    // Linux 初始栈（动态域）：AT_PHDR = 程序基 + phoff / AT_BASE =
+    // 解释器基 / AT_ENTRY = 程序基 + e_entry（musl 基式换算全谱）
+    let aux = AuxSys {
+        pagesz: FRAME_SIZE,
+        entry: ELF_USER_BASE + img.entry,
+        phdr: ELF_USER_BASE + img.phoff,
+        phent: bedrock::elf::PHDR_LEN as u64,
+        phnum: img.phnum,
+        clktck: 100,
+        base: DYN_INTERP_BASE,
+    };
+    let region_base = STACK_TOP_GROW - FRAME_SIZE;
+    let mut region = alloc::vec![0u8; FRAME_SIZE as usize];
+    let region_top = region.len();
+    let rsp = build_initial_stack(
+        &mut region,
+        region_base,
+        region_top,
+        argv,
+        envp,
+        &random,
+        exec_fn,
+        &aux,
+    )
+    .map_err(|_| UserSpaceError::BadImage)?;
+    ostd::hw::phys::write_bytes(stack, &region);
+    Ok(ExecSpace {
+        root,
+        entry: DYN_INTERP_BASE + idef.entry,
         stack_top: STACK_TOP_GROW,
         rsp,
         seg_frames,

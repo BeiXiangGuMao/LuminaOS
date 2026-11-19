@@ -6,15 +6,18 @@
 //! entry 落段、栈域取值）归内核装载器（`kernel::user`）——格式层不
 //! 知晓页表布局，内核层不重复结构校验。
 //!
-//! 口径（M33-计划 裁决注）：仅 ET_EXEC 静态映像（动态链接 ET_DYN 拒
-//! 收、无重定位、无符号面）；「Linux 静态 busybox」由制备面重基址构
-//! 建（linker script 落 FRESH 域），p_vaddr 与 p_offset 均 4 KiB 页
-//! 对齐、PT_LOAD 页槽互斥（段间不共享页，违背即装载面 BadImage 显
-//! 形）。System V AMD64 ABI 初始栈：`rsp` 16 字节对齐，自 `rsp` 向上
-//! 依次 argc / argv[] / NULL / envp[] / NULL / auxv 对，字符串区与
-//! AT_RANDOM 垫顶。
-//!
-//! 非目标：ET_DYN/PIE、动态链接器、符号重定位（如实记档）。
+//! 口径（M33-计划 裁决注；M50-MUSLRUN72 笔82 演化如实记档）：ET_EXEC
+//! 静态映像 + **ET_DYN 动态映像**双型接纳（后者 PT_INTERP 解释器路
+//! 径串随结构解析出域，重基址与装载归内核动态车道）；**重定位与符
+//! 号决议非本模块职责**——动态链语义全部归解释器本体（真实
+//! ld-musl-x86_64.so.1 机器码在 ring3 自行执行），内核零代劳。
+//! 「Linux 静态 busybox」由制备面重基址构建（linker script 落 FRESH
+//! 域），p_vaddr 与 p_offset 均 4 KiB 页对齐、PT_LOAD 页槽互斥（段间
+//! 不共享页，违背即装载面 BadImage 显形）。System V AMD64 ABI 初始
+//! 栈：`rsp` 16 字节对齐，自 `rsp` 向上依次 argc / argv[] / NULL /
+//! envp[] / NULL / auxv 对，字符串区与 AT_RANDOM 垫顶；AT_BASE 对仅
+//! 解释器域发射（[`AuxSys::base`] ≠ 0——静态链字节面零扰动，历史
+//! 金值逐字节同构）。
 
 /// 魔数 \x7f"ELF"（ident[0..4]）。
 pub const ELF_MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];
@@ -26,10 +29,17 @@ pub const ELFDATA2LSB: u8 = 1;
 pub const EV_CURRENT: u8 = 1;
 /// e_type：可执行（非 PIE）。
 pub const ET_EXEC: u16 = 2;
+/// e_type：动态共享对象 / PIE（M50-MUSLRUN72 笔82 双真件口径——
+/// busybox-dynamic 本体与 ld-musl 解释器均 ET_DYN）。
+pub const ET_DYN: u16 = 3;
 /// e_machine：x86-64。
 pub const EM_X86_64: u16 = 62;
 /// 程序头类型：可装载段。
 pub const PT_LOAD: u32 = 1;
+/// 程序头类型：解释器路径串（M50-MUSLRUN72 笔82 动态车道出域面）。
+pub const PT_INTERP: u32 = 3;
+/// 程序头类型：程序头表自述段（musl 基式换算消费面）。
+pub const PT_PHDR: u32 = 6;
 /// p_flags：可执行。
 pub const PF_X: u32 = 1;
 /// p_flags：可写。
@@ -93,7 +103,8 @@ pub enum ElfError {
     BadData,
     /// 非 EV_CURRENT。
     BadVersion,
-    /// 非 ET_EXEC（ET_DYN/ET_REL 等拒收——静态口径）。
+    /// 非 ET_EXEC / ET_DYN（ET_REL/ET_CORE 等拒收——双型口径，
+    /// M50-MUSLRUN72 笔82 演化）。
     BadType,
     /// 非 EM_X86_64。
     BadMachine,
@@ -137,6 +148,11 @@ pub struct ElfImage<'a> {
     pub loads: [PtLoad; ELF_MAX_LOADS],
     /// 有效 PT_LOAD 数（1..=ELF_MAX_LOADS）。
     pub load_count: usize,
+    /// e_type（ET_EXEC / ET_DYN——动态车道判型消费面）。
+    pub etype: u16,
+    /// PT_INTERP 解释器路径串（NUL 剥离；None = 静态映像。
+    /// M50-MUSLRUN72 笔82——vfs 以此串原样解析解释器媒体）。
+    pub interp: Option<&'a [u8]>,
     /// 源 blob（段数据切片的基底）。
     blob: &'a [u8],
 }
@@ -184,7 +200,7 @@ pub fn probe(blob: &[u8]) -> bool {
 /// 防线序（fail-visible 全显形，逐条例独立可测）：魔数 → 位宽 →
 /// 端序 → 版本 → 类型 → 机器 → phentsize → 头表自洽 → PT_LOAD 计数
 /// → 每段（文件偏移越界 / memsz ≥ filesz / 页对齐 / 页槽互斥）。
-pub fn parse(blob: &[u8]) -> Result<ElfImage<'_>, ElfError> {
+pub fn parse<'a>(blob: &'a [u8]) -> Result<ElfImage<'a>, ElfError> {
     if blob.len() < EHDR_LEN {
         return Err(ElfError::Truncated);
     }
@@ -203,7 +219,10 @@ pub fn parse(blob: &[u8]) -> Result<ElfImage<'_>, ElfError> {
     let Some(e_type) = rd_u16(blob, 0x10) else {
         return Err(ElfError::Truncated);
     };
-    if e_type != ET_EXEC {
+    // 双型口径（M50-MUSLRUN72 笔82）：ET_EXEC 静态 + ET_DYN 动态/PIE
+    // 同表解析；ET_DYN 动态车道闸（PT_INTERP 必在场）归内核动态装载
+    // 器（kernel::user::build_user_space_elf_dynamic）——格式层不载决。
+    if e_type != ET_EXEC && e_type != ET_DYN {
         return Err(ElfError::BadType);
     }
     let Some(e_machine) = rd_u16(blob, 0x12) else {
@@ -245,11 +264,31 @@ pub fn parse(blob: &[u8]) -> Result<ElfImage<'_>, ElfError> {
         flags: 0,
     }; ELF_MAX_LOADS];
     let mut load_count = 0usize;
+    let mut interp: Option<&'a [u8]> = None;
     for k in 0..phnum {
         let base = e_phoff as usize + k * PHDR_LEN;
         let Some(p_type) = rd_u32(blob, base) else {
             return Err(ElfError::Truncated);
         };
+        // PT_INTERP 首现收录（解释器路径串；NUL 剥离——musl 官方
+        // 媒体 = "/lib/ld-musl-x86_64.so.1"+NUL）。边界先于语义。
+        if p_type == PT_INTERP && interp.is_none() {
+            let Some(p_off) = rd_u64(blob, base + 0x08) else {
+                return Err(ElfError::Truncated);
+            };
+            let Some(p_fsz) = rd_u64(blob, base + 0x20) else {
+                return Err(ElfError::Truncated);
+            };
+            let off = p_off as usize;
+            let len = p_fsz as usize;
+            if off + len > blob.len() {
+                return Err(ElfError::Truncated);
+            }
+            let raw = &blob[off..off + len];
+            let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
+            interp = Some(&raw[..end]);
+            continue;
+        }
         if p_type != PT_LOAD {
             continue;
         }
@@ -320,6 +359,8 @@ pub fn parse(blob: &[u8]) -> Result<ElfImage<'_>, ElfError> {
         phnum: e_phnum as u64,
         loads,
         load_count,
+        etype: e_type,
+        interp,
         blob,
     })
 }
@@ -338,7 +379,7 @@ pub enum StackError {
 pub struct AuxSys {
     /// 页大小（AT_PAGESZ）。
     pub pagesz: u64,
-    /// 入口虚地址（AT_ENTRY）。
+    /// 入口虚地址（AT_ENTRY；动态域 = 程序基 + e_entry）。
     pub entry: u64,
     /// 程序头表虚地址（AT_PHDR；装载器 = 映像基 + phoff 换算）。
     pub phdr: u64,
@@ -348,6 +389,10 @@ pub struct AuxSys {
     pub phnum: u64,
     /// 时钟节拍（AT_CLKTCK）。
     pub clktck: u64,
+    /// 解释器装载基（AT_BASE；M50-MUSLRUN72 笔82——0 = 缺省静态域
+    /// 零发射，历史 auxv 字节面逐字节同构；≠ 0 时随对数组入栈，
+    /// musl ldso 基式换算消费面）。
+    pub base: u64,
 }
 
 /// 在栈页字节面内构造 Linux 初始栈（System V AMD64 ABI），返回 rsp。
@@ -411,10 +456,15 @@ pub fn build_initial_stack(
     put(&mut sp, random)?;
     let random_off = sp;
     // ② auxv + 指针数组 + argc 的总体尺寸（8B 倍数；随后 rsp 再 16 对齐）。
-    let auxv_pairs: [(u64, u64); 14] = [
+    // AT_BASE 对仅解释器域发射（base ≠ 0——M50-MUSLRUN72 笔82）；
+    // 静态链 base = 0 → 14 对字节面与历史金值逐字节同构（t82/t83
+    // 回归锚）。
+    let with_base = aux.base != 0;
+    let auxv_pairs: [(u64, u64); 15] = [
         (AT_PAGESZ, aux.pagesz),
         (AT_RANDOM, region_base + random_off as u64),
         (AT_EXECFN, region_base + execfn_off as u64),
+        (AT_BASE, aux.base), // 占位对——base == 0 时跳过不落栈
         (AT_PHDR, aux.phdr),
         (AT_PHENT, aux.phent),
         (AT_PHNUM, aux.phnum),
@@ -427,7 +477,8 @@ pub fn build_initial_stack(
         (AT_SECURE, 0),
         (AT_CLKTCK, aux.clktck),
     ];
-    let vec_bytes = 8 + (argv.len() + 1) * 8 + (envp.len() + 1) * 8 + auxv_pairs.len() * 16 + 16;
+    let auxv_used = if with_base { 15 } else { 14 };
+    let vec_bytes = 8 + (argv.len() + 1) * 8 + (envp.len() + 1) * 8 + auxv_used * 16 + 16;
     if sp < vec_bytes {
         return Err(StackError::Overflow);
     }
@@ -460,8 +511,12 @@ pub fn build_initial_stack(
     }
     w(cur, 0)?; // envp NULL 收尾
     cur += 8;
-    // auxv（对数组 + AT_NULL 收尾——上表 14 对后再补一对）
+    // auxv（对数组 + AT_NULL 收尾——上表 15 对槽位；AT_BASE 占位对
+    // 仅 base ≠ 0 发射——静态域跳过后字节面与历史金值同构）
     for (tag, val) in auxv_pairs {
+        if tag == AT_BASE && !with_base {
+            continue;
+        }
         w(cur, tag)?;
         w(cur + 8, val)?;
         cur += 16;
@@ -575,9 +630,10 @@ mod tests {
         let mut bad = good.clone();
         bad[6] = 0;
         assert_eq!(parse(&bad), Err(ElfError::BadVersion));
-        // 坏类型（ET_DYN=3 拒收——静态口径）
+        // 坏类型（ET_REL=1 拒收——双型口径外；ET_DYN 已随
+        // M50-MUSLRUN72 笔82 转正，见 parse_dyn_etype_interp_face）
         let mut bad = good.clone();
-        bad[0x10..0x12].copy_from_slice(&3u16.to_le_bytes());
+        bad[0x10..0x12].copy_from_slice(&1u16.to_le_bytes());
         assert_eq!(parse(&bad), Err(ElfError::BadType));
         // 坏机器（EM_386=3）
         let mut bad = good.clone();
@@ -625,6 +681,7 @@ mod tests {
             phent: 56,
             phnum: 2,
             clktck: 100,
+            base: 0,
         };
         let Ok(rsp) = build_initial_stack(
             &mut region,
@@ -685,6 +742,7 @@ mod tests {
             phent: 56,
             phnum: 0,
             clktck: 100,
+            base: 0,
         };
         assert_eq!(
             build_initial_stack(&mut region, 0, 65, &["a"], &[], &[0; 16], "a", &aux),
@@ -711,5 +769,133 @@ mod tests {
             build_initial_stack(&mut region, 0, 8192, &big, &[], &[0; 16], "x", &aux),
             Err(StackError::Overflow)
         );
+    }
+
+    /// 手编 ET_DYN + PT_INTERP 映像（M50-MUSLRUN72 笔82 双真件口径
+    /// 宿主锚）：min_elf 同构载荷 + 解释器段。返回（blob，解释器串）。
+    fn dyn_elf_with_interp() -> alloc::vec::Vec<u8> {
+        const INTERP: &[u8] = b"/lib/ld-musl-x86_64.so.1\0";
+        let mut v = min_elf();
+        // e_type → ET_DYN
+        v[0x10..0x12].copy_from_slice(&ET_DYN.to_le_bytes());
+        // 追加第 3 程序头（PT_INTERP）：off 0x2100 载荷——blob 尾扩至
+        // 0x2200 覆盖（min_elf 本体 0x2004 截止，interp 载荷在其外）
+        v.resize(0x2200, 0);
+        let p3 = EHDR_LEN + 2 * PHDR_LEN;
+        v[0x38..0x3A].copy_from_slice(&3u16.to_le_bytes());
+        v[p3..p3 + 4].copy_from_slice(&PT_INTERP.to_le_bytes());
+        v[p3 + 8..p3 + 16].copy_from_slice(&0x2100u64.to_le_bytes());
+        v[p3 + 32..p3 + 40].copy_from_slice(&(INTERP.len() as u64).to_le_bytes());
+        v[0x2100..0x2100 + INTERP.len()].copy_from_slice(INTERP);
+        v
+    }
+
+    #[test]
+    fn parse_dyn_etype_interp_face() {
+        let blob = dyn_elf_with_interp();
+        let img = match parse(&blob) {
+            Ok(i) => i,
+            Err(_) => panic!("ET_DYN 双型口径须接纳"),
+        };
+        assert_eq!(img.etype, ET_DYN);
+        assert_eq!(img.interp, Some(&b"/lib/ld-musl-x86_64.so.1"[..]));
+    }
+
+    #[test]
+    fn parse_static_interp_none_face() {
+        let blob = min_elf();
+        let img = match parse(&blob) {
+            Ok(i) => i,
+            Err(_) => panic!("ET_EXEC 静态口径须接纳"),
+        };
+        assert_eq!(img.etype, ET_EXEC);
+        assert_eq!(img.interp, None);
+    }
+
+    #[test]
+    fn initial_stack_at_base_face() {
+        // 动态域：base ≠ 0 → AT_BASE 对发射（AT_EXECFN 之后紧邻）；
+        // 总尺寸 = 静态域 + 16B。
+        let mut region = alloc::vec![0u8; 4096];
+        let base = 0x1_8040_0000u64 - 4096;
+        let top = region.len();
+        let aux_dyn = AuxSys {
+            pagesz: 4096,
+            entry: 0x66_28cf,
+            phdr: 0x40_0040,
+            phent: 56,
+            phnum: 12,
+            clktck: 100,
+            base: 0x60_0000,
+        };
+        let aux_st = AuxSys { base: 0, ..aux_dyn };
+        let rsp_dyn = match build_initial_stack(
+            &mut region,
+            base,
+            top,
+            &["/bin/busybox-dyn", "echo", "x"],
+            &[],
+            &[0xCD; 16],
+            "busybox-dyn",
+            &aux_dyn,
+        ) {
+            Ok(r) => r,
+            Err(_) => panic!("动态域布局须过"),
+        };
+        let mut region2 = alloc::vec![0u8; 4096];
+        let rsp_st = match build_initial_stack(
+            &mut region2,
+            base,
+            top,
+            &["/bin/busybox-dyn", "echo", "x"],
+            &[],
+            &[0xCD; 16],
+            "busybox-dyn",
+            &aux_st,
+        ) {
+            Ok(r) => r,
+            Err(_) => panic!("静态域布局须过"),
+        };
+        assert_eq!(rsp_dyn % 16, 0);
+        // 尺寸差 = 恰一对 auxv（16 B）
+        assert_eq!(rsp_st - rsp_dyn, 16);
+        // 扫 auxv 对：动态域含 (AT_BASE, 0x600000)；静态域无 AT_BASE 对
+        let scan = |buf: &[u8], rsp: u64| -> alloc::vec::Vec<(u64, u64)> {
+            let rd = |o: usize, buf: &[u8]| -> u64 {
+                let mut b8 = [0u8; 8];
+                if o + 8 <= buf.len() {
+                    b8.copy_from_slice(&buf[o..o + 8]);
+                }
+                u64::from_le_bytes(b8)
+            };
+            let mut off = (rsp - base) as usize;
+            let mut pairs = alloc::vec::Vec::new();
+            // 跳过 argc + argv + envp
+            let argc = rd(off, buf) as usize;
+            off += 8 + (argc + 1) * 8;
+            loop {
+                let v = rd(off, buf);
+                if v == 0 {
+                    break; // envp NULL
+                }
+                off += 8;
+            }
+            off += 8;
+            loop {
+                let tag = rd(off, buf);
+                let val = rd(off + 8, buf);
+                if tag == AT_NULL {
+                    break;
+                }
+                pairs.push((tag, val));
+                off += 16;
+            }
+            pairs
+        };
+        let pd = scan(&region, rsp_dyn);
+        let ps = scan(&region2, rsp_st);
+        assert!(pd.contains(&(AT_BASE, 0x60_0000)), "动态域须含 AT_BASE");
+        assert!(!ps.iter().any(|(t, _)| *t == AT_BASE), "静态域零 AT_BASE");
+        assert_eq!(pd.len(), ps.len() + 1);
     }
 }

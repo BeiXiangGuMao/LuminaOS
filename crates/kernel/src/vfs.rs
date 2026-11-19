@@ -271,6 +271,32 @@ pub fn init() {
             });
         });
     }
+    // M50-MUSLRUN72 笔82：动态链真件播种——/bin/busybox-dyn（module 1）
+    // + /lib/ld-musl-x86_64.so.1（module 2——PT_INTERP 串原样路径）。
+    // 目录幂等（lookup 命中即复用，create 仅缺位时铸造）；播种缺失
+    // 防御式跳过（t161 路径探针 fail-visible 兑底）。
+    if let Some(media) = take_media_dyn() {
+        let bin = fs
+            .lookup(files, "bin")
+            .or_else(|_| fs.create(files, "bin", NodeKind::Dir));
+        let _ = bin.map(|bin| {
+            let _ = fs.create(bin, "busybox-dyn", NodeKind::File).map(|h| {
+                let _ = fs.write_at(h, 0, &media);
+            });
+        });
+    }
+    if let Some(media) = take_media_interp() {
+        let lib = fs
+            .lookup(files, "lib")
+            .or_else(|_| fs.create(files, "lib", NodeKind::Dir));
+        let _ = lib.map(|lib| {
+            let _ = fs
+                .create(lib, "ld-musl-x86_64.so.1", NodeKind::File)
+                .map(|h| {
+                    let _ = fs.write_at(h, 0, &media);
+                });
+        });
+    }
     let mut ns = NAMESPACE.lock();
     *ns = Some(Namespace::new(fs));
     let mut tab = FILES.lock();
@@ -330,15 +356,46 @@ pub fn files_usage() -> (usize, usize) {
 /// 后、[`init`] 前），[`init`] 一次性取走播种 `/bin/busybox`。
 static STAGED_MEDIA: ostd::sync::SpinLock<Option<alloc::vec::Vec<u8>>> =
     ostd::sync::SpinLock::new(None);
+/// 动态链真件暂存（M50-MUSLRUN72 笔82：multiboot module[1] =
+/// busybox-dynamic 本体；init 一次性取走播种 `/bin/busybox-dyn`）。
+static STAGED_MEDIA_DYN: ostd::sync::SpinLock<Option<alloc::vec::Vec<u8>>> =
+    ostd::sync::SpinLock::new(None);
+/// 解释器真件暂存（M50-MUSLRUN72 笔82：multiboot module[2] =
+/// ld-musl-x86_64.so.1 本体；init 一次性取走播种 `/lib/ld-musl-x86_64.so.1`
+/// ——PT_INTERP 串原样路径解析消费面）。
+static STAGED_MEDIA_INTERP: ostd::sync::SpinLock<Option<alloc::vec::Vec<u8>>> =
+    ostd::sync::SpinLock::new(None);
 
 /// 暂存制备介质（multiboot module 字节域拷贝产物；init 播种消费）。
 pub fn stage_media(bytes: alloc::vec::Vec<u8>) {
     *STAGED_MEDIA.lock() = Some(bytes);
 }
 
+/// 暂存动态链真件（module[1] = busybox-dynamic；M50-MUSLRUN72 笔82）。
+pub fn stage_media_dyn(bytes: alloc::vec::Vec<u8>) {
+    *STAGED_MEDIA_DYN.lock() = Some(bytes);
+}
+
+/// 暂存解释器真件（module[2] = ld-musl-x86_64.so.1；M50-MUSLRUN72 笔82）。
+pub fn stage_media_interp(bytes: alloc::vec::Vec<u8>) {
+    *STAGED_MEDIA_INTERP.lock() = Some(bytes);
+}
+
 /// 取走暂存介质（[`init`] 一次性消费；None = 引导期无 module 介质）。
 fn take_media() -> Option<alloc::vec::Vec<u8>> {
     STAGED_MEDIA.lock().take()
+}
+
+/// 取走动态链真件（[`init`] 一次性消费；None = 引导期缺位——t161
+/// fail-visible 兑底）。
+fn take_media_dyn() -> Option<alloc::vec::Vec<u8>> {
+    STAGED_MEDIA_DYN.lock().take()
+}
+
+/// 取走解释器真件（[`init`] 一次性消费；None = 引导期缺位——t161
+/// PT_INTERP 解析域 fail-visible 兑底）。
+fn take_media_interp() -> Option<alloc::vec::Vec<u8>> {
+    STAGED_MEDIA_INTERP.lock().take()
 }
 
 /// M33-F1：Linux dirent64 页打包（kernel::linux getdents64 消费面）。
