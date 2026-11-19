@@ -1,5 +1,7 @@
 //! TCP 传输控制协议首割（RFC 9293 简化面）。
 //!
+//! 模块导入面：alloc Vec（M49-TCP63 笔72——SACK 块族/解码产物域）。
+//!
 //! M27-T1 范围界定（偏差登记，**M37-N1 转正收口**）：协议面结构——段头
 //! 编解码 + 连接状态机骨架 + 三次握手序号推进面（宿主对账测试承载）；
 //! vnet 电气接线（M36-N1 转正）与重传定时器、滑动窗口、分片重组
@@ -29,6 +31,8 @@
 //! 四元组查表——槽体 [`TcpConn`] 六面聚合）。仍不在域（如实记账不扩
 //! 域）：快速重传/快速恢复（RFC 5681 §3.2——[`CcState`] v0 只承载慢
 //! 启动/拥塞避免/RTO 折叠三态）、SACK、时间戳选项（kind=8）。
+
+use alloc::vec::Vec;
 
 /// TCP 头最小长（data_offset = 5，无选项域）。
 pub const HDR_LEN: usize = 20;
@@ -2037,5 +2041,459 @@ mod tests {
             Ok(3),
             "释放后恢复受理"
         );
+    }
+}
+
+// ---- M49-TCP63 笔72：快速重传/快速恢复（RFC 5681 补全域——M38-TCP1
+// v0 域清单外既录余项之一）+ SACK（RFC 2018 语义面）+ 时间戳选项
+//（RFC 7323 TSopt/RTTM）。零 unsafe 零 panic，fail-visible 全显形 ----
+
+/// 快速重传 dup ACK 阈值（RFC 5681 §3.2——三重 dup ACK 触发域）。
+pub const DUP_ACK_THRESH: u32 = 3;
+
+/// 快速重传动作域（dup ACK 拍产物）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FastRtxAction {
+    /// 无动作（dup 计数未达阈值）。
+    None,
+    /// 三重 dup ACK——进入快速恢复 + 立即重传（消费面随行
+    /// [`CcState::on_fast_rtx`] 定标）。
+    EnterRecovery,
+    /// 恢复中再收 dup——膨胀拍（cwnd += SMSS——零重传）。
+    Inflate,
+}
+
+/// 快速恢复态机（RFC 5681 补全域——dup ACK 计数 + 恢复点记账 + 出
+/// 恢复判读；零 unsafe 零 panic）。
+#[derive(Debug)]
+pub struct FastRtx {
+    dup_acks: u32,
+    in_recovery: bool,
+    /// 恢复点（进入恢复时的 snd.max——新 ACK 越点方出恢复）。
+    recovery_point: u32,
+}
+
+impl Default for FastRtx {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FastRtx {
+    /// 初值态（零计数零恢复域）。
+    pub const fn new() -> Self {
+        Self {
+            dup_acks: 0,
+            in_recovery: false,
+            recovery_point: 0,
+        }
+    }
+
+    /// 恢复中判读。
+    pub const fn in_recovery(&self) -> bool {
+        self.in_recovery
+    }
+
+    /// dup 计数读数。
+    pub const fn dup_acks(&self) -> u32 {
+        self.dup_acks
+    }
+
+    /// 新 ACK 拍：dup 计数清零；恢复中且 ack 越恢复点 → 退出恢复
+    /// （返 true——消费面随行收缩拍 [`CcState::on_fast_recovery_exit`]）。
+    /// 恢复中未越点的新 ACK（部分确认）不动恢复域。
+    pub fn on_ack(&mut self, ack: u32) -> bool {
+        self.dup_acks = 0;
+        if self.in_recovery && ack.wrapping_sub(self.recovery_point) < 0x8000_0000 {
+            // ack >= recovery_point（u32 序号回绕域——差值落正半域判读，
+            // 等点即出恢复——RFC 5681 §3.2 SND.UNA 覆盖域）
+            self.in_recovery = false;
+            return true;
+        }
+        false
+    }
+
+    /// dup ACK 拍：非恢复域计数达阈 → EnterRecovery（恢复点 = snd.max
+    /// ——记账后入恢复域）；恢复域中 dup → Inflate；未达阈 → None。
+    /// 恢复域中的 dup ACK 不再触发重传（RFC 5681 §3.2——每 RTT 至多
+    /// 一次重传的 v0 口径）。
+    pub fn on_dup_ack(&mut self, snd_max: u32) -> FastRtxAction {
+        if self.in_recovery {
+            return FastRtxAction::Inflate;
+        }
+        self.dup_acks = self.dup_acks.saturating_add(1);
+        if self.dup_acks >= DUP_ACK_THRESH {
+            self.in_recovery = true;
+            self.recovery_point = snd_max;
+            FastRtxAction::EnterRecovery
+        } else {
+            FastRtxAction::None
+        }
+    }
+}
+
+/// CcState 快速恢复拍（RFC 5681 §3.2——`ssthresh = max(flight/2,
+/// 2·SMSS)` + `cwnd = ssthresh + 3·SMSS` 膨胀初域——[on_rto] 同谱
+/// 折叠算术）。
+impl CcState {
+    /// 快速恢复进入拍。
+    pub fn on_fast_rtx(&mut self, flight: u32) {
+        self.ssthresh = (flight / 2).max(self.smss.saturating_mul(2));
+        self.cwnd = self.ssthresh.saturating_add(self.smss.saturating_mul(3));
+    }
+
+    /// 膨胀拍（恢复域中每 dup ACK——cwnd += SMSS）。
+    pub fn on_fast_inflate(&mut self) {
+        self.cwnd = self.cwnd.saturating_add(self.smss);
+    }
+
+    /// 收缩拍（出恢复拍——cwnd = ssthresh，RFC 5681 §3.2 deflate 域）。
+    pub fn on_fast_recovery_exit(&mut self) {
+        self.cwnd = self.ssthresh;
+    }
+}
+
+/// SACK 块（RFC 2018——[left, right) 左闭右开 u32 序号域）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SackBlock {
+    /// 块首序号。
+    pub left: u32,
+    /// 块尾序号（不含）。
+    pub right: u32,
+}
+
+/// 单选项字节上限（TCP 选项域 40 字节——kind+len+4 块 ×8 B = 34）。
+pub const SACK_MAX_BLOCKS: usize = 4;
+
+/// SACK 选项编码（kind 5——块序左闭右开 u32 LE 对；`blocks` 超
+/// [`SACK_MAX_BLOCKS`] / 越缓冲 = None fail-visible）。
+pub fn sack_encode(blocks: &[SackBlock], out: &mut [u8]) -> Option<usize> {
+    if blocks.len() > SACK_MAX_BLOCKS || blocks.len() * 8 + 2 > out.len() {
+        return None;
+    }
+    out[0] = 5;
+    out[1] = (blocks.len() * 8 + 2) as u8;
+    for (i, b) in blocks.iter().enumerate() {
+        let o = 2 + i * 8;
+        out[o..o + 4].copy_from_slice(&b.left.to_le_bytes());
+        out[o + 4..o + 8].copy_from_slice(&b.right.to_le_bytes());
+    }
+    Some(blocks.len() * 8 + 2)
+}
+
+/// SACK 选项解码（kind 5——len 域 2+8n 且 n ≤ [`SACK_MAX_BLOCKS`]；
+/// 越界/畸形 = None fail-visible；非 kind 5 头 = None）。
+pub fn sack_decode(opts: &[u8]) -> Option<Vec<SackBlock>> {
+    if opts.len() < 2 || opts[0] != 5 {
+        return None;
+    }
+    let len = opts[1] as usize;
+    if len < 2 || len > opts.len() || !(len - 2).is_multiple_of(8) {
+        return None;
+    }
+    let n = (len - 2) / 8;
+    if n > SACK_MAX_BLOCKS {
+        return None;
+    }
+    let mut out = Vec::new();
+    for i in 0..n {
+        let o = 2 + i * 8;
+        let left = u32::from_le_bytes(opts[o..o + 4].try_into().ok()?);
+        let right = u32::from_le_bytes(opts[o + 4..o + 8].try_into().ok()?);
+        if right == left {
+            return None; // 零宽块拒收（RFC 2018 结构域）
+        }
+        out.push(SackBlock { left, right });
+    }
+    Some(out)
+}
+
+/// SACK 块派生（重组窗 presence 位图消费——乱序滞留段族 → [left,
+/// right) 块序，上限 [`SACK_MAX_BLOCKS`]；`ReasmBuf::sack_runs` 同源）。
+pub fn sack_blocks_from_reasm<const N: usize>(buf: &ReasmBuf<N>) -> Vec<SackBlock> {
+    buf.sack_runs()
+        .into_iter()
+        .take(SACK_MAX_BLOCKS)
+        .map(|(left, right)| SackBlock { left, right })
+        .collect()
+}
+
+/// 时间戳选项编码（RFC 7323 TSopt——kind 8 len 10 TSval/TSecr u32 LE 对）。
+pub fn ts_encode(tsval: u32, tsecr: u32, out: &mut [u8]) -> Option<usize> {
+    if out.len() < 10 {
+        return None;
+    }
+    out[0] = 8;
+    out[1] = 10;
+    out[2..6].copy_from_slice(&tsval.to_le_bytes());
+    out[6..10].copy_from_slice(&tsecr.to_le_bytes());
+    Some(10)
+}
+
+/// 时间戳选项解码（kind 8 len 10——畸形 = None fail-visible）。
+pub fn ts_decode(opts: &[u8]) -> Option<(u32, u32)> {
+    if opts.len() < 10 || opts[0] != 8 || opts[1] != 10 {
+        return None;
+    }
+    let tsval = u32::from_le_bytes(opts[2..6].try_into().ok()?);
+    let tsecr = u32::from_le_bytes(opts[6..10].try_into().ok()?);
+    Some((tsval, tsecr))
+}
+
+/// TSopt 协商判读（RFC 7323——双方 SYN 各带 TSopt 方生效；`ws_negotiate`
+/// 同谱口径）。
+pub const fn ts_negotiate(local_syn_ts: bool, remote_syn_ts: bool) -> bool {
+    local_syn_ts && remote_syn_ts
+}
+
+/// RTTM 单槽跟踪器（RFC 7323 §4.3 v0 口径——仅最新发出段采样：发送
+/// 时记 (tsval, 时刻)，ACK 回显 tsecr 命中即采样差分——Karn 窄化天然
+/// 内嵌〔重传段新 tsval 覆写旧槽，旧样本永不采样〕；零 unsafe）。
+#[derive(Debug)]
+pub struct TsTracker {
+    tsval: u32,
+    at_ns: u64,
+    armed: bool,
+}
+
+impl Default for TsTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TsTracker {
+    /// 初值态（空槽）。
+    pub const fn new() -> Self {
+        Self {
+            tsval: 0,
+            at_ns: 0,
+            armed: false,
+        }
+    }
+
+    /// 发送拍（tsval 记账——覆写即 Karn 窄化）。
+    pub fn on_send(&mut self, tsval: u32, now_ns: u64) {
+        self.tsval = tsval;
+        self.at_ns = now_ns;
+        self.armed = true;
+    }
+
+    /// ACK 拍（tsecr 命中槽 → RTTM 样本 = now − at；未命中/空槽 =
+    /// None——旧段确认不采样域）。
+    pub fn on_ack_tsecr(&mut self, tsecr: u32, now_ns: u64) -> Option<u64> {
+        if !self.armed || tsecr != self.tsval {
+            return None;
+        }
+        self.armed = false;
+        Some(now_ns.saturating_sub(self.at_ns))
+    }
+}
+
+/// 重组窗 SACK 段族派生（presence 位图扫描——乱序滞留连续域 →
+/// (left, right) 序号对序；上限 [`SACK_MAX_BLOCKS`] 消费面截取）。
+impl<const N: usize> ReasmBuf<N> {
+    /// presence 段族扫描（乱序滞留域——rcv_nxt 之后 have 连续域族）。
+    pub fn sack_runs(&self) -> Vec<(u32, u32)> {
+        let mut out = Vec::new();
+        let mut cur: Option<usize> = None;
+        for (i, h) in self.have.iter().enumerate() {
+            if *h && cur.is_none() {
+                cur = Some(i);
+            } else if !*h {
+                if let Some(s) = cur.take() {
+                    out.push((
+                        self.base.wrapping_add(s as u32),
+                        self.base.wrapping_add(i as u32),
+                    ));
+                }
+            }
+        }
+        if let Some(s) = cur {
+            out.push((
+                self.base.wrapping_add(s as u32),
+                self.base.wrapping_add(self.have.len() as u32),
+            ));
+        }
+        out
+    }
+}
+
+// ---- M49-TCP63 笔72 宿主测试谱（快速重传/快速恢复 + SACK + TSopt） ----
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod m49_tcp63_tests {
+    use super::*;
+    use alloc::vec;
+
+    /// 快速重传/快速恢复全谱（RFC 5681 §3.2——七域）。
+    #[test]
+    fn fast_rtx_recovery_face() {
+        let mut cc = CcState::new(536);
+        let mut f = FastRtx::new();
+        // ① 未达阈零动作域（dup 1/2）
+        assert_eq!(f.on_dup_ack(1000), FastRtxAction::None);
+        assert_eq!(f.on_dup_ack(1000), FastRtxAction::None);
+        assert_eq!(f.dup_acks(), 2);
+        // ② 三重 dup → EnterRecovery（恢复点 = snd.max 记账）
+        assert_eq!(f.on_dup_ack(1000), FastRtxAction::EnterRecovery);
+        assert!(f.in_recovery());
+        // ③ 进入拍定标（ssthresh = max(flight/2, 2·SMSS) + cwnd = ssthresh + 3·SMSS）
+        cc.on_fast_rtx(4000);
+        assert_eq!(cc.ssthresh(), 2000); // flight/2 = 2000 > 2·SMSS = 1072——max 取前者
+        let ss = cc.ssthresh();
+        assert_eq!(cc.cwnd(), ss + 536 * 3);
+        // ④ 恢复域 dup → Inflate（cwnd += SMSS + 零重传）
+        let c0 = cc.cwnd();
+        assert_eq!(f.on_dup_ack(1000), FastRtxAction::Inflate);
+        cc.on_fast_inflate();
+        assert_eq!(cc.cwnd(), c0 + 536);
+        // ⑤ 部分确认不出恢复域（ack < recovery_point=1000）
+        assert!(!f.on_ack(900));
+        assert!(f.in_recovery());
+        // ⑥ 等点确认出恢复域（ack >= recovery_point 含等号）+ 收缩拍（cwnd = ssthresh）
+        assert!(f.on_ack(1000));
+        assert!(!f.in_recovery());
+        cc.on_fast_recovery_exit();
+        assert_eq!(cc.cwnd(), ss);
+        // ⑦ 新 ACK dup 计数清零域
+        assert_eq!(f.on_dup_ack(1000), FastRtxAction::None);
+        assert_eq!(f.on_dup_ack(1000), FastRtxAction::None);
+        f.on_ack(1000);
+        assert_eq!(f.dup_acks(), 0);
+    }
+
+    /// SACK 选项面全谱（RFC 2018——七域）。
+    #[test]
+    fn sack_option_face() {
+        // ① 编码金值（双块）
+        let mut out = [0u8; 40];
+        let blocks = [
+            SackBlock {
+                left: 0x1000,
+                right: 0x1100,
+            },
+            SackBlock {
+                left: 0x2000,
+                right: 0x2100,
+            },
+        ];
+        let n = sack_encode(&blocks, &mut out).expect("编码");
+        assert_eq!(n, 18);
+        assert_eq!(&out[..2], &[5, 18]);
+        assert_eq!(&out[2..6], &0x1000u32.to_le_bytes());
+        // ② 解码往返一致
+        assert_eq!(sack_decode(&out[..n]).expect("解码"), blocks.to_vec());
+        // ③ 单块最小域
+        let one = [SackBlock { left: 7, right: 9 }];
+        let n1 = sack_encode(&one, &mut out).expect("编码");
+        assert_eq!(n1, 10);
+        assert_eq!(sack_decode(&out[..n1]).expect("解码"), one.to_vec());
+        // ④ 四块上限域（40 字节选项域 34 B）
+        let four = [
+            SackBlock { left: 1, right: 2 },
+            SackBlock { left: 3, right: 4 },
+            SackBlock { left: 5, right: 6 },
+            SackBlock { left: 7, right: 8 },
+        ];
+        let n4 = sack_encode(&four, &mut out).expect("四块编码");
+        assert_eq!(n4, 34);
+        assert_eq!(sack_decode(&out[..n4]).expect("解码").len(), 4);
+        // ⑤ 五块超限拒收
+        let five = [
+            SackBlock { left: 1, right: 2 },
+            SackBlock { left: 3, right: 4 },
+            SackBlock { left: 5, right: 6 },
+            SackBlock { left: 7, right: 8 },
+            SackBlock { left: 9, right: 10 },
+        ];
+        assert_eq!(sack_encode(&five, &mut out), None, "五块超限 fail-visible");
+        // ⑥ 畸形域拒收（零宽块 / 非法 len）
+        let mut bad = out;
+        bad[0] = 5;
+        bad[1] = 10;
+        bad[2..6].copy_from_slice(&1u32.to_le_bytes());
+        bad[6..10].copy_from_slice(&1u32.to_le_bytes());
+        assert_eq!(sack_decode(&bad[..10]), None, "零宽块拒收");
+        bad[1] = 9; // 非法 len（非 2+8n）
+        assert_eq!(sack_decode(&bad[..10]), None);
+        // ⑦ 非本 kind 头拒收
+        assert_eq!(sack_decode(&[8, 10, 0, 0, 0, 0, 0, 0, 0, 0]), None);
+    }
+
+    /// 重组窗 SACK 派生面（presence 位图扫描——乱序滞留段族）。
+    #[test]
+    fn sack_from_reasm_face() {
+        let mut r = ReasmBuf::<64>::new(1000);
+        // 乱序注入：[1024,1040) 与 [1048,1064)——[1000,1024) 缺域（窗
+        // 域 1000..1064 恰容双段——Overflow 拒收域避开）
+        assert_eq!(r.insert(1024, &[0xAA; 16]), ReasmOutcome::Queued);
+        assert_eq!(r.insert(1048, &[0xBB; 16]), ReasmOutcome::Queued);
+        let runs = r.sack_runs();
+        assert_eq!(
+            runs,
+            vec![(1024, 1040), (1048, 1064)],
+            "双段族金值（presence 位图扫描域）"
+        );
+        let blocks = sack_blocks_from_reasm(&r);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(
+            blocks[0],
+            SackBlock {
+                left: 1024,
+                right: 1040
+            }
+        );
+        // in-order 交付消解首段（[1000,1024) 补洞 → 前缀连续域扩至
+        // 1040——drain 左移后段族随基线推进重算）
+        let head = [0u8; 24];
+        assert_eq!(r.insert(1000, &head), ReasmOutcome::InOrder);
+        let mut sink = [0u8; 64];
+        let _ = r.drain(&mut sink);
+        assert_eq!(
+            r.sack_runs(),
+            vec![(1048, 1064)],
+            "交付后段族随基线推进重算（第二段滞留域保持）"
+        );
+    }
+
+    /// TSopt/RTTM 面全谱（RFC 7323——六域）。
+    #[test]
+    fn ts_option_face() {
+        // ① 编码金值
+        let mut out = [0u8; 12];
+        let n = ts_encode(0x1234_5678, 0x9ABC_DEF0, &mut out).expect("编码");
+        assert_eq!(n, 10);
+        assert_eq!(&out[..2], &[8, 10]);
+        // ② 解码往返
+        assert_eq!(ts_decode(&out[..n]), Some((0x1234_5678, 0x9ABC_DEF0)));
+        // ③ 畸形拒收（len 错 / kind 错 / 截断）
+        assert_eq!(ts_decode(&out[..9]), None, "截断拒收");
+        assert_eq!(
+            ts_decode(&[5, 10, 0, 0, 0, 0, 0, 0, 0, 0]),
+            None,
+            "kind 错拒收"
+        );
+        assert_eq!(ts_decode(&[8, 8, 0, 0, 0, 0, 0, 0]), None, "len 错拒收");
+        // ④ 协商判读（双方 SYN 才生效）
+        assert!(ts_negotiate(true, true));
+        assert!(!ts_negotiate(true, false));
+        assert!(!ts_negotiate(false, true));
+        // ⑤ RTTM 采样（tsecr 命中槽 → 差分）
+        let mut t = TsTracker::new();
+        assert_eq!(t.on_ack_tsecr(100, 1000), None, "空槽不采样");
+        t.on_send(100, 5_000);
+        assert_eq!(t.on_ack_tsecr(100, 12_000), Some(7_000), "命中槽差分金值");
+        assert_eq!(t.on_ack_tsecr(100, 13_000), None, "采样后槽清（单发单样）");
+        // ⑥ Karn 窄化域（重传覆写槽——旧 tsecr 不采样）
+        t.on_send(200, 20_000);
+        t.on_send(300, 25_000); // 重传新 tsval 覆写
+        assert_eq!(
+            t.on_ack_tsecr(200, 30_000),
+            None,
+            "旧段 tsecr 不采样（Karn 域）"
+        );
+        assert_eq!(t.on_ack_tsecr(300, 30_000), Some(5_000), "新槽命中采样");
     }
 }
