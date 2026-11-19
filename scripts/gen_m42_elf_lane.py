@@ -36,7 +36,7 @@
 【域⑥】WAYCOMP_SVC_ELF 全谱 wire 解析（M42-WAYCOMP9——客户端窗内
   容解析域：v0 定形匹配器〔A@0/C@88 固定偏移〕退役为 walk 裁决解析
   器——逐消息头 walk〔obj id + (size<<16|opcode)〕+ 签名域闸：
-  get_registry(1,1) 12B → registry id 槽承接 + globals 124B 公告单发
+  get_registry(1,1) 12B → registry id 槽承接 + globals 156B 公告单发
   门控 / bind(reg,0) 40B → 接口名 string walk〔len=14 + "wl_c"/
   "ompo"/"sito"/"r" 四 dword 内容域闸〕→ compositor id 槽承接 /
   create_surface(comp,0) 12B → surface id 槽承接 / damage(surf,2)
@@ -133,7 +133,7 @@ INPUT_EVIDENCE = b"LUMINA-T109-CLIENT input-chain ok"
 INPUT_BAIL_CONNECT, INPUT_BAIL_SEND, INPUT_BAIL_RECV, INPUT_BAIL_BUDGET = 90, 91, 92, 93
 INPUT_ACC_CAP = 512
 INPUT_RECV_BUDGET = 64
-INPUT_TOTAL_TARGET = 272  # 事件流累计目标（globals+caps+keymap+enter+key×2+ptr enter+button×2 = 272B——客户端存活至指针域事件到达）
+INPUT_TOTAL_TARGET = 304  # 事件流累计目标（globals+caps+keymap+enter+key×2+ptr enter+button×2 = 304B——客户端存活至指针域事件到达；M50-XDGSHELL67 公告 156B 随行）
 # 客户端对象 id 域（wire 批内静态分配——与 prism::wayland 对账）
 INPUT_REGISTRY, INPUT_SEAT, INPUT_COMP, INPUT_SURF, INPUT_PTR, INPUT_KBD = 2, 3, 4, 5, 6, 7
 # wl 事件 opcode（官方 XML 声明序——与 SIG_KEYBOARD_KEY 对账）
@@ -160,7 +160,7 @@ WC_BAIL_BIND, WC_BAIL_ACCEPT, WC_BAIL_REG = 100, 101, 104
 # 位 done 串号——跨会话存续域，双槽寄存器打包）
 WC_EVID_OFF, WC_GLOB_OFF, WC_DONE_OFF, WC_BUF_OFF = 0x10, 0x40, 0x100, 0x140
 WC_BUF_CAP = 512
-WC_EV_TARGET = 136  # globals 124 + done 12（客户端字节计数车道——t106 已验证模式）
+WC_EV_TARGET = 168  # globals 156 + done 12（客户端字节计数车道——t106 已验证模式；M50-XDGSHELL67 五 global 随行）
 
 # ---- 域⑥常量（M42-WAYCOMP9——客户端窗内容解析域：WAYCOMP_SVC_ELF
 # 全谱 wire 解析——walk 裁决 + bind string 内容域闸 + 畸形拒收）----
@@ -640,14 +640,16 @@ def rs_hex(data, indent="    "):
 # 跨 syscall 存续契约）。数据段：+0x00 取证串 / +0x40 请求帧缓冲 /
 # +0x60 应答帧缓冲。bail 码 70/71/72 fail-visible——LXE 同码域。）----
 def build_wc_globals_blob():
-    """globals 公告批（124 B——encode_registry_global_event 同源字节：
-    registry=2 客户端域 + 四 global 声明序〔compositor v4 / seat v1 /
-    shm v1 / output v2〕——waycomp::GLOBALS 与 prism 编码器逐字节对账）。"""
+    """globals 公告批（156 B——encode_registry_global_event 同源字节：
+    registry=2 客户端域 + 五 global 声明序〔compositor v4 / seat v1 /
+    shm v1 / output v2 / xdg_wm_base v1——M50-XDGSHELL67 笔77 公告面
+    演化 4→5 目〕——waycomp::GLOBALS 与 prism 编码器逐字节对账）。"""
     blob = b""
     for name, iface, ver in [(1, b"wl_compositor", 4), (2, b"wl_seat", 1),
-                             (3, b"wl_shm", 1), (4, b"wl_output", 2)]:
+                             (3, b"wl_shm", 1), (4, b"wl_output", 2),
+                             (5, b"xdg_wm_base", 1)]:
         blob += w_msg(WC_REGISTRY, 0, w_u32(name) + w_str(iface) + w_u32(ver))
-    assert len(blob) == 124, f"globals 批长漂移：{len(blob)} ≠ 124"
+    assert len(blob) == 156, f"globals 批长漂移：{len(blob)} ≠ 156"
     return blob
 
 
@@ -734,7 +736,7 @@ def build_input_client_code():
     a.jcc32(0x85, "bail_send")
 
     # 3) RECV 字节计数等待（t106 车道——纯字节域）：事件流累计 ≥
-    #    INPUT_TOTAL_TARGET（272B = globals 124 + caps 12 + keymap 20 +
+    #    INPUT_TOTAL_TARGET（304B = globals 156 + caps 12 + keymap 20 +
     #    enter 20 + key ×2 48 + ptr enter 24 + button ×2 48——客户端存活
     #    至指针域事件到达，t109 键盘+指针双相位对账窗）。
     #    事件语义证明 = 服务端 stamps（WLCOMP_KEYS/INPUT_KEYS）+ 本计
@@ -928,7 +930,7 @@ def build_fbdev_svc_code():
 # ("wayland-1") → LOG boot 取证 → 真常驻环〔ACCEPT_B 阻塞收连接 → 会
 # 话环：RECV 填充环 → **walk 裁决解析器（v0 定形匹配器 A@0/C@88 固定
 # 偏移退役）**：逐消息头 walk〔obj id + (size<<16|opcode)〕+ 签名域闸
-# 〔get_registry(1,1) 12B → registry id 槽承接 + globals 124B 公告多发
+# 〔get_registry(1,1) 12B → registry id 槽承接 + globals 156B 公告多发
 # （M42-DMGL23 多注册表面——单发门控退役：重复 get_registry 分域承接
 # 第二槽 + 批头 4 处 obj id 改写承新 id；bind(reg,0) 40B → 接口名
 # string walk〔len=14 + "wl_c"/"ompo"/
@@ -1045,12 +1047,12 @@ def build_wc_svc_code():
     a.jcc32(0x85, "reg1_done")                 # jnz reg1_done（非首次——reg2 承接完成）
     a.db(0x41, 0x89, 0x86); a.imm32(st(WC_ST_REG))            # mov [r14+reg], eax（首次——第一槽承接）
     a.label("reg1_done")
-    for _off in (0, 36, 64, 92):               # globals 批 4 事件头 obj id 改写
+    for _off in (0, 36, 64, 92, 124):          # globals 批 5 事件头 obj id 改写
         a.db(0x41, 0x89, 0x86); a.imm32(st(WC_GLOB_OFF + _off))  # mov dword [r14+disp], eax
     mov_edi_i(a, USOCK_SEND)
     a.db(0x44, 0x89, 0xEE)                     # mov esi, r13d
     mov_edx_i(a, ELF_DATA_VA + WC_GLOB_OFF)    # mov edx, globals 批指针
-    a.db(0x41, 0xBA); a.imm32(124)             # mov r10d, 124
+    a.db(0x41, 0xBA); a.imm32(156)             # mov r10d, 156（M50-XDGSHELL67 五 global）
     mov_eax_i(a, SYS_UNIXSOCK)
     syscall(a)
     a.db(0x41, 0x83, 0x8E); a.imm32(st(WC_ST_FLAGS)); a.db(0x01)  # or dword [r14+flags], 1（已发）

@@ -1313,6 +1313,16 @@ static PREEMPT_REQ: [AtomicBool; MAX_CPUS] = [AtomicBool::new(false), AtomicBool
 /// 流程定根因——M22-③ 同族 cont 槽竞态窗的高能击发域，见
 /// try_preempt_switch 头注定性注）；事件驱动调度点不受影响。
 static PERCPU_IS_USER: [AtomicBool; MAX_CPUS] = [AtomicBool::new(false), AtomicBool::new(false)];
+/// per-CPU IOPB 缓存·pid（M50-IOPB71 笔81——派发面 (pid, gen) 双键判
+/// 定的 pid 翼：未变零写快径事实源；Relaxed——派发窗排他）。
+static PERCPU_IOPB_PID: [AtomicU64; MAX_CPUS] =
+    [AtomicU64::new(u64::MAX), AtomicU64::new(u64::MAX)];
+/// per-CPU IOPB 缓存·纪元（M50-IOPB71——dev::pio_generation 快照；
+/// 授权/撤销纪元递增即触发重建）。
+static PERCPU_IOPB_GEN: [AtomicU64; MAX_CPUS] = [AtomicU64::new(0), AtomicU64::new(0)];
+/// IOPB 重建清位累计（M50-IOPB71——t160 取证面：派发重建域授权端口
+/// 清位笔数累计；u64::MAX 缓存初值 = 首派发必重建）。
+static IOPB_CLEARS: AtomicU64 = AtomicU64::new(0);
 
 /// 调度切换握手旗（M11-D）：`SWITCHING[id] = 1` = 该槽位现场保存尚未
 /// 完成（重排队/唤醒重排队已生效但物理切换未落定），拾取面（[`eligible`]）拒绝；
@@ -1865,7 +1875,18 @@ fn spawn_fork_child_impl(
     };
     let prio = s.tasks[id].as_ref().map_or(PRIO_NORMAL, |t| t.prio);
     enqueue(&mut s.ready, id, prio);
-    kick_other();
+    // M50-IOPB71 笔81：**授权先于首派发**护栏（SPAWN_HOLD 置位域）——
+    // 挂 SWITCHING[id]=1（拾取面 eligible 旗闸拒绝）且不 kick_other
+    // （拾取面零唤醒）：子任务在铸授面解除前不可派发，授权竞逐窗封
+    // 死〔spawn 尾域 kick_other 跨核 IPI 竞逐窗实录：t160 首割 GP
+    // ——探针在 grant 落地前被 CPU1 抬取，deny-all 位图下端口指令
+    // #GP——揭雷②收口〕。解除域 = [`release_spawn_hold`]。
+    if SPAWN_HOLD.load(Ordering::Acquire) {
+        SPAWN_HELD.store(id as u64, Ordering::Release);
+        SWITCHING[id].store(1, Ordering::Release);
+    } else {
+        kick_other();
+    }
     id
 }
 
@@ -2128,7 +2149,42 @@ pub fn current_fs_base() -> u64 {
         .map_or(0, |t| t.fs_base)
 }
 
-fn prepare_dispatch(t: &Task, boot_cr3: u64, cpu: usize) {
+/// IOPB 重建取证快照（M50-IOPB71——t160 断言面：累计清位笔数 + 纪
+/// 元快照）。
+pub fn iopb_stamps() -> (u64, u64) {
+    (
+        IOPB_CLEARS.load(Ordering::Acquire),
+        crate::dev::pio_generation(),
+    )
+}
+
+/// 播种保持护栏（M50-IOPB71 笔81——**授权先于首派发**竞逐窗封死域）：
+/// 置位后 spawn_fork_child_impl 尾域改挂 SWITCHING[id]=1（eligible 旗
+/// 闸拒绝拾取）且不 kick_other；解除域解旗 + kick 补发（拾取面唤醒
+/// 链复原）。调用域 = 内核铸授面（boot/spawn 路径——非用户车道）。
+static SPAWN_HOLD: AtomicBool = AtomicBool::new(false);
+/// 持守槽位（单任务域——护栏窗内 spawn 语义约束如实记档；多任务持
+/// 守域随批挂账）。
+static SPAWN_HELD: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// 播种保持置位/解除（M50-IOPB71——置位后下一次 spawn 不 kick 不拾
+/// 取；解除域见 [`release_spawn_hold`]）。
+pub fn set_spawn_hold(on: bool) {
+    SPAWN_HOLD.store(on, Ordering::Release);
+}
+
+/// 播种保持解除（M50-IOPB71——解旗 + kick 补发：子任务进入常规拾
+/// 取域，此时授权面已落地——首派发重建即携授权域）。
+pub fn release_spawn_hold() {
+    let id = SPAWN_HELD.swap(u64::MAX, Ordering::AcqRel);
+    if (id as usize) < MAX_TASKS {
+        SWITCHING[id as usize].store(0, Ordering::Release);
+        kick_other();
+    }
+    SPAWN_HOLD.store(false, Ordering::Release);
+}
+
+fn prepare_dispatch(t: &Task, boot_cr3: u64, cpu: usize, pid: usize) {
     // M18-①：canary 校验（五条派发路径唯一收口；两次 volatile 读，
     // 锁内无分配、无锁获取——中断语境可达）。旧任务的下一次派发即
     // 校验其运行期/驻留期栈底完整性。
@@ -2146,6 +2202,24 @@ fn prepare_dispatch(t: &Task, boot_cr3: u64, cpu: usize) {
             // 冻结为已知语义，自检面事件驱动兼容）。
             ostd::hw::lapic::timer_mask();
             ostd::hw::gdt::set_rsp0(cpu, t.stack_top);
+            // M50-IOPB71 笔81：ring3 端口电气域随派发就位（per-CPU IOPB
+            // —— (pid, gen) 双键缓存未变零写快径〔逐拍 8 KiB 重建退
+            // 役〕；重建面 = kernel::dev::pio_apply_iopb——deny-by-
+            // default + 本 pid 授权域清位。锁序 SCHED→PIO 单向：本窗
+            // SCHED 锁内取 PIO 锁，sys_dev_pio 只取 PIO 锁反向不存在。
+            // IOPL 纪律：ring3 入口 RFLAGS 恒 IOPL=0——位图为唯一裁
+            // 决面，白名单口径）。
+            {
+                let gen_now = crate::dev::pio_generation();
+                if PERCPU_IOPB_PID[cpu].load(Ordering::Relaxed) != pid as u64
+                    || PERCPU_IOPB_GEN[cpu].load(Ordering::Relaxed) != gen_now
+                {
+                    let (gen, cleared) = crate::dev::pio_apply_iopb(cpu, pid as u64);
+                    PERCPU_IOPB_PID[cpu].store(pid as u64, Ordering::Relaxed);
+                    PERCPU_IOPB_GEN[cpu].store(gen, Ordering::Relaxed);
+                    IOPB_CLEARS.fetch_add(cleared as u64, Ordering::AcqRel); // t160 取证
+                }
+            }
             // syscall 入口桩唯一栈源（M8-A 接线；与本核 RSP0 同源）
             LUMINA_PERCPU_KSTACK[cpu].store(t.stack_top, Ordering::Relaxed);
             if ostd::hw::control::read_cr3() & !0xFFF != t.user_root {
@@ -2323,7 +2397,7 @@ pub fn yield_now() {
         sc.cooperative_switches += 1;
         let boot = sc.boot_cr3;
         if let Some(t) = sc.tasks[target].as_ref() {
-            prepare_dispatch(t, boot, cpu);
+            prepare_dispatch(t, boot, cpu, target);
         }
         slots_pair(sc, cur, target).with_handoff(SWITCHING[cur].as_ptr()) // M11-D：旗随切换机器清除
     };
@@ -2352,7 +2426,7 @@ fn idle_pick(cpu: usize) -> Option<SwitchPair> {
     CURRENT[cpu].store(target, Ordering::Relaxed);
     let boot = sc.boot_cr3;
     if let Some(t) = sc.tasks[target].as_ref() {
-        prepare_dispatch(t, boot, cpu);
+        prepare_dispatch(t, boot, cpu, target);
     }
     // M21-② 哨兵：idle 拾取面切换对构建前校验目标 ctx（cont∈.text +
     // rsp∈自有栈界）——round-432 鬼影族的活体前置网。
@@ -3044,7 +3118,7 @@ fn finish_and_switch_away(code: u64) -> ! {
                         CURRENT[cpu].store(id, Ordering::Relaxed);
                         let boot = sc.boot_cr3;
                         if let Some(t) = sc.tasks[id].as_ref() {
-                            prepare_dispatch(t, boot, cpu);
+                            prepare_dispatch(t, boot, cpu, id);
                         }
                         // M21-①：护槽旗随切换机器清除（保存完成时单 Store）。
                         Some(slots_pair(sc, cur, id).with_handoff(SWITCHING[cur].as_ptr()))
@@ -3210,7 +3284,7 @@ fn execute_switch(
     sc.preempt_switches += 1;
     let boot = sc.boot_cr3;
     if let Some(t) = sc.tasks[next].as_ref() {
-        prepare_dispatch(t, boot, cpu);
+        prepare_dispatch(t, boot, cpu, next);
     }
     // 稳定指针萃取（定容槽位表 + 中断窗口内无并发分配）
     let (lo, hi) = if cur < next { (cur, next) } else { (next, cur) };
@@ -3664,7 +3738,7 @@ fn block_current_impl(what: WaitWhat, resume_if: bool, mut probe: Probe) -> bool
                     sc.cooperative_switches += 1; // 自愿让出（阻塞）计入协作面
                     let boot = sc.boot_cr3;
                     if let Some(t) = sc.tasks[id].as_ref() {
-                        prepare_dispatch(t, boot, cpu);
+                        prepare_dispatch(t, boot, cpu, id);
                     }
                     Some(slots_pair(sc, cur, id).with_handoff(SWITCHING[cur].as_ptr()))
                 }

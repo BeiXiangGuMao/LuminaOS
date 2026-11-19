@@ -24,6 +24,11 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use ostd::sync::SpinLock;
 
+/// 授权纪元（M50-IOPB71 笔81——grant/revoke 成功域递增：派发面 IOPB
+/// 重建判定事实源——(pid, gen) 双键缓存，未变零写快径〔逐拍 8 KiB
+/// 重建退役〕；幂等放行域不递增——语义无变化如实记档）。
+static PIO_GEN: AtomicU64 = AtomicU64::new(0);
+
 /// 授权注册表容量（定容；v0 驱动进程批次域——fbdev 单授予 + 余量）。
 pub const PIO_GRANT_CAP: usize = 8;
 
@@ -54,6 +59,31 @@ pub enum PioGrantError {
 /// 端口裁量注册表（定容 Vec<Option<_>>；槽位复用与 SVCS 同构）。
 static PIO_GRANTS: SpinLock<alloc::vec::Vec<Option<PioGrant>>> =
     SpinLock::new(alloc::vec::Vec::new());
+
+/// 授权纪元快照（M50-IOPB71——派发面 IOPB 重建判定读面；(pid, gen)
+/// 双键缓存的 gen 事实源）。
+pub fn pio_generation() -> u64 {
+    PIO_GEN.load(Ordering::Acquire)
+}
+
+/// per-task IOPB 重建（M50-IOPB71 笔81——deny-by-default 基线 + 本
+/// pid 授权域逐条清位：per-CPU TSS 位图 → ring3 端口电气域随派发就
+/// 位。返回 (纪元, 清位端口数)——t160 重建面断言事实源）。调用域 =
+/// 派发准备窗（SCHED 锁内——锁序 SCHED→PIO 单向，sys_dev_pio 只取
+/// PIO 锁，反向不存在）。
+pub fn pio_apply_iopb(cpu: usize, pid: u64) -> (u64, usize) {
+    let gen = PIO_GEN.load(Ordering::Acquire);
+    ostd::hw::gdt::iopb_deny_all(cpu);
+    let mut cleared = 0usize;
+    {
+        let grants = PIO_GRANTS.lock();
+        for g in grants.iter().flatten().filter(|g| g.pid == pid) {
+            ostd::hw::gdt::iopb_grant_range(cpu, g.lo, g.hi);
+            cleared += (g.hi - g.lo) as usize + 1;
+        }
+    }
+    (gen, cleared)
+}
 
 /// 执行面取证戳：IN 次数 / OUT 次数 / 末端口 / 末读值 / 末 op。
 static PIO_IN_N: AtomicU64 = AtomicU64::new(0);
@@ -106,6 +136,7 @@ pub fn pio_grant(pid: u64, lo: u16, hi: u16) -> Result<usize, PioGrantError> {
         None => return Err(PioGrantError::Full),
     };
     grants[slot] = Some(PioGrant { pid, lo, hi });
+    PIO_GEN.fetch_add(1, Ordering::AcqRel); // 授权纪元递增（派发面重建触发）
     Ok(slot)
 }
 
@@ -145,6 +176,7 @@ pub fn pio_revoke(pid: u64, lo: u16, hi: u16) -> Result<(), PioGrantError> {
         return Err(PioGrantError::NotFound);
     };
     grants[pos] = None; // 槽位复用域（满容闸复用既有 None 槽——SVCS 同构）
+    PIO_GEN.fetch_add(1, Ordering::AcqRel); // 授权纪元递增（撤销域同谱）
     Ok(())
 }
 

@@ -62,14 +62,18 @@ use super::{
     encode_pointer_axis_stop_event, encode_pointer_axis_value120_event,
     encode_pointer_button_event, encode_pointer_enter_event, encode_pointer_frame_event,
     encode_pointer_leave_event, encode_pointer_motion_event, encode_registry_global_event,
-    encode_seat_capabilities_event, iface_name, keyboard_req, parse_args, parse_header, registry,
-    seat, shm, shm_pool, surface, WlArg, WlError, WlHeader, WlIface, WlObjectTable, HEADER,
-    KEYMAP_FORMAT_XKB_V1, MOD_ALT, MOD_CAPS, MOD_CTRL, MOD_MOD4, MOD_NUM2, MOD_SHIFT,
-    SEAT_CAPS_KEYBOARD, SEAT_CAPS_POINTER, SIG_COMPOSITOR_CREATE_REGION,
+    encode_seat_capabilities_event, encode_xdg_surface_configure_event,
+    encode_xdg_toplevel_close_event, encode_xdg_toplevel_configure_event,
+    encode_xdg_wm_base_ping_event, iface_name, keyboard_req, parse_args, parse_header, registry,
+    seat, shm, shm_pool, surface, xdg_surface, xdg_toplevel, xdg_wm_base, WlArg, WlError, WlHeader,
+    WlIface, WlObjectTable, HEADER, KEYMAP_FORMAT_XKB_V1, MOD_ALT, MOD_CAPS, MOD_CTRL, MOD_MOD4,
+    MOD_NUM2, MOD_SHIFT, SEAT_CAPS_KEYBOARD, SEAT_CAPS_POINTER, SIG_COMPOSITOR_CREATE_REGION,
     SIG_COMPOSITOR_CREATE_SURFACE, SIG_DISPLAY_GET_REGISTRY, SIG_DISPLAY_SYNC,
     SIG_KEYBOARD_SET_CURSOR, SIG_REGISTRY_BIND, SIG_SEAT_GET_KEYBOARD, SIG_SEAT_GET_POINTER,
     SIG_SHM_CREATE_POOL, SIG_SHM_POOL_CREATE_BUFFER, SIG_SHM_POOL_DESTROY, SIG_SURFACE_ATTACH,
-    SIG_SURFACE_COMMIT, SIG_SURFACE_DAMAGE, SIG_SURFACE_FRAME, WIRE_MAX,
+    SIG_SURFACE_COMMIT, SIG_SURFACE_DAMAGE, SIG_SURFACE_FRAME, SIG_XDG_SURFACE_ACK_CONFIGURE,
+    SIG_XDG_SURFACE_GET_TOPLEVEL, SIG_XDG_SURFACE_SET_WINDOW_GEOMETRY, SIG_XDG_TOPLEVEL_SET_APP_ID,
+    SIG_XDG_TOPLEVEL_SET_TITLE, SIG_XDG_WM_BASE_GET_XDG_SURFACE, SIG_XDG_WM_BASE_PONG, WIRE_MAX,
 };
 
 /// 单会话 surface 槽容量（定容零堆——SurfaceTable 同量级先例）。
@@ -78,8 +82,16 @@ pub const SESSION_SURFACES: usize = 8;
 pub const MAX_COMMITS_PER_FEED: usize = 8;
 /// 每 surface 帧回调队列深度（官方无上界——v0 定容裁量如实记档）。
 pub const MAX_FRAME_CBS: usize = 4;
-/// registry globals 名单上限（核心子集：compositor/seat/shm/output）。
-pub const GLOBALS_MAX: usize = 4;
+/// registry globals 名单上限（核心子集 + xdg_shell：compositor/seat/
+/// shm/output/xdg_wm_base——M50-XDGSHELL67 笔77 公告面演化 4→5 目）。
+pub const GLOBALS_MAX: usize = 5;
+/// xdg_toplevel 窗口标题承载上界（set_title 截断域——定容零堆；
+/// waycomp 标题带消费面同谱）。
+pub const XDG_TITLE_CAP: usize = 32;
+/// app_id 承载上界（set_app_id 截断域）。
+pub const XDG_APPID_CAP: usize = 16;
+/// 服务端 close 请求队列深度（policy 车道——request_close 定容）。
+pub const CLOSE_Q_MAX: usize = 8;
 /// 单次 feed 的 create_pool 记录上限（定容零堆）。
 pub const MAX_POOLS_PER_FEED: usize = 4;
 /// 单次 feed 的 destroy 摘除记录上限（定容零堆——MAX_POOLS_PER_FEED 同量级）。
@@ -157,6 +169,25 @@ pub struct CompSurface {
     pub frame_n: usize,
     /// 首映射位（commit 一次后置位——电气面 REGISTER/UPDATE 分流键）。
     pub mapped: bool,
+    /// xdg_surface 对象 id（M50-XDGSHELL67——0 = 无窗口角色；
+    /// wm_base.get_xdg_surface 派生域，destroy 域清除）。
+    pub xdg_surf: u32,
+    /// xdg_toplevel 对象 id（0 = 未派生 toplevel——get_toplevel 域）。
+    pub xdg_toplevel: u32,
+    /// 最近一次 configure 串号（get_toplevel 域铸造——自 1 起，v0 单
+    /// 挂起 configure 口径）。
+    pub config_serial: u32,
+    /// 最近 configure 已 ack 位（commit 前置闸事实源——官方双向序契
+    /// 约：commit 前必须 ack 最近一次 configure）。
+    pub acked: bool,
+    /// 窗口标题承载（set_title 截断域——waycomp 标题带消费事实源）。
+    pub title: [u8; XDG_TITLE_CAP],
+    /// 标题有效字节数。
+    pub title_n: usize,
+    /// app_id 承载（set_app_id 截断域）。
+    pub app_id: [u8; XDG_APPID_CAP],
+    /// app_id 有效字节数。
+    pub app_id_n: usize,
 }
 
 /// wl_shm 池创建记录（feed 回执——电气面 fd 传递对账域：每记录恰
@@ -482,6 +513,9 @@ pub struct FeedReport {
     /// 增量；每 commit 冲刷域 frame callback 恰一 done + delete_id 对，
     /// 客户端 id 复用域对账）。
     pub frame_dels: usize,
+    /// xdg_toplevel.close 事件出域数（M50-XDGSHELL67——policy close
+    /// 车道冲刷域增量；每入队 toplevel 恰一 close 事件出域）。
+    pub closes: usize,
 }
 
 impl FeedReport {
@@ -511,6 +545,17 @@ pub enum CompError {
     InputQFull,
     /// 对象表域错误（v0 表纪律透传——满容/id 冲突）。
     Table(WlError),
+    /// xdg_surface configure 未 ack 即 commit（官方契约：commit 前必须
+    /// ack 最近一次 configure——M50-XDGSHELL67 电气闸 fail-visible）。
+    XdgUnacked,
+    /// xdg serial 域失配（ack_configure / pong——官方 serial 契约：
+    /// 必须回执最近一次 configure/ping 的串号）。
+    XdgBadSerial,
+    /// xdg 角色冲突（wl_surface 已持 xdg_surface 角色再派生 / xdg_
+    /// surface 已派生 toplevel 再派生——官方角色域单占）。
+    XdgRoleBusy,
+    /// 服务端 close 请求队列满（[`CLOSE_Q_MAX`] 定容——policy 车道）。
+    XdgCloseQFull,
 }
 
 /// 合成器会话状态机（registry 公告面 + surface 生命周期 + commit 发
@@ -581,6 +626,19 @@ pub struct CompSession {
     /// keymap 公告待提记录（M42-WAYCOMP13——dispatch_seat 公告域
     /// 登记，feed 回执提走 take）。None = 无待提。
     keymap_out: Option<KeymapRecord>,
+    /// xdg 串号铸造器（M50-XDGSHELL67——configure/ping serial 事实
+    /// 源，自 1 起单调；input_serial 分域正交）。
+    xdg_serial: u32,
+    /// 已 bind 的 xdg_wm_base 对象 id（0 = 未 bind——send_ping 车道
+    /// 前置闸；bind 域登记，destroy 域清零）。
+    wm_base_obj: u32,
+    /// 未决 ping（wmbase id, serial）——pong 域串号对账事实源。
+    ping_pending: Option<(u32, u32)>,
+    /// 服务端 close 请求队列（policy 车道——request_close 入队，feed
+    /// 冲刷域 xdg_toplevel.close 事件出域）。
+    close_q: [Option<u32>; CLOSE_Q_MAX],
+    /// close 队列在队数。
+    close_n: usize,
 }
 
 impl CompSession {
@@ -619,6 +677,11 @@ impl CompSession {
             ptr_q: [None; INPUT_Q_MAX],
             ptr_n: 0,
             keymap_out: None,
+            xdg_serial: 0,
+            wm_base_obj: 0,
+            ping_pending: None,
+            close_q: [None; CLOSE_Q_MAX],
+            close_n: 0,
         }
     }
 
@@ -1242,8 +1305,10 @@ impl CompSession {
         let mut fd_need = 0usize;
         let mut out_len = 0usize;
         let mut consumed = 0usize;
-        // 输入事件冲刷先行（M42-INPUT7——官方语义：输入事件异步于
-        // 请求流；空流 feed 亦承载冲刷——waycomp 输入驱动轮询面消费域）。
+        let mut closes = 0usize;
+        // xdg close 车道冲刷（M50-XDGSHELL67——policy close 请求异步于
+        // 请求流：空流 feed 亦承载冲刷，输入冲刷同谱纪律）。
+        self.flush_xdg(out, &mut out_len, &mut closes)?;
         self.flush_inputs(out, &mut out_len, &mut keys, &mut ptrs)?;
         while consumed + HEADER <= stream.len() {
             // 尺寸前窥：完整消息域判定（部分消息干净断流——非错误域；
@@ -1266,6 +1331,7 @@ impl CompSession {
         // 派生回执二次冲刷（M43-KBREP37 笔㊷——同批请求回执同批出域：
         // set_cursor 回执在 dispatch 域入待发队列，flush 先行段已过——
         // 尾部二次冲刷承接，空队列零操作幂等）。
+        self.flush_xdg(out, &mut out_len, &mut closes)?;
         self.flush_inputs(out, &mut out_len, &mut keys, &mut ptrs)?;
         Ok(FeedReport {
             consumed,
@@ -1279,6 +1345,7 @@ impl CompSession {
             keymaps: self.keymap_out.take(),
             syncs: self.syncs_total - syncs0,
             frame_dels: self.frame_dels_total - fdels0,
+            closes,
         })
     }
 
@@ -1435,6 +1502,11 @@ impl CompSession {
             WlIface::Shm => self.dispatch_shm(&header, body, pools, fd_need)?,
             WlIface::ShmPool => self.dispatch_shm_pool(&header, body)?,
             WlIface::Seat => self.dispatch_seat(&header, body, out_len, out)?,
+            // xdg_shell 窗口管理协议域（M50-XDGSHELL67 笔77 电气闭环——
+            // wm_base 派生面 / surface 角色域 / toplevel 标题域三臂在环）
+            WlIface::XdgWmBase => self.dispatch_xdg_wm_base(&header, body, out_len, out)?,
+            WlIface::XdgSurface => self.dispatch_xdg_surface(&header, body, out_len, out)?,
+            WlIface::XdgToplevel => self.dispatch_xdg_toplevel(&header, body)?,
             // keyboard：set_cursor 官方请求域在环（M43-KBREP37 笔㊷）
             // ——release 挂账维持（对象摘除域随会话收场承载）。
             WlIface::Keyboard => self.dispatch_keyboard(&header, body, out_len, out)?,
@@ -1615,6 +1687,11 @@ impl CompSession {
                     .map_err(CompError::Wire)?;
                     *out_len += n;
                 }
+                // xdg_wm_base bind 登记（M50-XDGSHELL67——send_ping 车道
+                // 前置闸事实源；v0 单 wm_base 会话域 last-wins 记档）。
+                if g.iface == WlIface::XdgWmBase {
+                    self.wm_base_obj = new_id;
+                }
                 Ok(())
             }
             _ => Err(CompError::UnknownRequest),
@@ -1686,6 +1763,256 @@ impl CompSession {
             }
             _ => Err(CompError::UnknownRequest),
         }
+    }
+
+    /// xdg_wm_base 请求域（M50-XDGSHELL67 笔77 电气闭环）：
+    /// destroy / get_xdg_surface（窗口角色派生——surface 在册闸 + 角
+    /// 色单占闸）/ pong（ping 串号对账——官方 liveness 契约）。
+    fn dispatch_xdg_wm_base(
+        &mut self,
+        header: &WlHeader,
+        body: &[u8],
+        _out_len: &mut usize,
+        _out: &mut [u8],
+    ) -> Result<(), CompError> {
+        match header.opcode {
+            xdg_wm_base::REQ_DESTROY => {
+                let _ = parse_args(body, &[]).map_err(CompError::Wire)?;
+                if self.table.lookup(header.object_id) != Some(WlIface::XdgWmBase) {
+                    return Err(CompError::BadObject);
+                }
+                self.table.remove(header.object_id);
+                if self.wm_base_obj == header.object_id {
+                    self.wm_base_obj = 0;
+                }
+                Ok(())
+            }
+            xdg_wm_base::REQ_GET_XDG_SURFACE => {
+                let (args, _) =
+                    parse_args(body, SIG_XDG_WM_BASE_GET_XDG_SURFACE).map_err(CompError::Wire)?;
+                let Some(WlArg::NewId(xdg_id)) = args[0] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                let Some(WlArg::Object(surf_id)) = args[1] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                // surface 在册闸 + 角色单占闸（官方角色域——单 wl_surface
+                // 至多一 xdg_surface；两闸全 fail-visible）。
+                let Some(sf) = self.surface_slot_mut(surf_id) else {
+                    return Err(CompError::BadObject);
+                };
+                if sf.xdg_surf != 0 {
+                    return Err(CompError::XdgRoleBusy);
+                }
+                sf.xdg_surf = xdg_id;
+                self.table
+                    .install(xdg_id, WlIface::XdgSurface)
+                    .map_err(CompError::Table)?;
+                Ok(())
+            }
+            xdg_wm_base::REQ_PONG => {
+                let (args, _) = parse_args(body, SIG_XDG_WM_BASE_PONG).map_err(CompError::Wire)?;
+                let Some(WlArg::Uint(serial)) = args[0] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                // 官方 liveness 契约：pong 必须回执最近一次 ping 的串号
+                // （v0 严格串号纪律——未决 ping 缺席/串号失配皆拒）。
+                match self.ping_pending {
+                    Some((_, s)) if s == serial => {
+                        self.ping_pending = None;
+                        Ok(())
+                    }
+                    _ => Err(CompError::XdgBadSerial),
+                }
+            }
+            _ => Err(CompError::UnknownRequest),
+        }
+    }
+
+    /// xdg_surface 请求域（M50-XDGSHELL67 笔77）：destroy（角色摘除）/
+    /// get_toplevel（toplevel 派生 + **初始 configure 对出域**——xdg_
+    /// surface.configure(serial) + xdg_toplevel.configure(0,0,[])，零
+    /// 值几何 = 服务端策略自主，tiling 面承接）/ ack_configure（最近
+    /// 串号对账——commit 前置闸）/ set_window_geometry（解析面记账
+    /// 域外挂账）；get_popup 域外 fail-visible。
+    fn dispatch_xdg_surface(
+        &mut self,
+        header: &WlHeader,
+        body: &[u8],
+        out_len: &mut usize,
+        out: &mut [u8],
+    ) -> Result<(), CompError> {
+        match header.opcode {
+            xdg_surface::REQ_DESTROY => {
+                let _ = parse_args(body, &[]).map_err(CompError::Wire)?;
+                if let Some(sf) = self
+                    .surfaces
+                    .iter_mut()
+                    .flatten()
+                    .find(|sf| sf.xdg_surf == header.object_id)
+                {
+                    sf.xdg_surf = 0;
+                    sf.xdg_toplevel = 0;
+                    sf.config_serial = 0;
+                    sf.acked = false;
+                }
+                self.table.remove(header.object_id);
+                Ok(())
+            }
+            xdg_surface::REQ_GET_TOPLEVEL => {
+                let (args, _) =
+                    parse_args(body, SIG_XDG_SURFACE_GET_TOPLEVEL).map_err(CompError::Wire)?;
+                let Some(WlArg::NewId(top_id)) = args[0] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                let Some(sf) = self
+                    .surfaces
+                    .iter_mut()
+                    .flatten()
+                    .find(|sf| sf.xdg_surf == header.object_id)
+                else {
+                    return Err(CompError::BadObject);
+                };
+                if sf.xdg_toplevel != 0 {
+                    return Err(CompError::XdgRoleBusy);
+                }
+                sf.xdg_toplevel = top_id;
+                self.table
+                    .install(top_id, WlIface::XdgToplevel)
+                    .map_err(CompError::Table)?;
+                // 初始 configure 对出域（官方语义：get_toplevel 后服务端
+                // 必发初始 configure——串号铸造 + 未 ack 位铸造，commit
+                // 闸事实源；v0 单挂起 configure 口径）。
+                self.xdg_serial = self.xdg_serial.wrapping_add(1);
+                let ser = self.xdg_serial;
+                sf.config_serial = ser;
+                sf.acked = false;
+                let n =
+                    encode_xdg_surface_configure_event(&mut out[*out_len..], header.object_id, ser)
+                        .map_err(CompError::Wire)?;
+                *out_len += n;
+                let n =
+                    encode_xdg_toplevel_configure_event(&mut out[*out_len..], top_id, 0, 0, &[])
+                        .map_err(CompError::Wire)?;
+                *out_len += n;
+                Ok(())
+            }
+            xdg_surface::REQ_ACK_CONFIGURE => {
+                let (args, _) =
+                    parse_args(body, SIG_XDG_SURFACE_ACK_CONFIGURE).map_err(CompError::Wire)?;
+                let Some(WlArg::Uint(serial)) = args[0] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                let Some(sf) = self
+                    .surfaces
+                    .iter_mut()
+                    .flatten()
+                    .find(|sf| sf.xdg_surf == header.object_id)
+                else {
+                    return Err(CompError::BadObject);
+                };
+                // 官方串号契约：ack 必须针对最近一次 configure（v0 单挂
+                // 起 configure——串号相等即最近；失配 = XdgBadSerial）。
+                if sf.config_serial != serial {
+                    return Err(CompError::XdgBadSerial);
+                }
+                sf.acked = true;
+                Ok(())
+            }
+            xdg_surface::REQ_SET_WINDOW_GEOMETRY => {
+                let _ = parse_args(body, SIG_XDG_SURFACE_SET_WINDOW_GEOMETRY)
+                    .map_err(CompError::Wire)?;
+                // 解析面记账（几何内容 v0 域外——tiling 面策略自主，
+                // 客户端几何请求挂账如实记档）。
+                Ok(())
+            }
+            _ => Err(CompError::UnknownRequest), // get_popup 挂账
+        }
+    }
+
+    /// xdg_toplevel 请求域（M50-XDGSHELL67 笔77）：destroy / set_title
+    /// （标题承载域——waycomp 标题带消费事实源）/ set_app_id；窗口交
+    /// 互请求域〔move/resize/maximized/fullscreen/minimized 族〕域外
+    /// fail-visible（笔76 挂账维持）。
+    fn dispatch_xdg_toplevel(&mut self, header: &WlHeader, body: &[u8]) -> Result<(), CompError> {
+        match header.opcode {
+            xdg_toplevel::REQ_DESTROY => {
+                let _ = parse_args(body, &[]).map_err(CompError::Wire)?;
+                if let Some(sf) = self
+                    .surfaces
+                    .iter_mut()
+                    .flatten()
+                    .find(|sf| sf.xdg_toplevel == header.object_id)
+                {
+                    sf.xdg_toplevel = 0;
+                }
+                self.table.remove(header.object_id);
+                Ok(())
+            }
+            xdg_toplevel::REQ_SET_TITLE => {
+                let (args, _) =
+                    parse_args(body, SIG_XDG_TOPLEVEL_SET_TITLE).map_err(CompError::Wire)?;
+                let Some(WlArg::Str(title)) = args[0] else {
+                    return Err(CompError::Wire(WlError::BadString));
+                };
+                let Some(sf) = self
+                    .surfaces
+                    .iter_mut()
+                    .flatten()
+                    .find(|sf| sf.xdg_toplevel == header.object_id)
+                else {
+                    return Err(CompError::BadObject);
+                };
+                let n = title.len().min(XDG_TITLE_CAP);
+                sf.title[..n].copy_from_slice(&title[..n]);
+                sf.title_n = n;
+                Ok(())
+            }
+            xdg_toplevel::REQ_SET_APP_ID => {
+                let (args, _) =
+                    parse_args(body, SIG_XDG_TOPLEVEL_SET_APP_ID).map_err(CompError::Wire)?;
+                let Some(WlArg::Str(app_id)) = args[0] else {
+                    return Err(CompError::Wire(WlError::BadString));
+                };
+                let Some(sf) = self
+                    .surfaces
+                    .iter_mut()
+                    .flatten()
+                    .find(|sf| sf.xdg_toplevel == header.object_id)
+                else {
+                    return Err(CompError::BadObject);
+                };
+                let n = app_id.len().min(XDG_APPID_CAP);
+                sf.app_id[..n].copy_from_slice(&app_id[..n]);
+                sf.app_id_n = n;
+                Ok(())
+            }
+            _ => Err(CompError::UnknownRequest),
+        }
+    }
+
+    /// xdg close 车道冲刷（M50-XDGSHELL67——policy close 请求队列逐项
+    /// 编组出域：xdg_toplevel.close 事件；对象域已摘 = 静默丢弃（防
+    /// 御域——drop 与 close 竞逐窗）；冲刷后队列清零，记录数出域）。
+    fn flush_xdg(
+        &mut self,
+        out: &mut [u8],
+        out_len: &mut usize,
+        closes: &mut usize,
+    ) -> Result<(), CompError> {
+        for i in 0..self.close_n {
+            if let Some(top_id) = self.close_q[i] {
+                if self.table.lookup(top_id) == Some(WlIface::XdgToplevel) {
+                    let n = encode_xdg_toplevel_close_event(&mut out[*out_len..], top_id)
+                        .map_err(CompError::Wire)?;
+                    *out_len += n;
+                    *closes += 1;
+                }
+            }
+        }
+        self.close_q = [None; CLOSE_Q_MAX];
+        self.close_n = 0;
+        Ok(())
     }
 
     /// wl_compositor 请求域（create_surface / create_region）。
@@ -1939,6 +2266,14 @@ impl CompSession {
             frames: [0; MAX_FRAME_CBS],
             frame_n: 0,
             mapped: false,
+            xdg_surf: 0,
+            xdg_toplevel: 0,
+            config_serial: 0,
+            acked: false,
+            title: [0; XDG_TITLE_CAP],
+            title_n: 0,
+            app_id: [0; XDG_APPID_CAP],
+            app_id_n: 0,
         });
         self.surf_n += 1;
         Ok(())
@@ -2012,7 +2347,9 @@ impl CompSession {
     /// commit 发布语义（损伤平移屏域 ∩ 窗口几何交集裁剪 + 帧回调冲刷
     /// done 事件 + 串号推进 + commit 记录入批）。零面积几何/零损伤
     /// 域 = 记录照常入批（映射态推进语义——损伤矩形零面积，电气面
-    /// sync 零量化收敛）。
+    /// sync 零量化收敛）。**xdg commit 前置闸（M50-XDGSHELL67）**：
+    /// 窗口角色面未 ack 最近 configure 即 commit = [`CompError::XdgUnacked`]
+    /// fail-visible（官方契约：commit 前必须 ack）。
     fn session_commit(
         &mut self,
         wl_id: u32,
@@ -2021,10 +2358,11 @@ impl CompSession {
         log: &mut CommitLog,
     ) -> Result<(), CompError> {
         // 帧回调冲刷先行取值（借用域分离——状态读 + 事件写分离窗）
-        let (geom, screen_damage, frames_fired, frame_ids, first_map, attach_buf) = {
+        let (geom, screen_damage, frames_fired, frame_ids, first_map, attach_buf, unacked) = {
             let Some(sf) = self.surface_slot_mut(wl_id) else {
                 return Err(CompError::BadObject);
             };
+            let unacked = sf.xdg_surf != 0 && !sf.acked;
             let screen_damage = match (sf.damage, sf.geom.area()) {
                 (Some(d), a) if a > 0 => {
                     // 损伤（surface 坐标）平移屏域后与窗口几何交集裁
@@ -2056,8 +2394,11 @@ impl CompSession {
             sf.mapped = true;
             sf.damage = None;
             sf.frame_n = 0;
-            (sf.geom, screen_damage, fired, ids, first, abuf)
+            (sf.geom, screen_damage, fired, ids, first, abuf, unacked)
         };
+        if unacked {
+            return Err(CompError::XdgUnacked);
+        }
         // attach buffer 几何解析（M42-ELF5——commit 快照：buffer 对象
         // 在会话槽内即携几何出域；未附/已解附 = None。借用域分离：可
         // 变槽借用终结后缓冲槽只读域）
@@ -2096,6 +2437,48 @@ impl CompSession {
             first_map,
             buffer,
         });
+        Ok(())
+    }
+
+    /// 会话窗口标题读面（M50-XDGSHELL67——xdg_toplevel.set_title 承载
+    /// 域的消费访问面：waycomp 窗格标题带刷新事实源；无 xdg 角色 /
+    /// 空标题 = None（调用方保持既有台账））。
+    pub fn surface_title(&self, wl_id: u32) -> Option<&[u8]> {
+        let sf = self.surface_slot(wl_id)?;
+        if sf.title_n == 0 {
+            return None;
+        }
+        Some(&sf.title[..sf.title_n])
+    }
+
+    /// 服务端 liveness 探测（M50-XDGSHELL67——官方 ping/pong 契约：
+    /// wm_base 未 bind = [`CompError::BadObject`] 前置闸；ping 事件
+    /// 即时编组入 out 首部〔调用方 send_all 承接〕，串号入未决 ping
+    /// 记账，pong 域对账事实源）。返回串号。
+    pub fn send_ping(&mut self, out: &mut [u8]) -> Result<u32, CompError> {
+        if self.wm_base_obj == 0 {
+            return Err(CompError::BadObject);
+        }
+        self.xdg_serial = self.xdg_serial.wrapping_add(1);
+        let ser = self.xdg_serial;
+        self.ping_pending = Some((self.wm_base_obj, ser));
+        encode_xdg_wm_base_ping_event(out, self.wm_base_obj, ser).map_err(CompError::Wire)?;
+        Ok(ser)
+    }
+
+    /// 服务端 close 请求入队（M50-XDGSHELL67——policy 车道：用户关窗
+    /// 请求 → close 队列，下次 feed 冲刷域 xdg_toplevel.close 出域。
+    /// 对象域闸：toplevel 必须在册（fail-visible——不泄会话拓扑同
+    /// 面）；队满 = [`CompError::XdgCloseQFull`]）。
+    pub fn request_close(&mut self, toplevel_id: u32) -> Result<(), CompError> {
+        if self.table.lookup(toplevel_id) != Some(WlIface::XdgToplevel) {
+            return Err(CompError::BadObject);
+        }
+        if self.close_n >= CLOSE_Q_MAX {
+            return Err(CompError::XdgCloseQFull);
+        }
+        self.close_q[self.close_n] = Some(toplevel_id);
+        self.close_n += 1;
         Ok(())
     }
 }
@@ -2142,8 +2525,9 @@ mod tests {
         SIG_SEAT_CAPABILITIES,
     };
 
-    /// 测试用公告名单：核心子集四 global（compositor v4 / seat v1 /
-    /// shm v1 / output v2——名 1..=4）。
+    /// 测试用公告名单：核心子集 + xdg_shell 五 global（compositor v4 /
+    /// seat v1 / shm v1 / output v2 / xdg_wm_base v1——名 1..=5；
+    /// M50-XDGSHELL67 公告面演化同源）。
     const GLOBALS: [GlobalDef; GLOBALS_MAX] = [
         GlobalDef {
             name: 1,
@@ -2164,6 +2548,11 @@ mod tests {
             name: 4,
             iface: WlIface::Output,
             version: 2,
+        },
+        GlobalDef {
+            name: 5,
+            iface: WlIface::XdgWmBase,
+            version: 1,
         },
     ];
 
@@ -2198,7 +2587,8 @@ mod tests {
         let rep = s.feed(&req[..n], &mut out).unwrap();
         assert_eq!(rep.consumed, n);
         // 回执字节数逐项对账：compositor(36) + seat(28) + shm(28) + output(32)
-        assert_eq!(rep.out_len, 36 + 28 + 28 + 32);
+        // + xdg_wm_base(32)——M50-XDGSHELL67 公告面演化五目
+        assert_eq!(rep.out_len, 36 + 28 + 28 + 32 + 32);
         assert_eq!(s.table().lookup(2), Some(WlIface::Registry));
         // 回执解析：四 global 事件逐条对账（声明序 = 名单序）
         let mut off = 0usize;
@@ -2634,11 +3024,11 @@ mod tests {
         let mut req = [0u8; 64];
         let n = encode_display_get_registry(&mut req, 1, 2).unwrap();
         let rep = s.feed(&req[..n], &mut out).unwrap();
-        assert_eq!(rep.out_len, 124, "首公告四 global");
+        assert_eq!(rep.out_len, 156, "首公告五 global");
         // 第二 registry（id 0x52）公告——多注册面在环
         let n = encode_display_get_registry(&mut req, 1, 0x52).unwrap();
         let rep = s.feed(&req[..n], &mut out).unwrap();
-        assert_eq!(rep.out_len, 124, "次公告四 global（reg_id 0x52）");
+        assert_eq!(rep.out_len, 156, "次公告五 global（reg_id 0x52）");
         let m = crate::wayland::parse_message(&out[..rep.out_len], SIG_REGISTRY_GLOBAL).unwrap();
         assert_eq!(m.header.object_id, 0x52, "次公告首 global 承新 registry id");
         assert_eq!(s.table().lookup(2), Some(WlIface::Registry));
@@ -2754,7 +3144,7 @@ mod tests {
         assert_eq!(rep.consumed, stream.len());
         // 回执 = sync done(12) + delete_id(12)〔M42-WAYCOMP18 生命周期随
         // 行〕 + globals(36+28+28+32)
-        assert_eq!(rep.out_len, 12 + 12 + 124);
+        assert_eq!(rep.out_len, 12 + 12 + 156);
         assert_eq!(rep.syncs, 1);
         assert_eq!(s.table().lookup(9), None, "callback done 后销毁摘除");
         assert_eq!(s.table().lookup(2), Some(WlIface::Registry));
@@ -3782,5 +4172,129 @@ mod tests {
         let rep = s.feed(&[], &mut out).unwrap();
         assert_eq!(rep.keys.n, INPUT_Q_MAX);
         assert_eq!(s.keyboard_inject(0xAA, 1), Ok(()));
+    }
+
+    /// xdg_shell 电气闭环全谱（M50-XDGSHELL67 笔77——真实编码字节双向
+    /// 回环：bind → get_xdg_surface → get_toplevel → configure 对出域
+    /// → ack → commit 闸 → set_title 承载 → close 车道 → destroy 收
+    /// 场；负例域全谱 fail-visible）。
+    #[test]
+    fn xdg_shell_loop_face() {
+        use crate::wayland::{
+            encode_xdg_surface_ack_configure, encode_xdg_surface_get_toplevel,
+            encode_xdg_toplevel_set_title, encode_xdg_wm_base_get_xdg_surface,
+            encode_xdg_wm_base_pong, xdg_surface as xs, xdg_toplevel as xt,
+            SIG_XDG_SURFACE_CONFIGURE, SIG_XDG_TOPLEVEL_CLOSE, SIG_XDG_TOPLEVEL_CONFIGURE,
+        };
+        let mut s = new_session();
+        let mut out = [0u8; 512];
+
+        // (a) 前置链域：get_registry + 三 bind（compositor / xdg_wm_base）+
+        //     create_surface
+        setup_registry(&mut s);
+        let mut req = [0u8; 128];
+        let mut n = 0usize;
+        n += encode_registry_bind(&mut req[n..], 2, 1, "wl_compositor", 4, 3).unwrap();
+        n += encode_registry_bind(&mut req[n..], 2, 5, "xdg_wm_base", 1, 0x71).unwrap();
+        n += encode_message(
+            &mut req[n..],
+            3,
+            compositor::REQ_CREATE_SURFACE,
+            &[WlArg::NewId(0x60)],
+        )
+        .unwrap();
+        let rep = s.feed(&req[..n], &mut out).unwrap();
+        assert_eq!(rep.consumed, n);
+        assert_eq!(rep.out_len, 0, "bind 无事件域（seat 除外）");
+        assert_eq!(s.table().lookup(0x71), Some(WlIface::XdgWmBase));
+
+        // (b) 角色派生对：get_xdg_surface(0x61←0x60) + get_toplevel(0x62)
+        //     → 初始 configure 对出域（12 + 20 = 32 B）
+        let mut n2 = 0usize;
+        n2 += encode_xdg_wm_base_get_xdg_surface(&mut req[n2..], 0x71, 0x61, 0x60).unwrap();
+        n2 += encode_xdg_surface_get_toplevel(&mut req[n2..], 0x61, 0x62).unwrap();
+        let rep = s.feed(&req[..n2], &mut out).unwrap();
+        assert_eq!(rep.consumed, n2);
+        assert_eq!(rep.out_len, 12 + 20, "初始 configure 对 32 B");
+        let m = crate::wayland::parse_message(&out[..12], SIG_XDG_SURFACE_CONFIGURE).unwrap();
+        assert_eq!(m.header.object_id, 0x61);
+        assert_eq!(m.header.opcode, xs::EV_CONFIGURE);
+        let ser = match m.args[0] {
+            Some(WlArg::Uint(v)) => v,
+            _ => panic!("configure serial"),
+        };
+        let m = crate::wayland::parse_message(&out[12..32], SIG_XDG_TOPLEVEL_CONFIGURE).unwrap();
+        assert_eq!(m.header.object_id, 0x62);
+        assert_eq!(m.header.opcode, xt::EV_CONFIGURE);
+        assert_eq!(
+            m.args[0],
+            Some(WlArg::Int(0)),
+            "初始几何零值 = 服务端策略自主"
+        );
+        assert_eq!(m.args[1], Some(WlArg::Int(0)));
+
+        // (c) commit 闸：未 ack 即 commit → XdgUnacked fail-visible
+        let mut n3 = 0usize;
+        n3 += encode_surface_commit(&mut req[n3..], 0x60).unwrap();
+        assert_eq!(s.feed(&req[..n3], &mut out), Err(CompError::XdgUnacked));
+
+        // (d) ack 串号域：错串号 → XdgBadSerial；对串号放行
+        let mut n4 = 0usize;
+        n4 += encode_xdg_surface_ack_configure(&mut req[n4..], 0x61, ser.wrapping_add(1)).unwrap();
+        assert_eq!(s.feed(&req[..n4], &mut out), Err(CompError::XdgBadSerial));
+        let n4 = encode_xdg_surface_ack_configure(&mut req, 0x61, ser).unwrap();
+        s.feed(&req[..n4], &mut out).unwrap();
+        let sf = s.surface(0x60).unwrap();
+        assert!(sf.acked && sf.config_serial == ser);
+
+        // (e) commit → 映射（mapped 位 + 表存续）
+        s.feed(&req[..n3], &mut out).unwrap();
+        assert!(s.surface(0x60).unwrap().mapped);
+        assert_eq!(s.table().lookup(0x62), Some(WlIface::XdgToplevel));
+
+        // (f) set_title 承载域（标题 + app_id）
+        let n5 = encode_xdg_toplevel_set_title(&mut req, 0x62, "LUMINA-APP").unwrap();
+        s.feed(&req[..n5], &mut out).unwrap();
+        let sf = s.surface(0x60).unwrap();
+        assert_eq!(&sf.title[..sf.title_n], b"LUMINA-APP");
+
+        // (g) close 车道：request_close 入队 → 空流 feed 冲刷 close 事件
+        //     （8 B）+ closes 计数；对象域闸（非 toplevel 拒）
+        assert_eq!(s.request_close(0x61), Err(CompError::BadObject));
+        s.request_close(0x62).unwrap();
+        let rep = s.feed(&[], &mut out).unwrap();
+        assert_eq!(rep.out_len, 8, "close 事件 8 B");
+        assert_eq!(rep.closes, 1);
+        let m = crate::wayland::parse_message(&out[..8], SIG_XDG_TOPLEVEL_CLOSE).unwrap();
+        assert_eq!(m.header.object_id, 0x62);
+        assert_eq!(m.header.opcode, xt::EV_CLOSE);
+
+        // (h) ping/pong 车道：send_ping 即时出域 + 串号对账；错串号拒
+        let ser_p = s.send_ping(&mut out).unwrap();
+        let m = crate::wayland::parse_message(&out[..12], crate::wayland::SIG_XDG_WM_BASE_PING)
+            .unwrap();
+        assert_eq!(m.header.object_id, 0x71);
+        assert_eq!(m.args[0], Some(WlArg::Uint(ser_p)));
+        let n6 = encode_xdg_wm_base_pong(&mut req, 0x71, ser_p.wrapping_add(1)).unwrap();
+        assert_eq!(s.feed(&req[..n6], &mut out), Err(CompError::XdgBadSerial));
+        let n6 = encode_xdg_wm_base_pong(&mut req, 0x71, ser_p).unwrap();
+        s.feed(&req[..n6], &mut out).unwrap();
+
+        // (i) 负例域：角色单占（二次 get_xdg_surface / 二次 get_toplevel）
+        //     + 非在册 surface 派生
+        let n7 = encode_xdg_wm_base_get_xdg_surface(&mut req, 0x71, 0x63, 0x60).unwrap();
+        assert_eq!(s.feed(&req[..n7], &mut out), Err(CompError::XdgRoleBusy));
+        let n7 = encode_xdg_wm_base_get_xdg_surface(&mut req, 0x71, 0x63, 0x99).unwrap();
+        assert_eq!(s.feed(&req[..n7], &mut out), Err(CompError::BadObject));
+
+        // (j) 收场：xdg_surface destroy（角色摘除）→ surface destroy
+        //     （槽位 + 表双清）
+        let n8 = encode_message(&mut req, 0x61, xs::REQ_DESTROY, &[]).unwrap();
+        s.feed(&req[..n8], &mut out).unwrap();
+        assert_eq!(s.table().lookup(0x61), None);
+        assert_eq!(s.surface(0x60).unwrap().xdg_surf, 0, "角色摘除域");
+        let n8 = encode_message(&mut req, 0x60, surface::REQ_DESTROY, &[]).unwrap();
+        s.feed(&req[..n8], &mut out).unwrap();
+        assert!(s.surface(0x60).is_none());
     }
 }

@@ -1391,7 +1391,9 @@ pub mod gdt {
     }
 
     impl TaskStateSegment {
-        /// 全零 TSS；I/O 位图偏移写至 0x66 = 104（无位图语义）。
+        /// 全零 TSS；I/O 位图偏移写至 0x66 = 104（M50-IOPB71：位图域
+        /// 由 [`TssWithIopb`] 合成布局承接——offset 104 = 位图紧随 TSS
+        /// 主体，永挂在环）。
         pub const fn new() -> Self {
             let mut w = [0u32; 26];
             // 0x66 字节 = words[25] 的高 16 位（0x64..0x68 窗口内偏移 2）
@@ -1409,6 +1411,69 @@ pub mod gdt {
         fn set_ist1_raw(&mut self, addr: u64) {
             self.words[9] = addr as u32;
             self.words[10] = (addr >> 32) as u32;
+        }
+    }
+
+    /// I/O 位图容量（65536 端口 / 8 = 8192 B——SDM Vol.3 §7.2.4 全域
+    /// 定容；M50-IOPB71 笔81 IOPB 挂 TSS 面事实源）。
+    pub const IOPB_BYTES: usize = 8192;
+
+    /// TSS 描述符 limit（M50-IOPB71——合成布局全域覆盖值 =
+    /// `size_of::<TssWithIopb>() − 1`（align(16) 终值）；t160 挂载
+    /// 取证三元组事实源。CPU 位图可读域判据：iopb_offset + 位图 +
+    /// 终结字 ≤ limit）。
+    pub const TSS_IOPB_LIMIT: u32 = (core::mem::size_of::<TssWithIopb>() - 1) as u32;
+
+    /// TSS + I/O 位图合成布局（M50-IOPB71 笔81——**iopb_offset = 104
+    /// 恒挂**：位图紧跟 104 字节 TSS 主体连续放置，尾随 0xFF 终结字节
+    /// 〔SDM 口径——位图后必随终结字〕；TSS 描述符 limit 覆盖全合成
+    /// 体（limit = [`TSS_IOPB_LIMIT`]——覆盖 112 + 8192 + 1 全域）。
+    /// 永挂语义：未授权位全 1 = 全拒 deny-by-default——与笔81 前
+    /// 「offset 越出 limit 无位图语义」同面等价，授权 = 清位）。
+    /// IOPL 纪律：ring3 入口 RFLAGS 恒 IOPL=0（user.rs 0x202 同谱）——
+    /// 端口可达性唯一裁决 = 本位图（IOPL=3 全开域拒绝，如实记档）。
+    #[repr(C, align(16))]
+    pub struct TssWithIopb {
+        /// 104 字节 TSS 主体（words 布局不变——RSP0/IST1 同谱）。
+        pub tss: TaskStateSegment,
+        /// I/O 位图（bit=1 拒绝 / bit=0 放行——LSB-first：port N =
+        /// 第 N 位，QEMU TCG check_io / Linux ioperm 同谱）。
+        pub iopb: [u8; IOPB_BYTES],
+        /// 位图终结字节（0xFF——SDM：位图后必随，越界访问必 #GP）。
+        pub term: u8,
+    }
+
+    impl TssWithIopb {
+        /// I/O 位图偏移（TSS 相对——SDM 0x66 域名义 = 104；实际 =
+        /// `size_of::<TaskStateSegment>()` = 112——align(16) 布局将
+        /// 26×u32 = 104 B 主体垫至 112，位图紧随其后连续放置，offset
+        /// 与位图物理起点同源（words[25] 高 16 位写入值 = 本常量，
+        /// M50-IOPB71 t160 挂载取证三元组事实源；「104 名义值」为
+        /// SDM 手册口径，本域以布局实值如实录档）。
+        pub const IOPB_OFFSET: u16 = core::mem::size_of::<TaskStateSegment>() as u16;
+
+        /// 全拒初态（iopb 全 0xFF + 终结字 0xFF——deny-by-default；
+        /// 授权域 = kernel::dev 裁量注册表经 [`iopb_grant_range`] 清位）。
+        pub const fn new() -> Self {
+            Self {
+                tss: TaskStateSegment::new(),
+                iopb: [0xFF; IOPB_BYTES],
+                term: 0xFF,
+            }
+        }
+
+        fn set_rsp0_raw(&mut self, addr: u64) {
+            self.tss.set_rsp0_raw(addr);
+        }
+
+        fn set_ist1_raw(&mut self, addr: u64) {
+            self.tss.set_ist1_raw(addr);
+        }
+    }
+
+    impl Default for TssWithIopb {
+        fn default() -> Self {
+            Self::new()
         }
     }
 
@@ -1453,10 +1518,10 @@ pub mod gdt {
             (*tss).set_ist1_raw(top);
         }
     }
-
-    // TSS per-CPU 实例；RSP0 仅由本核调度点独占写入（见 set_rsp0）。
-    static mut TSS: [TaskStateSegment; MAX_TSS_CPUS] =
-        [TaskStateSegment::new(), TaskStateSegment::new()];
+    // TSS per-CPU 实例（M50-IOPB71：合成布局——TSS 主体 + IOPB 位图
+    // + 终结字；RSP0 仅由本核调度点独占写入（见 set_rsp0），IOPB 由
+    // 派发面按任务授权域重建（kernel::dev::pio_apply_iopb 承接））。
+    static mut TSS: [TssWithIopb; MAX_TSS_CPUS] = [TssWithIopb::new(), TssWithIopb::new()];
 
     /// 7 槽 GDT：null / kcode / kdata / ucode / udata / TSS 低 / TSS 高。
     #[repr(C, align(16))]
@@ -1515,7 +1580,7 @@ pub mod gdt {
         // SAFETY: 仅读取静态 TSS 的 words 字段（不产生中间引用）。
         unsafe {
             let tss = core::ptr::addr_of!(TSS[cpu]);
-            u64::from((*tss).words[1]) | (u64::from((*tss).words[2]) << 32)
+            u64::from((*tss).tss.words[1]) | (u64::from((*tss).tss.words[2]) << 32)
         }
     }
 
@@ -1525,7 +1590,83 @@ pub mod gdt {
         // SAFETY: 仅读取静态 TSS 的 words 字段（不产生中间引用）。
         unsafe {
             let tss = core::ptr::addr_of!(TSS[cpu]);
-            u64::from((*tss).words[9]) | (u64::from((*tss).words[10]) << 32)
+            u64::from((*tss).tss.words[9]) | (u64::from((*tss).tss.words[10]) << 32)
+        }
+    }
+
+    /// I/O 位图端口授权（M50-IOPB71 笔81——grant = 清位：CPL=3 ∧
+    /// IOPL=0 下该端口 in/out 放行〔SDM §7.2.4：CPL > IOPL 时逐位裁
+    /// 量，bit=0 放行〕。LSB-first：port N = 第 N 位——QEMU TCG
+    /// check_io / Linux ioperm 同谱）。
+    ///
+    /// # SAFETY（调用方义务）
+    /// `cpu` 为目标核槽位；写入窗口 = 本核派发准备窗（IntWindow 内，
+    /// 中断关闭）或内核自检取证窗——位图仅 ring3 端口指令消费，ring0
+    /// 语境访问无视位图（SDM：CPL ≤ IOPL 不查位图），写窗撕裂域无
+    /// 致命后果（最坏 = 撕裂窗内一次端口访问误判——派发窗排他纪律
+    /// 收口）。
+    pub fn iopb_grant_range(cpu: usize, lo: u16, hi: u16) {
+        let (lo, hi) = (lo.min(hi), lo.max(hi));
+        // SAFETY: 前置条件 —— per-CPU 派发窗/取证窗（见函数级义务）。
+        unsafe {
+            let tss = core::ptr::addr_of_mut!(TSS[cpu]);
+            for port in lo..=hi {
+                let p = port as usize;
+                (*tss).iopb[p >> 3] &= !(1u8 << (p & 7));
+            }
+        }
+    }
+
+    /// I/O 位图端口撤销（M50-IOPB71——revoke = 置位：拒绝域回填，
+    /// deny-by-default 恢复）。
+    pub fn iopb_deny_range(cpu: usize, lo: u16, hi: u16) {
+        let (lo, hi) = (lo.min(hi), lo.max(hi));
+        // SAFETY: 同 [`iopb_grant_range`] 义务。
+        unsafe {
+            let tss = core::ptr::addr_of_mut!(TSS[cpu]);
+            for port in lo..=hi {
+                let p = port as usize;
+                (*tss).iopb[p >> 3] |= 1u8 << (p & 7);
+            }
+        }
+    }
+
+    /// I/O 位图全拒复位（M50-IOPB71——deny-by-default 基线重建：
+    /// 派发面 per-task 重建前置清零域；8 KiB 定容全 0xFF 填充）。
+    pub fn iopb_deny_all(cpu: usize) {
+        // SAFETY: 同 [`iopb_grant_range`] 义务。
+        unsafe {
+            let tss = core::ptr::addr_of_mut!(TSS[cpu]);
+            (*tss).iopb = [0xFF; IOPB_BYTES];
+            (*tss).term = 0xFF;
+        }
+    }
+
+    /// I/O 位图端口判读（M50-IOPB71 取证面——true = 拒绝域〔bit=1〕/
+    /// false = 放行域〔bit=0〕；t160 位取证断言事实源）。
+    pub fn iopb_denied(cpu: usize, port: u16) -> bool {
+        let p = port as usize;
+        // SAFETY: 仅读取静态位图字节（不产生中间引用）。
+        unsafe {
+            let tss = core::ptr::addr_of!(TSS[cpu]);
+            (*tss).iopb[p >> 3] & (1u8 << (p & 7)) != 0
+        }
+    }
+
+    /// TSS IOPB 挂载状态取证（M50-IOPB71——三元组：(位图偏移〔应为
+    /// 104 = 0x66〕, TSS 描述符 limit〔应覆盖 104 + 8192 + 1〕, 终结
+    /// 字节值〔应为 0xFF〕)；t160 挂载面断言事实源）。
+    pub fn tss_iopb_state(cpu: usize) -> (u16, u32, u8) {
+        // SAFETY: 仅读取静态 TSS words[25] 高 16 位〔iopb_offset 域〕
+        // 与 GDT 描述符 limit 域（不产生中间引用）。
+        unsafe {
+            let tss = core::ptr::addr_of!(TSS[cpu]);
+            let off = (((*tss).tss.words[25] >> 16) & 0xFFFF) as u16;
+            let gdt = core::ptr::addr_of!(GDTS[cpu]);
+            let lo = (*gdt).slots[5];
+            let limit = (lo & 0xFFFF) as u32;
+            let term = (*tss).term;
+            (off, limit, term)
         }
     }
 
@@ -1534,7 +1675,7 @@ pub mod gdt {
         // SAFETY: 静态表槽位填写；调用点在 lgdt 之前（无并发读者）。
         unsafe {
             let tss_base = core::ptr::addr_of!(TSS[cpu]) as u64;
-            let tss_len = (core::mem::size_of::<TaskStateSegment>() - 1) as u32;
+            let tss_len = (core::mem::size_of::<TssWithIopb>() - 1) as u32;
             let (tlo, thi) = tss_descriptor(tss_base, tss_len);
             let gdt_ptr = core::ptr::addr_of_mut!(GDTS[cpu]);
             (*gdt_ptr).slots[5] = tlo;
@@ -1596,7 +1737,7 @@ pub mod gdt {
         unsafe {
             let gdt_ptr = core::ptr::addr_of_mut!(GDTS[0]);
             let tss_base = core::ptr::addr_of!(TSS[0]) as u64;
-            let tss_len = (core::mem::size_of::<TaskStateSegment>() - 1) as u32;
+            let tss_len = (core::mem::size_of::<TssWithIopb>() - 1) as u32;
             let (tlo, thi) = tss_descriptor(tss_base, tss_len);
             (*gdt_ptr).slots[5] = tlo;
             (*gdt_ptr).slots[6] = thi;

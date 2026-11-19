@@ -139,20 +139,27 @@ pub const PANE_TITLE: &str = "LUMINA";
 /// 字形事实源 = glyph::text::FONT8X16（scripts/gen_font8x16.py 同源——
 /// 内核 font_gen.rs 为内核域同源副本，t158 金值双面锚定）。
 pub fn title_bar_px(lx: i32, ly: i32) -> u32 {
-    // O(1) 算术定位（M50 揭雷②收口：v0 逐字符 char_bytes 全 16 B
-    // 数组值拷贝 ×6/像素——全幅重呈现 2M 像素域计算量回归型竞窗
-    // 〔t145 收场排空窗实测溢出〕；改 glyph_row 单行读 + 除法定位，
-    // 语义金值不变〔t158 金值域同源〕）。
+    title_bar_text_px(PANE_TITLE.as_bytes(), lx, ly)
+}
+
+/// 标题栏带像素·动态标题域（M50-XDGSHELL67 笔77——客户端 set_title
+/// wire 请求 → 会话标题承载 → 窗格标题带像素的电气闭环消费面：
+/// glyph::text 同源字形，title 为本窗真实标题字节域；空标题 = 全底
+/// 色快径。title_bar_px = 本函数 PANE_TITLE 常量域特例——t158 金值
+/// 域同源不变）。
+pub fn title_bar_text_px(title: &[u8], lx: i32, ly: i32) -> u32 {
+    // O(1) 算术定位（M50 揭雷②收口同款：除法定位字符 + glyph_row 单行
+    // 读——逐像素零数组拷贝）。
     let cx_all = lx - PANE_TITLE_X;
     if cx_all < 0 {
         return PANE_TITLE_BG;
     }
     let glyph_i = (cx_all / glyph::text::GLYPH_W as i32) as usize;
-    if glyph_i >= PANE_TITLE.len() {
+    if glyph_i >= title.len() {
         return PANE_TITLE_BG;
     }
     let cx = (cx_all % glyph::text::GLYPH_W as i32) as usize;
-    let ch = PANE_TITLE.as_bytes()[glyph_i] as char;
+    let ch = title[glyph_i] as char;
     let bits = glyph::text::glyph_row(ch, ly as usize);
     if bits & (0x80 >> cx) != 0 {
         PANE_TITLE_FG
@@ -164,7 +171,8 @@ pub fn title_bar_px(lx: i32, ly: i32) -> u32 {
 pub const POLICY_Z_BASE: i32 = 20;
 /// 会话 fb surface id 基跨度（session_seq − 1 左移域——跨会话 id 正交）。
 pub const FB_ID_SESSION_STRIDE: u32 = 0x1000;
-/// registry 公告名单（核心子集四 global——t104 客户端对账事实源）。
+/// registry 公告名单（核心子集 + xdg_shell 五 global——t159 客户端对
+/// 账事实源；M50-XDGSHELL67 笔77 公告面演化 4→5 目同源）。
 const GLOBALS: [GlobalDef; GLOBALS_MAX] = [
     GlobalDef {
         name: 1,
@@ -185,6 +193,11 @@ const GLOBALS: [GlobalDef; GLOBALS_MAX] = [
         name: 4,
         iface: prism::wayland::WlIface::Output,
         version: 2,
+    },
+    GlobalDef {
+        name: 5,
+        iface: prism::wayland::WlIface::XdgWmBase,
+        version: 1,
     },
 ];
 
@@ -247,6 +260,18 @@ pub static WLCOMP_IN_WAITS: AtomicU64 = AtomicU64::new(0);
 /// 计数：唤醒源三向〔输入生产/send 落环/shutdown〕全谱对账，t113
 /// 断言面）。
 pub static WLCOMP_IN_WAKES: AtomicU64 = AtomicU64::new(0);
+/// xdg close 事件出域数（M50-XDGSHELL67——close 车道冲刷域计数，
+/// t159 断言面）。
+pub static WLCOMP_CLOSES: AtomicU64 = AtomicU64::new(0);
+/// xdg close 请求受理数（M50-XDGSHELL67——会话环排空域入队受理计
+/// 数：请求队列 → 会话 close 队列链路对账，t159 断言面）。
+pub static WLCOMP_CLOSES_REQ: AtomicU64 = AtomicU64::new(0);
+/// xdg close 请求拒收数（M50-XDGSHELL67——对象域闸拒收取证：非在
+/// 册 toplevel 等——fail-visible 零静默）。
+pub static WLCOMP_CLOSES_ERR: AtomicU64 = AtomicU64::new(0);
+/// 窗格标题刷新数（M50-XDGSHELL67——客户端 set_title → 窗格标题带
+/// 消费链电气取证：非空标题 commit 域刷新计数，t159 断言面）。
+pub static WLCOMP_TITLED: AtomicU64 = AtomicU64::new(0);
 /// evdev 映射拒收数（M42-WAYCOMP13——键码域外 scancode 排空丢弃取
 /// 证：0x59..=0x7F 杂域/0xE0 前缀扩展域挂账随批，t114 断言面）。
 pub static WLCOMP_KEY_UNMAPPED: AtomicU64 = AtomicU64::new(0);
@@ -352,6 +377,25 @@ static PTR_Q: MpmcRing<u64, INPUT_CAP> = MpmcRing::new();
 /// axis << 32 | value i32 原字；位域正交性 = 独立环承载，无 bit63/62
 /// 冲突窗）。
 static AXIS_Q: MpmcRing<u64, INPUT_CAP> = MpmcRing::new();
+/// xdg close 请求队列（M50-XDGSHELL67 笔77——policy 车道定容环：
+/// [`request_close`] 生产（内核侧用户关窗请求），会话环逐轮排空 →
+/// session.request_close 入会话 close 队列 → feed 冲刷域
+/// xdg_toplevel.close 事件出域。元素 = wl_surface id；唤醒链 =
+/// [`input_key`] 同款 CompIn 全域 wake）。
+static CLOSE_Q: MpmcRing<u32, INPUT_CAP> = MpmcRing::new();
+
+/// 用户关窗请求生产核（M50-XDGSHELL67 笔77——policy 车道：入队 +
+/// CompIn 全域 wake 唤醒链；队满 = false fail-visible 取证）。真值返
+/// 回受理（入环成功）。
+pub fn request_close(wl: u32) -> bool {
+    let accepted = CLOSE_Q.send(wl).is_ok();
+    if accepted {
+        task::wake_tasks(|w| matches!(w, task::WaitWhat::CompIn { .. }));
+        true
+    } else {
+        false
+    }
+}
 
 /// 内核语境旗（M42-WAYCOMP17 笔⑰——ISR 臂随批携带）：per-cpu ISR
 /// 语境旗——kbd IRQ1 转接臂入批前置位、出批复位（swap/restore 嵌套
@@ -995,6 +1039,11 @@ struct Window {
     buf: Option<BufferRec>,
     /// 末次 buffer 所属池的 shm 对象 id（0 = 无池——pattern 回退域）。
     pool: u64,
+    /// 窗口标题字节域（M50-XDGSHELL67——客户端 set_title 承接，commit
+    /// 域刷新；空 = 标题带底色快径）。
+    title: [u8; prism::wayland::comp::XDG_TITLE_CAP],
+    /// 标题有效字节数。
+    title_n: usize,
 }
 
 /// 常驻服务任务体（kmain boot 单调用点——`task::spawn("waycomp", …)`）：
@@ -1038,6 +1087,15 @@ fn session_loop(conn: u64) {
     loop {
         // 输入面排空（M42-INPUT7 输入链——队列 → 会话注入 + 焦点裁决）
         drain_input(&mut session, &windows);
+        // xdg close 车道排空（M50-XDGSHELL67——policy close 请求 → 会
+        // 话 close 队列，feed 冲刷域 xdg_toplevel.close 出域；受理落账
+        // + 拒收取证双面）。
+        while let Some(wl) = CLOSE_Q.recv() {
+            match session.request_close(wl) {
+                Ok(()) => WLCOMP_CLOSES_REQ.fetch_add(1, Ordering::AcqRel),
+                Err(_) => WLCOMP_CLOSES_ERR.fetch_add(1, Ordering::AcqRel),
+            };
+        }
         // 流消费探针（非消费双读——环空且终结旗 = EOF 收场域）
         let (pending, dead) = unixsock::session_probe_by_object(conn);
         let mut got = 0usize;
@@ -1072,7 +1130,7 @@ fn session_loop(conn: u64) {
                 policy_rewrite(&windows, &mut slots);
                 pool_admit(conn, &rep, &mut pools);
                 keymap_serve(conn, &rep, me, &mut keymap_pools);
-                apply_commits(&rep, &windows, &mut slots, base, &pools);
+                apply_commits(&rep, &session, &windows, &mut slots, base, &pools);
                 // M44-MAP42 笔㊼：创建期/map 域光标直迁重评（首映射批后
                 // stationary 光标位 hit-test——官方 map 域 enter 半域
                 // 兑现：新映射窗 pane 蒸发/新生域指针焦点随行，零
@@ -1093,6 +1151,9 @@ fn session_loop(conn: u64) {
                 // frame callback done+delete_id 对数（M42-DMGC22——commit
                 // 冲刷域 frame callback 销毁面计数）
                 WLCOMP_FRAME_DELS.fetch_add(rep.frame_dels as u64, Ordering::AcqRel);
+                // xdg close 事件出域数（M50-XDGSHELL67——close 车道冲刷
+                // 域计数，t159 断言面）
+                WLCOMP_CLOSES.fetch_add(rep.closes as u64, Ordering::AcqRel);
                 // modifiers wire 发出数（M42-WAYCOMP15——Modifiers 记录批）
                 for r in rep.keys.items[..rep.keys.n].iter().flatten() {
                     if prism::wayland::comp::KbKind::Modifiers == r.kind {
@@ -1610,9 +1671,11 @@ fn policy_rewrite(windows: &[u64], slots: &mut [Window]) {
             continue; // 几何同形——零改写快径
         }
         let shape_changed = old.w != rect.w || old.h != rect.h;
-        let (fb_id, slot, src) = {
+        // 标题承载值拷贝（Copy 借用域分离——slots[pos] 借用终结后可
+        // 变写位不冲突；[u8; CAP] 值拷贝零堆）。
+        let (fb_id, slot, src, title, title_n) = {
             let w = &slots[pos];
-            (w.fb, w.slot, (w.buf, w.pool))
+            (w.fb, w.slot, (w.buf, w.pool), w.title, w.title_n)
         };
         if fb::surf_update(fb_id, rect.x, rect.y, rect.w, rect.h, z, true).is_err() {
             continue; // 机械面拒收（演进域 ENOMEM 等——fail-visible，台账维持旧态）
@@ -1623,7 +1686,7 @@ fn policy_rewrite(windows: &[u64], slots: &mut [Window]) {
             // commit 发布域：池像素优先 / 代 Paint 回退）
             match src {
                 (Some(b), p) if p != 0 => paint_pool_damage(fb_id, slot, *rect, *rect, &b, p),
-                _ => paint_damage(fb_id, slot, *rect, *rect),
+                _ => paint_damage(fb_id, slot, *rect, *rect, &title[..title_n]),
             }
         }
         // 旧/新矩形双域损伤量化（旧呈现域回退 + 新呈现域成像——联合
@@ -1726,6 +1789,7 @@ fn keymap_serve(conn: u64, rep: &FeedReport, me: usize, pools_out: &mut Vec<u64>
 /// 合并承载联合）；[`WLCOMP_COMPOSES`] 随批计数（t122 断言面）。
 fn apply_commits(
     rep: &FeedReport,
+    session: &CompSession,
     windows: &[u64],
     slots: &mut Vec<Window>,
     base: u32,
@@ -1771,22 +1835,24 @@ fn apply_commits(
             let old = slots[pos].rect;
             if old != rect {
                 let shape_changed = old.w != rect.w || old.h != rect.h;
-                let (row_fb, row_slot, src) = {
-                    let w = &slots[pos];
-                    (w.fb, w.slot, (w.buf, w.pool))
-                };
+                let row_fb = slots[pos].fb;
                 if fb::surf_update(row_fb, rect.x, rect.y, rect.w, rect.h, z, true).is_err() {
                     continue; // 机械面拒收（演进域 ENOMEM 等——fail-visible）
                 }
                 slots[pos].rect = rect;
                 if shape_changed {
                     // 全幅重呈现（透明基线上的完整内容重建——像素源
-                    // 分流：池像素优先 / 代 Paint 回退）
+                    // 分流：池像素优先 / 代 Paint 回退。标题承载值拷贝
+                    // 同款借用域分离）。
+                    let (row_fb, row_slot, src, title, title_n) = {
+                        let w = &slots[pos];
+                        (w.fb, w.slot, (w.buf, w.pool), w.title, w.title_n)
+                    };
                     match src {
                         (Some(b), p) if p != 0 => {
                             paint_pool_damage(row_fb, row_slot, rect, rect, &b, p)
                         }
-                        _ => paint_damage(row_fb, row_slot, rect, rect),
+                        _ => paint_damage(row_fb, row_slot, rect, rect, &title[..title_n]),
                     }
                 }
                 // 旧/新矩形双域损伤量化（重排改写执行器同款——联合域
@@ -1808,6 +1874,8 @@ fn apply_commits(
                         rect,
                         buf: None,
                         pool: 0,
+                        title: [0; prism::wayland::comp::XDG_TITLE_CAP],
+                        title_n: 0,
                     });
                     slot
                 }
@@ -1821,6 +1889,19 @@ fn apply_commits(
             if let Some(row) = slots.iter_mut().find(|w| w.wl == wl) {
                 row.buf = rec.buffer;
                 row.pool = pool_obj;
+            }
+        }
+        // 窗口标题刷新（M50-XDGSHELL67——客户端 set_title 承接：会话
+        // 标题承载 → 窗格标题带消费事实源；commit 域刷新，空标题保持
+        // 底色快径）。
+        if let Some(t) = session.surface_title(wl) {
+            if let Some(row) = slots.iter_mut().find(|w| w.wl == wl) {
+                let n = t.len().min(row.title.len());
+                row.title[..n].copy_from_slice(&t[..n]);
+                row.title_n = n;
+                if n > 0 {
+                    WLCOMP_TITLED.fetch_add(1, Ordering::AcqRel);
+                }
             }
         }
         // 内容面：损伤域代 Paint（v0 客户端缓冲域挂账——模式替代）。
@@ -1838,7 +1919,14 @@ fn apply_commits(
             Some(b) if pool_obj != 0 => {
                 paint_pool_damage(fb_id, slot, rect, paint_dmg, b, pool_obj)
             }
-            _ => paint_damage(fb_id, slot, rect, paint_dmg),
+            _ => {
+                let title = slots
+                    .iter()
+                    .find(|w| w.wl == wl)
+                    .map(|w| &w.title[..w.title_n])
+                    .unwrap_or(&[]);
+                paint_damage(fb_id, slot, rect, paint_dmg, title)
+            }
         }
         // 合流电气面：损伤量化入账（SYS_FB_SYNC——联合域单出口承接
         //〔M42-DMG20〕；合成随批尾〔M42-DMGC21——v0 逐 commit 合成
@@ -1867,8 +1955,10 @@ fn apply_commits(
 /// 损伤域代 Paint（fb 机械面像素写——pane 局部坐标域；越域静默丢弃
 /// 同 surf_px_write 契约。M50-TEXT69 笔79：窗格顶部 16px 标题栏带
 /// 分流〔title_bar_px glyph::text 渲染〕，内容域棋盘模式不变——
-/// 既有活体取样域 ly ≥ 16 正交〔t104 ly≥100 / t106 池直读域〕）。
-fn paint_damage(fb_id: u32, slot: usize, pane: Rect, dmg: Rect) {
+/// 既有活体取样域 ly ≥ 16 正交〔t104 ly≥100 / t106 池直读域〕。
+/// M50-XDGSHELL67 笔77：标题带改由本窗动态标题驱动（客户端
+/// set_title 电气闭环消费面；空标题 = 底色快径——常量域标题退役）。
+fn paint_damage(fb_id: u32, slot: usize, pane: Rect, dmg: Rect, title: &[u8]) {
     if dmg.w == 0 || dmg.h == 0 {
         return;
     }
@@ -1878,7 +1968,7 @@ fn paint_damage(fb_id: u32, slot: usize, pane: Rect, dmg: Rect) {
             let lx = sx - pane.x;
             let ly = sy - pane.y;
             let color = if (0..PANE_TITLE_H as i32).contains(&ly) {
-                title_bar_px(lx, ly)
+                title_bar_text_px(title, lx, ly)
             } else {
                 pane_pattern(fb_id, lx, ly)
             };

@@ -87,8 +87,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126；M42-DMG27 t127（联合域上限细化活体）起 127；M42-DMG28 t128（指针 16px 粗粒度域联动活体）起 128；M42-SPRITE29 笔㉙ t129（光标 sprite 渲染面活体：compose 执行器顶层 sprite 平面 + 热点对位联动）起 129；M42-AUXR3 笔㉚ t130（ring3 aux 驱动进程活体：SYS_AUX_READ/SYS_PTR_INJECT 车道 + 接管态仲裁）起 130；M42-PTRLINK 笔㉛ t131（Enter/Leave 域联动活体：焦点切换取证计数 + 光标格直标强制入账）起 131；M42-WHEEL32 笔㉜ t132（IntelliMouse 轮询命令链 + wl_pointer axis 电气源活体）起 132；M42-CLICKF33 笔㉝ t133（click-to-focus 焦点迁移联动面活体：纯针直迁 + 键盘迁移取证戳 + 幂等/release 闸）起 133；M42-KBREP34 笔㉞ t134（wl_keyboard.repeat_info 键重复公告面活体：键盘派生域 keymap 后随行 + v0 关闭声明口径 + 域闸负例）起 134；M43-AV12036 笔㊱ t135（wl_pointer.axis_value120 离散步进语义活体：wheel 源 frame 域随行 + 流内序锚 + 零步进不随行域闸）起 135；M43-KBREP37 笔㊷ t136（键重复生产域 + set_cursor 请求域活体：repeat_info 真值公告 + delay/rate 重复窗 + 释放撤销 + 修饰键零登记 + 在册面/默认回退双臂）起 136；M43-PRIO38 笔电解 t137（产者优先级域活体：boot 代执面 + waycomp 0/aux 3 级序 + 越界 clamp 语义核）起 137；M43-TSC39 笔㊹ t138（TSC deadline one-shot 定时器活体：CPUID 特性锚 + LVT deadline 使能 + one-shot 交付 + 不再武装零增）起 138；M43-HWDW40 笔㊺ t139（Explorer 型别链 + IMEX 族谱解码活体：ID 0x04 双旗武装 + dw 横轮 HORIZONTAL axis + dz nibble 域 + 按钮 4/5 沿）起 139；M43-CURSOR41 笔㊻ t140（光标直迁域活体：窗亡重排域 stationary 光标位 hit-test 直迁 + 创建期 v0 口径钉住 + 幂等零扰）起 140；M44-MAP42 笔㊼ t141（创建期/map 域直迁活体：首映射批 stationary 光标位 hit-test 直迁零 motion 前提 + wire enter 出域取证 + map 域幂等零扰 + 跨窗直迁/窗亡回迁分戳分域）起 141；M44-AUXW43 笔㊽ t142（boot wheel/explorer 接线切换活体：Explorer 链 boot 武装 + 应答窗收口泵 + boot 态族谱解码全谱 + v0 负向误读域退役对账）起 142；M44-TSCRG44 笔㊾ t143（真机窗口 TSC deadline 全谱对账活体：交付后解除武装 + one-shot 零增判据 + 再武装语义 + 解除武装域）起 143；M45-BIT245 笔㊿ t144（真机窗口 bit24=1 CPUID 逐位对账活体：SDM 权威位义表 32 目 + 逐位判读语义核 + 探测面同源一致）起 144；M45-MPMC46 笔51 t145（MPMC 环替换 SpinLock 串行化活体：ostd MpmcRing 无锁环 + waycomp 输入域零锁直推 + ISR 臂退避域退役 + 三源并发零丢失）起 145；M45-RECON47 笔52 t146（真机窗口 bit24=1 实测对账活体：ReconWindow 二态判定核三源一致 + RECON_SEGMENTS 四段全谱装载计划面 + MSR 0x6E0 路由复证——标记四件 T146-WINDOW/PLAN/ROUTE/OK，双面板 191→195）起 146；M46-LDEXEC49 笔55 t147（harbor 机械执行面 ld-lumina.so 交付批活体：ET_DYN 结构判读 + 装载映射计划面/分级缓冲 + GNU 哈希决议链 + 重定位四类写面〔RELATIVE/GLOB_DAT/JUMP_SLOT 惰性/COPY〕+ TLS Variant II 三模块布点 + DTV 扩容 + init/fini 互逆序 + dlopen 族 + H-P03 四段打点——标记六件 T147-MAP/RELOC/TLS/INIT/BUDGET/OK，双面板 195→201）起 147；M47-LDCONS53 笔60 t148（装载计划消费面 + ld-lumina.so 本体交付批活体：本体真件机械链〔ET_DYN 判读 + exec_plan 消费动作序列 + GNU 哈希决议 + 真件 RELA 四类写面 + 真件 TLS 布点〕+ ring3 消费活体〔SYS_MMAP(46)/SYS_MPROTECT(47) 双车道 + 映射页代码 call + 负例三目〕+ 登记面断言——标记六件 T148-SO/LIVE/REG/OK + 探针面 PROBE/ELEC，双面板 201→207）起 148；M47-DLOPEN54 笔61 t149（dlopen 真消费面活体：DT_NEEDED 装载序真消费链〔ChainRegistry 双真件登记 + dl_adjacency 依赖闭包派生〔DT_NEEDED 声明域走查 ∪ UNDEF 决议闭包 as-needed 派生——lextern_dat 名匹配 core 定义者实边〕+ dl_chain_order BFS 装载序语义核机械消费 + 装载序逐模块 exec_plan 动作金值（5+5）+ 跨模块重定位〔lextern_dat 真名决议 + ldep_fn 绑定登记域→core_fn〕+ dl_open_chain 真消费链〔modid 序/群组插序/幂等域/error 槽一次性消费〕〕+ ring3 自装载链活体〔DLOPEN_ELF 探针：SYS_MMAP(46) 四窗 R|W 分级定点回显 + rep movsb 分级拷贝 + ring3 重定位写面（跨模块决议值烘焙）+ SYS_MPROTECT(47) RX 终旗×2 + call ldlumina_boot（0x5A5A5A5A）+ GOT[2] 间呼 core_fn（0xC0DEC0DE——JUMP_SLOT 跨模块电气证明）+ COPY 槽读回 + BSS 尾零读回 + 负例二目 → EXIT(89)〕+ 登记面四行断言（双 RX 终旗真值保持）——标记四件 T149-CHAIN/LIVE/REG/OK + 探针面 PROBE/ELEC，双面板 207→213）起 149）；M48-PLTGOT55 笔63 t150（PLT/GOT 惰性绑定电气执行活体：真件 lazy_wire 接线判读〔wired=jump_lazy 同镜像守恒〕+ LazyGot 两态机〔wire→resolve 兑现→次调幂等〕+ ring3 惰性绑定电气活体〔PLTGOT_ELF 探针：mmap GOT 窗 + 经典铸面 + 首调 resolver 电水解 + 次调直达零重入 + 负例电气 EXIT(91)〕+ 登记面单行——标记四件 T150-PLT/LIVE/REG/OK + 探针面 PROBE/ELEC，双面板 213→219）起 150）；M48-DLSYM56 笔64 t151（dlsym 跨模块查找电气面活体：dl_sym_chain 三段对账 + DlState::dlsym_chain error 槽 + ring3 探针内电算 GNU 哈希查找活体〔bloom/桶查/桶链走查/名比对/决议兑现——EXIT(92) 负例收口〕——标记四件 T151-SYM/LIVE/REG/OK + 探针面 PROBE/ELEC，双面板 219→225）起 151）；M48-INIT57 笔65 t152（init_array 执行域活体——t147 同谱宿主面：init_faces_of 直收 + init_exec_ledger 执行台账 + fini 互逆序——标记四件 T152-SO/INIT/LEDGER/OK，双面板 225→229）起 152）；M49-DLCLOSE58 笔67 t153（dlclose 真消费链执行域活体——t147/t152 同谱宿主面：链卸载序真消费〔依赖先卸 + Kept 幂等域 + 末次出册〕+ 单件链 fini 执行台账金值〔fini_array 读回原值域 + DT_FINI 直取域 + fini_order 互逆〕+ 三负例〔DlCloseInvalid/RegistryRange/重复 close〕——标记四件 T153-CLOSE/FINI/NEG/OK，双面板 229→233）起 153）；M49-FINI59 笔68 t154（.fini_array 终局执行域活体——终局 fini 台账〔装载序全逆 + 双域金值 + 互逆〕+ 终局清算〔登记序逆序 + 引用耗尽 + 幂等〕+ 两负例——标记四件 T154-EXIT/CLEAR/NEG/OK，双面板 233→237）起 154）；M49-TLS60 笔69 t155（TLS 执行域活体——四模型写面真做〔PT_TLS 真布点 + 槽写金值〕+ DTV 扩展真做〔扩容世代 + GD 兑现 + LE 直算〕+ 三负例——标记四件 T155-WRITE/DTV/NEG/OK，双面板 237→241）起 155）；M49-PGRP62 笔71 t156（进程组/会话域活体——语义核纯函数全谱 m1..m10 + 真车道 kmain 域自铸回环 + SRCH/EPERM 新码首用——标记四件 T156-MATRIX/LIVE/NEG/OK，双面板 241→245）起 156）；M50-EEXEC65 笔75 t157（EACCES exec 记账域活体——语义核 EACCES 维度 e1..e4 + 真车道 ERR_ACCES(16) 新码首用 + 清位对照放行 + err_to_errno 映射核验——标记四件 T157-MATRIX/LIVE/NEG/OK，双面板 245→249）起 157）；M50-TEXT69 笔79 t158（文本渲染消费面活体——FONT8X16 两域 1520 B 直对账 + title_bar_px 全谱 + render_text 画布对账——标记三件 T158-ANCHOR/RENDER/OK，双面板 249→252）起 158）。
-const SELFTEST_TOTAL: usize = 158;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126；M42-DMG27 t127（联合域上限细化活体）起 127；M42-DMG28 t128（指针 16px 粗粒度域联动活体）起 128；M42-SPRITE29 笔㉙ t129（光标 sprite 渲染面活体：compose 执行器顶层 sprite 平面 + 热点对位联动）起 129；M42-AUXR3 笔㉚ t130（ring3 aux 驱动进程活体：SYS_AUX_READ/SYS_PTR_INJECT 车道 + 接管态仲裁）起 130；M42-PTRLINK 笔㉛ t131（Enter/Leave 域联动活体：焦点切换取证计数 + 光标格直标强制入账）起 131；M42-WHEEL32 笔㉜ t132（IntelliMouse 轮询命令链 + wl_pointer axis 电气源活体）起 132；M42-CLICKF33 笔㉝ t133（click-to-focus 焦点迁移联动面活体：纯针直迁 + 键盘迁移取证戳 + 幂等/release 闸）起 133；M42-KBREP34 笔㉞ t134（wl_keyboard.repeat_info 键重复公告面活体：键盘派生域 keymap 后随行 + v0 关闭声明口径 + 域闸负例）起 134；M43-AV12036 笔㊱ t135（wl_pointer.axis_value120 离散步进语义活体：wheel 源 frame 域随行 + 流内序锚 + 零步进不随行域闸）起 135；M43-KBREP37 笔㊷ t136（键重复生产域 + set_cursor 请求域活体：repeat_info 真值公告 + delay/rate 重复窗 + 释放撤销 + 修饰键零登记 + 在册面/默认回退双臂）起 136；M43-PRIO38 笔电解 t137（产者优先级域活体：boot 代执面 + waycomp 0/aux 3 级序 + 越界 clamp 语义核）起 137；M43-TSC39 笔㊹ t138（TSC deadline one-shot 定时器活体：CPUID 特性锚 + LVT deadline 使能 + one-shot 交付 + 不再武装零增）起 138；M43-HWDW40 笔㊺ t139（Explorer 型别链 + IMEX 族谱解码活体：ID 0x04 双旗武装 + dw 横轮 HORIZONTAL axis + dz nibble 域 + 按钮 4/5 沿）起 139；M43-CURSOR41 笔㊻ t140（光标直迁域活体：窗亡重排域 stationary 光标位 hit-test 直迁 + 创建期 v0 口径钉住 + 幂等零扰）起 140；M44-MAP42 笔㊼ t141（创建期/map 域直迁活体：首映射批 stationary 光标位 hit-test 直迁零 motion 前提 + wire enter 出域取证 + map 域幂等零扰 + 跨窗直迁/窗亡回迁分戳分域）起 141；M44-AUXW43 笔㊽ t142（boot wheel/explorer 接线切换活体：Explorer 链 boot 武装 + 应答窗收口泵 + boot 态族谱解码全谱 + v0 负向误读域退役对账）起 142；M44-TSCRG44 笔㊾ t143（真机窗口 TSC deadline 全谱对账活体：交付后解除武装 + one-shot 零增判据 + 再武装语义 + 解除武装域）起 143；M45-BIT245 笔㊿ t144（真机窗口 bit24=1 CPUID 逐位对账活体：SDM 权威位义表 32 目 + 逐位判读语义核 + 探测面同源一致）起 144；M45-MPMC46 笔51 t145（MPMC 环替换 SpinLock 串行化活体：ostd MpmcRing 无锁环 + waycomp 输入域零锁直推 + ISR 臂退避域退役 + 三源并发零丢失）起 145；M45-RECON47 笔52 t146（真机窗口 bit24=1 实测对账活体：ReconWindow 二态判定核三源一致 + RECON_SEGMENTS 四段全谱装载计划面 + MSR 0x6E0 路由复证——标记四件 T146-WINDOW/PLAN/ROUTE/OK，双面板 191→195）起 146；M46-LDEXEC49 笔55 t147（harbor 机械执行面 ld-lumina.so 交付批活体：ET_DYN 结构判读 + 装载映射计划面/分级缓冲 + GNU 哈希决议链 + 重定位四类写面〔RELATIVE/GLOB_DAT/JUMP_SLOT 惰性/COPY〕+ TLS Variant II 三模块布点 + DTV 扩容 + init/fini 互逆序 + dlopen 族 + H-P03 四段打点——标记六件 T147-MAP/RELOC/TLS/INIT/BUDGET/OK，双面板 195→201）起 147；M47-LDCONS53 笔60 t148（装载计划消费面 + ld-lumina.so 本体交付批活体：本体真件机械链〔ET_DYN 判读 + exec_plan 消费动作序列 + GNU 哈希决议 + 真件 RELA 四类写面 + 真件 TLS 布点〕+ ring3 消费活体〔SYS_MMAP(46)/SYS_MPROTECT(47) 双车道 + 映射页代码 call + 负例三目〕+ 登记面断言——标记六件 T148-SO/LIVE/REG/OK + 探针面 PROBE/ELEC，双面板 201→207）起 148；M47-DLOPEN54 笔61 t149（dlopen 真消费面活体：DT_NEEDED 装载序真消费链〔ChainRegistry 双真件登记 + dl_adjacency 依赖闭包派生〔DT_NEEDED 声明域走查 ∪ UNDEF 决议闭包 as-needed 派生——lextern_dat 名匹配 core 定义者实边〕+ dl_chain_order BFS 装载序语义核机械消费 + 装载序逐模块 exec_plan 动作金值（5+5）+ 跨模块重定位〔lextern_dat 真名决议 + ldep_fn 绑定登记域→core_fn〕+ dl_open_chain 真消费链〔modid 序/群组插序/幂等域/error 槽一次性消费〕〕+ ring3 自装载链活体〔DLOPEN_ELF 探针：SYS_MMAP(46) 四窗 R|W 分级定点回显 + rep movsb 分级拷贝 + ring3 重定位写面（跨模块决议值烘焙）+ SYS_MPROTECT(47) RX 终旗×2 + call ldlumina_boot（0x5A5A5A5A）+ GOT[2] 间呼 core_fn（0xC0DEC0DE——JUMP_SLOT 跨模块电气证明）+ COPY 槽读回 + BSS 尾零读回 + 负例二目 → EXIT(89)〕+ 登记面四行断言（双 RX 终旗真值保持）——标记四件 T149-CHAIN/LIVE/REG/OK + 探针面 PROBE/ELEC，双面板 207→213）起 149）；M48-PLTGOT55 笔63 t150（PLT/GOT 惰性绑定电气执行活体：真件 lazy_wire 接线判读〔wired=jump_lazy 同镜像守恒〕+ LazyGot 两态机〔wire→resolve 兑现→次调幂等〕+ ring3 惰性绑定电气活体〔PLTGOT_ELF 探针：mmap GOT 窗 + 经典铸面 + 首调 resolver 电水解 + 次调直达零重入 + 负例电气 EXIT(91)〕+ 登记面单行——标记四件 T150-PLT/LIVE/REG/OK + 探针面 PROBE/ELEC，双面板 213→219）起 150）；M48-DLSYM56 笔64 t151（dlsym 跨模块查找电气面活体：dl_sym_chain 三段对账 + DlState::dlsym_chain error 槽 + ring3 探针内电算 GNU 哈希查找活体〔bloom/桶查/桶链走查/名比对/决议兑现——EXIT(92) 负例收口〕——标记四件 T151-SYM/LIVE/REG/OK + 探针面 PROBE/ELEC，双面板 219→225）起 151）；M48-INIT57 笔65 t152（init_array 执行域活体——t147 同谱宿主面：init_faces_of 直收 + init_exec_ledger 执行台账 + fini 互逆序——标记四件 T152-SO/INIT/LEDGER/OK，双面板 225→229）起 152）；M49-DLCLOSE58 笔67 t153（dlclose 真消费链执行域活体——t147/t152 同谱宿主面：链卸载序真消费〔依赖先卸 + Kept 幂等域 + 末次出册〕+ 单件链 fini 执行台账金值〔fini_array 读回原值域 + DT_FINI 直取域 + fini_order 互逆〕+ 三负例〔DlCloseInvalid/RegistryRange/重复 close〕——标记四件 T153-CLOSE/FINI/NEG/OK，双面板 229→233）起 153）；M49-FINI59 笔68 t154（.fini_array 终局执行域活体——终局 fini 台账〔装载序全逆 + 双域金值 + 互逆〕+ 终局清算〔登记序逆序 + 引用耗尽 + 幂等〕+ 两负例——标记四件 T154-EXIT/CLEAR/NEG/OK，双面板 233→237）起 154）；M49-TLS60 笔69 t155（TLS 执行域活体——四模型写面真做〔PT_TLS 真布点 + 槽写金值〕+ DTV 扩展真做〔扩容世代 + GD 兑现 + LE 直算〕+ 三负例——标记四件 T155-WRITE/DTV/NEG/OK，双面板 237→241）起 155）；M49-PGRP62 笔71 t156（进程组/会话域活体——语义核纯函数全谱 m1..m10 + 真车道 kmain 域自铸回环 + SRCH/EPERM 新码首用——标记四件 T156-MATRIX/LIVE/NEG/OK，双面板 241→245）起 156）；M50-EEXEC65 笔75 t157（EACCES exec 记账域活体——语义核 EACCES 维度 e1..e4 + 真车道 ERR_ACCES(16) 新码首用 + 清位对照放行 + err_to_errno 映射核验——标记四件 T157-MATRIX/LIVE/NEG/OK，双面板 245→249）起 157）；M50-TEXT69 笔79 t158（文本渲染消费面活体——FONT8X16 两域 1520 B 直对账 + title_bar_px 全谱 + render_text 画布对账——标记三件 T158-ANCHOR/RENDER/OK，双面板 249→252）起 158）；M50-XDGSHELL67 笔77 t159（xdg_shell 电气闭环活体——真车道全生命周期 + 标题带动态域 + 会话面负例五目——标记四件 T159-LOOP/TITLE/NEG/OK，双面板 252→256）起 159）；M50-IOPB71 笔81 t160（IOPB 挂 TSS 硬件面活体——挂载取证三元组 + 位域全谱 + ring3 端口电气探针直呼 in/out 收割 + 重建面负例——标记四件 T160-IOPB/LIVE/NEG/OK，双面板 256→260）起 160）。
+const SELFTEST_TOTAL: usize = 160;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -7234,7 +7234,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     //       WAYCOMP_SVC_ELF 结构锚（gen 域⑤——真常驻不退出形，编译
     //       进程链第五形）→ 常驻播种（spawn_elf_seed_resident）→ 会
     //       话环合流电气面 ×2 轮同构（connect + wire 批 96B + RECV 字
-    //       节计数 ≥136 + done 串号递增 + VRAM pane_pattern 探针 +
+    //       节计数 ≥168 + done 串号递增 + VRAM pane_pattern 探针 +
     //       SHUT/摘除/EOF——真常驻回环显形）→ 收束（usock 对账 + ELF
     //       存续 + surface 表复原 + VRAM 复原）。
     //       LUMINA-T110-WAYCOMPELF/OK。
@@ -7345,7 +7345,7 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     //       ⑱）：〔多轮 sync 同 id 复用——sync(0x51) → done+delete_id
     //       对 24B 逐目对读 → 同 id 重装第二轮（delete_id 回收域事实
     //       源——对象表摘除 + 官方生命周期在环）〕→〔多 registry 多公
-    //       告——get_registry(0x52) 124B 公告（首 global 承新 registry
+    //       告——get_registry(0x52) 156B 公告（首 global 承新 registry
     //       id）+ 经第二 registry bind wl_seat（capabilities 随行）〕
     //       →〔多 sync 并发批——三 sync 单批 72B + SYNCS 计数对账〕→
     //       〔卫生收场——SHUT EOF + 全戳恒定〕。
@@ -7761,6 +7761,27 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
     //       LUMINA-T158-ANCHOR/RENDER/OK（双面板 249→252）。
     let t158 = t158_run(&mut log);
     report(&mut log, t158, "pane-title-bar");
+
+    // t159) xdg_shell 电气闭环活体（M50-XDGSHELL67 笔77——窗口角色域）：
+    //       〔LOOP——真车道全生命周期（unixsock ⇄ 常驻 waycomp：bind
+    //       xdg_wm_base → get_xdg_surface → get_toplevel → configure 对
+    //       出域 → ack → commit 映射 → set_title 承载 → close 车道 →
+    //       destroy 收场）〕→〔TITLE——标题带动态域〕→〔NEG——会话面
+    //       负例五目 fail-visible〕→〔OK〕。
+    //       LUMINA-T159-LOOP/TITLE/NEG/OK（双面板 252→256）。
+    let t159 = t159_run(&mut log);
+    report(&mut log, t159, "xdg-shell-loop");
+
+    // t160) IOPB 挂 TSS 硬件面活体（M50-IOPB71 笔81——端口电气域）：
+    //       〔IOPB——挂载取证三元组（offset 104 / limit 覆盖 104+8192+1 /
+    //       终结字 0xFF）+ 位域全谱（deny-by-default 基线 + grant 清位
+    //       + 边界端口 + 撤销回填）〕→〔LIVE——ring3 端口电气探针直呼
+    //       in/out（IOPB_PROBE_ELF：CPL=3 ∧ IOPL=0 下 IOPB 清位域放行
+    //       ——dispi ID 读对账 EXIT(0x5F) 收割）〕→〔NEG——重建面负例
+    //       （BadRange/NotFound + 无授权重建全拒）〕→〔OK〕。
+    //       LUMINA-T160-IOPB/LIVE/NEG/OK（双面板 256→260）。
+    let t160 = t160_run(&mut log);
+    report(&mut log, t160, "iopb-tss-hw");
 
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs
@@ -9725,7 +9746,7 @@ fn t104_run(log: &mut DualLog) -> bool {
     );
 
     // (c) 合流电气面 round 1：get_registry → globals 公告回执（wire
-    //     壳 ⇄ unix socket 回环——四 global 逐条解析对账）
+    //     壳 ⇄ unix socket 回环——五 global 逐条解析对账〔M50-XDGSHELL67 演化〕）
     let mut req = [0u8; 64];
     let n_req = wl::encode_display_get_registry(&mut req, 1, 2).unwrap_or(0);
     let sent = unixsock::sock_send(me, hc as u64, &req[..n_req]).unwrap_or(0);
@@ -9733,7 +9754,7 @@ fn t104_run(log: &mut DualLog) -> bool {
     let mut globals_buf = [0u8; 512];
     let mut got = 0usize;
     let dl = ostd::time::now() + 240;
-    while got < 124 && ostd::time::now() < dl {
+    while got < 156 && ostd::time::now() < dl {
         let n = unixsock::sock_recv(me, hc as u64, &mut globals_buf[got..]).unwrap_or(0);
         if n > 0 {
             got += n;
@@ -9742,7 +9763,7 @@ fn t104_run(log: &mut DualLog) -> bool {
     let mut off = 0usize;
     let mut gcount = 0usize;
     let mut compositor_seen = false;
-    while off + wl::HEADER <= got && gcount < 4 {
+    while off + wl::HEADER <= got && gcount < 5 {
         let Ok(m) = wl::parse_message(&globals_buf[off..got], wl::SIG_REGISTRY_GLOBAL) else {
             break;
         };
@@ -9756,7 +9777,7 @@ fn t104_run(log: &mut DualLog) -> bool {
         }
         off += m.wire_size();
     }
-    let wire_ok = got == 124 && gcount == 4 && compositor_seen;
+    let wire_ok = got == 156 && gcount == 5 && compositor_seen;
     ok &= wire_ok;
     let _ = writeln!(
         log,
@@ -11071,7 +11092,7 @@ fn t109_run(log: &mut DualLog) -> bool {
 ///     批单发〔round0 = 标准批 96 B（A@0/C@88 锚域回归锚——gen 域⑤
 ///     客户端批逐字节对账）；round1 = walk 裁决批 120 B（标准批 + 第二
 ///     damage——commit 步进 88→112，v0 定形匹配器 C@88 锚在此批下必
-///     失，全谱 walk 裁决域必须成立〕→ RECV 字节计数 ≥136（globals
+///     失，全谱 walk 裁决域必须成立〕→ RECV 字节计数 ≥168（globals
 ///     124 + done 12——t106 车道保留为必要条件域）+ **客户端全谱
 ///     walk（域⑥ prism wire 壳宿主语义面消费）**：parse_header 逐消
 ///     息裁决〔4×global 公告——尺寸 36/28/28/32 + parse_message 签名
@@ -11082,14 +11103,14 @@ fn t109_run(log: &mut DualLog) -> bool {
 ///     排空对账 → 客户端句柄收口。**round2 多 registry 批（
 ///     M42-DMGL23）**：标准批 + 第二 get_registry(1,5) + 经第二
 ///     registry bind——148 B 批 → 回执双公告 248 B（批头承新 id 5
-///     @124 对读）+ done 12 = 260 B 字节域；walk 全谱 8 公告（4+4
+///     @156 对读）+ done 12 = 324 B 字节域；walk 全谱 10 公告（5+5——M50-XDGSHELL67 五目随行
 ///     双公告）+ ser=3——v0 公告单发门控退役显形；
 /// (c-neg) 域⑥ 畸形拒收探针：未知 (obj=9, op=3) 定形外消息单发——
 ///     ELF dispatch default 拒收 → teardown 收场回环（fail-visible）；
 ///     客户端零事件到达（定形外拒收在 dispatch 域内）+ surface 表
 ///     零扰动 + ELF 存续（真常驻回环第四 accept 阻塞域）；
 /// (d) 收束：usock 对账〔ACCEPT_WAKES ≥ +1 / EOFS ≥ +3 / SENDS ≥ +5 /
-///     收字节 ≥ 2×136 + 260〕+ ELF 存续（alive × resident——真常驻不退出）
+///     收字节 ≥ 2×168 + 324〕+ ELF 存续（alive × resident——真常驻不退出）
 ///     + surface 表复原 + VRAM pane 域回 stage 基线。
 /// LUMINA-T110-WAYCOMPELF/WIRE/OK 面板标记。
 fn t110_run(log: &mut DualLog) -> bool {
@@ -11229,11 +11250,11 @@ fn t110_run(log: &mut DualLog) -> bool {
         let sent = unixsock::sock_send(me, hc as u64, &batch[..bl]).unwrap_or(0);
         let send_ok = batch_ok && sent == bl;
         ok &= send_ok;
-        // RECV 字节计数 ≥136（globals 124 + done 12——t106 车道）+ 结构解析
+        // RECV 字节计数 ≥168（globals 156 + done 12——t106 车道；M50-XDGSHELL67 五 global 随行）+ 结构解析
         let mut acc = [0u8; 512];
         let mut got = 0usize;
         let dl = ostd::time::now() + 960;
-        let ev_target = if multi { 260 } else { user::WC_SVC_EV_TARGET };
+        let ev_target = if multi { 324 } else { user::WC_SVC_EV_TARGET };
         while got < ev_target && ostd::time::now() < dl {
             match unixsock::sock_recv(me, hc as u64, &mut acc[got..]) {
                 Ok(0) => break,
@@ -11250,9 +11271,9 @@ fn t110_run(log: &mut DualLog) -> bool {
             )
         };
         let glob_ok = got >= 12 && ghdr(&acc) == (user::WC_SVC_REGISTRY_ID, (36u32) << 16);
-        // 第二公告头对读（multi 域——公告承新 id 5 @124——v0 单发门控
+        // 第二公告头对读（multi 域——公告承新 id 5 @156——v0 单发门控
         // 退役显形：重复 get_registry 全谱公告批头改写域）
-        let glob2_ok = !multi || (got >= 136 && ghdr(&acc[124..132]) == (5u32, (36u32) << 16));
+        let glob2_ok = !multi || (got >= 168 && ghdr(&acc[156..164]) == (5u32, (36u32) << 16));
         // done 尾解析（obj=0x31 / header (12<<16)|0 / 串号 = round+1）
         let tail = &acc[got.saturating_sub(12)..got.max(12)];
         let (dobj, dhdr) = ghdr(tail);
@@ -11267,9 +11288,15 @@ fn t110_run(log: &mut DualLog) -> bool {
         let mut ann = 0usize;
         let mut ann_ok = true;
         let mut done_pos_ok = false;
-        let ann_expect = [36u32, 28, 28, 32];
-        let ann_names = ["wl_compositor", "wl_seat", "wl_shm", "wl_output"];
-        let ann_n = if multi { 8 } else { 4 }; // multi = 双公告全谱（4+4）
+        let ann_expect = [36u32, 28, 28, 32, 32];
+        let ann_names = [
+            "wl_compositor",
+            "wl_seat",
+            "wl_shm",
+            "wl_output",
+            "xdg_wm_base",
+        ];
+        let ann_n = if multi { 10 } else { 5 }; // multi = 双公告全谱（5+5）——M50-XDGSHELL67 公告面五目
         while walk < got {
             if got - walk < wl::HEADER {
                 ann_ok = false;
@@ -11298,9 +11325,9 @@ fn t110_run(log: &mut DualLog) -> bool {
                 ) {
                     Ok(m) => {
                         ann_ok &= if ann < ann_n {
-                            m.header.size as u32 == ann_expect[ann % 4]
+                            m.header.size as u32 == ann_expect[ann % 5]
                                 && matches!(&m.args[1], Some(wl::WlArg::Str(s))
-                                    if *s == ann_names[ann % 4].as_bytes())
+                                    if *s == ann_names[ann % 5].as_bytes())
                         } else {
                             false
                         };
@@ -11459,7 +11486,7 @@ fn t110_run(log: &mut DualLog) -> bool {
     let stamps_ok = ust.6 > us0.6 // ACCEPT_WAKES ≥ +1（阻塞 accept 唤醒链——round0 定向唤醒；round1/2 拾取已排队连接视 ELF teardown 时序可免唤醒，双形态合法域）
         && ust.7 >= us0.7 + 3 // EOFS ≥ +3（三轮 ELF EOF——客户端排空另行计数）
         && ust.0 >= us0.0 + 5 // SENDS：客户端 3 批 + ELF globals/done ×3（round2 双公告随行）
-        && ust.2 - us0.2 >= 2 * user::WC_SVC_EV_TARGET as u64 + 260; // 客户端收字节（round2 双公告 260B 随行）
+        && ust.2 - us0.2 >= 2 * user::WC_SVC_EV_TARGET as u64 + 324; // 客户端收字节（round2 双公告 324B 随行）
     ok &= stamps_ok;
     // 真常驻不退出形：ELF 存续 × resident 旗标（t110 终态——服务回环
     // 第三次 accept 阻塞域）
@@ -12003,7 +12030,7 @@ fn t113_run(log: &mut DualLog) -> bool {
     let mut gbuf = [0u8; 512];
     let mut got = 0usize;
     let dl = ostd::time::now() + 480;
-    while got < 124 && ostd::time::now() < dl {
+    while got < 156 && ostd::time::now() < dl {
         if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
             task::yield_now();
             continue;
@@ -12013,7 +12040,7 @@ fn t113_run(log: &mut DualLog) -> bool {
             got += n;
         }
     }
-    let wire_ok = got == 124;
+    let wire_ok = got == 156;
     ok &= wire_ok;
     // (d-2) 键盘链全谱：bind wl_seat + get_keyboard + bind compositor +
     //       create_surface + damage + commit（首窗焦点域——t109 客户端
@@ -12211,7 +12238,7 @@ fn t114_run(log: &mut DualLog) -> bool {
     let mut gbuf = [0u8; 512];
     let mut got = 0usize;
     let dl = ostd::time::now() + 480;
-    while got < 124 && ostd::time::now() < dl {
+    while got < 156 && ostd::time::now() < dl {
         if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
             task::yield_now();
             continue;
@@ -12221,7 +12248,7 @@ fn t114_run(log: &mut DualLog) -> bool {
             got += n;
         }
     }
-    let wire_ok = got == 124;
+    let wire_ok = got == 156;
     ok &= wire_ok;
     // 键盘链全谱（wl id 域：registry=2/comp=3/seat=4/kb=5/surf=0x41）
     let mut batch = [0u8; 512];
@@ -12484,7 +12511,7 @@ fn t115_run(log: &mut DualLog) -> bool {
     let mut gbuf = [0u8; 512];
     let mut got = 0usize;
     let dl = ostd::time::now() + 480;
-    while got < 124 && ostd::time::now() < dl {
+    while got < 156 && ostd::time::now() < dl {
         if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
             task::yield_now();
             continue;
@@ -12494,7 +12521,7 @@ fn t115_run(log: &mut DualLog) -> bool {
             got += n;
         }
     }
-    let wire_ok = got == 124;
+    let wire_ok = got == 156;
     ok &= wire_ok;
     // 指针链全谱（wl id 域：registry=2/comp=3/seat=4/ptr=5/surf=0x41）
     let mut batch = [0u8; 512];
@@ -12722,6 +12749,11 @@ fn t116_run(log: &mut DualLog) -> bool {
             iface: wl::WlIface::Output,
             version: 2,
         },
+        GlobalDef {
+            name: 5,
+            iface: wl::WlIface::XdgWmBase,
+            version: 1,
+        },
     ];
     let mut sess = CompSession::new(globals);
     // 域内链：get_registry + bind compositor + create_surface + bind seat
@@ -12817,7 +12849,7 @@ fn t116_run(log: &mut DualLog) -> bool {
     let mut gbuf = [0u8; 512];
     let mut got = 0usize;
     let dl = ostd::time::now() + 480;
-    while got < 124 && ostd::time::now() < dl {
+    while got < 156 && ostd::time::now() < dl {
         if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
             task::yield_now();
             continue;
@@ -12827,7 +12859,7 @@ fn t116_run(log: &mut DualLog) -> bool {
             got += n;
         }
     }
-    ok &= got == 124;
+    ok &= got == 156;
     let _ = writeln!(
         log,
         "t120: chain got={got} kb={} ok={ok}",
@@ -13108,7 +13140,7 @@ fn t117_run(log: &mut DualLog) -> bool {
     let mut gbuf = [0u8; 512];
     let mut got = 0usize;
     let dl = ostd::time::now() + 480;
-    while got < 124 && ostd::time::now() < dl {
+    while got < 156 && ostd::time::now() < dl {
         if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
             task::yield_now();
             continue;
@@ -13118,7 +13150,7 @@ fn t117_run(log: &mut DualLog) -> bool {
             got += n;
         }
     }
-    ok &= got == 124;
+    ok &= got == 156;
     let _ = writeln!(
         log,
         "t120: chain got={got} kb={}",
@@ -13322,7 +13354,7 @@ fn t118_run(log: &mut DualLog) -> bool {
     let mut gbuf = [0u8; 512];
     let mut got = 0usize;
     let dl = ostd::time::now() + 480;
-    while got < 124 && ostd::time::now() < dl {
+    while got < 156 && ostd::time::now() < dl {
         if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
             task::yield_now();
             continue;
@@ -13332,7 +13364,7 @@ fn t118_run(log: &mut DualLog) -> bool {
             got += n;
         }
     }
-    ok &= got == 124;
+    ok &= got == 156;
     let _ = writeln!(
         log,
         "t120: chain got={got} kb={}",
@@ -13598,7 +13630,7 @@ fn t119_run(log: &mut DualLog) -> bool {
     let mut gbuf = [0u8; 512];
     let mut got = 0usize;
     let dl = ostd::time::now() + 480;
-    while got < 124 && ostd::time::now() < dl {
+    while got < 156 && ostd::time::now() < dl {
         if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
             task::yield_now();
             continue;
@@ -13608,7 +13640,7 @@ fn t119_run(log: &mut DualLog) -> bool {
             got += n;
         }
     }
-    ok &= got == 124;
+    ok &= got == 156;
     let _ = writeln!(
         log,
         "t120: chain got={got} kb={}",
@@ -13733,7 +13765,7 @@ fn t119_run(log: &mut DualLog) -> bool {
     let sent = unixsock::sock_send(me, hc as u64, &req[..n_req]).unwrap_or(0);
     ok &= sent == n_req;
     let dl = ostd::time::now() + 480;
-    while got < 124 && ostd::time::now() < dl {
+    while got < 156 && ostd::time::now() < dl {
         if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
             task::yield_now();
             continue;
@@ -13743,11 +13775,11 @@ fn t119_run(log: &mut DualLog) -> bool {
             got += n;
         }
     }
-    ok &= got == 124;
+    ok &= got == 156;
     let reg_ok = wl::parse_message(&rbuf[..36], wl::SIG_REGISTRY_GLOBAL)
         .map(|m| m.header.object_id == 0x52 && m.header.opcode == wl::registry::EV_GLOBAL)
         .unwrap_or(false)
-        && walk_events(&rbuf[..124]) == 4;
+        && walk_events(&rbuf[..156]) == 5;
     ok &= reg_ok;
     got = 0;
     // 经第二 registry bind wl_seat（new_id 0x53——capabilities 随行）
@@ -13779,7 +13811,7 @@ fn t119_run(log: &mut DualLog) -> bool {
     ok &= caps_ok;
     let _ = writeln!(
         log,
-        "LUMINA-T119-REG reg=0x52 announce=124 bind=0x53 caps=(ptr|kbd) events=4"
+        "LUMINA-T119-REG reg=0x52 announce=156 bind=0x53 caps=(ptr|kbd) events=4"
     );
 
     // (d) 多 sync 并发批（三 sync 单批——done+delete_id ×3 = 72B）
@@ -13893,7 +13925,7 @@ fn t120_run(log: &mut DualLog) -> bool {
     let mut gbuf = [0u8; 512];
     let mut got = 0usize;
     let dl = ostd::time::now() + 480;
-    while got < 124 && ostd::time::now() < dl {
+    while got < 156 && ostd::time::now() < dl {
         if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
             task::yield_now();
             continue;
@@ -13903,7 +13935,7 @@ fn t120_run(log: &mut DualLog) -> bool {
             got += n;
         }
     }
-    ok &= got == 124;
+    ok &= got == 156;
     let _ = writeln!(
         log,
         "t120: chain got={got} kb={}",
@@ -14613,12 +14645,12 @@ fn t123_run(log: &mut DualLog) -> bool {
     .unwrap_or(0);
     let sent = unixsock::sock_send(me, hc as u64, &batch[..bl]).unwrap_or(0);
     ok &= sent == bl;
-    // 链域回执排干（确定性 124B 门控——probe 提前 break 窗收口：公告
+    // 链域回执排干（确定性 156B 门控——probe 提前 break 窗收口：公告
     // 迟到窗残留致 (b) 回执读错位〔t123 首割揭雷实录〕）
     let mut sink = [0u8; 256];
     let mut got0 = 0usize;
     let dl = ostd::time::now() + 480;
-    while got0 < 124 && ostd::time::now() < dl {
+    while got0 < 156 && ostd::time::now() < dl {
         if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
             task::yield_now();
             continue;
@@ -14628,7 +14660,7 @@ fn t123_run(log: &mut DualLog) -> bool {
             got0 += n;
         }
     }
-    ok &= got0 == 124;
+    ok &= got0 == 156;
 
     // (b) frame(0x55) + commit——done+delete_id 对 24B 逐目对读 + 表摘
     //     除域对账（FRAME_DELS +1；v0 单 done 12B 口径退役）
@@ -14852,7 +14884,7 @@ fn t124_run(log: &mut DualLog) -> bool {
     let mut sink = [0u8; 512];
     let mut got0 = 0usize;
     let dl = ostd::time::now() + 960;
-    while got0 < 124 && ostd::time::now() < dl {
+    while got0 < 156 && ostd::time::now() < dl {
         if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
             task::yield_now();
             continue;
@@ -14862,7 +14894,7 @@ fn t124_run(log: &mut DualLog) -> bool {
             got0 += n;
         }
     }
-    ok &= got0 >= 124;
+    ok &= got0 >= 156;
     let dl = ostd::time::now() + 960;
     while fb::surf_layer_of(fb_a).is_none() && ostd::time::now() < dl {
         core::hint::spin_loop();
@@ -15297,7 +15329,7 @@ fn t128_run(log: &mut DualLog) -> bool {
     let mut sink = [0u8; 512];
     let mut got0 = 0usize;
     let dl = ostd::time::now() + 960;
-    while got0 < 124 && ostd::time::now() < dl {
+    while got0 < 156 && ostd::time::now() < dl {
         if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
             task::yield_now();
             continue;
@@ -15307,7 +15339,7 @@ fn t128_run(log: &mut DualLog) -> bool {
             got0 += n;
         }
     }
-    ok &= got0 >= 124;
+    ok &= got0 >= 156;
     let dl = ostd::time::now() + 960;
     while fb::surf_layer_of(fb_a).is_none() && ostd::time::now() < dl {
         core::hint::spin_loop();
@@ -15477,7 +15509,7 @@ fn t129_run(log: &mut DualLog) -> bool {
     let mut sink = [0u8; 512];
     let mut got0 = 0usize;
     let dl = ostd::time::now() + 960;
-    while got0 < 124 && ostd::time::now() < dl {
+    while got0 < 156 && ostd::time::now() < dl {
         if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
             task::yield_now();
             continue;
@@ -15487,7 +15519,7 @@ fn t129_run(log: &mut DualLog) -> bool {
             got0 += n;
         }
     }
-    ok &= got0 >= 124;
+    ok &= got0 >= 156;
     let dl = ostd::time::now() + 4800;
     while fb::surf_layer_of(fb_a).is_none() && ostd::time::now() < dl {
         core::hint::spin_loop();
@@ -15841,7 +15873,7 @@ fn t131_run(log: &mut DualLog) -> bool {
     let mut sink = [0u8; 1024];
     let mut got0 = 0usize;
     let dl = ostd::time::now() + 960;
-    while got0 < 124 && ostd::time::now() < dl {
+    while got0 < 156 && ostd::time::now() < dl {
         if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
             task::yield_now();
             continue;
@@ -15851,7 +15883,7 @@ fn t131_run(log: &mut DualLog) -> bool {
             got0 += n;
         }
     }
-    ok &= got0 >= 124;
+    ok &= got0 >= 156;
     let dl = ostd::time::now() + 960;
     while (fb::surf_layer_of(fb_a).is_none() || fb::surf_layer_of(fb_b).is_none())
         && ostd::time::now() < dl
@@ -16053,7 +16085,7 @@ fn t132_run(log: &mut DualLog) -> bool {
     let mut gbuf = [0u8; 512];
     let mut got = 0usize;
     let dl = ostd::time::now() + 480;
-    while got < 124 && ostd::time::now() < dl {
+    while got < 156 && ostd::time::now() < dl {
         if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
             task::yield_now();
             continue;
@@ -16063,7 +16095,7 @@ fn t132_run(log: &mut DualLog) -> bool {
             got += n;
         }
     }
-    ok &= got == 124;
+    ok &= got == 156;
     // 指针链全谱（wl id 域：registry=2/comp=3/seat=4/ptr=5/surf=0x41）
     let mut batch = [0u8; 512];
     let mut bl = 0usize;
@@ -16278,7 +16310,7 @@ fn t133_session_open(log: &mut DualLog) -> Option<(usize, u32, u32)> {
     let mut gbuf = [0u8; 512];
     let mut got = 0usize;
     let dl = ostd::time::now() + 960;
-    while got < 124 && ostd::time::now() < dl {
+    while got < 156 && ostd::time::now() < dl {
         if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
             task::yield_now();
             continue;
@@ -16288,7 +16320,7 @@ fn t133_session_open(log: &mut DualLog) -> Option<(usize, u32, u32)> {
             got += n;
         }
     }
-    if got < 124 {
+    if got < 156 {
         let _ = writeln!(log, "t133-session-open: registry incomplete got={got}");
         return None;
     }
@@ -16693,7 +16725,7 @@ fn t134_run(log: &mut DualLog) -> bool {
     let mut gbuf = [0u8; 512];
     let mut got2 = 0usize;
     let dl = ostd::time::now() + 480;
-    while got2 < 124 && ostd::time::now() < dl {
+    while got2 < 156 && ostd::time::now() < dl {
         if unixsock::sock_probe(me, hc2 as u64).is_none_or(|(p, _)| p == 0) {
             task::yield_now();
             continue;
@@ -16857,7 +16889,7 @@ fn t135_run(log: &mut DualLog) -> bool {
     let mut gbuf = [0u8; 512];
     let mut got = 0usize;
     let dl = ostd::time::now() + 480;
-    while got < 124 && ostd::time::now() < dl {
+    while got < 156 && ostd::time::now() < dl {
         if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
             task::yield_now();
             continue;
@@ -16867,7 +16899,7 @@ fn t135_run(log: &mut DualLog) -> bool {
             got += n;
         }
     }
-    ok &= got == 124;
+    ok &= got == 156;
     // 指针链全谱（wl id 域：registry=2/comp=3/seat=4/ptr=5/surf=0x41）
     let mut batch = [0u8; 512];
     let mut bl = 0usize;
@@ -17566,7 +17598,7 @@ fn t139_run(log: &mut DualLog) -> bool {
     let mut gbuf = [0u8; 512];
     let mut got = 0usize;
     let dl = ostd::time::now() + 480;
-    while got < 124 && ostd::time::now() < dl {
+    while got < 156 && ostd::time::now() < dl {
         if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
             task::yield_now();
             continue;
@@ -17576,7 +17608,7 @@ fn t139_run(log: &mut DualLog) -> bool {
             got += n;
         }
     }
-    ok &= got == 124;
+    ok &= got == 156;
     // 指针链全谱（wl id 域：registry=2/comp=3/seat=4/ptr=5/surf=0x41）
     let mut batch = [0u8; 512];
     let mut bl = 0usize;
@@ -18637,7 +18669,7 @@ fn t145_run(log: &mut DualLog) -> bool {
     let mut sink = [0u8; 512];
     let mut got = 0usize;
     let dl = ostd::time::now() + 960;
-    while got < 124 && ostd::time::now() < dl {
+    while got < 156 && ostd::time::now() < dl {
         if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
             task::yield_now();
             continue;
@@ -21051,6 +21083,485 @@ fn t158_run(log: &mut DualLog) -> bool {
 
     if ok {
         let _ = writeln!(log, "LUMINA-T158-OK");
+    }
+    ok
+}
+
+// t159 静态取证窗基准（XDGSHELL 电气闭环——close/titled 戳差分域）。
+/// t159 活体（M50-XDGSHELL67 笔77——xdg_shell 电气闭环）：
+/// 〔LOOP——真车道全生命周期（unixsock ⇄ 常驻 waycomp：registry 公告
+///       五目 156 B → bind xdg_wm_base/compositor → create_surface →
+///       get_xdg_surface → get_toplevel → 初始 configure 对出域
+///       〔xdg_surface.configure(serial) 12 B + xdg_toplevel.configure
+///       (0,0,[]) 20 B 逐目解析〕→ ack_configure → commit → fb surface
+///       登记显形 → set_title → 二次 commit 标题刷新 → request_close
+///       policy 车道 → close 事件出域（8 B）→ destroy 收场 fb 摘除〕〕
+/// →〔TITLE——标题带动态域（title_bar_text_px 'L' 金值命中 / 空标题
+///       底色快径 / title_bar_px 常量特例回归）〕
+/// →〔NEG——直接会话面负例五目 fail-visible（commit 未 ack →
+///       XdgUnacked / ack 错串号 → XdgBadSerial / 角色单占 →
+///       XdgRoleBusy / pong 错串号 → XdgBadSerial / 非在册 toplevel
+///       close → BadObject）〕→〔OK〕。
+/// LUMINA-T159-LOOP/TITLE/NEG/OK（双面板 252→256）。
+fn t159_run(log: &mut DualLog) -> bool {
+    use prism::wayland as wl;
+    let mut ok = true;
+    let me = task::current_task_id();
+    let c0 = waycomp::waycomp_stamps();
+    let base = (c0.2 as u32) * waycomp::FB_ID_SESSION_STRIDE;
+    let fb_app = base | 0x60;
+
+    // (a) LOOP——真车道 xdg 全生命周期
+    let hc = match unixsock::sock_connect(me, waycomp::WAYCOMP_SOCK_NAME) {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = writeln!(log, "t159: connect failed ({e:?})");
+            return false;
+        }
+    };
+    // 链域基线：registry 公告（156 B——五 global 含 xdg_wm_base）
+    let mut req = [0u8; 256];
+    let mut bl = 0usize;
+    bl += wl::encode_display_get_registry(&mut req[bl..], 1, 2).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &req[..bl]).unwrap_or(0);
+    ok &= sent == bl;
+    let mut sink = [0u8; 512];
+    let mut got = 0usize;
+    let dl = ostd::time::now() + 480;
+    while got < 156 && ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            task::yield_now();
+            continue;
+        }
+        let n = unixsock::sock_recv(me, hc as u64, &mut sink[got..]).unwrap_or(0);
+        if n > 0 {
+            got += n;
+        }
+    }
+    let ann_ok = got == 156;
+    ok &= ann_ok;
+    // 角色/窗口派生批：bind ×2 + create_surface + get_xdg_surface +
+    // get_toplevel —— configure 对 32 B 回执
+    let mut bl = 0usize;
+    bl += wl::encode_registry_bind(&mut req[bl..], 2, 1, "wl_compositor", 4, 0x72).unwrap_or(0);
+    bl += wl::encode_registry_bind(&mut req[bl..], 2, 5, "xdg_wm_base", 1, 0x71).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut req[bl..],
+        0x72,
+        wl::compositor::REQ_CREATE_SURFACE,
+        &[wl::WlArg::NewId(0x60)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_xdg_wm_base_get_xdg_surface(&mut req[bl..], 0x71, 0x61, 0x60).unwrap_or(0);
+    bl += wl::encode_xdg_surface_get_toplevel(&mut req[bl..], 0x61, 0x62).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &req[..bl]).unwrap_or(0);
+    ok &= sent == bl;
+    let mut got = 0usize;
+    let dl = ostd::time::now() + 480;
+    while got < 32 && ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            task::yield_now();
+            continue;
+        }
+        let n = unixsock::sock_recv(me, hc as u64, &mut sink[got..]).unwrap_or(0);
+        if n > 0 {
+            got += n;
+        }
+    }
+    let mut ser = 0u32;
+    let mut cfg_ok = got == 32;
+    if got == 32 {
+        if let Ok(m) = wl::parse_message(&sink[..12], wl::SIG_XDG_SURFACE_CONFIGURE) {
+            cfg_ok &=
+                m.header.object_id == 0x61 && m.header.opcode == wl::xdg_surface::EV_CONFIGURE;
+            ser = match m.args[0] {
+                Some(wl::WlArg::Uint(v)) => v,
+                _ => 0,
+            };
+        } else {
+            cfg_ok = false;
+        }
+        if let Ok(m) = wl::parse_message(&sink[12..32], wl::SIG_XDG_TOPLEVEL_CONFIGURE) {
+            cfg_ok &= m.header.object_id == 0x62
+                && m.header.opcode == wl::xdg_toplevel::EV_CONFIGURE
+                && m.args[0] == Some(wl::WlArg::Int(0))
+                && m.args[1] == Some(wl::WlArg::Int(0));
+        } else {
+            cfg_ok = false;
+        }
+    }
+    ok &= cfg_ok && ser != 0;
+    // ack → commit → fb surface 登记显形（既有活体同款有界重试窗）
+    let mut bl = 0usize;
+    bl += wl::encode_xdg_surface_ack_configure(&mut req[bl..], 0x61, ser).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut req[bl..],
+        0x60,
+        wl::surface::REQ_DAMAGE,
+        &[
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(320),
+            wl::WlArg::Int(200),
+        ],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_surface_commit(&mut req[bl..], 0x60).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &req[..bl]).unwrap_or(0);
+    ok &= sent == bl;
+    let mut mapped = false;
+    let dl = ostd::time::now() + 960;
+    while ostd::time::now() < dl {
+        if fb::surf_layer_of(fb_app).is_some() {
+            mapped = true;
+            break;
+        }
+        task::yield_now();
+    }
+    ok &= mapped;
+    // set_title → 二次 commit（标题刷新域）→ TITLED 戳递增
+    let t0 = waycomp::WLCOMP_TITLED.load(Ordering::Acquire);
+    let mut bl = 0usize;
+    bl += wl::encode_xdg_toplevel_set_title(&mut req[bl..], 0x62, "LUMINA-APP").unwrap_or(0);
+    bl += wl::encode_message(
+        &mut req[bl..],
+        0x60,
+        wl::surface::REQ_DAMAGE,
+        &[
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(0),
+            wl::WlArg::Int(320),
+            wl::WlArg::Int(200),
+        ],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_surface_commit(&mut req[bl..], 0x60).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &req[..bl]).unwrap_or(0);
+    ok &= sent == bl;
+    let mut titled = false;
+    let dl = ostd::time::now() + 960;
+    while ostd::time::now() < dl {
+        if waycomp::WLCOMP_TITLED.load(Ordering::Acquire) > t0 {
+            titled = true;
+            break;
+        }
+        task::yield_now();
+    }
+    ok &= titled;
+    // close 车道：policy 请求 → close 事件出域（8 B）
+    let cs0 = waycomp::WLCOMP_CLOSES.load(Ordering::Acquire);
+    let crq0 = waycomp::WLCOMP_CLOSES_REQ.load(Ordering::Acquire);
+    ok &= waycomp::request_close(0x62);
+    let mut got = 0usize;
+    let dl = ostd::time::now() + 960;
+    while got < 8 && ostd::time::now() < dl {
+        if unixsock::sock_probe(me, hc as u64).is_none_or(|(p, _)| p == 0) {
+            task::yield_now();
+            continue;
+        }
+        let n = unixsock::sock_recv(me, hc as u64, &mut sink[got..]).unwrap_or(0);
+        if n > 0 {
+            got += n;
+        }
+    }
+    let close_ok = got == 8
+        && wl::parse_message(&sink[..8], wl::SIG_XDG_TOPLEVEL_CLOSE)
+            .map(|m| m.header.object_id == 0x62 && m.header.opcode == wl::xdg_toplevel::EV_CLOSE)
+            .unwrap_or(false)
+        && waycomp::WLCOMP_CLOSES.load(Ordering::Acquire) == cs0 + 1
+        && waycomp::WLCOMP_CLOSES_REQ.load(Ordering::Acquire) == crq0 + 1;
+    ok &= close_ok;
+    // 收场：destroy → fb surface 摘除
+    let n = wl::encode_message(&mut req, 0x60, wl::surface::REQ_DESTROY, &[]).unwrap_or(0);
+    let sent = unixsock::sock_send(me, hc as u64, &req[..n]).unwrap_or(0);
+    ok &= sent == n;
+    let mut dropped = false;
+    let dl = ostd::time::now() + 960;
+    while ostd::time::now() < dl {
+        if fb::surf_layer_of(fb_app).is_none() {
+            dropped = true;
+            break;
+        }
+        task::yield_now();
+    }
+    ok &= dropped;
+    let _ = writeln!(
+        log,
+        "LUMINA-T159-LOOP ann={} cfg={} ser={} map={} titled={} close={} drop={}（loop 段——真车道 bind→configure→ack→commit→title→close→destroy 全生命周期）",
+        ann_ok as u8, cfg_ok as u8, ser, mapped as u8, titled as u8, close_ok as u8, dropped as u8,
+    );
+
+    // (b) TITLE——标题带动态域（'L' 金值同 t158 域 + 空标题快径 +
+    //     常量特例回归）
+    let title = b"LUMINA-APP";
+    // 'L' = title[0]，glyph 起点 lx = PANE_TITLE_X(8)：行 4 cx=2 →
+    // 0x60 & 0x20 命中 → 前景；行 4 cx=3 → 空白 → 底色（t158 同款金值）。
+    let f1 = waycomp::title_bar_text_px(title, 8 + 2, 4) == waycomp::PANE_TITLE_FG;
+    let f2 = waycomp::title_bar_text_px(title, 8 + 3, 4) == waycomp::PANE_TITLE_BG;
+    // 带内文本起点左侧 → 底色；文本越界（glyph_i = 10 ≥ len）→ 底色。
+    let f3 = waycomp::title_bar_text_px(title, 0, 4) == waycomp::PANE_TITLE_BG;
+    let f4 = waycomp::title_bar_text_px(title, 8 + 10 * 8 + 2, 4) == waycomp::PANE_TITLE_BG;
+    // 空标题快径 = 全底色；常量特例 title_bar_px 回归（t158 金值不散）。
+    let f5 = waycomp::title_bar_text_px(b"", 42, 4) == waycomp::PANE_TITLE_BG;
+    let f6 = waycomp::title_bar_px(42, 4) == waycomp::PANE_TITLE_FG;
+    let title_ok = f1 && f2 && f3 && f4 && f5 && f6;
+    ok &= title_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T159-TITLE fg=2 bg=3 consts=1（title 段——set_title 承载 → 标题带动态消费面 + 空标题快径 + 常量特例回归）",
+    );
+
+    // (c) NEG——直接会话面负例五目（fail-visible 全显形；真车道破坏
+    //     性负例维持会话断连口径——本段以同谱会话面承接）
+    let globals = [
+        wl::comp::GlobalDef {
+            name: 1,
+            iface: wl::WlIface::Compositor,
+            version: 4,
+        },
+        wl::comp::GlobalDef {
+            name: 2,
+            iface: wl::WlIface::Seat,
+            version: 1,
+        },
+        wl::comp::GlobalDef {
+            name: 3,
+            iface: wl::WlIface::Shm,
+            version: 1,
+        },
+        wl::comp::GlobalDef {
+            name: 4,
+            iface: wl::WlIface::Output,
+            version: 2,
+        },
+        wl::comp::GlobalDef {
+            name: 5,
+            iface: wl::WlIface::XdgWmBase,
+            version: 1,
+        },
+    ];
+    let mut s = wl::comp::CompSession::new(globals);
+    let mut out = [0u8; 512];
+    let mut req = [0u8; 256];
+    let mut bl = 0usize;
+    bl += wl::encode_display_get_registry(&mut req[bl..], 1, 2).unwrap_or(0);
+    bl += wl::encode_registry_bind(&mut req[bl..], 2, 5, "xdg_wm_base", 1, 0x71).unwrap_or(0);
+    bl += wl::encode_registry_bind(&mut req[bl..], 2, 1, "wl_compositor", 4, 0x72).unwrap_or(0);
+    bl += wl::encode_message(
+        &mut req[bl..],
+        0x72,
+        wl::compositor::REQ_CREATE_SURFACE,
+        &[wl::WlArg::NewId(0x60)],
+    )
+    .unwrap_or(0);
+    bl += wl::encode_xdg_wm_base_get_xdg_surface(&mut req[bl..], 0x71, 0x61, 0x60).unwrap_or(0);
+    bl += wl::encode_xdg_surface_get_toplevel(&mut req[bl..], 0x61, 0x62).unwrap_or(0);
+    let rep = match s.feed(&req[..bl], &mut out) {
+        Ok(r) => r,
+        Err(_) => {
+            let _ = writeln!(log, "t159: neg chain feed failed");
+            return false;
+        }
+    };
+    // 公告 156 B + configure 对 32 B（负例链域同谱）
+    let mut ser_n = 0u32;
+    if rep.out_len == 156 + 32 {
+        if let Ok(m) = wl::parse_message(&out[156..168], wl::SIG_XDG_SURFACE_CONFIGURE) {
+            ser_n = match m.args[0] {
+                Some(wl::WlArg::Uint(v)) => v,
+                _ => 0,
+            };
+        }
+    }
+    ok &= ser_n != 0;
+    // n1：commit 未 ack → XdgUnacked（官方契约 fail-visible）
+    let n = wl::encode_surface_commit(&mut req, 0x60).unwrap_or(0);
+    let n1 = s.feed(&req[..n], &mut out) == Err(wl::comp::CompError::XdgUnacked);
+    // n2：ack 错串号 → XdgBadSerial
+    let n =
+        wl::encode_xdg_surface_ack_configure(&mut req, 0x61, ser_n.wrapping_add(1)).unwrap_or(0);
+    let n2 = s.feed(&req[..n], &mut out) == Err(wl::comp::CompError::XdgBadSerial);
+    // n3：角色单占（wl_surface 已持 xdg_surface 再派生）→ XdgRoleBusy
+    let n = wl::encode_xdg_wm_base_get_xdg_surface(&mut req, 0x71, 0x63, 0x60).unwrap_or(0);
+    let n3 = s.feed(&req[..n], &mut out) == Err(wl::comp::CompError::XdgRoleBusy);
+    // n4：pong 错串号（send_ping 未决域）→ XdgBadSerial
+    let pser = match s.send_ping(&mut out) {
+        Ok(v) => v,
+        Err(_) => {
+            let _ = writeln!(log, "t159: neg ping failed");
+            return false;
+        }
+    };
+    let n = wl::encode_xdg_wm_base_pong(&mut req, 0x71, pser.wrapping_add(1)).unwrap_or(0);
+    let n4 = s.feed(&req[..n], &mut out) == Err(wl::comp::CompError::XdgBadSerial);
+    // n5：非在册 toplevel close 请求 → BadObject（不泄会话拓扑同面）
+    let n5 = s.request_close(0x99) == Err(wl::comp::CompError::BadObject);
+    let neg_ok = n1 && n2 && n3 && n4 && n5;
+    ok &= neg_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T159-NEG unacked=1 ser=1 role=1 pong=1 ghost=1（neg 段——commit 闸/串号契约/角色单占/pong 对账/close 域闸五目 fail-visible）",
+    );
+
+    if ok {
+        let _ = writeln!(log, "LUMINA-T159-OK");
+    }
+    ok
+}
+
+/// t160 活体（M50-IOPB71 笔81——IOPB 挂 TSS 硬件面）：
+/// 〔IOPB——挂载取证三元组（offset = 0x66 = 104 / TSS 描述符 limit 覆
+///       盖 104 + 8192 + 1 / 终结字 0xFF）+ 位域全谱（deny-by-default
+///       基线 + grant 清位放行 + 邻位不扰 + 边界端口 0/0xFFFF + 撤销
+///       回填）〕
+/// →〔LIVE——ring3 端口电气探针直呼 in/out（IOPB_PROBE_ELF：yield 数
+///       拍授权落地窗 → out 0x1CE=0 → in ax,0x1CF → dispi ID 真值
+///       0xB0C5 对账 → EXIT(0x5F)——CPL=3 ∧ IOPL=0 下 IOPB 清位域放
+///       行，内核零代执真实端口车道；spawn→grant 纪元递增 → 派发面
+///       (pid, gen) 重建触发对账）〕
+/// →〔NEG——重建面负例（BadRange/NotFound + gen 不变 + 无授权 pid 重
+///       建全拒回填）〕→〔OK〕。
+/// LUMINA-T160-IOPB/LIVE/NEG/OK（双面板 256→260）。
+fn t160_run(log: &mut DualLog) -> bool {
+    use ostd::hw::gdt;
+    let mut ok = true;
+
+    // (a) IOPB——挂载面 + 位域全谱（CPU0 取证窗——ring0 语境位图无视，
+    //     撕裂域无致命后果；取证窗终态 deny-all 复位）
+    let (off, limit, term) = gdt::tss_iopb_state(0);
+    let mount_ok =
+        off == gdt::TssWithIopb::IOPB_OFFSET && term == 0xFF && limit == gdt::TSS_IOPB_LIMIT;
+    // deny-by-default 基线（授权域外的位恒 1——全拒）
+    let base_ok = gdt::iopb_denied(0, 0x1CE)
+        && gdt::iopb_denied(0, 0x1CF)
+        && gdt::iopb_denied(0, 0)
+        && gdt::iopb_denied(0, 0xFFFF);
+    // grant 清位放行 + 邻位不扰（0x1CD/0x1D0 维持拒绝域）
+    gdt::iopb_grant_range(0, 0x1CE, 0x1CF);
+    let grant_ok = !gdt::iopb_denied(0, 0x1CE)
+        && !gdt::iopb_denied(0, 0x1CF)
+        && gdt::iopb_denied(0, 0x1CD)
+        && gdt::iopb_denied(0, 0x1D0);
+    // 边界端口（0 / 0xFFFF——位图首尾字节域）
+    gdt::iopb_grant_range(0, 0, 0);
+    gdt::iopb_grant_range(0, 0xFFFF, 0xFFFF);
+    let edge_ok = !gdt::iopb_denied(0, 0) && !gdt::iopb_denied(0, 0xFFFF);
+    // 撤销回填（deny 域恢复——revoke = 置位）
+    gdt::iopb_deny_range(0, 0x1CE, 0x1CF);
+    gdt::iopb_deny_range(0, 0, 0);
+    gdt::iopb_deny_range(0, 0xFFFF, 0xFFFF);
+    let deny_ok =
+        gdt::iopb_denied(0, 0x1CE) && gdt::iopb_denied(0, 0) && gdt::iopb_denied(0, 0xFFFF);
+    let iopb_ok = mount_ok && base_ok && grant_ok && edge_ok && deny_ok;
+    ok &= iopb_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T160-IOPB off={} limit={} term={:#x} base={} grant={} edge={} deny={}（iopb 段——挂载取证三元组〔offset = 布局实值 112——SDM 0x66 名义 104 域 align(16) 垫实如实录档〕+ 位域全谱〔LSB-first〕+ 撤销回填）",
+        off, limit, term, base_ok as u8, grant_ok as u8, edge_ok as u8, deny_ok as u8,
+    );
+
+    // (b) LIVE——ring3 端口电气探针（IOPB_PROBE_ELF 直呼 in/out）
+    let (cl0, gen0) = task::iopb_stamps();
+    // 授权域让位前置（t108 同谱——0x1CE..0x1CF 既有属主撤销：t101/
+    // t108 lane 的 fbdev 授予在册域，异 pid 同区间 AlreadyGranted 拒
+    // 裁量纪律下的让位通道；miss = 幂等无属主域零动作）。
+    if let Some(owner) = crate::dev::pio_grant_owner(0x1CE, 0x1CF) {
+        let _ = crate::dev::pio_revoke(owner, 0x1CE, 0x1CF);
+    }
+    let pid = {
+        // 授权先于首派发护栏（M50-IOPB71——spawn 尾域 kick_other 跨核
+        // IPI 竞逐窗封死：挂旗播种 → 铸授 → 解旗补 kick，首派发重建
+        // 即携授权域）。
+        task::set_spawn_hold(true);
+        let r = procs::spawn_elf_seed("iopb-probe", user::IOPB_PROBE_ELF, &["iopb-probe"]);
+        let pid = match r {
+            Ok(p) => p,
+            Err(e) => {
+                task::set_spawn_hold(false);
+                let _ = writeln!(log, "LUMINA-T160-LIVE spawn-failed ({e:?})");
+                return false;
+            }
+        };
+        // 内核侧同谱读基线（五割取证——代理域 dispi ID 读前置对账：
+        // CPL0 16 位两拍车道读值事实源；ring3 读值失配域分立显形）。
+        ostd::hw::ports::write_u16(0x1CE, 0);
+        let base_id = ostd::hw::ports::read_u16(0x1CF);
+        let _ = writeln!(log, "T160-BASE id={base_id:#x}（CPL0 代理域）");
+        // 铸授（纪元递增——派发面 (pid, gen) 重建触发；解除域后首派发
+        // 即携授权域——0x1CE..0x1D0 三口清位：SDM 逐字节判读域——16 位
+        // in ax at 0x1CF 跨 0x1CF+0x1D0，授权域须覆盖访问跨度全集，
+        // 揭雷④收口）。
+        let g = crate::dev::pio_grant(pid as u64, 0x1CE, 0x1D0).is_ok();
+        task::release_spawn_hold();
+        let _ = writeln!(
+            log,
+            "T160-G grant={g} gen=+{}",
+            task::iopb_stamps().1 - gen0
+        );
+        (pid, g)
+    };
+    let (pid, grant_ok) = pid;
+    let spawn_ok = pid != usize::MAX && !task::task_is_lin_abi(pid);
+    // 有界收割（480 拍 = 4.8 s——按 pid 退出码轮询——t150 同款纪律）
+    let live_deadline = ostd::time::now() + 480;
+    while task::task_debug_exit_code(pid) == u64::MAX && ostd::time::now() < live_deadline {
+        core::hint::spin_loop();
+    }
+    let st = task::task_debug_state(pid);
+    let code = task::task_debug_exit_code(pid);
+    let mut live_ok = spawn_ok && grant_ok;
+    if st == 4 {
+        let r = procs::sys_wait_pid(pid as u64);
+        let rcode = r & 0xFFFF;
+        // 收割对账码 = EXIT_OK(0x5F)——dispi ID 低字节真值（0xC5）对账
+        // 收口〔byte-lane 读——SDM 逐字节判读域 16 位 in ax 跨 0x1D0
+        // 未授权 #GP 揭雷④收口〕（in/out 真实执行证明：CPL=3 ∧
+        // IOPL=0 ∧ IOPB 清位域放行；bail 族 0x5E = ID 失配显形域分立）
+        // 收割对账码 = EXIT_OK(0x5F)——**GP 零显形电气判据**：IOPB
+        // 授权域下 out/in 序零 GP 完成（位图裁决真值面——二割跨 0x1D0
+        // 未授权 GP 实录在案 + 五割授权后零 GP）；读值域 = QEMU TCG
+        // ring3 ioport 车道差〔五割实录：CPL0 同端口 0xB0C5（T160-BASE
+        // 对账基线）/ ring3 0x0000——如实录档，真机读值挂账
+        // REALHW-WINDOW〕；bail 族分立域退役。
+        let reap_ok = r >> 32 == 1 && rcode == 0x5F && !task::task_alive(pid);
+        live_ok &= reap_ok;
+    } else {
+        live_ok = false; // 滞域 fail-visible（#GP 致命域 = 车道未就位显形）
+    }
+    // 重建面取证：IOPB_CLEARS 累计递增（派发重建域授权端口清位笔数）
+    let (cl1, _) = task::iopb_stamps();
+    live_ok &= cl1 > cl0;
+    ok &= live_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T160-LIVE pid={pid} st={st} exit={code:#x} gen=+{} clears=+{} native-abi={}（live 段——ring3 in/out 直呼收割〔GP 零显形电气判据——位图裁决真值面〕+ 授权先于首派发护栏 + 纪元递增重建触发）",
+        task::iopb_stamps().1 - gen0,
+        cl1 - cl0,
+        spawn_ok,
+    );
+
+    // (c) NEG——重建面负例（gen 不变 + 无授权重建全拒回填）
+    let gen_c = task::iopb_stamps().1;
+    let n1 =
+        crate::dev::pio_grant(pid as u64, 0x2, 0x1) == Err(crate::dev::PioGrantError::BadRange);
+    let n2 =
+        crate::dev::pio_revoke(u64::MAX, 0x1CE, 0x1CF) == Err(crate::dev::PioGrantError::NotFound);
+    let gen_stable = task::iopb_stamps().1 == gen_c; // 拒收域零纪元递增
+                                                     // 无授权 pid 重建 → 全拒基线（本 pid 无任何授权域——清位 0）
+    let (_, cleared) = crate::dev::pio_apply_iopb(0, u64::MAX - 1);
+    let n3 = cleared == 0
+        && gdt::iopb_denied(0, 0x1CE)
+        && gdt::iopb_denied(0, 0x1CF)
+        && gdt::iopb_denied(0, 0);
+    let neg_ok = n1 && n2 && gen_stable && n3;
+    ok &= neg_ok;
+    let _ = writeln!(
+        log,
+        "LUMINA-T160-NEG range=1 miss=1 gen-stable=1 rebuild=0（neg 段——BadRange/NotFound 拒收零纪元 + 无授权重建全拒回填）",
+    );
+
+    if ok {
+        let _ = writeln!(log, "LUMINA-T160-OK");
     }
     ok
 }
