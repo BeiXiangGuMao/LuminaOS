@@ -144,6 +144,10 @@ pub fn err_to_errno(code: u64) -> Option<i32> {
         // M42-COMP4（v0.21）：EOF 对端终结域写侧显形——ERR_PIPE =
         // EPIPE（对端 shutdown 后 send 断裂语义同面）。
         abi::ERR_PIPE => errno::EPIPE,
+        // M49-PGRP62（v0.25）：进程组/会话域新增码——ESRCH 目标缺席 /
+        // EPERM 规则域拒收（Linux setpgid/setsid 语义面）。
+        abi::ERR_SRCH => errno::ESRCH,
+        abi::ERR_PERM => errno::EPERM,
         _ => return None,
     };
     Some(errno)
@@ -586,11 +590,14 @@ mod tests {
         assert_eq!(err_to_errno(abi::ERR_INUSE), Some(98)); // EADDRINUSE
         assert_eq!(err_to_errno(abi::ERR_NOENT), Some(111)); // ECONNREFUSED
         assert_eq!(err_to_errno(abi::ERR_PIPE), Some(32)); // EPIPE
-                                                           // 域外：成功(0)/哨兵/越界 → None
+                                                           // M49-PGRP62（v0.25）：进程组/会话域双码
+        assert_eq!(err_to_errno(abi::ERR_SRCH), Some(3)); // ESRCH
+        assert_eq!(err_to_errno(abi::ERR_PERM), Some(1)); // EPERM
+                                                          // 域外：成功(0)/哨兵/越界 → None
         assert_eq!(err_to_errno(0), None);
         assert_eq!(err_to_errno(u64::MAX), None);
         assert_eq!(err_to_errno(u64::MAX - 1), None);
-        assert_eq!(err_to_errno(14), None); // 13 后首未登记号
+        assert_eq!(err_to_errno(16), None); // 15 后首未登记号
                                             // 反向：登记 9 项 + 未登记透传域
         assert_eq!(errno_to_err(1), Some(abi::ERR_CAP));
         assert_eq!(errno_to_err(11), Some(abi::ERR_EMPTY));

@@ -340,6 +340,24 @@ extern "C" fn lumina_syscall_dispatch(frame: &mut SyscallFrame) -> u64 {
             task::count_syscall(2);
             crate::procs::current_pid()
         }
+        // M49-PGRP62 笔71：进程组/会话域四号（多用户纵深三批余项——
+        // Linux setpgid/getpgid/getpgrp/setsid 同谱真车道）。
+        Syscall::SetPgid { pid, pgid } => {
+            task::count_syscall(2);
+            task::sys_setpgid(pid, pgid)
+        }
+        Syscall::GetPgid { pid } => {
+            task::count_syscall(2);
+            task::sys_getpgid(pid)
+        }
+        Syscall::GetPgrp => {
+            task::count_syscall(2);
+            task::sys_getpgrp()
+        }
+        Syscall::Setsid => {
+            task::count_syscall(2);
+            task::sys_setsid()
+        }
         Syscall::WaitPid { pid } => {
             task::count_syscall(2);
             // M10-C 进程间等待面：阻塞等待直接子任务终结并收割退出码

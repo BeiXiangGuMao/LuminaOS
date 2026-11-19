@@ -577,6 +577,23 @@ pub const PROT_MASK: u64 = PROT_READ | PROT_WRITE | PROT_EXEC;
 /// PROT_EXEC 语义同 [`SYS_MMAP`] 注⑥（记账位不落表）。
 pub const SYS_MPROTECT: u64 = 47;
 
+/// 进程组铸造/迁移面（v0.25，M49-PGRP62 笔71；rdi = 目标 pid〔0 = 自〕
+/// / rsi = pgid〔0 = 目标 pid 自铸〕）：Linux setpgid 同谱语义核——SRCH
+/// 目标缺席 / EPERM〔非自非子、跨会话迁移、入组越会话〕/ Inval 负域。
+pub const SYS_SETPGID: u64 = 48;
+
+/// 进程组查询面（v0.25，M49-PGRP62 笔71；rdi = 目标 pid〔0 = 自〕）：
+/// Linux getpgid 同谱——SRCH 目标缺席。
+pub const SYS_GETPGID: u64 = 49;
+
+/// 调用方进程组查询面（v0.25，M49-PGRP62 笔71；getpgrp = getpgid(0)
+/// 语义同面零参）。
+pub const SYS_GETPGRP: u64 = 50;
+
+/// 会话铸造面（v0.25，M49-PGRP62 笔71；零参）：Linux setsid 同谱——
+/// 调用方已为组长 = EPERM；成功 = sid = pgid = 调用方 pid。
+pub const SYS_SETSID: u64 = 51;
+
 /// 套接字名词法校验（fail-visible 注册面）：1..=[`USOCK_NAME_MAX`]
 /// 字节，ASCII 可打印域（0x21..=0x7E——空格/控制域拒收；平名命名域
 /// v0 无路径解析，斜杠词法域放行如实记档）。宿主可测纯函数
@@ -658,9 +675,9 @@ pub const OPEN_MODE_MASK: u64 = 0b1_1111;
 /// 无独立用户空间 → `ERR_CAP`；帧耗尽 → `ERR_NOMEM(9)`。
 pub const SYS_EXEC: u64 = 17;
 
-/// 系统调用 ABI 版本（v0.24 = M47-LDCONS53 笔60：新增 SYS_MMAP(46)
-/// native 匿名映射面 + SYS_MPROTECT(47) 页保护改旗面——装载计划消费面
-/// 电气域〔harbor::ld::exec load_plan 计划区 ring3 承接位——PROT_READ/
+/// 〔历史〕v0.24 = M47-LDCONS53 笔60：新增 SYS_MMAP(46) native 匿名
+/// 映射面 + SYS_MPROTECT(47) 页保护改旗面——装载计划消费面电气域
+/// 〔harbor::ld::exec load_plan 计划区 ring3 承接位——PROT_READ/
 /// WRITE/EXEC 位族 + MMAP_ANON_BASE 0x2_0000_0000 256 MiB 映射窗 +
 /// MMAP_ANON_FD 匿名哨兵；PROT_EXEC v0 记账位——EFER.NXE 未启用不落
 /// 表如实记档〕；v0.23 = M42-AUXR3 笔㉚：新增 SYS_AUX_READ(44)/
@@ -694,7 +711,12 @@ pub const SYS_EXEC: u64 = 17;
 /// v0.16 = M15：目录面五落点 MKDIR/REMOVE/READDIR/MOUNT/UMOUNT +
 /// 句柄面深化 DUP/FCNTL（CLOEXEC）+ NANOSLEEP 参数语义升级为 TSC 纳秒。
 /// v0.8 = SYS_QUOTA；v0.7 = 文件面六落点 + NANOSLEEP + 统一句柄面）。
-pub const ABI_VERSION: (u16, u16) = (0, 24);
+/// 系统调用 ABI 版本（v0.25 = M49-PGRP62 笔71：新增 SYS_SETPGID(48)/
+/// SYS_GETPGID(49)/SYS_GETPGRP(50)/SYS_SETSID(51) 进程组/会话域四号 +
+/// ERR_SRCH(14)/ERR_PERM(15) 双码——多用户纵深三批余项；v0.24 =
+/// M47-LDCONS53 笔60：新增 SYS_MMAP(46) native 匿名映射面 +
+/// SYS_MPROTECT(47) 页保护改旗面——装载计划消费面电气域。
+pub const ABI_VERSION: (u16, u16) = (0, 25);
 
 /// ---------------------------------------------------------------------------
 /// LXE1 v0 错误码表（具名化事实源，M25-C1）：
@@ -739,6 +761,15 @@ pub const ERR_NOENT: u64 = 12;
 /// 语义面；EOF 对端终结域的写侧显形；conduit 映射 `EPIPE(32)`）。
 /// （M42-COMP4 阶段三首笔追加——“编号冻结只增不改”域）。
 pub const ERR_PIPE: u64 = 13;
+
+/// 无此进程（M49-PGRP62 笔71——进程组/会话域追加；“编号冻结只增不改”
+/// 域；conduit 映射 `ESRCH(3)`）。
+pub const ERR_SRCH: u64 = 14;
+
+/// 操作不允许（M49-PGRP62 笔71——进程组/会话域追加；“编号冻结只增
+/// 不改”域；conduit 映射 `EPERM(1)`——ERR_CAP(1) 权限类粗粒度收敛的
+/// 细分目：进程组/会话规则域专用，勿与能力域混用）。
+pub const ERR_PERM: u64 = 15;
 
 /// 寄存器快照形式的系统调用请求。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1085,6 +1116,23 @@ pub enum Syscall {
         /// 保护位新旗（[`PROT_MASK`] 子集）。
         prot: u64,
     },
+    /// 进程组铸造/迁移（M49-PGRP62 笔71——Linux setpgid 同谱；pid_t
+    /// i32 域：0 = 自 / 负域 Inval 拒收）。
+    SetPgid {
+        /// 目标 pid（0 = 调用方自）。
+        pid: i32,
+        /// 新进程组（0 = 目标 pid 自铸）。
+        pgid: i32,
+    },
+    /// 进程组查询（M49-PGRP62 笔71——Linux getpgid 同谱）。
+    GetPgid {
+        /// 目标 pid（0 = 调用方自）。
+        pid: i32,
+    },
+    /// 调用方进程组查询（M49-PGRP62 笔71——getpgrp = getpgid(0) 同面）。
+    GetPgrp,
+    /// 会话铸造（M49-PGRP62 笔71——Linux setsid 同谱；组长 = EPERM）。
+    Setsid,
 }
 
 /// 从寄存器快照解析调用意图。只做结构校验，不做内存访问（由慢路径完成）。
@@ -1264,6 +1312,25 @@ pub fn parse(regs: SyscallRegs) -> Result<Syscall, AbiError> {
             prot: a2,
         }),
         SYS_MPROTECT => Err(AbiError::BadArgs),
+        SYS_SETPGID => {
+            let pid = a0 as u32 as i32;
+            let pgid = a1 as u32 as i32;
+            if pid < 0 || pgid < 0 {
+                Err(AbiError::BadArgs)
+            } else {
+                Ok(Syscall::SetPgid { pid, pgid })
+            }
+        }
+        SYS_GETPGID => {
+            let pid = a0 as u32 as i32;
+            if pid < 0 {
+                Err(AbiError::BadArgs)
+            } else {
+                Ok(Syscall::GetPgid { pid })
+            }
+        }
+        SYS_GETPGRP => Ok(Syscall::GetPgrp),
+        SYS_SETSID => Ok(Syscall::Setsid),
         _ => Err(AbiError::UnknownSyscall),
     }
 }
@@ -1675,7 +1742,7 @@ mod tests {
         assert_eq!(super::SYS_DUP, 31);
         assert_eq!(super::SYS_FCNTL, 32);
         assert_eq!(super::SYS_IMAGE_ENUM, 33);
-        assert_eq!(super::ABI_VERSION, (0, 24));
+        assert_eq!(super::ABI_VERSION, (0, 25));
         assert_eq!(super::SYS_TTY_GETCH, 34);
         assert_eq!(
             super::parse(super::SyscallRegs {
@@ -2274,10 +2341,52 @@ mod svc_abi_tests {
             "op 2 越域拒收"
         );
         assert_eq!(
-            super::parse(r(super::SYS_SHM + 5, [0; 5])),
+            super::parse(r(super::SYS_SETSID + 1, [0; 5])),
             Err(super::AbiError::UnknownSyscall),
-            "号域 48 未注册拒收（编号冻结只增不改域探针——46/47 = M47-LDCONS53 \
-             SYS_MMAP/SYS_MPROTECT 收录后探针顺延）"
+            "号域 52 未注册拒收（编号冻结只增不改域探针——48..=51 = \
+             M49-PGRP62 SYS_SETPGID/SYS_GETPGID/SYS_GETPGRP/SYS_SETSID \
+             收录后探针顺延）"
+        );
+        // M49-PGRP62 笔71：进程组/会话域四号 parse 金值 + 负例
+        assert_eq!(
+            super::parse(r(super::SYS_SETPGID, [0, 0, 0, 0, 0])),
+            Ok(super::Syscall::SetPgid { pid: 0, pgid: 0 }),
+            "setpgid(0,0) = 自铸域"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_SETPGID, [7, 7, 0, 0, 0])),
+            Ok(super::Syscall::SetPgid { pid: 7, pgid: 7 }),
+            "setpgid(7,7) 金值"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_SETPGID, [u64::MAX, 0, 0, 0, 0])),
+            Err(super::AbiError::BadArgs),
+            "pid 负域拒收（i32 负 = BadArgs）"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_SETPGID, [0, u64::MAX, 0, 0, 0])),
+            Err(super::AbiError::BadArgs),
+            "pgid 负域拒收"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_GETPGID, [9, 0, 0, 0, 0])),
+            Ok(super::Syscall::GetPgid { pid: 9 }),
+            "getpgid(9) 金值"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_GETPGID, [u64::MAX, 0, 0, 0, 0])),
+            Err(super::AbiError::BadArgs),
+            "getpgid 负域拒收"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_GETPGRP, [0; 5])),
+            Ok(super::Syscall::GetPgrp),
+            "getpgrp 零参金值"
+        );
+        assert_eq!(
+            super::parse(r(super::SYS_SETSID, [0; 5])),
+            Ok(super::Syscall::Setsid),
+            "setsid 零参金值"
         );
     }
 

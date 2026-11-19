@@ -318,6 +318,13 @@ struct Task {
     /// timer-sleeper 同族裁决体系化：长活任务批模式由 kernel_exit 带
     /// 过、从不终结——常驻任务不计入收敛面，否则自检等待环永眠）。
     resident: bool,
+    /// 进程组铸号（M49-PGRP62 笔71——多用户纵深三批余项；Linux pgid_t
+    /// 同域；0 = root 组哨兵——kmain 口径，组 0 = root 会话组）。fork
+    /// 全量继承（Linux 同款——spawn_fork_child 锁窗内拷贝）。
+    pgid: u32,
+    /// 会话铸号（M49-PGRP62 笔71；Linux sid_t 同域；0 = root 会话哨兵
+    /// ——kmain 口径）。fork 全量继承（Linux 同款）。
+    sid: u32,
 }
 
 impl Task {
@@ -357,6 +364,8 @@ impl Task {
             cwd: None,
             creds: Creds::ROOT,
             resident: false,
+            pgid: 0,
+            sid: 0,
         }
     }
 
@@ -452,6 +461,8 @@ impl Task {
             cwd: None,
             creds: Creds::ROOT,
             resident: false,
+            pgid: 0,
+            sid: 0,
         }
     }
 }
@@ -532,6 +543,217 @@ impl Creds {
         self.groups[..gids.len()].copy_from_slice(gids);
         self.ngroups = gids.len() as u8;
         Ok(())
+    }
+}
+
+// ---- 进程组/会话域（M49-PGRP62 笔71——多用户纵深三批余项：Linux
+// setpgid/getpgid/getpgrp/setsid 同谱语义核 + 真面承接；纯函数宿主面
+// + 真车道包装双域；EACCES exec 后迁移禁令 v0 域清单外如实记账——
+// Task 无 execed 标记位，随 execed 记账批次滚动） ----
+
+/// 进程组/会话域错误族（errno 语义域——ERR_SRCH(14)/ERR_PERM(15)/
+/// 坏参数哨兵 u64::MAX-1 映射承接）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PgidErr {
+    /// ESRCH——目标进程不在册。
+    Srch,
+    /// EPERM——规则域拒收（非自非子 / 跨会话迁移 / 入组越会话 / 组长
+    /// setsid）。
+    Eperm,
+    /// EINVAL——pid/pgid 负域（parse 层已拒，语义核防御域）。
+    Inval,
+}
+
+impl PgidErr {
+    /// LXE1 错误码映射（ERR_SRCH(14) / ERR_PERM(15) / 坏参数哨兵）。
+    pub fn to_err(self) -> u64 {
+        match self {
+            PgidErr::Srch => bedrock::abi::ERR_SRCH,
+            PgidErr::Eperm => bedrock::abi::ERR_PERM,
+            PgidErr::Inval => u64::MAX - 1,
+        }
+    }
+}
+
+/// setpgid 语义核（Linux 规则 v0 全谱——纯函数宿主面；谓词由调用面
+/// 在 SCHED 锁窗内判读供给）：
+/// ① pid/pgid 0 域展开（0 = 自 / 0 = 目标 pid 自铸）；
+/// ② SRCH——目标不在册；
+/// ③ EPERM——target ≠ caller 且非 caller 子进程（Linux 同款）；
+/// ④ EPERM——跨会话迁移禁令（sid(target) ≠ sid(caller)——Linux 同款）；
+/// ⑤ 组域合法性——自铸（want == target pid）∨ 入组（want 组长同会话
+///    在册——`want_leader_in_session` 谓词）；
+/// ⑥ 其余 → EPERM。
+pub fn setpgid_check(
+    raw_pid: i32,
+    raw_pgid: i32,
+    caller_pid: u32,
+    p: PgrpPreds,
+) -> Result<u32, PgidErr> {
+    if raw_pid < 0 || raw_pgid < 0 {
+        return Err(PgidErr::Inval);
+    }
+    let pid = if raw_pid == 0 {
+        caller_pid
+    } else {
+        raw_pid as u32
+    };
+    let want = if raw_pgid == 0 { pid } else { raw_pgid as u32 };
+    if !p.target_exists {
+        return Err(PgidErr::Srch);
+    }
+    if !p.is_self_or_child {
+        return Err(PgidErr::Eperm);
+    }
+    if !p.same_session {
+        return Err(PgidErr::Eperm);
+    }
+    if want == p.target_pid || p.want_leader_in_session {
+        return Ok(want);
+    }
+    Err(PgidErr::Eperm)
+}
+
+/// setpgid 判读谓词组（SCHED 锁窗单点采集——语义核消费面；纯值零
+/// 内核态依赖——宿主面矩阵直接构造）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PgrpPreds {
+    /// 目标在册位。
+    pub target_exists: bool,
+    /// 自 ∨ 子域（target == caller ∨ parent(target) == caller）。
+    pub is_self_or_child: bool,
+    /// 同会话位（sid(target) == sid(caller)）。
+    pub same_session: bool,
+    /// 目标 pid（锁窗解析产物——raw 0 域展开后）。
+    pub target_pid: u32,
+    /// 入组谓词位（want 组长同会话在册）。
+    pub want_leader_in_session: bool,
+}
+
+/// setsid 语义核（Linux 同谱——组长拒收域；纯函数宿主面）。
+pub fn setsid_check(caller_pgid: u32, caller_pid: u32) -> Result<u32, PgidErr> {
+    if caller_pgid == caller_pid {
+        return Err(PgidErr::Eperm);
+    }
+    Ok(caller_pid)
+}
+
+/// setpgid 谓词采集（SCHED 锁窗内——`raw` pid 判读全谱单点产物）。
+fn pgrp_preds(caller_slot: usize, raw_pid: i32, want: u32) -> (PgrpPreds, u32) {
+    let s = sched_lock!();
+    let caller_pid = caller_slot as u32;
+    let caller_sid = s
+        .tasks
+        .get(caller_slot)
+        .and_then(|t| t.as_ref())
+        .map(|t| t.sid)
+        .unwrap_or(0);
+    let target_slot = if raw_pid == 0 {
+        caller_slot
+    } else {
+        raw_pid as u32 as usize
+    };
+    let target = s.tasks.get(target_slot).and_then(|t| t.as_ref());
+    let exists = target.is_some();
+    let is_self_or_child = target_slot == caller_slot
+        || target
+            .and_then(|t| t.parent)
+            .map(|p| p == caller_slot)
+            .unwrap_or(false);
+    let target_sid = target.map(|t| t.sid).unwrap_or(0);
+    let same_session = caller_sid == target_sid;
+    let target_pid = target_slot as u32;
+    // 入组谓词：want 组长同会话在册（组 = want 的活任务且 sid 同会话）。
+    let want_leader_in_session = want != 0
+        && s.tasks.iter().any(|t| {
+            t.as_ref()
+                .is_some_and(|t| t.pgid == want && t.sid == caller_sid)
+        });
+    (
+        PgrpPreds {
+            target_exists: exists,
+            is_self_or_child,
+            same_session,
+            target_pid,
+            want_leader_in_session,
+        },
+        caller_pid,
+    )
+}
+
+/// SYS_SETPGID 承接（真车道——语义核 + 锁窗写面）。
+pub fn sys_setpgid(raw_pid: i32, raw_pgid: i32) -> u64 {
+    let _w = IntWindow::new();
+    let caller_slot = crate::procs::current_pid() as usize;
+    let want = {
+        let (preds, caller_pid) = pgrp_preds(caller_slot, raw_pid, 0);
+        match setpgid_check(raw_pid, raw_pgid, caller_pid, preds) {
+            Ok(w) => w,
+            Err(e) => return e.to_err(),
+        }
+    };
+    let target_slot = if raw_pid == 0 {
+        caller_slot
+    } else {
+        raw_pid as u32 as usize
+    };
+    let mut s = sched_lock!();
+    match s.tasks.get_mut(target_slot).and_then(|t| t.as_mut()) {
+        Some(t) => {
+            t.pgid = want;
+            0
+        }
+        None => PgidErr::Srch.to_err(),
+    }
+}
+
+/// SYS_GETPGID 承接（真车道——0 = 自；SRCH 缺席）。
+pub fn sys_getpgid(raw_pid: i32) -> u64 {
+    let _w = IntWindow::new();
+    if raw_pid < 0 {
+        return PgidErr::Inval.to_err();
+    }
+    let caller_slot = crate::procs::current_pid() as usize;
+    let target_slot = if raw_pid == 0 {
+        caller_slot
+    } else {
+        raw_pid as u32 as usize
+    };
+    let s = sched_lock!();
+    match s.tasks.get(target_slot).and_then(|t| t.as_ref()) {
+        Some(t) => u64::from(t.pgid),
+        None => PgidErr::Srch.to_err(),
+    }
+}
+
+/// SYS_GETPGRP 承接（真车道——getpgid(0) 同面）。
+pub fn sys_getpgrp() -> u64 {
+    let _w = IntWindow::new();
+    sys_getpgid(0)
+}
+
+/// SYS_SETSID 承接（真车道——组长拒收域 + sid/pgid 双写面）。
+pub fn sys_setsid() -> u64 {
+    let _w = IntWindow::new();
+    let caller_slot = crate::procs::current_pid() as usize;
+    let caller_pgid = {
+        let s = sched_lock!();
+        s.tasks
+            .get(caller_slot)
+            .and_then(|t| t.as_ref())
+            .map(|t| t.pgid)
+            .unwrap_or(0)
+    };
+    match setsid_check(caller_pgid, caller_slot as u32) {
+        Ok(newid) => {
+            let mut s = sched_lock!();
+            if let Some(t) = s.tasks.get_mut(caller_slot).and_then(|t| t.as_mut()) {
+                t.sid = newid;
+                t.pgid = newid;
+            }
+            u64::from(newid)
+        }
+        Err(e) => e.to_err(),
     }
 }
 
@@ -1520,6 +1742,16 @@ fn spawn_fork_child_impl(
         .and_then(|p| p.as_ref())
         .map(|p| p.creds)
         .unwrap_or(Creds::ROOT);
+    // M49-PGRP62 笔71：进程组/会话域全量继承（Linux fork 同款——
+    // 父槽缺失防御回退 root 哨兵 0 域）。
+    let (p_pgid, p_sid) = s
+        .tasks
+        .get(parent)
+        .and_then(|p| p.as_ref())
+        .map(|p| (p.pgid, p.sid))
+        .unwrap_or((0, 0));
+    t.pgid = p_pgid;
+    t.sid = p_sid;
     // M34-B1：cwd 继承（fork 子代 = 父工作目录——Linux 同款；
     // 父槽缺失防御回退根哨兵 None）。
     t.cwd = s

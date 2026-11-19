@@ -535,6 +535,7 @@ mod bench {
         let p99_ns = samples[samples.len() * 99 / 100];
         std::println!("H-P05 freelist alloc+free mean = {mean_ns} ns/pair (host, 64B slot)");
         std::println!("H-P05 freelist alloc+free p99  = {p99_ns} ns (host, per-call)");
-        assert!(mean_ns > 0 && p99_ns >= mean_ns, "基准打点结构性判读");
+        // 非序判读（时序断言禁令——p99 与均值序随负载漂移如实）。
+        assert!(mean_ns > 0, "基准打点非零判读");
     }
 }

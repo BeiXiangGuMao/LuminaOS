@@ -1978,7 +1978,10 @@ fn bench_ld_load_and_resolve() {
     println!("H-P02 ld load+reloc mean = {mean_ns} ns/op (host)");
     println!("H-P02 ld load+reloc p99  = {p99_ns} ns (host, per-call)");
     println!("H-P02 dl open+close pair mean = {chain_ns} ns/pair (host)");
-    assert!(mean_ns > 0 && p99_ns >= mean_ns, "基准打点结构性判读");
+    // 打点判读 = 非序结构性（p99 与均值序随负载漂移——首跑实录揭雷：
+    // 均值被离群慢样拉高时 p99 < mean 合法——时序断言禁令，数值面仅
+    // 登记 METRICS 对照）。
+    assert!(mean_ns > 0 && chain_ns > 0, "基准打点非零判读");
 }
 
 /// H-P03 四段打点基准（load-map / reloc / tls-init / init-exec——真件
