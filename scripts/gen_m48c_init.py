@@ -33,7 +33,7 @@ ARR_VA = RW_VA  # .init_array @ RW+0（双 8B 指针）+ .fini_array @+0x10（1 
 def dl_new_hash(n):
     h = 5381
     for c in n:
-        h = (h * 33) ^ c & 0xFFFFFFFF
+        h = (h * 33 + c) & 0xFFFFFFFF  # M50-MUSL70 揭雷①：官方加法口径（harbor dl_new_hash 同源修正）
     return h & 0xFFFFFFFF
 
 def build():

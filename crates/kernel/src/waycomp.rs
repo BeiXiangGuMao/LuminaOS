@@ -120,6 +120,46 @@ use crate::{fb, shm, task, unixsock};
 pub const WAYCOMP_SOCK_NAME: &[u8] = b"wayland-comp";
 /// 策略面视口（stdvga LFB 全谱 1920×1080——fb WIDTH/HEIGHT 同源）。
 pub const VIEWPORT: (u32, u32) = (1920, 1080);
+
+// --- 窗格标题栏带（M50-TEXT69 笔79——glyph::text 同源字体消费面） ---
+
+/// 标题栏带高（像素行 = glyph::text::GLYPH_H 同谱）。
+pub const PANE_TITLE_H: u32 = glyph::text::GLYPH_H as u32;
+/// 标题栏带底色（ARGB）。
+pub const PANE_TITLE_BG: u32 = 0xFF1A_1A1E;
+/// 标题栏文本前景色（ARGB）。
+pub const PANE_TITLE_FG: u32 = 0xFFE8_E8E8;
+/// 标题栏文本起点（窗格局部 x）。
+pub const PANE_TITLE_X: i32 = 8;
+/// 标题栏文本（v0 常量行——窗名动态域挂账）。
+pub const PANE_TITLE: &str = "LUMINA";
+
+/// 标题栏带像素（M50-TEXT69 笔79——纯函数：ly ∈ [0, 16) 带内
+/// glyph::text 字形命中 → 前景，否则底色；带外不适用〔消费面分流〕。
+/// 字形事实源 = glyph::text::FONT8X16（scripts/gen_font8x16.py 同源——
+/// 内核 font_gen.rs 为内核域同源副本，t158 金值双面锚定）。
+pub fn title_bar_px(lx: i32, ly: i32) -> u32 {
+    // O(1) 算术定位（M50 揭雷②收口：v0 逐字符 char_bytes 全 16 B
+    // 数组值拷贝 ×6/像素——全幅重呈现 2M 像素域计算量回归型竞窗
+    // 〔t145 收场排空窗实测溢出〕；改 glyph_row 单行读 + 除法定位，
+    // 语义金值不变〔t158 金值域同源〕）。
+    let cx_all = lx - PANE_TITLE_X;
+    if cx_all < 0 {
+        return PANE_TITLE_BG;
+    }
+    let glyph_i = (cx_all / glyph::text::GLYPH_W as i32) as usize;
+    if glyph_i >= PANE_TITLE.len() {
+        return PANE_TITLE_BG;
+    }
+    let cx = (cx_all % glyph::text::GLYPH_W as i32) as usize;
+    let ch = PANE_TITLE.as_bytes()[glyph_i] as char;
+    let bits = glyph::text::glyph_row(ch, ly as usize);
+    if bits & (0x80 >> cx) != 0 {
+        PANE_TITLE_FG
+    } else {
+        PANE_TITLE_BG
+    }
+}
 /// z 序基（master 顶层——t79 仲裁样本同谱；cascade 平面序号递减）。
 pub const POLICY_Z_BASE: i32 = 20;
 /// 会话 fb surface id 基跨度（session_seq − 1 左移域——跨会话 id 正交）。
@@ -1825,7 +1865,9 @@ fn apply_commits(
 }
 
 /// 损伤域代 Paint（fb 机械面像素写——pane 局部坐标域；越域静默丢弃
-/// 同 surf_px_write 契约）。
+/// 同 surf_px_write 契约。M50-TEXT69 笔79：窗格顶部 16px 标题栏带
+/// 分流〔title_bar_px glyph::text 渲染〕，内容域棋盘模式不变——
+/// 既有活体取样域 ly ≥ 16 正交〔t104 ly≥100 / t106 池直读域〕）。
 fn paint_damage(fb_id: u32, slot: usize, pane: Rect, dmg: Rect) {
     if dmg.w == 0 || dmg.h == 0 {
         return;
@@ -1835,7 +1877,12 @@ fn paint_damage(fb_id: u32, slot: usize, pane: Rect, dmg: Rect) {
         for sx in dmg.x..dmg.x + dmg.w as i32 {
             let lx = sx - pane.x;
             let ly = sy - pane.y;
-            fb::surf_px_write(slot, pages, pane.w, lx, ly, pane_pattern(fb_id, lx, ly));
+            let color = if (0..PANE_TITLE_H as i32).contains(&ly) {
+                title_bar_px(lx, ly)
+            } else {
+                pane_pattern(fb_id, lx, ly)
+            };
+            fb::surf_px_write(slot, pages, pane.w, lx, ly, color);
         }
     }
 }

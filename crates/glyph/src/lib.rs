@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 pub mod raster;
+pub mod text;
 
 /// 基准网格（逻辑像素）。
 pub const BASE_GRID: u32 = 24;

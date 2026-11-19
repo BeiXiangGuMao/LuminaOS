@@ -325,6 +325,12 @@ struct Task {
     /// 会话铸号（M49-PGRP62 笔71；Linux sid_t 同域；0 = root 会话哨兵
     /// ——kmain 口径）。fork 全量继承（Linux 同款）。
     sid: u32,
+    /// exec 记账位（M50-EEXEC65 笔75——exec 后进程组迁移禁令域；
+    /// Linux `did_exec` 同谱：execve 成功承接后置位，setpgid 对
+    /// 已 exec 的 caller 子进程返回 EACCES。fork/spawn 初值 false；
+    /// 置位面唯一收口 = [`crate::procs::exec_load_switch`] 成功路径
+    /// + [`set_execed`] setter）。
+    execed: bool,
 }
 
 impl Task {
@@ -366,6 +372,7 @@ impl Task {
             resident: false,
             pgid: 0,
             sid: 0,
+            execed: false,
         }
     }
 
@@ -463,6 +470,7 @@ impl Task {
             resident: false,
             pgid: 0,
             sid: 0,
+            execed: false,
         }
     }
 }
@@ -548,11 +556,11 @@ impl Creds {
 
 // ---- 进程组/会话域（M49-PGRP62 笔71——多用户纵深三批余项：Linux
 // setpgid/getpgid/getpgrp/setsid 同谱语义核 + 真面承接；纯函数宿主面
-// + 真车道包装双域；EACCES exec 后迁移禁令 v0 域清单外如实记账——
-// Task 无 execed 标记位，随 execed 记账批次滚动） ----
+// + 真车道包装双域；M50-EEXEC65 笔75 追加：exec 记账位 execed +
+// setpgid EACCES 禁令判据〔子进程已 execve 翼〕——Linux did_exec 同谱） ----
 
 /// 进程组/会话域错误族（errno 语义域——ERR_SRCH(14)/ERR_PERM(15)/
-/// 坏参数哨兵 u64::MAX-1 映射承接）。
+/// ERR_ACCES(16)/坏参数哨兵 u64::MAX-1 映射承接）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PgidErr {
     /// ESRCH——目标进程不在册。
@@ -560,16 +568,21 @@ pub enum PgidErr {
     /// EPERM——规则域拒收（非自非子 / 跨会话迁移 / 入组越会话 / 组长
     /// setsid）。
     Eperm,
+    /// EACCES——caller 子进程已 execve 后的进程组改写禁令
+    /// （M50-EEXEC65 笔75——Linux setpgid(2) EACCES 同谱）。
+    Eacces,
     /// EINVAL——pid/pgid 负域（parse 层已拒，语义核防御域）。
     Inval,
 }
 
 impl PgidErr {
-    /// LXE1 错误码映射（ERR_SRCH(14) / ERR_PERM(15) / 坏参数哨兵）。
+    /// LXE1 错误码映射（ERR_SRCH(14) / ERR_PERM(15) / ERR_ACCES(16) /
+    /// 坏参数哨兵）。
     pub fn to_err(self) -> u64 {
         match self {
             PgidErr::Srch => bedrock::abi::ERR_SRCH,
             PgidErr::Eperm => bedrock::abi::ERR_PERM,
+            PgidErr::Eacces => bedrock::abi::ERR_ACCES,
             PgidErr::Inval => u64::MAX - 1,
         }
     }
@@ -580,10 +593,13 @@ impl PgidErr {
 /// ① pid/pgid 0 域展开（0 = 自 / 0 = 目标 pid 自铸）；
 /// ② SRCH——目标不在册；
 /// ③ EPERM——target ≠ caller 且非 caller 子进程（Linux 同款）；
-/// ④ EPERM——跨会话迁移禁令（sid(target) ≠ sid(caller)——Linux 同款）；
-/// ⑤ 组域合法性——自铸（want == target pid）∨ 入组（want 组长同会话
+/// ④ EACCES——target 为 caller 子进程且已 execve（M50-EEXEC65 笔75
+///    ——Linux did_exec 同谱；自铸域豁免——caller 自身 exec 后仍可
+///    自铸组）；
+/// ⑤ EPERM——跨会话迁移禁令（sid(target) ≠ sid(caller)——Linux 同款）；
+/// ⑥ 组域合法性——自铸（want == target pid）∨ 入组（want 组长同会话
 ///    在册——`want_leader_in_session` 谓词）；
-/// ⑥ 其余 → EPERM。
+/// ⑦ 其余 → EPERM。
 pub fn setpgid_check(
     raw_pid: i32,
     raw_pgid: i32,
@@ -604,6 +620,11 @@ pub fn setpgid_check(
     }
     if !p.is_self_or_child {
         return Err(PgidErr::Eperm);
+    }
+    // M50-EEXEC65：exec 后迁移禁令——仅对子进程翼（非自铸域）。
+    let is_self = p.target_pid == caller_pid;
+    if !is_self && p.target_execed {
+        return Err(PgidErr::Eacces);
     }
     if !p.same_session {
         return Err(PgidErr::Eperm);
@@ -628,6 +649,9 @@ pub struct PgrpPreds {
     pub target_pid: u32,
     /// 入组谓词位（want 组长同会话在册）。
     pub want_leader_in_session: bool,
+    /// exec 记账位（M50-EEXEC65 笔75——SCHED 锁窗采集 target.execed；
+    /// EACCES 判据消费面——仅子进程翼生效）。
+    pub target_execed: bool,
 }
 
 /// setsid 语义核（Linux 同谱——组长拒收域；纯函数宿主面）。
@@ -663,6 +687,8 @@ fn pgrp_preds(caller_slot: usize, raw_pid: i32, want: u32) -> (PgrpPreds, u32) {
     let target_sid = target.map(|t| t.sid).unwrap_or(0);
     let same_session = caller_sid == target_sid;
     let target_pid = target_slot as u32;
+    // exec 记账位（M50-EEXEC65——SCHED 锁窗单点采集）。
+    let target_execed = target.is_some_and(|t| t.execed);
     // 入组谓词：want 组长同会话在册（组 = want 的活任务且 sid 同会话）。
     let want_leader_in_session = want != 0
         && s.tasks.iter().any(|t| {
@@ -676,9 +702,32 @@ fn pgrp_preds(caller_slot: usize, raw_pid: i32, want: u32) -> (PgrpPreds, u32) {
             same_session,
             target_pid,
             want_leader_in_session,
+            target_execed,
         },
         caller_pid,
     )
+}
+
+/// exec 记账位置面（M50-EEXEC65 笔75——SCHED 锁窗单点写；消费方：
+/// [`crate::procs::exec_load_switch`] 成功路径置位 + 自检活体记账面。
+/// fork 子代初值 false 不继承父位——Linux `did_exec` fork 语义同谱）。
+pub(crate) fn set_execed(slot: usize, v: bool) {
+    let mut s = sched_lock!();
+    if let Some(t) = s.tasks.get_mut(slot).and_then(|t| t.as_mut()) {
+        t.execed = v;
+    }
+}
+
+/// 父子登记面（M50-EEXEC65 笔75——SCHED 锁窗单点写；自检活体记账域：
+/// `spawn` 铸造的内核任务 parent 初值 None（内核直接派生），EACCES
+/// 禁令真车道活体须以本面登记 caller 父子关系后行使〔Linux 父子
+/// setpgid 域同谱〕；生产域父子归属唯一来源 = spawn_fork_child/
+/// spawn_stage 铸造面，本面不自产生产父子）。
+pub(crate) fn set_parent_slot(slot: usize, parent: usize) {
+    let mut s = sched_lock!();
+    if let Some(t) = s.tasks.get_mut(slot).and_then(|t| t.as_mut()) {
+        t.parent = Some(parent);
+    }
 }
 
 /// SYS_SETPGID 承接（真车道——语义核 + 锁窗写面）。

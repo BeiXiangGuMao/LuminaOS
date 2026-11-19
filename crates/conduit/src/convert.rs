@@ -148,6 +148,9 @@ pub fn err_to_errno(code: u64) -> Option<i32> {
         // EPERM 规则域拒收（Linux setpgid/setsid 语义面）。
         abi::ERR_SRCH => errno::ESRCH,
         abi::ERR_PERM => errno::EPERM,
+        // M50-EEXEC65（v0.26）：exec 后进程组迁移禁令域——EACCES
+        // （Linux setpgid(2) EACCES 语义面：caller 子进程已 execve）。
+        abi::ERR_ACCES => errno::EACCES,
         _ => return None,
     };
     Some(errno)
@@ -173,6 +176,9 @@ pub fn errno_to_err(errno: i32) -> Option<u64> {
         // M42-COMP4（v0.21）：EOF 对端终结域写侧显形——EPIPE 反向
         // 登记（ERR_PIPE 一对一，无歧义收敛域）。
         errno::EPIPE => abi::ERR_PIPE,
+        // M50-EEXEC65（v0.26）：EACCES 反向登记（ERR_ACCES 一对一，
+        // 无歧义收敛域）。
+        errno::EACCES => abi::ERR_ACCES,
         _ => return None,
     };
     Some(code)
@@ -593,11 +599,13 @@ mod tests {
                                                            // M49-PGRP62（v0.25）：进程组/会话域双码
         assert_eq!(err_to_errno(abi::ERR_SRCH), Some(3)); // ESRCH
         assert_eq!(err_to_errno(abi::ERR_PERM), Some(1)); // EPERM
-                                                          // 域外：成功(0)/哨兵/越界 → None
+                                                          // M50-EEXEC65（v0.26）：exec 后进程组迁移禁令域单码
+        assert_eq!(err_to_errno(abi::ERR_ACCES), Some(13)); // EACCES
+                                                            // 域外：成功(0)/哨兵/越界 → None
         assert_eq!(err_to_errno(0), None);
         assert_eq!(err_to_errno(u64::MAX), None);
         assert_eq!(err_to_errno(u64::MAX - 1), None);
-        assert_eq!(err_to_errno(16), None); // 15 后首未登记号
+        assert_eq!(err_to_errno(17), None); // 16 后首未登记号
                                             // 反向：登记 9 项 + 未登记透传域
         assert_eq!(errno_to_err(1), Some(abi::ERR_CAP));
         assert_eq!(errno_to_err(11), Some(abi::ERR_EMPTY));
@@ -608,7 +616,8 @@ mod tests {
         assert_eq!(errno_to_err(24), Some(abi::ERR_TABLE));
         assert_eq!(errno_to_err(8), Some(abi::ERR_IMAGE));
         assert_eq!(errno_to_err(32), Some(abi::ERR_PIPE)); // M42-COMP4
-                                                           // 未登记 errno：文件面透传值（ENOENT/EINVAL/EFAULT/EEXIST…）
+        assert_eq!(errno_to_err(13), Some(abi::ERR_ACCES)); // M50-EEXEC65
+                                                            // 未登记 errno：文件面透传值（ENOENT/EINVAL/EFAULT/EEXIST…）
         assert_eq!(errno_to_err(2), None);
         assert_eq!(errno_to_err(22), None);
         assert_eq!(errno_to_err(14), None);

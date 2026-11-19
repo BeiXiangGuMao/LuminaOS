@@ -372,6 +372,15 @@ pub enum WlIface {
     Shm,
     /// wl_shm_pool。
     ShmPool,
+    /// xdg_wm_base（M50-XDGSHELL66 笔76——xdg_shell 窗口管理协议入口，
+    /// version 1..=6 域；registry 名 "xdg_wm_base"）。
+    XdgWmBase,
+    /// xdg_surface（M50-XDGSHELL66 笔76——wm_base.get_xdg_surface 派生
+    /// 对象：per-surface 窗口角色装载体）。
+    XdgSurface,
+    /// xdg_toplevel（M50-XDGSHELL66 笔76——xdg_surface.get_toplevel
+    /// 派生对象：toplevel 应用窗角色）。
+    XdgToplevel,
 }
 
 /// 接口官方名（registry global 事件 interface string 事实源）。
@@ -390,6 +399,9 @@ pub fn iface_name(iface: WlIface) -> &'static str {
         WlIface::Region => "wl_region",
         WlIface::Shm => "wl_shm",
         WlIface::ShmPool => "wl_shm_pool",
+        WlIface::XdgWmBase => "xdg_wm_base",
+        WlIface::XdgSurface => "xdg_surface",
+        WlIface::XdgToplevel => "xdg_toplevel",
     }
 }
 
@@ -696,6 +708,82 @@ pub mod shm_pool {
     pub const REQ_RESIZE: u16 = 2;
 }
 
+/// xdg_wm_base 请求/事件 opcode（M50-XDGSHELL66 笔76——官方
+/// xdg-shell.xml 声明序；请求序 destroy/get_xdg_surface/pong，
+/// 事件 ping——v0 最小面：窗口管理协议入口 + liveness 契约）。
+pub mod xdg_wm_base {
+    /// request destroy。
+    pub const REQ_DESTROY: u16 = 0;
+    /// request get_xdg_surface（new_id + object surface）。
+    pub const REQ_GET_XDG_SURFACE: u16 = 1;
+    /// request pong（uint serial——ping 应答，官方 liveness 契约）。
+    pub const REQ_PONG: u16 = 2;
+    /// event ping（uint serial——客户端必须回 pong，v0 死亡拒绝禁令
+    /// 域外挂账：服务端 v0 不主动 ping，契约面先行）。
+    pub const EV_PING: u16 = 0;
+}
+
+/// xdg_surface 请求/事件 opcode（M50-XDGSHELL66 笔76——官方声明序；
+/// configure/ack_configure 双向序契约：commit 前必须 ack 最近一次
+/// configure，v0 契约面先行，电气挂账笔77）。
+pub mod xdg_surface {
+    /// request destroy。
+    pub const REQ_DESTROY: u16 = 0;
+    /// request get_toplevel（new_id）。
+    pub const REQ_GET_TOPLEVEL: u16 = 1;
+    /// request get_popup（new_id + object parent + object positioner——
+    /// v0 挂账：popup 角色域）。
+    pub const REQ_GET_POPUP: u16 = 2;
+    /// request set_window_geometry（int × 4）。
+    pub const REQ_SET_WINDOW_GEOMETRY: u16 = 3;
+    /// request ack_configure（uint serial）。
+    pub const REQ_ACK_CONFIGURE: u16 = 4;
+    /// event configure（uint serial——toled 初始几何零值 = 服务端策略
+    /// 自主；客户端 commit 前必须 ack）。
+    pub const EV_CONFIGURE: u16 = 0;
+}
+
+/// xdg_toplevel 请求/事件 opcode（M50-XDGSHELL66 笔76——官方声明序；
+/// v0 最小面主事件 = configure/close，窗口交互请求域外如实挂账）。
+pub mod xdg_toplevel {
+    /// request destroy。
+    pub const REQ_DESTROY: u16 = 0;
+    /// request set_parent（object）。
+    pub const REQ_SET_PARENT: u16 = 1;
+    /// request set_title（string——v0 最小面主请求）。
+    pub const REQ_SET_TITLE: u16 = 2;
+    /// request set_app_id（string）。
+    pub const REQ_SET_APP_ID: u16 = 3;
+    /// request show_window_menu（object seat + uint serial + int × 2）。
+    pub const REQ_SHOW_WINDOW_MENU: u16 = 4;
+    /// request move（object seat + uint serial）。
+    pub const REQ_MOVE: u16 = 5;
+    /// request resize（object seat + uint serial + uint edges）。
+    pub const REQ_RESIZE: u16 = 6;
+    /// request set_max_size（int × 2）。
+    pub const REQ_SET_MAX_SIZE: u16 = 7;
+    /// request set_min_size（int × 2）。
+    pub const REQ_SET_MIN_SIZE: u16 = 8;
+    /// request set_maximized。
+    pub const REQ_SET_MAXIMIZED: u16 = 9;
+    /// request unset_maximized。
+    pub const REQ_UNSET_MAXIMIZED: u16 = 10;
+    /// request set_fullscreen（object output）。
+    pub const REQ_SET_FULLSCREEN: u16 = 11;
+    /// request unset_fullscreen。
+    pub const REQ_UNSET_FULLSCREEN: u16 = 12;
+    /// request set_minimized。
+    pub const REQ_SET_MINIMIZED: u16 = 13;
+    /// event configure（int width + int height + array states）。
+    pub const EV_CONFIGURE: u16 = 0;
+    /// event close（——v0 最小面主事件：用户关闭请求）。
+    pub const EV_CLOSE: u16 = 1;
+    /// event configure_bounds（int × 2，v4+）。
+    pub const EV_CONFIGURE_BOUNDS: u16 = 2;
+    /// event wm_capabilities（array，v5+）。
+    pub const EV_WM_CAPABILITIES: u16 = 3;
+}
+
 // ---------------------------------------------------------------------------
 // 核心子集签名表（官方 XML arg 声明序逐条对账——parse_message 消费域）
 // ---------------------------------------------------------------------------
@@ -808,6 +896,33 @@ pub const SIG_SHM_POOL_CREATE_BUFFER: &[WlType] = &[
 ];
 /// wl_shm_pool.destroy：`()`。
 pub const SIG_SHM_POOL_DESTROY: &[WlType] = &[];
+
+// --- xdg_shell 窗口管理协议签名表（M50-XDGSHELL66 笔76——官方
+// xdg-shell.xml arg 声明序逐条对账） ---
+
+/// xdg_wm_base.get_xdg_surface：`(new_id, object)`。
+pub const SIG_XDG_WM_BASE_GET_XDG_SURFACE: &[WlType] = &[WlType::NewId, WlType::Object];
+/// xdg_wm_base.pong：`(uint)`。
+pub const SIG_XDG_WM_BASE_PONG: &[WlType] = &[WlType::Uint];
+/// xdg_wm_base.ping：`(uint)`。
+pub const SIG_XDG_WM_BASE_PING: &[WlType] = &[WlType::Uint];
+/// xdg_surface.get_toplevel：`(new_id)`。
+pub const SIG_XDG_SURFACE_GET_TOPLEVEL: &[WlType] = &[WlType::NewId];
+/// xdg_surface.set_window_geometry：`(int × 4)`。
+pub const SIG_XDG_SURFACE_SET_WINDOW_GEOMETRY: &[WlType] =
+    &[WlType::Int, WlType::Int, WlType::Int, WlType::Int];
+/// xdg_surface.ack_configure：`(uint)`。
+pub const SIG_XDG_SURFACE_ACK_CONFIGURE: &[WlType] = &[WlType::Uint];
+/// xdg_surface.configure：`(uint)`。
+pub const SIG_XDG_SURFACE_CONFIGURE: &[WlType] = &[WlType::Uint];
+/// xdg_toplevel.set_title：`(string)`。
+pub const SIG_XDG_TOPLEVEL_SET_TITLE: &[WlType] = &[WlType::Str];
+/// xdg_toplevel.set_app_id：`(string)`。
+pub const SIG_XDG_TOPLEVEL_SET_APP_ID: &[WlType] = &[WlType::Str];
+/// xdg_toplevel.configure：`(int, int, array)`——states 数组字节域。
+pub const SIG_XDG_TOPLEVEL_CONFIGURE: &[WlType] = &[WlType::Int, WlType::Int, WlType::Array];
+/// xdg_toplevel.close：`()`。
+pub const SIG_XDG_TOPLEVEL_CLOSE: &[WlType] = &[];
 
 // --- 输入链语义常量（官方 XML 枚举值逐字对账——宿主测试 + t109 消费面） ---
 
@@ -966,6 +1081,145 @@ pub fn encode_display_delete_id_event(
 /// wl_surface.commit 请求编组（零参消息——签名空表域）。
 pub fn encode_surface_commit(buf: &mut [u8], surface_id: u32) -> Result<usize, WlError> {
     encode_message(buf, surface_id, surface::REQ_COMMIT, &[])
+}
+
+// --- xdg_shell 窗口管理协议编组器（M50-XDGSHELL66 笔76——v0 最小面：
+//     get_xdg_surface / get_toplevel / set_title / set_app_id / pong /
+//     ack_configure 六请求 + ping/configure/close 三事件；官方
+//     xdg-shell.xml 声明序，configure/ack 双向序契约面先行） ---
+
+/// xdg_wm_base.get_xdg_surface 请求编组（per-surface 窗口角色装载体）。
+pub fn encode_xdg_wm_base_get_xdg_surface(
+    buf: &mut [u8],
+    wmbase_id: u32,
+    xdg_surface_new_id: u32,
+    surface_id: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        wmbase_id,
+        xdg_wm_base::REQ_GET_XDG_SURFACE,
+        &[WlArg::NewId(xdg_surface_new_id), WlArg::Object(surface_id)],
+    )
+}
+
+/// xdg_wm_base.pong 请求编组（ping 应答——官方 liveness 契约）。
+pub fn encode_xdg_wm_base_pong(
+    buf: &mut [u8],
+    wmbase_id: u32,
+    serial: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        wmbase_id,
+        xdg_wm_base::REQ_PONG,
+        &[WlArg::Uint(serial)],
+    )
+}
+
+/// xdg_wm_base.ping 事件编组（服务端 → 客户端 liveness 探测；v0 服务端
+/// 不主动 ping——契约面先行，电气挂账）。
+pub fn encode_xdg_wm_base_ping_event(
+    buf: &mut [u8],
+    wmbase_id: u32,
+    serial: u32,
+) -> Result<usize, WlError> {
+    encode_message(buf, wmbase_id, xdg_wm_base::EV_PING, &[WlArg::Uint(serial)])
+}
+
+/// xdg_surface.get_toplevel 请求编组（toplevel 应用窗角色派生）。
+pub fn encode_xdg_surface_get_toplevel(
+    buf: &mut [u8],
+    xdg_surface_id: u32,
+    toplevel_new_id: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        xdg_surface_id,
+        xdg_surface::REQ_GET_TOPLEVEL,
+        &[WlArg::NewId(toplevel_new_id)],
+    )
+}
+
+/// xdg_surface.ack_configure 请求编组（commit 前必须 ack 最近一次
+/// configure——官方双向序契约）。
+pub fn encode_xdg_surface_ack_configure(
+    buf: &mut [u8],
+    xdg_surface_id: u32,
+    serial: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        xdg_surface_id,
+        xdg_surface::REQ_ACK_CONFIGURE,
+        &[WlArg::Uint(serial)],
+    )
+}
+
+/// xdg_surface.configure 事件编组（初始几何零值 = 服务端策略自主；
+/// 客户端 commit 前必须 ack 本串号）。
+pub fn encode_xdg_surface_configure_event(
+    buf: &mut [u8],
+    xdg_surface_id: u32,
+    serial: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        xdg_surface_id,
+        xdg_surface::EV_CONFIGURE,
+        &[WlArg::Uint(serial)],
+    )
+}
+
+/// xdg_toplevel.set_title 请求编组（v0 最小面主请求——标题字符串）。
+pub fn encode_xdg_toplevel_set_title(
+    buf: &mut [u8],
+    toplevel_id: u32,
+    title: &str,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        toplevel_id,
+        xdg_toplevel::REQ_SET_TITLE,
+        &[WlArg::Str(title.as_bytes())],
+    )
+}
+
+/// xdg_toplevel.set_app_id 请求编组。
+pub fn encode_xdg_toplevel_set_app_id(
+    buf: &mut [u8],
+    toplevel_id: u32,
+    app_id: &str,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        toplevel_id,
+        xdg_toplevel::REQ_SET_APP_ID,
+        &[WlArg::Str(app_id.as_bytes())],
+    )
+}
+
+/// xdg_toplevel.configure 事件编组（w/h 零值 = 服务端策略自主 +
+/// states 数组字节域——v0 空态数组）。
+pub fn encode_xdg_toplevel_configure_event(
+    buf: &mut [u8],
+    toplevel_id: u32,
+    width: i32,
+    height: i32,
+    states: &[u8],
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        toplevel_id,
+        xdg_toplevel::EV_CONFIGURE,
+        &[WlArg::Int(width), WlArg::Int(height), WlArg::Array(states)],
+    )
+}
+
+/// xdg_toplevel.close 事件编组（v0 最小面主事件——用户关闭请求，
+/// 官方语义：客户端销毁窗口对象不再等 configure）。
+pub fn encode_xdg_toplevel_close_event(buf: &mut [u8], toplevel_id: u32) -> Result<usize, WlError> {
+    encode_message(buf, toplevel_id, xdg_toplevel::EV_CLOSE, &[])
 }
 
 /// wl_seat.capabilities 事件编组（M42-INPUT7 输入链——seat bind 后
@@ -1715,6 +1969,110 @@ mod tests {
         let m = parse_message(&buf, SIG_POINTER_AXIS_VALUE120).expect("parse");
         assert_eq!(m.header.opcode, pointer::EV_AXIS_VALUE120);
         assert_eq!(m.args[1], Some(WlArg::Int(-240)));
+        assert_eq!(m.wire_size(), n);
+    }
+
+    /// xdg_shell 窗口管理协议 wire 面（M50-XDGSHELL66 笔76）：
+    /// 接口名事实源 + 六请求三事件编组/解析回环 + opcode 官方声明序锚
+    /// + states 空数组域 + close 零参域。
+    #[test]
+    fn xdg_shell_wire_face() {
+        // (a) 接口名事实源（registry global interface string 域）。
+        assert_eq!(iface_name(WlIface::XdgWmBase), "xdg_wm_base");
+        assert_eq!(iface_name(WlIface::XdgSurface), "xdg_surface");
+        assert_eq!(iface_name(WlIface::XdgToplevel), "xdg_toplevel");
+        // (b) opcode 官方声明序锚（xdg-shell.xml 逐条对账）。
+        assert_eq!(xdg_wm_base::REQ_DESTROY, 0);
+        assert_eq!(xdg_wm_base::REQ_GET_XDG_SURFACE, 1);
+        assert_eq!(xdg_wm_base::REQ_PONG, 2);
+        assert_eq!(xdg_wm_base::EV_PING, 0);
+        assert_eq!(xdg_surface::REQ_DESTROY, 0);
+        assert_eq!(xdg_surface::REQ_GET_TOPLEVEL, 1);
+        assert_eq!(xdg_surface::REQ_GET_POPUP, 2);
+        assert_eq!(xdg_surface::REQ_SET_WINDOW_GEOMETRY, 3);
+        assert_eq!(xdg_surface::REQ_ACK_CONFIGURE, 4);
+        assert_eq!(xdg_surface::EV_CONFIGURE, 0);
+        assert_eq!(xdg_toplevel::REQ_DESTROY, 0);
+        assert_eq!(xdg_toplevel::REQ_SET_PARENT, 1);
+        assert_eq!(xdg_toplevel::REQ_SET_TITLE, 2);
+        assert_eq!(xdg_toplevel::REQ_SET_APP_ID, 3);
+        assert_eq!(xdg_toplevel::EV_CONFIGURE, 0);
+        assert_eq!(xdg_toplevel::EV_CLOSE, 1);
+        assert_eq!(xdg_toplevel::EV_CONFIGURE_BOUNDS, 2);
+        assert_eq!(xdg_toplevel::EV_WM_CAPABILITIES, 3);
+        // (c) get_xdg_surface 请求编组/回环（new_id + object 双参）。
+        let mut buf = [0u8; 64];
+        let n = encode_xdg_wm_base_get_xdg_surface(&mut buf, 0x40, 0x41, 0x21).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_WM_BASE_GET_XDG_SURFACE).expect("parse");
+        assert_eq!(m.header.object_id, 0x40);
+        assert_eq!(m.header.opcode, xdg_wm_base::REQ_GET_XDG_SURFACE);
+        assert_eq!(m.args[0], Some(WlArg::NewId(0x41)));
+        assert_eq!(m.args[1], Some(WlArg::Object(0x21)));
+        assert_eq!(m.wire_size(), n);
+        assert_eq!(n, 16, "8 头 + 8 体（new_id + object）");
+        // (d) get_toplevel 请求（单 new_id）+ ack_configure（单 uint）。
+        let n = encode_xdg_surface_get_toplevel(&mut buf, 0x41, 0x42).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_SURFACE_GET_TOPLEVEL).expect("parse");
+        assert_eq!(m.header.opcode, xdg_surface::REQ_GET_TOPLEVEL);
+        assert_eq!(m.args[0], Some(WlArg::NewId(0x42)));
+        assert_eq!(m.wire_size(), n);
+        assert_eq!(n, 12, "8 头 + 4 体");
+        let n = encode_xdg_surface_ack_configure(&mut buf, 0x41, 7).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_SURFACE_ACK_CONFIGURE).expect("parse");
+        assert_eq!(m.args[0], Some(WlArg::Uint(7)));
+        assert_eq!(m.wire_size(), n);
+        // (e) set_title/set_app_id 请求（string 载荷 NUL 填充域回读）。
+        let n = encode_xdg_toplevel_set_title(&mut buf, 0x42, "Lumina Terminal").expect("encode");
+        let m = parse_message(&buf, SIG_XDG_TOPLEVEL_SET_TITLE).expect("parse");
+        assert_eq!(m.header.opcode, xdg_toplevel::REQ_SET_TITLE);
+        match m.args[0] {
+            Some(WlArg::Str(s)) => {
+                // 官方 wire 契约：编组载荷不含 NUL 终止符，wire 层尾部
+                // NUL 填充域由 encode_message 补齐、解析面保证剔除。
+                assert_eq!(s, b"Lumina Terminal");
+                assert_eq!(s.len(), 15, "载荷字节数（NUL 在 wire 尾填充域）");
+            }
+            _ => panic!("title 应为 Str 载荷"),
+        }
+        assert_eq!(m.wire_size(), n);
+        let n = encode_xdg_toplevel_set_app_id(&mut buf, 0x42, "org.lumina.term").expect("encode");
+        let m = parse_message(&buf, SIG_XDG_TOPLEVEL_SET_APP_ID).expect("parse");
+        assert_eq!(m.header.opcode, xdg_toplevel::REQ_SET_APP_ID);
+        assert_eq!(m.wire_size(), n);
+        // (f) configure/ack 双向序契约面（服务端 configure 事件串号 +
+        //     客户端 ack 同串号回环——官方 liveness 同谱）。
+        let n = encode_xdg_surface_configure_event(&mut buf, 0x41, 7).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_SURFACE_CONFIGURE).expect("parse");
+        assert_eq!(m.header.opcode, xdg_surface::EV_CONFIGURE);
+        assert_eq!(m.args[0], Some(WlArg::Uint(7)));
+        assert_eq!(m.wire_size(), n);
+        // (g) toplevel configure 事件（w/h + 空态数组域）。
+        let n = encode_xdg_toplevel_configure_event(&mut buf, 0x42, 0, 0, &[]).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_TOPLEVEL_CONFIGURE).expect("parse");
+        assert_eq!(m.header.opcode, xdg_toplevel::EV_CONFIGURE);
+        assert_eq!(m.args[0], Some(WlArg::Int(0)), "w 零值 = 服务端策略自主");
+        assert_eq!(m.args[1], Some(WlArg::Int(0)));
+        match m.args[2] {
+            Some(WlArg::Array(s)) => assert_eq!(s, b"", "v0 空态数组"),
+            _ => panic!("states 应为 Array 载荷"),
+        }
+        assert_eq!(m.wire_size(), n);
+        assert_eq!(n, 20, "8 头 + 8 体（int×2）+ 4 数组长 + 0 载荷");
+        // (h) close 事件（零参——v0 最小面主事件）+ ping/pong liveness。
+        let n = encode_xdg_toplevel_close_event(&mut buf, 0x42).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_TOPLEVEL_CLOSE).expect("parse");
+        assert_eq!(m.header.opcode, xdg_toplevel::EV_CLOSE);
+        assert_eq!(m.wire_size(), n);
+        assert_eq!(n, 8, "零参 = 纯头");
+        let n = encode_xdg_wm_base_ping_event(&mut buf, 0x40, 99).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_WM_BASE_PING).expect("parse");
+        assert_eq!(m.header.opcode, xdg_wm_base::EV_PING);
+        assert_eq!(m.args[0], Some(WlArg::Uint(99)));
+        assert_eq!(m.wire_size(), n);
+        let n = encode_xdg_wm_base_pong(&mut buf, 0x40, 99).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_WM_BASE_PONG).expect("parse");
+        assert_eq!(m.header.opcode, xdg_wm_base::REQ_PONG);
+        assert_eq!(m.args[0], Some(WlArg::Uint(99)));
         assert_eq!(m.wire_size(), n);
     }
 }

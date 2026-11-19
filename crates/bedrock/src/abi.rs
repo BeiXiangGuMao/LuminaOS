@@ -711,12 +711,14 @@ pub const SYS_EXEC: u64 = 17;
 /// v0.16 = M15：目录面五落点 MKDIR/REMOVE/READDIR/MOUNT/UMOUNT +
 /// 句柄面深化 DUP/FCNTL（CLOEXEC）+ NANOSLEEP 参数语义升级为 TSC 纳秒。
 /// v0.8 = SYS_QUOTA；v0.7 = 文件面六落点 + NANOSLEEP + 统一句柄面）。
-/// 系统调用 ABI 版本（v0.25 = M49-PGRP62 笔71：新增 SYS_SETPGID(48)/
+/// 系统调用 ABI 版本（v0.26 = M50-EEXEC65 笔75：ERR_ACCES(16) 单码追加——
+/// exec 后进程组迁移禁令域（Linux setpgid EACCES 语义面——纯 err 码追加
+/// 零新号，M49 先例同谱“编号冻结只增不改”）；v0.25 = M49-PGRP62 笔71：新增 SYS_SETPGID(48)/
 /// SYS_GETPGID(49)/SYS_GETPGRP(50)/SYS_SETSID(51) 进程组/会话域四号 +
 /// ERR_SRCH(14)/ERR_PERM(15) 双码——多用户纵深三批余项；v0.24 =
 /// M47-LDCONS53 笔60：新增 SYS_MMAP(46) native 匿名映射面 +
 /// SYS_MPROTECT(47) 页保护改旗面——装载计划消费面电气域。
-pub const ABI_VERSION: (u16, u16) = (0, 25);
+pub const ABI_VERSION: (u16, u16) = (0, 26);
 
 /// ---------------------------------------------------------------------------
 /// LXE1 v0 错误码表（具名化事实源，M25-C1）：
@@ -770,6 +772,12 @@ pub const ERR_SRCH: u64 = 14;
 /// 不改”域；conduit 映射 `EPERM(1)`——ERR_CAP(1) 权限类粗粒度收敛的
 /// 细分目：进程组/会话规则域专用，勿与能力域混用）。
 pub const ERR_PERM: u64 = 15;
+
+/// 权限拒绝·exec 后迁移禁令（M50-EEXEC65 笔75——进程组/会话域纵深追加；
+/// “编号冻结只增不改”域；conduit 映射 `EACCES(13)`——Linux setpgid(2)
+/// EACCES 语义面：caller 子进程已 execve 后禁止改写其进程组；勿与
+/// ERR_PERM(15)/ERR_CAP(1) 混用——exec 记账域专用）。
+pub const ERR_ACCES: u64 = 16;
 
 /// 寄存器快照形式的系统调用请求。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1742,7 +1750,7 @@ mod tests {
         assert_eq!(super::SYS_DUP, 31);
         assert_eq!(super::SYS_FCNTL, 32);
         assert_eq!(super::SYS_IMAGE_ENUM, 33);
-        assert_eq!(super::ABI_VERSION, (0, 25));
+        assert_eq!(super::ABI_VERSION, (0, 26));
         assert_eq!(super::SYS_TTY_GETCH, 34);
         assert_eq!(
             super::parse(super::SyscallRegs {

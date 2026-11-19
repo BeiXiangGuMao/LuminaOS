@@ -61,11 +61,11 @@ R_X86_64_COPY = 5
 
 
 def dl_new_hash(name: bytes) -> int:
-    """GNU 权威口径（harbor::ld::dl_new_hash 同源——× 33 **异或**逐字节，
+    """GNU 权威口径（harbor::ld::dl_new_hash 同源——× 33 **加法**逐字节（M50-MUSL70 官方口径），
     5381 初值；语义锚：空串 = 5381、"a" = 5381×33^97 = 0x2B5C4）。"""
     h = 5381
     for c in name:
-        h = (h * 33) ^ c & 0xFFFFFFFF
+        h = (h * 33 + c) & 0xFFFFFFFF  # M50-MUSL70 揭雷①：官方加法口径（harbor dl_new_hash 同源修正）
     return h & 0xFFFFFFFF
 
 

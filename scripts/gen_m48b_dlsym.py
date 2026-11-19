@@ -7,7 +7,7 @@
      （原生 ABI ET_EXEC 静态映像）：**探针内真 GNU 哈希查找活体**——
      mmap(46) core 双窗（RX@+0x1000 / RW@+0x3000）→ rep movsb 双页拷贝
      （liblumina-core.so 真件——gen_m47b 单一事实源）→ **电算 GNU 哈希**
-     （h = 5381 × 33 异或逐字节——"core_fn" 七字符 imul/xor 展开）→
+     （h = 5381 × 33 加法逐字节〔M50-MUSL70 官方口径〕——"core_fn" 七字符 imul/add 展开）→
      **bloom 双位判读**（bt 双测——单位缺必不命中）→ **桶查**（h %
      nbuckets → buckets[.]）→ **桶链走查**（链尾旗判读 + sym 递进）→
      **名比对**（strtab + st_name 八字节 qword cmp——"core_fn\\0"）→
@@ -83,7 +83,7 @@ NEG_NAME = b"nosuch"  # 六字节 + NUL 填充八字节（qword 对齐域）
 def dl_new_hash(name: bytes) -> int:
     h = 5381
     for c in name:
-        h = (h * 33) ^ c & 0xFFFFFFFF
+        h = (h * 33 + c) & 0xFFFFFFFF  # M50-MUSL70 揭雷①：官方加法口径（harbor dl_new_hash 同源修正）
     return h & 0xFFFFFFFF
 
 
@@ -135,7 +135,7 @@ def build_hash_code(name: bytes, expected: int, neg: bool, bail_code: int) -> by
     U32(5381)
     for c in name:
         body.extend(b"\x45\x6b\xc0\x21")  # imul r8d, r8d, 33
-        body.extend(b"\x41\x83\xf0")  # xor r8d, imm8
+        body.extend(b"\x41\x83\xc0")  # add r8d, imm8（M50-MUSL70 揭雷①——官方加法口径，等长编码）
         body.append(c & 0xFF)
     body.extend(b"\x44\x89\xc0")  # mov eax, r8d
     body.extend(b"\x3d")  # cmp eax, expected
@@ -288,12 +288,12 @@ def build_probe_code() -> tuple[bytes, dict]:
     # 实录：表值全垃圾 → 桶查索引野值 #PF）
     copy_seq(0x2000, 0x1000, 0x1000)  # RX 页（blob 0x1000 + core RX 0x1000）
     copy_seq(0x3000, 0x3000, 0x200)  # RW filesz（blob 0x1000 + core RW 0x2000）
-    # 哈希对账①："core_fn" 电算 h == 0xdeed9c69（真表 core_fn 符号哈希——
+    # 哈希对账①："core_fn" 电算 h == 0xd3b9a741（官方加法口径——M50-MUSL70；
     # miss = 雷显形 bail 99）
     body.extend(build_hash_code(TARGET_NAME, dl_new_hash(TARGET_NAME), False, 99))
     # LOG(msg2)
     log_seq(MSG2_OFF)
-    # 哈希对账②："nosuch" 电算 h != 真符号哈希（core_fn 0xdeed9c69——
+    # 哈希对账②："nosuch" 电算 h != 真符号哈希（core_fn 0xd3b9a741——
     # 负例名对真表符号哈希域：相等 = 雷显形 bail 99；不等 = 负例电气
     # 收口 EXIT(92)——t151 LIVE 收割对账码）
     body.extend(build_hash_code(NEG_NAME, dl_new_hash(TARGET_NAME), True, 99))
@@ -406,8 +406,8 @@ def main():
     objdump_check(
         code,
         [
-            ("imul $0x21,%r8d,%r8d", "GNU 哈希电算锚（×33 异或域——AT&T 序）"),
-            ("cmp $0xdeed9c69,%eax", "正例哈希对账锚（h(core_fn) 真值）"),
+            ("imul $0x21,%r8d,%r8d", "GNU 哈希电算锚（×33 加法域——M50-MUSL70 官方口径）"),
+            ("cmp $0xd3b9a741,%eax", "正例哈希对账锚（h(core_fn) 官方加法真值——M50-MUSL70）"),
             ("rep movsb %ds:(%rsi),%es:(%rdi)", "分级拷贝锚"),
         ],
         n_sys,

@@ -724,6 +724,9 @@ pub(crate) fn exec_load_switch(
     // M33-L1：ABI 标志随装载链切换（ELF 链 = Linux 语义；LXE1 链 =
     // 原生语义——LXE1 映像可入 ELF 任务（双格式并行），标志随链定）
     task::set_lin_abi(caller, is_elf);
+    // M50-EEXEC65：exec 记账位置位（Linux did_exec 同谱——setpgid
+    // EACCES 禁令判据的记账面唯一收口）。
+    task::set_execed(caller, true);
     ostd::hw::control::write_cr3(es.root);
     frame.rip = es.entry;
     // M33-E1：ELF 链 rsp = 初始栈构造面（argc/argv/envp/auxv 已写栈顶帧）；

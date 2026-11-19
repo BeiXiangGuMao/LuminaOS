@@ -10,11 +10,11 @@ SMP、抢占式调度、ring3 用户进程、SYSCALL/SYSRET、能力化 IPC、sw
 
 | 指标 | 现值 |
 |---|---|
-| 裸机自检 | **156 项全绿**（QEMU 退出码 33 自动验收） |
+| 裸机自检 | **158 项全绿**（QEMU 退出码 33 自动验收） |
 | CI 门禁 | CI-OK 11 阶段（宿主七阶段 + IDL/lint + 内核构建 + 冒烟 + 报告） |
-| syscall ABI | v0.25（SYS_SETPGID/SYS_GETPGID/SYS_GETPGRP/SYS_SETSID 进程组/会话域四新号——M49-PGRP62） |
+| syscall ABI | v0.26（ERR_ACCES(16) 单码追加——exec 后进程组迁移禁令域 EACCES 语义面——M50-EEXEC65） |
 | 编译进程链 | 九形（协议/shm/服务环/常驻/合成器/契约标本/argv/解析/驱动） |
-| 双面板标记 | 245（S8 required + longrun 双面同步） |
+| 双面板标记 | 252（S8 required + longrun 双面同步） |
 
 ## 当前状态
 
@@ -284,6 +284,7 @@ lumina-build/              ← 编译产物 + 日志 + 报告（源码树外，�
 | v0.27.0 | M32–M41 | 九里程碑连发（Aurora SDK → busybox 兼容 → 服务化 → TCP → fb 电气化 → 竞态根治）+ M41 收官 + 八步发布流水线闭环 |
 | v0.38.0 | M46 | harbor 机械执行面四笔（ld-lumina.so 交付批 + 真机回填执行面 + DPMS 背光语义面 + 长稳记录底稿）；自检 146→147，双面板 195→201 |
 | v0.41.0 | M49 | 五候选全开工轮（harbor 收口〔dlclose/fini/TLS 执行域——六族全谱闭环〕+ 基准族 H-P02/H-P03/H-P05 + 进程组/会话域 + TCP 重传面补全 + 残余窗口族定性）；自检 152→156，ABI v0.25，双面板 229→245 |
+| 开发线 | M50 开工批 | 四笔合批（EEXEC65 EACCES exec 记账域〔ABI v0.26〕+ XDGSHELL66 xdg_shell wire 面 + TEXT68/69 文本渲染面 + MUSL70 musl 动态全链真件谱〔揭雷① dl_new_hash 官方化〕）；自检 156→158，ABI v0.25→v0.26，双面板 245→252 |
 | v0.40.0 | M48 | PLT/GOT 惰性绑定电气执行 + dlsym 跨模块查找电气面 + init_array 执行域 + 真机三实测开工；自检 149→152，ABI v0.24，双面板 213→229 |
 | v0.39.0 | M47 | 装载计划消费面 + ld-lumina.so 本体 + dlopen 真消费面三笔；自检 148→149，ABI v0.24，双面板 207→213 |
 | 开发线 | M42 用户态桌面链 | **35 笔逐笔落账**（三阶段 + 卫生/损伤/光标/驱动/滚轮/焦点/键盘语义批次）；自检 100→134，ABI v0.23，双面板 130 标记 |

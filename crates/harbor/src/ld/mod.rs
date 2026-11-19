@@ -99,14 +99,18 @@ pub fn budget_total_ok(actual: &[u32; 4]) -> bool {
     sum <= H_P03_TOTAL_BUDGET_TENTHS
 }
 
-/// GNU 式符号哈希（const fn 全回绕——5381 初值逐字节 × 33 异或；结构锚
-/// 手算可验零外引黄金值：空串 = 5381；"a" = 5381 × 33 ^ 97 = 177604 =
-/// 0x2B5C4）。
+/// GNU 式符号哈希（const fn 全回绕——官方 System V gABI GNU hash 口径：
+/// 5381 初值逐字节 × 33 **加法** `h = h*33 + c`；M50-MUSL70 揭雷①收口：
+/// v0 ×33 异或变体与官方口径偏差——自产件同源烘焙域内自洽故 M47/M48
+/// 全绿，真件 musl libc 首撞即断〔h("write") 0x10A8B550 官方 vs 异或
+/// 变体失配〕——官方事实源对齐修正，四生成器随批同源重产；结构锚
+/// 手算可验零外引黄金值：空串 = 5381；"a" = 5381 × 33 + 97 = 177670 =
+/// 0x2B606）。
 pub const fn dl_new_hash(name: &[u8]) -> u32 {
     let mut h: u32 = 5381;
     let mut i = 0;
     while i < name.len() {
-        h = h.wrapping_mul(33) ^ (name[i] as u32);
+        h = h.wrapping_mul(33).wrapping_add(name[i] as u32);
         i += 1;
     }
     h
@@ -398,18 +402,25 @@ mod tests {
         assert!(budget_total_ok(&d)); // 合计 30 = 总闸贴线绿
     }
 
-    /// GNU 式符号哈希结构锚：空串 5381 + 单字符手算锚（"a" = 177604 =
-    /// 0x2B5C4）+ const 上下文可编译 + 回绕不变式（wrapping 全回绕零
-    /// panic）。
+    /// GNU 式符号哈希结构锚（M50-MUSL70 揭雷①收口——官方 h*33+c 口径）：
+    /// 空串 5381 + 单字符手算锚（"a" = 5381 × 33 + 97 = 177670 = 0x2B606）
+    /// + const 上下文可编译 + 回绕不变式（wrapping 全回绕零 panic）
+    /// + 真件对账锚（官方口径 h("write") = 0x10A8B550——musl libc
+    ///   真件 GNU 桶链同源）。
     #[test]
     fn dl_new_hash_algorithm_anchor() {
         // 结构锚：初值 5381
         const EMPTY: u32 = dl_new_hash(b"");
         assert_eq!(EMPTY, 5381);
-        // 单字符手算锚：5381 × 33 = 177573 = 0x2B5A5；^ 0x61 = 0x2B5C4
+        // 单字符手算锚：5381 × 33 = 177573 = 0x2B5A5；+ 0x61 = 0x2B606
+        // （官方加法口径——M50-MUSL70 揭雷①收口）
         const A: u32 = dl_new_hash(b"a");
-        assert_eq!(A, 177604);
-        assert_eq!(A, 0x2B5C4);
+        assert_eq!(A, 177670);
+        assert_eq!(A, 0x2B606);
+        // 官方口径真件锚：h("write") = 0x10A8B550（musl libc GNU 桶链
+        // 首链步命中域——musl_chain_face 真件决议同源）。
+        const W: u32 = dl_new_hash(b"write");
+        assert_eq!(W, 0x10A8_B550);
         // 同串幂等 + 异串异值（判读面零碰撞声明域）
         assert_eq!(dl_new_hash(b"libc"), dl_new_hash(b"libc"));
         assert_ne!(dl_new_hash(b"libc"), dl_new_hash(b"libm"));

@@ -99,7 +99,7 @@ CORE_DAT = b"lextern_dat"
 def dl_new_hash(name: bytes) -> int:
     h = 5381
     for c in name:
-        h = (h * 33) ^ c & 0xFFFFFFFF
+        h = (h * 33 + c) & 0xFFFFFFFF  # M50-MUSL70 揭雷①：官方加法口径（harbor dl_new_hash 同源修正）
     return h & 0xFFFFFFFF
 
 

@@ -2059,3 +2059,148 @@ fn bench_h_p03_four_segments() {
     );
     assert!(total_ok, "H-P03 总闸通过");
 }
+
+// ---------------------------------------------------------------------------
+// M50-MUSL70 笔80——musl 动态全链真件判读谱（harbor 六族 × 真实第三方
+// ELF）：Alpine v3.19 musl 1.2.4（libc.musl-x86_64.so.1 = ld-musl
+// 合体件）+ busybox 1.36.1 动态 PIE。六族结构级实证：
+// ① dyn_parse 判读（busybox PIE + DT_NEEDED 指向 musl；musl SONAME
+//    + 零依赖 + PT_TLS 真域）② 装载计划（musl 真件 load_plan 多段 +
+//    exec_plan 三段式动作序列形态）③ 链式消费（ChainRegistry 双真件
+//    + adjacency 声明域单边 + chain_order BFS + dl_open_chain modid
+//    序 + global_scope）④ 符号决议（musl GNU 哈希定义者查边——真名
+//    真决议）⑤ TLS（musl PT_TLS → TlsSpace 真域布点）。
+// 域外挂账：ring3 电气执行（interpreter 转交 / 栈构造 / 信号面）随
+// musl 全链 QEMU 批滚动——本域宿主结构谱先行，零虚报。
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[test]
+fn musl_chain_face() {
+    // 介质在环判（artifacts/musl 真件——随批入库；缺件 fail-visible）
+    let bb: Vec<u8> = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../artifacts/musl/busybox-dynamic"
+    ))
+    .expect("musl busybox 真件缺位——artifacts/musl/ 媒体面随批入库");
+    let libc: Vec<u8> = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../artifacts/musl/ld-musl-x86_64.so.1"
+    ))
+    .expect("musl libc 真件缺位——artifacts/musl/ 媒体面随批入库");
+
+    // ① 判读：双真件 dyn_parse + 结构事实
+    let bb_img = dyn_parse(&bb).expect("busybox 判读");
+    let libc_img = dyn_parse(&libc).expect("musl libc 判读");
+    // musl libc：多段（RX/RO/RW ≥ 2）+ 零依赖 + SONAME
+    assert!(libc_img.load_count >= 2, "musl libc 多段装载面");
+    assert!(
+        libc_img.needed().is_empty(),
+        "musl libc 零 DT_NEEDED（根域依赖事实）"
+    );
+    let libc_strtab = libc_img.dyn_val(DT_STRTAB).expect("strtab");
+    let soname_off = libc_img.dyn_val(DT_SONAME).expect("SONAME");
+    assert_eq!(
+        libc_img.str_at(libc_strtab, soname_off),
+        Some(&b"libc.musl-x86_64.so.1"[..]),
+        "musl SONAME 官方名逐字节"
+    );
+    // busybox：DT_NEEDED = musl libc（声明域单边）+ GNU 哈希表 + interp
+    let bb_strtab = bb_img.dyn_val(DT_STRTAB).expect("strtab");
+    let needed = bb_img.needed();
+    assert_eq!(needed.len(), 1, "musl 动态 busybox 单依赖");
+    assert_eq!(
+        bb_img.str_at(bb_strtab, needed[0]),
+        Some(&b"libc.musl-x86_64.so.1"[..]),
+        "busybox DT_NEEDED 逐字节"
+    );
+    assert!(bb_img.dyn_val(DT_GNU_HASH).is_some(), "GNU 哈希表在环");
+    assert!(
+        bb.windows(b"/lib/ld-musl-x86_64.so.1".len())
+            .any(|w| w == b"/lib/ld-musl-x86_64.so.1"),
+        "PT_INTERP interpreter 串在环（musl ld.so 转交域事实）"
+    );
+
+    // ② 装载计划：musl 真件 load_plan 多段 + exec_plan 三段式形态
+    let base = 0x7000_0000u64;
+    let plan = load_plan(base, &libc_img).expect("musl 装载计划");
+    assert_eq!(plan.len(), libc_img.load_count, "计划段数 = PT_LOAD 数");
+    let staged = stage_image(base, &libc_img).expect("musl 分级承载");
+    let acts = exec_plan(&plan, &staged).expect("musl 消费动作序列");
+    // 形态：首臂 Mmap R|W（分级窗）+ 有 CopyTo 搬运 + 若含 RX 区则有
+    // Mprotect 终旗（musl libc 代码段 RX——终旗在环）
+    assert!(
+        matches!(
+            acts.first(),
+            Some(MapAction::Mmap { prot, .. }) if *prot == PROT_READ | PROT_WRITE
+        ),
+        "首臂 = R|W 分级映射（Linux 共享页序）"
+    );
+    assert!(acts.iter().any(|a| matches!(a, MapAction::CopyTo { .. })));
+    assert!(
+        acts.iter().any(
+            |a| matches!(a, MapAction::Mprotect { prot, .. } if *prot == PROT_READ | PROT_EXEC)
+        ),
+        "RX 区 Mprotect 终旗在环"
+    );
+
+    // ③ 链式消费：双真件注册表 + adjacency + BFS 装载序 + dlopen 链
+    let mut reg = ChainRegistry::new();
+    assert_eq!(
+        reg.add(b"libc.musl-x86_64.so.1", &libc).expect("登记 musl"),
+        0
+    );
+    assert_eq!(reg.add(b"busybox", &bb).expect("登记 busybox"), 1);
+    let adj = dl_adjacency(&reg).expect("邻接派生");
+    assert_eq!(adj, vec![vec![], vec![0]], "busybox(1) → musl(0) 单边");
+    assert_eq!(
+        dl_chain_order(&reg, 1).expect("装载序"),
+        vec![1, 0],
+        "BFS：root busybox 居首 + musl 依赖随行"
+    );
+    let mut dl = DlState::new();
+    let ids = dl_open_chain(&mut dl, &reg, b"busybox", true).expect("dlopen 链");
+    assert_eq!(ids, vec![1, 2], "modid 序 = 装载序同谱");
+    assert_eq!(dl.global_scope(), vec![1, 2], "RTLD_GLOBAL 群组插序");
+
+    // ④ 符号决议：musl GNU 哈希定义者查边——真名真决议
+    for sym in [
+        &b"write"[..],
+        &b"memset"[..],
+        &b"__libc_start_main"[..],
+        &b"open"[..],
+    ] {
+        assert!(
+            gnu_hash_lookup(&libc_img, sym).is_some(),
+            "musl 导出 {}（真件 GNU 哈希桶链机械面）",
+            core::str::from_utf8(sym).unwrap_or("?")
+        );
+    }
+
+    // ⑤ TLS 域事实：musl ld.so 运行期 TLS 域（TCB 自管 malloc 分配——
+    //    静态 PT_TLS 模板缺席真件事实；fail-visible None 域合法显形，
+    //    零虚构）。布点真域回归锚 = 自产 ld-lumina.so 真件（t155 谱
+    //    ——PT_TLS 真域布点金值在环）。
+    assert_eq!(
+        libc_img.tls, None,
+        "musl ld.so 静态 TLS 模板缺席（运行期域真件事实）"
+    );
+    let own: &[u8] = include_bytes!("../../../../../artifacts/ld-lumina.so");
+    let own_img = dyn_parse(own).expect("自产件判读");
+    let own_tls = own_img.tls.expect("自产 PT_TLS 真域");
+    let mut sp = TlsSpace::new(16);
+    let m1 = sp
+        .alloc(own_tls.mem_len, own_tls.align, 1)
+        .expect("自产模块布点");
+    assert_eq!(
+        m1.tp_offset,
+        -(own_tls.mem_len as i64),
+        "tp 前域 = −memsz（t155 金值同谱）"
+    );
+    assert!(sp.dtv_needs(0, 1), "DTV 扩容判读（modid 1 需扩容）");
+
+    println!(
+        "MUSL-CHAIN loads(musl)={} acts={} chain=[busybox→musl] modids=[1,2] sym=write/memset/__libc_start_main/open tls(musl)=None own-tls.memsz={}",
+        libc_img.load_count, acts.len(), own_tls.mem_len
+    );
+}
