@@ -15,10 +15,14 @@
 //! - **fence 账户面**：提交计数单调 + wait_fence drain 判定（同步域
 //!   立即返回——异步等待随硬件队列批次挂账）。
 //!
-//! 硬件 Vulkan 队列（ICD/真机 GPU）挂账不变如实登记——QEMU TCG 无
-//! Vulkan ICD，真机窗口裁决不变（ROADMAP 远线 PR-P04 行）。no_std
-//! 零堆零 unsafe：Canvas 借用切片承载（像素内容外置——prism 只裁几
-//! 何与序，不触碰像素缓冲所有权——lib.rs 口径同源）。
+//! 硬件 Vulkan 队列（M52-HWVULK80 笔92 落域——笔91 挂账摘牌）：队列
+//! 族语义面（VkQueueFamilyProperties 同构——flags 位域 + queueCount）
+//! + 物理设备枚举承载 + ICD 清单扫描面（loader vkEnumerate 同构语义
+//! v0——QEMU TCG 无 Vulkan ICD → Absent fail-visible 显形，真机窗口
+//! 批次随 ICD 清单注入演进如实记档）+ HwQueue 硬件队列（VkQueue 语义
+//! 面——ICD 前置闸 + fence 账户面 + Backend 分流——软件金值域零扰）。
+//! no_std 零堆零 unsafe：Canvas 借用切片承载（像素内容外置——prism
+//! 只裁几何与序，不触碰像素缓冲所有权——lib.rs 口径同源）。
 
 #![forbid(unsafe_code)]
 
@@ -409,6 +413,177 @@ fn clip_rect(canvas: &Canvas, x: i32, y: i32, w: u32, h: u32) -> Option<(u32, u3
     Some((x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32))
 }
 
+// ------------------------------------------------- 硬件 Vulkan 队列面
+// （M52-HWVULK80 笔92——VkQueueFamilyProperties / VkPhysicalDevice /
+//   loader vkEnumerate* / VkQueue 同构语义面 v0；ICD 实装域随真机窗
+//   口批次注入——QEMU TCG 无 Vulkan ICD Absent fail-visible 显形。）
+
+/// 队列族能力位域：GRAPHICS（VkQueueFamilyProperties queueFlags bit 0
+/// 同构——图形/合成车道）。
+pub const QF_GRAPHICS: u32 = 1 << 0;
+/// 队列族能力位域：COMPUTE（bit 1 同构——PR-P04 口径「Vulkan 1.3 计
+/// 算着色器可用」事实源）。
+pub const QF_COMPUTE: u32 = 1 << 1;
+/// 队列族能力位域：TRANSFER（bit 2 同构——blit/copy 车道）。
+pub const QF_TRANSFER: u32 = 1 << 2;
+
+/// 队列族（VkQueueFamilyProperties 同构——flags 位域 + queueCount 定
+/// 容承载；零堆零 unsafe——族表静态切片）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueueFamily {
+    /// 能力位域（QF_GRAPHICS/QF_COMPUTE/QF_TRANSFER 或组合）。
+    pub flags: u32,
+    /// 队列数（VkQueueFamilyProperties queueCount 同构）。
+    pub queue_count: u32,
+}
+
+impl QueueFamily {
+    /// 能力判定（位域旗全含判定——零堆 const 域可展开）。
+    pub const fn supports(&self, want: u32) -> bool {
+        self.flags & want == want
+    }
+}
+
+/// 物理设备（VkPhysicalDevice 语义面 v0——枚举承载：静态名域 + 静态
+/// 族表切片——零堆定容）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhysicalDevice {
+    /// 设备名（静态域——"lumina-software" 软件后端金值承载）。
+    pub name: &'static str,
+    /// 队列族表（静态切片——族索引 = 数组下标，VkQueue GetDeviceQueue
+    /// familyIndex 同构）。
+    pub queue_families: &'static [QueueFamily],
+}
+
+/// ICD 状态（Vulkan loader 枚举同构三分域——枚举面 fail-visible 纪律）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IcdStatus {
+    /// 清单零 ICD（QEMU TCG 域——无 Vulkan ICD 实装，如实显形）。
+    Absent,
+    /// ICD 在册但加载未达（清单在册域——加载器前闸，真机窗口批次随
+    /// ICD 清单注入演进）。
+    Unavailable,
+    /// ICD 就绪（真机/ICD 到达——HwQueue submit 放行域）。
+    Ready,
+}
+
+/// ICD 清单静态承载（loader ICD manifest 同构语义 v0——定容零堆：
+/// 每目库名域 + 加载态域。QEMU TCG 域清单恒空——probe_icd Absent；
+/// 真机窗口批次注入清单目后演 Unavailable/Ready——注入面随批落域
+/// 如实记档，v0 清单只读）。
+static ICD_MANIFEST: [&str; 0] = [];
+
+/// ICD 清单扫描（vkEnumerateInstanceLayerProperties 同构语义面 v0）：
+/// 清单零目 → `IcdStatus::Absent`；有目未达 → Unavailable（v0 清单
+/// 静态只读恒不触发——登记面保留位）；就绪判定随 ICD 后端实装域挂账
+/// （真机窗口批次）。零堆零 unsafe——静态清单直扫。
+pub fn probe_icd() -> IcdStatus {
+    if ICD_MANIFEST.is_empty() {
+        return IcdStatus::Absent;
+    }
+    IcdStatus::Unavailable
+}
+
+/// 软件物理设备（枚举面 v0 金值承载——device 0 "lumina-software"：
+/// 单族三旗全谱 GRAPHICS|COMPUTE|TRANSFER + queue_count=1——软件语义
+/// 核同构族，t169 QFAM 段断言域）。
+pub fn software_device() -> PhysicalDevice {
+    PhysicalDevice {
+        name: "lumina-software",
+        queue_families: &[QueueFamily {
+            flags: QF_GRAPHICS | QF_COMPUTE | QF_TRANSFER,
+            queue_count: 1,
+        }],
+    }
+}
+
+/// 执行后端域（GfxQueue 软件执行核 / HwQueue 硬件队列分流——Backend
+/// 选择面 v0：软件金值域默认承载，硬件域随 ICD 到达切换）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    /// 软件执行核（GfxQueue::submit——笔91 金值域）。
+    Software,
+    /// 硬件队列（HwQueue——ICD 前置闸）。
+    Hardware,
+}
+
+/// 硬件提交错误域（fail-visible 全谱显形）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HwError {
+    /// ICD 未就绪（Absent/Unavailable——HwQueue::submit 前置闸显形）。
+    IcdNotReady(IcdStatus),
+    /// 队列族不匹配（flags 域 COMPUTE|GRAPHICS 双旗缺失——PR-P04 口
+    /// 径事实源闸）。
+    QueueFamilyMismatch,
+}
+
+/// 硬件队列（VkQueue 语义面 v0——queue family 绑定 + ICD 前置闸 +
+/// fence 账户面：提交计数单调 + 拒收记账 fail-visible。ICD 未达域零
+/// 软件执行核触碰——软硬分流隔离纪律）。
+#[derive(Debug, Clone, Copy)]
+pub struct HwQueue {
+    /// 队列族索引（PhysicalDevice.queue_families 下标域）。
+    family: usize,
+    /// 硬件 fence 账户（放行提交计数——单调域）。
+    fence: u64,
+    /// 击发尝试计数（含拒收——记账面全谱）。
+    submissions: u64,
+    /// 拒收计数（fail-visible 显形域）。
+    rejects: u64,
+}
+
+impl HwQueue {
+    /// 空硬件队列（const——内核 static 域可用；family 绑定族索引）。
+    pub const fn new(family: usize) -> Self {
+        Self {
+            family,
+            fence: 0,
+            submissions: 0,
+            rejects: 0,
+        }
+    }
+
+    /// 队列族索引。
+    pub fn family(&self) -> usize {
+        self.family
+    }
+
+    /// 当前 fence 值（放行提交计数——drain 判定事实源）。
+    pub fn fence(&self) -> u64 {
+        self.fence
+    }
+
+    /// 击发尝试计数（含拒收——记账面）。
+    pub fn submissions(&self) -> u64 {
+        self.submissions
+    }
+
+    /// 拒收计数（fail-visible 记账域）。
+    pub fn rejects(&self) -> u64 {
+        self.rejects
+    }
+
+    /// 硬件提交（VkQueueSubmit 同构语义面 v0）：ICD 前置闸（未就绪 →
+    /// `HwError::IcdNotReady` 拒收 fail-visible——零软件核触碰）→ 族
+    /// 旗闸（COMPUTE|GRAPHICS 双旗缺失 → `HwError::QueueFamilyMismatch`）
+    /// → fence++ 放行记账（执行面随 ICD 后端实装域挂账——真机窗口批
+    /// 次；v0 放行 = 账户面记账，命令域仍由软件执行核承载——软硬分流
+    /// 落点如实记档）。
+    pub fn submit(&mut self, icd: IcdStatus, family: &QueueFamily) -> Result<u64, HwError> {
+        self.submissions += 1;
+        if icd != IcdStatus::Ready {
+            self.rejects += 1;
+            return Err(HwError::IcdNotReady(icd));
+        }
+        if !family.supports(QF_COMPUTE | QF_GRAPHICS) {
+            self.rejects += 1;
+            return Err(HwError::QueueFamilyMismatch);
+        }
+        self.fence += 1;
+        Ok(self.fence)
+    }
+}
+
 // -------------------------------------------------------- 宿主测试面
 
 #[cfg(test)]
@@ -654,5 +829,71 @@ mod tests {
                 assert_eq!(cv.px(x, y), cv2.px(x, y), "画布逐位一致 ({x},{y})");
             }
         }
+    }
+
+    #[test]
+    fn gfx_hw_queue_family_gold() {
+        // 队列族位域常量金值（VkQueueFamilyProperties queueFlags 同构）
+        assert_eq!(QF_GRAPHICS, 0x1);
+        assert_eq!(QF_COMPUTE, 0x2);
+        assert_eq!(QF_TRANSFER, 0x4);
+        // 软件物理设备枚举金值（device 0 单族三旗全谱）
+        let dev = software_device();
+        assert_eq!(dev.name, "lumina-software");
+        assert_eq!(dev.queue_families.len(), 1);
+        let fam = dev.queue_families[0];
+        assert_eq!(fam.flags, QF_GRAPHICS | QF_COMPUTE | QF_TRANSFER);
+        assert_eq!(fam.queue_count, 1);
+        // supports 全含判定矩阵（单旗/双旗/三旗全谱 + 零旗 + 缺旗）
+        assert!(fam.supports(QF_GRAPHICS));
+        assert!(fam.supports(QF_COMPUTE));
+        assert!(fam.supports(QF_TRANSFER));
+        assert!(fam.supports(QF_GRAPHICS | QF_COMPUTE));
+        assert!(fam.supports(QF_GRAPHICS | QF_COMPUTE | QF_TRANSFER));
+        assert!(fam.supports(0), "零旗判定恒真（全含零域）");
+        // 缺旗族（TRANSFER 单旗域——PR-P04 双旗闸负例承载）
+        let bare = QueueFamily {
+            flags: QF_TRANSFER,
+            queue_count: 2,
+        };
+        assert!(!bare.supports(QF_COMPUTE | QF_GRAPHICS));
+        assert!(bare.supports(QF_TRANSFER));
+    }
+
+    #[test]
+    fn gfx_icd_hw_gates() {
+        // ICD 清单扫描（QEMU/宿主域清单恒空——Absent fail-visible 显形）
+        assert_eq!(probe_icd(), IcdStatus::Absent);
+        // HwQueue::new 绑定族索引 + 零账户
+        let mut hw = HwQueue::new(0);
+        assert_eq!(hw.family(), 0);
+        assert_eq!((hw.fence(), hw.submissions(), hw.rejects()), (0, 0, 0));
+        // ICD 前置闸：Absent 拒收 fail-visible + 记账面推进
+        let fam = software_device().queue_families[0];
+        assert_eq!(
+            hw.submit(IcdStatus::Absent, &fam),
+            Err(HwError::IcdNotReady(IcdStatus::Absent))
+        );
+        assert_eq!(
+            hw.submit(IcdStatus::Unavailable, &fam),
+            Err(HwError::IcdNotReady(IcdStatus::Unavailable))
+        );
+        assert_eq!((hw.fence(), hw.submissions(), hw.rejects()), (0, 2, 2));
+        // 族旗闸：Ready 域 + 双旗缺失 → QueueFamilyMismatch
+        let bare = QueueFamily {
+            flags: QF_TRANSFER,
+            queue_count: 1,
+        };
+        assert_eq!(
+            hw.submit(IcdStatus::Ready, &bare),
+            Err(HwError::QueueFamilyMismatch)
+        );
+        assert_eq!((hw.fence(), hw.submissions(), hw.rejects()), (0, 3, 3));
+        // 放行域：Ready + 全谱族 → fence 单调推进 + 零拒收追加
+        assert_eq!(hw.submit(IcdStatus::Ready, &fam), Ok(1));
+        assert_eq!(hw.submit(IcdStatus::Ready, &fam), Ok(2));
+        assert_eq!((hw.fence(), hw.submissions(), hw.rejects()), (2, 5, 3));
+        // Backend 分流域（枚举判读）
+        assert_ne!(Backend::Software, Backend::Hardware);
     }
 }

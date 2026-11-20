@@ -14,6 +14,12 @@
 //! 单向量 MSI/INTx 模拟件——QEMU e1000 无 MSI 能力如实记档，挂账域为
 //! 「IOAPIC 路由」字面口径）。
 //!
+//! 路由口径复评面（M52-PCIQLR81 笔93——笔89 揭雷①挂账摘牌）：
+//! RouteProfile 触发/极性口径参数化（EdgeHigh QEMU 实测金值域 /
+//! LevelLow 真机 PCI INTx 电域口径预置域）+ route_profile 写后读回
+//! 分口径对账 + IOAPIC_PROFILE 装载口径取证戳。真机电域数值留真机
+//! （docs/REALHW-WINDOW-M48.md R1' 复评协议档——真机窗口批次击发）。
+//!
 //! unsafe 白名单说明（SPEC 第十七章同谱）：IOAPIC MMIO 寄存器访问无法
 //! 以 safe Rust 表达；逐处携带 SAFETY 注释，访问基址一律来自本模块
 //! probe 成功后的映射窗（界内偏移，无越界路径）。
@@ -71,6 +77,9 @@ pub static IOAPIC_VER: AtomicU64 = AtomicU64::new(0);
 pub static IOAPIC_ENTRIES: AtomicU64 = AtomicU64::new(0);
 /// route 成功数。
 pub static IOAPIC_ROUTED: AtomicU64 = AtomicU64::new(0);
+/// 当前装载口径（0 = EdgeHigh / 1 = LevelLow——RouteProfile as u64；
+/// t170 复评面取证戳）。
+pub static IOAPIC_PROFILE: AtomicU64 = AtomicU64::new(0);
 
 // ---------------------------------------------------------------------------
 // 错误域（fail-visible 全谱显形）
@@ -205,16 +214,63 @@ pub fn probe(frames: &FrameAllocator) -> Option<IoApicDev> {
 }
 
 // ---------------------------------------------------------------------------
-// route（ISA IRQ → vector，BSP LAPIC 物理目标——level + active-low）
+// 路由口径（RouteProfile——触发/极性双域参数化）
 // ---------------------------------------------------------------------------
 
-/// 路由装配：IRQ 输入 n → vector（BSP LAPIC 物理目标，**edge 触发 +
-/// active-high 极性**——M52 揭雷①首割翻账：level+low 在 QEMU GSI 布
-/// 尔电平模型下 storm〔10000 IRQ/9999 spur〕，edge+high 收口；真机
-/// PCI 电域 level+low 口径随真机窗口批次复评挂账如实记档），mask 清
-/// 位 → 读回对账（vector/trigger/mask/polarity/dest 五位域）。e1000
-/// 中断面事实源（t166 IRQ 段断言域）。
-pub fn route(irq: u8, vector: u8) -> Result<(u32, u32), IoApicError> {
+/// 路由口径（触发模式 + 极性对——重定向项 bit15 trigger / bit13
+/// polarity 双位域参数化——M52-PCIQLR81 笔93 复评面事实源）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteProfile {
+    /// edge 触发 + active-high（QEMU 实测金值——笔89 揭雷①翻账收口域；
+    /// t166 路由金值域零扰承载）。
+    EdgeHigh,
+    /// level 触发 + active-low（真机 PCI INTx 电域口径预置域——PCI
+    /// 共享中断线电平触发官方语义；真机电域数值留真机——
+    /// docs/REALHW-WINDOW-M48.md R1' 复评协议随真机窗口批次击发，
+    /// 翻账/固化裁决随实测回填）。
+    LevelLow,
+}
+
+impl RouteProfile {
+    /// 重定向项低字口径位域（bit15 trigger / bit13 polarity 双位装配）。
+    pub fn lo_bits(self) -> u32 {
+        match self {
+            RouteProfile::EdgeHigh => 0,
+            RouteProfile::LevelLow => REDIR_LO_LEVEL | REDIR_LO_ACTIVE_LOW,
+        }
+    }
+
+    /// 读回对账判定（vector 低 8 位 + mask 清位恒定域 + trigger/
+    /// polarity 双位随口径——五位域对账的路由面承载域）。
+    pub fn readback_ok(self, lo: u32, vector: u8) -> bool {
+        if lo & 0xFF != u32::from(vector) || lo & REDIR_LO_MASK != 0 {
+            return false;
+        }
+        lo & (REDIR_LO_LEVEL | REDIR_LO_ACTIVE_LOW) == self.lo_bits()
+    }
+
+    /// 取证戳编码（IOAPIC_PROFILE 装载域）。
+    pub fn stamp(self) -> u64 {
+        match self {
+            RouteProfile::EdgeHigh => 0,
+            RouteProfile::LevelLow => 1,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// route（ISA IRQ → vector，BSP LAPIC 物理目标——口径参数化）
+// ---------------------------------------------------------------------------
+
+/// 路由装配（口径参数化面——笔93）：IRQ 输入 n → vector（BSP LAPIC
+/// 物理目标，trigger/polarity 双位随 [`RouteProfile`] 装配），mask 清
+/// 位 → 读回对账（vector/trigger/mask/polarity/dest 五位域分口径）。`route`
+/// 为 [`RouteProfile::EdgeHigh`] 快捷臂（t166 金值域零扰）。
+pub fn route_profile(
+    irq: u8,
+    vector: u8,
+    profile: RouteProfile,
+) -> Result<(u32, u32), IoApicError> {
     if vector < 0x20 {
         return Err(IoApicError::BadVector);
     }
@@ -225,21 +281,30 @@ pub fn route(irq: u8, vector: u8) -> Result<(u32, u32), IoApicError> {
         return Err(IoApicError::BadIrq);
     }
     let dest = u32::from(ostd::hw::lapic::id());
-    let lo = u32::from(vector);
+    let lo = u32::from(vector) | profile.lo_bits();
     // 高字目标域（bits 63:56——u64 域左移后截回 u32，u32 域内 56 位移溢出禁域）。
     let hi = ((u64::from(dest)) << REDIR_HI_DEST_SHIFT) as u32;
     redir_write(s.base, irq, lo, hi);
     let (rlo, rhi) = redir_read(s.base, irq);
-    if rlo & 0xFF != u32::from(vector)
-        || rlo & REDIR_LO_LEVEL != 0
-        || rlo & REDIR_LO_ACTIVE_LOW != 0
-        || rlo & REDIR_LO_MASK != 0
+    if !profile.readback_ok(rlo, vector)
         || (u64::from(rhi) >> REDIR_HI_DEST_SHIFT) != u64::from(dest)
     {
         return Err(IoApicError::ReadbackMismatch);
     }
+    IOAPIC_PROFILE.store(profile.stamp(), Ordering::Release);
     IOAPIC_ROUTED.fetch_add(1, Ordering::AcqRel);
     Ok((rlo, rhi))
+}
+
+/// 路由装配：IRQ 输入 n → vector（BSP LAPIC 物理目标，**edge 触发 +
+/// active-high 极性**——M52 揭雷①首割翻账：level+low 在 QEMU GSI 布
+/// 尔电平模型下 storm〔10000 IRQ/9999 spur〕，edge+high 收口；真机
+/// PCI 电域 level+low 口径复评面随笔93 落域——[`RouteProfile::LevelLow`]
+/// 参数化域 + REALHW-WINDOW R1' 协议档，真机数值留真机），mask 清
+/// 位 → 读回对账（vector/trigger/mask/polarity/dest 五位域）。e1000
+/// 中断面事实源（t166 IRQ 段断言域）。
+pub fn route(irq: u8, vector: u8) -> Result<(u32, u32), IoApicError> {
+    route_profile(irq, vector, RouteProfile::EdgeHigh)
 }
 
 /// 单目 mask 置位（NEG 面——屏蔽域零送达消费域；v0 由设备侧 IMC 屏
