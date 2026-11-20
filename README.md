@@ -10,15 +10,15 @@ SMP、抢占式调度、ring3 用户进程、SYSCALL/SYSRET、能力化 IPC、sw
 
 | 指标 | 现值 |
 |---|---|
-| 裸机自检 | **163 项全绿**（QEMU 退出码 33 自动验收） |
+| 裸机自检 | **164 项全绿**（QEMU 退出码 33 自动验收） |
 | CI 门禁 | CI-OK 11 阶段（宿主七阶段 + IDL/lint + 内核构建 + 冒烟 + 报告） |
 | syscall ABI | v0.26（ERR_ACCES(16) 单码追加——exec 后进程组迁移禁令域 EACCES 语义面——M50-EEXEC65） |
 | 编译进程链 | 九形（协议/shm/服务环/常驻/合成器/契约标本/argv/解析/驱动） |
-| 双面板标记 | 273（S8 required + longrun 双面同步） |
+| 双面板标记 | 278（S8 required + longrun 双面同步） |
 
 ## 当前状态
 
-**M51 开工批双笔落账**（用户点名两域）：笔84 EXECDYN73〔**ring3 SYS_EXEC 动态分流**——EXEC_IMAGES 尾槽 /bin/busybox-dyn（ELF 链首 EXEC 槽）+ exec_load_switch PT_INTERP 动态分流臂（elf_dyn_interp_path 语义核 → vfs 读解释器 → build_user_space_elf_dynamic）+ **同任务 CR3 替换** musl ldso ring3 真执行——t162；揭雷 exit=0/t62 探针顺延两例实录〕+ 笔85 VECFONT74〔**矢量字体栅格化**——DejaVu Sans Mono 1.16 真件入库（343 KB）+ multiboot module 3 媒体通道 + glyph::vecfont（sfnt/glyf/cmap 语义面 + 二次贝塞尔 8 段定点细分 + 4×4 超采样非零缠绕 8bpp AA 扫描线）——L@24 nz=72/sum=15352 python 同源金值逐字节一致——t163〕；t162/t163 八新标记，双面板 265→273）。已定版 **v0.42.0**（M50 关账定版）。**M50 七笔落账**（EACCES exec 记账域〔**ABI v0.26**——ERR_ACCES(16)〕+ xdg_shell 电气闭环〔「合成器演示」→「可开应用窗」分水岭——真车道全生命周期 + 动态标题带〕+ 文本渲染面〔FONT8X16 双域同源〕+ musl 动态全链真件谱→真执行〔真实 musl ldso 机器码 ring3 电气贯通——ld-musl 1.2.4 + busybox-dynamic 1.36.1 双真件三模块媒体通道〕+ IOPB 挂 TSS 硬件面〔deny-by-default 端口白名单——ring3 直呼 in/out GP 零显形〕——t157-t161 五新号；真机 F/G/PR-P04 三项维持挂账；MATURITY v12 = 7.1/10〔等权合成公式复归——v10/v11 总评行勘误注在库〕）。此前已定版 v0.41.0（M49 关账定版）、v0.39.0（M47 关账定版）。**M47 三笔落账**（装载计划消费面 + ld-lumina.so 本体交付批 + dlopen 真消费面〔harbor::ld::exec——DT_NEEDED 装载序真消费 + ring3 自装载链〕
+**M51 续作批落账**：笔86 XDGPOP75〔**xdg_popup 尺寸交互族**——xdg_positioner/xdg_popup 双接口 wire 面（官方声明序锚 + 编组回环 + placement 官方定位公式语义核）+ comp 会话域六闸（完整性/在册/枚举域/父角色/角色单占/grab 域）+ **size-configure 车道**（policy 钩子 request_configure + min/max 钳制消费域 clamp_minmax + ack 位节流 + last-sent 去重）+ **popup_done 派生域**（父窗收场 close 车道随行）+ **揭雷① wm_base opcode 序修正**（官方 XML create_positioner 缺位重编号——get_xdg_surface 1→2/pong 2→3 官方序对齐）+ t164；揭雷② t159 车道 size-configure ack 对齐 + 揭雷③ popup_done 寻址域 toplevel-id 化 + 揭雷④ clamp 金值 1000×900 预断翻账 1600×900 三例实录〕（先行的 M51 开工批：笔84 EXECDYN73〔**ring3 SYS_EXEC 动态分流**——EXEC_IMAGES 尾槽 /bin/busybox-dyn（ELF 链首 EXEC 槽）+ exec_load_switch PT_INTERP 动态分流臂（elf_dyn_interp_path 语义核 → vfs 读解释器 → build_user_space_elf_dynamic）+ **同任务 CR3 替换** musl ldso ring3 真执行——t162；揭雷 exit=0/t62 探针顺延两例实录〕+ 笔85 VECFONT74〔**矢量字体栅格化**——DejaVu Sans Mono 1.16 真件入库（343 KB）+ multiboot module 3 媒体通道 + glyph::vecfont（sfnt/glyf/cmap 语义面 + 二次贝塞尔 8 段定点细分 + 4×4 超采样非零缠绕 8bpp AA 扫描线）——L@24 nz=72/sum=15352 python 同源金值逐字节一致——t163〕；t162/t163 八新标记，双面板 265→273）。已定版 **v0.42.0**（M50 关账定版）。**M50 七笔落账**（EACCES exec 记账域〔**ABI v0.26**——ERR_ACCES(16)〕+ xdg_shell 电气闭环〔「合成器演示」→「可开应用窗」分水岭——真车道全生命周期 + 动态标题带〕+ 文本渲染面〔FONT8X16 双域同源〕+ musl 动态全链真件谱→真执行〔真实 musl ldso 机器码 ring3 电气贯通——ld-musl 1.2.4 + busybox-dynamic 1.36.1 双真件三模块媒体通道〕+ IOPB 挂 TSS 硬件面〔deny-by-default 端口白名单——ring3 直呼 in/out GP 零显形〕——t157-t161 五新号；真机 F/G/PR-P04 三项维持挂账；MATURITY v12 = 7.1/10〔等权合成公式复归——v10/v11 总评行勘误注在库〕）。此前已定版 v0.41.0（M49 关账定版）、v0.39.0（M47 关账定版）。**M47 三笔落账**（装载计划消费面 + ld-lumina.so 本体交付批 + dlopen 真消费面〔harbor::ld::exec——DT_NEEDED 装载序真消费 + ring3 自装载链〕
 ld-lumina.so 交付批〔harbor::ld::exec——ET_DYN 结构判读 + 装载映射 +
 GNU 哈希桶链 + 重定位四类写面 + TLS Variant II + init/fini 序 + dlopen
 族 + H-P03 四段打点 + auxv 入口契约，t147 活体五相位〕+ 真机窗口实测
@@ -43,7 +43,7 @@ DPMS 背光语义面〔power PanelPower/backlight_pct/BACKLIGHT_RAMP〕+ 长
   号 + WaitWhat::AuxRead 阻塞读 + 接管态仲裁）、Enter/Leave 域联动（焦点切换
   取证计数 + 光标格直标强制入账）。
 
-每笔带活体自检（t1-t163 续编）、双面板标记与 CI-OK 11 阶段门禁；取证证据链
+每笔带活体自检（t1-t164 续编）、双面板标记与 CI-OK 11 阶段门禁；取证证据链
 全程落账，ADR 八项裁决在库（docs/adr/），五维成熟度 v7 = 7.0/10
 （docs/MATURITY.md，v6 6.9 → v7 随 M45-收尾记分）。
 
@@ -291,10 +291,11 @@ lumina-build/              ← 编译产物 + 日志 + 报告（源码树外，�
 | 开发线 | M43–M45 | **M43 六批 + M44 三批 + M45 四笔**（输入链收口/真机窗口对账/MPMC 零锁化/harbor 语义核开工）；自检 134→146，双面板 130→195，v0.37.0 定版 |
 | 开发线 | M46 harbor 机械执行面 | **四笔落账**（LDEXEC49 交付批 + RECON50 回填执行面 + DPMS51 背光语义面 + LONGRUN52 记录底稿）；自检 146→**147**，双面板 195→**201**，v0.38.0 定版 |
 | 开发线 | M47 装载计划消费面 + dlopen 真消费面 | **两笔落账**（LDCONS53 双电气域 ABI v0.24 + exec_plan 消费面 + ld-lumina.so 本体真件 + DLOPEN54 dlopen 真消费面〔DT_NEEDED 装载序 + ring3 自装载链〕+ liblumina-core.so 依赖库真件）；自检 148→**149**，双面板 207→**213**，v0.39.0 定版 |
+| 开发线 | M51 续作批 | **笔86 XDGPOP75 落账**（xdg_popup 尺寸交互族——positioner/popup wire 面 + size-configure 车道 + popup_done 派生域 + wm_base opcode 序揭雷修正）；自检 163→**164**，双面板 273→**278**，v0.43.0 定版随 M51 收尾 |
 
-最新发布：**[Release v0.39.0](../../releases)**——src / artifacts / RELEASE_NOTES /
-SHA256SUMS 四资产。M42–M47 桌面链与用户态链接面进度随里程碑收口定版
-（HEAD 门禁 CI-OK 全绿，冒烟 152/152）。
+最新发布：**[Release v0.42.0](../../releases)**——src / artifacts / RELEASE_NOTES /
+SHA256SUMS 四资产。M48–M50 链接面电气域与桌面可用性跃迁进度随里程碑收口
+定版（HEAD 门禁 CI-OK 全绿，冒烟 164/164）。
 
 ## 工程纪律
 

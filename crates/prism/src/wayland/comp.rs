@@ -62,18 +62,25 @@ use super::{
     encode_pointer_axis_stop_event, encode_pointer_axis_value120_event,
     encode_pointer_button_event, encode_pointer_enter_event, encode_pointer_frame_event,
     encode_pointer_leave_event, encode_pointer_motion_event, encode_registry_global_event,
-    encode_seat_capabilities_event, encode_xdg_surface_configure_event,
-    encode_xdg_toplevel_close_event, encode_xdg_toplevel_configure_event,
-    encode_xdg_wm_base_ping_event, iface_name, keyboard_req, parse_args, parse_header, registry,
-    seat, shm, shm_pool, surface, xdg_surface, xdg_toplevel, xdg_wm_base, WlArg, WlError, WlHeader,
-    WlIface, WlObjectTable, HEADER, KEYMAP_FORMAT_XKB_V1, MOD_ALT, MOD_CAPS, MOD_CTRL, MOD_MOD4,
-    MOD_NUM2, MOD_SHIFT, SEAT_CAPS_KEYBOARD, SEAT_CAPS_POINTER, SIG_COMPOSITOR_CREATE_REGION,
+    encode_seat_capabilities_event, encode_xdg_popup_configure_event, encode_xdg_popup_done_event,
+    encode_xdg_surface_configure_event, encode_xdg_toplevel_close_event,
+    encode_xdg_toplevel_configure_event, encode_xdg_wm_base_ping_event, iface_name, keyboard_req,
+    parse_args, parse_header, registry, seat, shm, shm_pool, surface, xdg_popup, xdg_positioner,
+    xdg_surface, xdg_toplevel, xdg_wm_base, PosDef, WlArg, WlError, WlHeader, WlIface,
+    WlObjectTable, HEADER, KEYMAP_FORMAT_XKB_V1, MOD_ALT, MOD_CAPS, MOD_CTRL, MOD_MOD4, MOD_NUM2,
+    MOD_SHIFT, SEAT_CAPS_KEYBOARD, SEAT_CAPS_POINTER, SIG_COMPOSITOR_CREATE_REGION,
     SIG_COMPOSITOR_CREATE_SURFACE, SIG_DISPLAY_GET_REGISTRY, SIG_DISPLAY_SYNC,
     SIG_KEYBOARD_SET_CURSOR, SIG_REGISTRY_BIND, SIG_SEAT_GET_KEYBOARD, SIG_SEAT_GET_POINTER,
     SIG_SHM_CREATE_POOL, SIG_SHM_POOL_CREATE_BUFFER, SIG_SHM_POOL_DESTROY, SIG_SURFACE_ATTACH,
-    SIG_SURFACE_COMMIT, SIG_SURFACE_DAMAGE, SIG_SURFACE_FRAME, SIG_XDG_SURFACE_ACK_CONFIGURE,
-    SIG_XDG_SURFACE_GET_TOPLEVEL, SIG_XDG_SURFACE_SET_WINDOW_GEOMETRY, SIG_XDG_TOPLEVEL_SET_APP_ID,
-    SIG_XDG_TOPLEVEL_SET_TITLE, SIG_XDG_WM_BASE_GET_XDG_SURFACE, SIG_XDG_WM_BASE_PONG, WIRE_MAX,
+    SIG_SURFACE_COMMIT, SIG_SURFACE_DAMAGE, SIG_SURFACE_FRAME, SIG_XDG_POPUP_GRAB,
+    SIG_XDG_POSITIONER_SET_ANCHOR, SIG_XDG_POSITIONER_SET_ANCHOR_RECT,
+    SIG_XDG_POSITIONER_SET_CONSTRAINT_ADJUSTMENT, SIG_XDG_POSITIONER_SET_GRAVITY,
+    SIG_XDG_POSITIONER_SET_OFFSET, SIG_XDG_POSITIONER_SET_SIZE, SIG_XDG_SURFACE_ACK_CONFIGURE,
+    SIG_XDG_SURFACE_GET_POPUP, SIG_XDG_SURFACE_GET_TOPLEVEL, SIG_XDG_SURFACE_SET_WINDOW_GEOMETRY,
+    SIG_XDG_TOPLEVEL_SET_APP_ID, SIG_XDG_TOPLEVEL_SET_MAX_SIZE, SIG_XDG_TOPLEVEL_SET_MIN_SIZE,
+    SIG_XDG_TOPLEVEL_SET_TITLE, SIG_XDG_WM_BASE_CREATE_POSITIONER, SIG_XDG_WM_BASE_GET_XDG_SURFACE,
+    SIG_XDG_WM_BASE_PONG, WIRE_MAX, XDG_ANCHOR_MAX, XDG_ANCHOR_NONE, XDG_CADJ_FLIP_X,
+    XDG_CADJ_FLIP_Y, XDG_CADJ_RESIZE_X, XDG_CADJ_RESIZE_Y, XDG_CADJ_SLIDER_X, XDG_CADJ_SLIDER_Y,
 };
 
 /// 单会话 surface 槽容量（定容零堆——SurfaceTable 同量级先例）。
@@ -92,6 +99,15 @@ pub const XDG_TITLE_CAP: usize = 32;
 pub const XDG_APPID_CAP: usize = 16;
 /// 服务端 close 请求队列深度（policy 车道——request_close 定容）。
 pub const CLOSE_Q_MAX: usize = 8;
+/// 会话 positioner 定容表深度（M51-XDGPOP75 笔86——create_positioner
+/// 定容零堆；同会话 popup 数同量级裁量）。
+pub const POSITIONER_CAP: usize = 4;
+/// 服务端 size-configure 待发队列深度（M51-XDGPOP75 笔86——
+/// request_configure policy 车道定容；单挂起 configure 口径随行）。
+pub const SIZE_Q_MAX: usize = 4;
+/// 服务端 popup_done 待发队列深度（M51-XDGPOP75 笔86——父窗收场
+/// 派生域定容）。
+pub const PDONE_Q_MAX: usize = 4;
 /// 单次 feed 的 create_pool 记录上限（定容零堆）。
 pub const MAX_POOLS_PER_FEED: usize = 4;
 /// 单次 feed 的 destroy 摘除记录上限（定容零堆——MAX_POOLS_PER_FEED 同量级）。
@@ -188,6 +204,28 @@ pub struct CompSurface {
     pub app_id: [u8; XDG_APPID_CAP],
     /// app_id 有效字节数。
     pub app_id_n: usize,
+    /// xdg_popup 对象 id（M51-XDGPOP75 笔86——0 = 未派生 popup；
+    /// get_popup 派生域，destroy 域清除）。
+    pub xdg_popup: u32,
+    /// popup 位置 x（父面局部坐标——placement 语义核产出，configure
+    /// 事件同值出域）。
+    pub popup_x: i32,
+    /// popup 位置 y。
+    pub popup_y: i32,
+    /// popup grab 记账位（xdg_popup.grab 官方请求域——v0 记账面，
+    /// 输入 grab 施策挂账如实记档）。
+    pub popup_grabbed: bool,
+    /// popup 父面 wl id（popup_done 派生域寻址键——父窗收场扫描域）。
+    pub popup_parent_wl: u32,
+    /// toplevel 最小尺寸宣告（set_min_size——0 = 未设定，官方语义；
+    /// waycomp tiling 面消费域事实源）。
+    pub min_w: i32,
+    /// 最小高度宣告。
+    pub min_h: i32,
+    /// toplevel 最大尺寸宣告（set_max_size——0 = 未设定）。
+    pub max_w: i32,
+    /// 最大高度宣告。
+    pub max_h: i32,
 }
 
 /// wl_shm 池创建记录（feed 回执——电气面 fd 传递对账域：每记录恰
@@ -516,6 +554,13 @@ pub struct FeedReport {
     /// xdg_toplevel.close 事件出域数（M50-XDGSHELL67——policy close
     /// 车道冲刷域增量；每入队 toplevel 恰一 close 事件出域）。
     pub closes: usize,
+    /// size-configure 对出域数（M51-XDGPOP75 笔86——policy size 车道
+    /// 冲刷域增量；每入队窗口恰一 configure 对〔surface.configure
+    /// + toplevel.configure(w,h)〕出域）。
+    pub configs: usize,
+    /// xdg_popup.popup_done 事件出域数（M51-XDGPOP75 笔86——父窗收
+    /// 场派生域冲刷增量）。
+    pub popup_dones: usize,
 }
 
 impl FeedReport {
@@ -556,6 +601,16 @@ pub enum CompError {
     XdgRoleBusy,
     /// 服务端 close 请求队列满（[`CLOSE_Q_MAX`] 定容——policy 车道）。
     XdgCloseQFull,
+    /// positioner 完整性闸失守（M51-XDGPOP75 笔86——官方契约：
+    /// set_size ∧ set_anchor_rect 双宣告在位才可用于 get_popup）。
+    XdgPosIncomplete,
+    /// xdg 枚举值域越界（M51-XDGPOP75 笔86——anchor/gravity 值域
+    /// [`crate::wayland::mod::XDG_ANCHOR_MAX`] 越界 fail-visible）。
+    XdgBadEnum,
+    /// 服务端 size-configure 待发队列满（[`SIZE_Q_MAX`] 定容）。
+    XdgSizeQFull,
+    /// 服务端 popup_done 待发队列满（[`PDONE_Q_MAX`] 定容）。
+    XdgDoneQFull,
 }
 
 /// 合成器会话状态机（registry 公告面 + surface 生命周期 + commit 发
@@ -639,6 +694,21 @@ pub struct CompSession {
     close_q: [Option<u32>; CLOSE_Q_MAX],
     /// close 队列在队数。
     close_n: usize,
+    /// positioner 定容表（M51-XDGPOP75 笔86——create_positioner 登记
+    /// 域，对象 id → [`PosDef`]；destroy 域摘除）。
+    pos_tbl: [Option<(u32, PosDef)>; POSITIONER_CAP],
+    /// positioner 在账数。
+    pos_n: usize,
+    /// 服务端 size-configure 待发队列（M51-XDGPOP75 笔86——
+    /// request_configure 入队，feed 冲刷域 configure 对出域）。
+    size_q: [Option<(u32, u32, i32, i32)>; SIZE_Q_MAX],
+    /// size 队列在队数。
+    size_n: usize,
+    /// 服务端 popup_done 待发队列（M51-XDGPOP75 笔86——父窗收场
+    /// request_popup_done_for_parent 入队，feed 冲刷域事件出域）。
+    pdone_q: [Option<u32>; PDONE_Q_MAX],
+    /// pdone 队列在队数。
+    pdone_n: usize,
 }
 
 impl CompSession {
@@ -682,6 +752,12 @@ impl CompSession {
             ping_pending: None,
             close_q: [None; CLOSE_Q_MAX],
             close_n: 0,
+            pos_tbl: [None; POSITIONER_CAP],
+            pos_n: 0,
+            size_q: [None; SIZE_Q_MAX],
+            size_n: 0,
+            pdone_q: [None; PDONE_Q_MAX],
+            pdone_n: 0,
         }
     }
 
@@ -1306,9 +1382,17 @@ impl CompSession {
         let mut out_len = 0usize;
         let mut consumed = 0usize;
         let mut closes = 0usize;
+        let mut configs = 0usize;
+        let mut popup_dones = 0usize;
         // xdg close 车道冲刷（M50-XDGSHELL67——policy close 请求异步于
         // 请求流：空流 feed 亦承载冲刷，输入冲刷同谱纪律）。
-        self.flush_xdg(out, &mut out_len, &mut closes)?;
+        self.flush_xdg(
+            out,
+            &mut out_len,
+            &mut closes,
+            &mut configs,
+            &mut popup_dones,
+        )?;
         self.flush_inputs(out, &mut out_len, &mut keys, &mut ptrs)?;
         while consumed + HEADER <= stream.len() {
             // 尺寸前窥：完整消息域判定（部分消息干净断流——非错误域；
@@ -1331,7 +1415,13 @@ impl CompSession {
         // 派生回执二次冲刷（M43-KBREP37 笔㊷——同批请求回执同批出域：
         // set_cursor 回执在 dispatch 域入待发队列，flush 先行段已过——
         // 尾部二次冲刷承接，空队列零操作幂等）。
-        self.flush_xdg(out, &mut out_len, &mut closes)?;
+        self.flush_xdg(
+            out,
+            &mut out_len,
+            &mut closes,
+            &mut configs,
+            &mut popup_dones,
+        )?;
         self.flush_inputs(out, &mut out_len, &mut keys, &mut ptrs)?;
         Ok(FeedReport {
             consumed,
@@ -1346,6 +1436,8 @@ impl CompSession {
             syncs: self.syncs_total - syncs0,
             frame_dels: self.frame_dels_total - fdels0,
             closes,
+            configs,
+            popup_dones,
         })
     }
 
@@ -1503,10 +1595,13 @@ impl CompSession {
             WlIface::ShmPool => self.dispatch_shm_pool(&header, body)?,
             WlIface::Seat => self.dispatch_seat(&header, body, out_len, out)?,
             // xdg_shell 窗口管理协议域（M50-XDGSHELL67 笔77 电气闭环——
-            // wm_base 派生面 / surface 角色域 / toplevel 标题域三臂在环）
+            // wm_base 派生面 / surface 角色域 / toplevel 标题域三臂在环；
+            // M51-XDGPOP75 笔86——positioner/popup 双臂入环）
             WlIface::XdgWmBase => self.dispatch_xdg_wm_base(&header, body, out_len, out)?,
             WlIface::XdgSurface => self.dispatch_xdg_surface(&header, body, out_len, out)?,
             WlIface::XdgToplevel => self.dispatch_xdg_toplevel(&header, body)?,
+            WlIface::XdgPositioner => self.dispatch_xdg_positioner(&header, body)?,
+            WlIface::XdgPopup => self.dispatch_xdg_popup(&header, body)?,
             // keyboard：set_cursor 官方请求域在环（M43-KBREP37 笔㊷）
             // ——release 挂账维持（对象摘除域随会话收场承载）。
             WlIface::Keyboard => self.dispatch_keyboard(&header, body, out_len, out)?,
@@ -1810,6 +1905,40 @@ impl CompSession {
                     .map_err(CompError::Table)?;
                 Ok(())
             }
+            xdg_wm_base::REQ_CREATE_POSITIONER => {
+                let (args, _) =
+                    parse_args(body, SIG_XDG_WM_BASE_CREATE_POSITIONER).map_err(CompError::Wire)?;
+                let Some(WlArg::NewId(pos_id)) = args[0] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                // wm_base 在册闸（bind 域登记对象——create 车道前置闸）。
+                if self.table.lookup(header.object_id) != Some(WlIface::XdgWmBase) {
+                    return Err(CompError::BadObject);
+                }
+                // 定容表满容闸（[`POSITIONER_CAP`]——fail-visible）。
+                if self.pos_n >= POSITIONER_CAP {
+                    return Err(CompError::BufferFull);
+                }
+                self.table
+                    .install(pos_id, WlIface::XdgPositioner)
+                    .map_err(CompError::Table)?;
+                let Some(slot) = self.pos_tbl.iter_mut().find(|s| s.is_none()) else {
+                    return Err(CompError::BufferFull);
+                };
+                *slot = Some((
+                    pos_id,
+                    PosDef {
+                        size: (0, 0),
+                        anchor_rect: (0, 0, 0, 0),
+                        anchor: XDG_ANCHOR_NONE,
+                        gravity: XDG_ANCHOR_NONE,
+                        cadj: 0,
+                        offset: (0, 0),
+                    },
+                ));
+                self.pos_n += 1;
+                Ok(())
+            }
             xdg_wm_base::REQ_PONG => {
                 let (args, _) = parse_args(body, SIG_XDG_WM_BASE_PONG).map_err(CompError::Wire)?;
                 let Some(WlArg::Uint(serial)) = args[0] else {
@@ -1855,6 +1984,11 @@ impl CompSession {
                     sf.xdg_toplevel = 0;
                     sf.config_serial = 0;
                     sf.acked = false;
+                    sf.xdg_popup = 0;
+                    sf.popup_x = 0;
+                    sf.popup_y = 0;
+                    sf.popup_grabbed = false;
+                    sf.popup_parent_wl = 0;
                 }
                 self.table.remove(header.object_id);
                 Ok(())
@@ -1919,6 +2053,71 @@ impl CompSession {
                 sf.acked = true;
                 Ok(())
             }
+            xdg_surface::REQ_GET_POPUP => {
+                let (args, _) =
+                    parse_args(body, SIG_XDG_SURFACE_GET_POPUP).map_err(CompError::Wire)?;
+                let Some(WlArg::NewId(pop_id)) = args[0] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                let Some(WlArg::Object(parent_id)) = args[1] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                let Some(WlArg::Object(pos_id)) = args[2] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                // positioner 在册闸 + 完整性闸（官方契约：set_size ∧
+                // set_anchor_rect 双宣告在位——缺位 XdgPosIncomplete）。
+                let Some(pos) = self.pos_get(pos_id) else {
+                    return Err(CompError::BadObject);
+                };
+                if !pos.complete() {
+                    return Err(CompError::XdgPosIncomplete);
+                }
+                // parent 闸：parent xdg_surface 在册 + 持 toplevel 角色
+                // （v1 面——popup 嵌套父域挂账如实记档；先借后置——
+                // child 可变借用前收口，借用域不相交）。
+                let Some(parent) = self
+                    .surfaces
+                    .iter()
+                    .flatten()
+                    .find(|sf| sf.xdg_surf == parent_id)
+                    .copied()
+                else {
+                    return Err(CompError::BadObject);
+                };
+                if parent.xdg_toplevel == 0 {
+                    return Err(CompError::XdgRoleBusy);
+                }
+                // 自身（child）xdg_surface 在册闸 + 角色单占闸（popup 与
+                // toplevel 同面单占——官方角色域）。
+                let Some(child) = self
+                    .surfaces
+                    .iter_mut()
+                    .flatten()
+                    .find(|sf| sf.xdg_surf == header.object_id)
+                else {
+                    return Err(CompError::BadObject);
+                };
+                if child.xdg_toplevel != 0 || child.xdg_popup != 0 {
+                    return Err(CompError::XdgRoleBusy);
+                }
+                // placement 语义核（官方定位公式——父面局部坐标 raw 域；
+                // 约束域 flip/slide/resize + 屏域裁剪 v1 域外挂账）。
+                let (px, py) = pos.place();
+                child.xdg_popup = pop_id;
+                child.popup_x = px;
+                child.popup_y = py;
+                child.popup_parent_wl = parent.wl_id;
+                self.table
+                    .install(pop_id, WlIface::XdgPopup)
+                    .map_err(CompError::Table)?;
+                // 初始 popup configure 出域（官方语义：get_popup 后必发
+                // configure(x,y)——位置父面局部坐标）。
+                let n = encode_xdg_popup_configure_event(&mut out[*out_len..], pop_id, px, py)
+                    .map_err(CompError::Wire)?;
+                *out_len += n;
+                Ok(())
+            }
             xdg_surface::REQ_SET_WINDOW_GEOMETRY => {
                 let _ = parse_args(body, SIG_XDG_SURFACE_SET_WINDOW_GEOMETRY)
                     .map_err(CompError::Wire)?;
@@ -1926,7 +2125,7 @@ impl CompSession {
                 // 客户端几何请求挂账如实记档）。
                 Ok(())
             }
-            _ => Err(CompError::UnknownRequest), // get_popup 挂账
+            _ => Err(CompError::UnknownRequest),
         }
     }
 
@@ -1987,18 +2186,246 @@ impl CompSession {
                 sf.app_id_n = n;
                 Ok(())
             }
+            xdg_toplevel::REQ_SET_MIN_SIZE => {
+                let (args, _) =
+                    parse_args(body, SIG_XDG_TOPLEVEL_SET_MIN_SIZE).map_err(CompError::Wire)?;
+                let Some(WlArg::Int(w)) = args[0] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                let Some(WlArg::Int(h)) = args[1] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                let Some(sf) = self
+                    .surfaces
+                    .iter_mut()
+                    .flatten()
+                    .find(|sf| sf.xdg_toplevel == header.object_id)
+                else {
+                    return Err(CompError::BadObject);
+                };
+                // 尺寸宣告承载域（0 = 未设定，官方语义——waycomp tiling
+                // 面消费事实源）。
+                sf.min_w = w;
+                sf.min_h = h;
+                Ok(())
+            }
+            xdg_toplevel::REQ_SET_MAX_SIZE => {
+                let (args, _) =
+                    parse_args(body, SIG_XDG_TOPLEVEL_SET_MAX_SIZE).map_err(CompError::Wire)?;
+                let Some(WlArg::Int(w)) = args[0] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                let Some(WlArg::Int(h)) = args[1] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                let Some(sf) = self
+                    .surfaces
+                    .iter_mut()
+                    .flatten()
+                    .find(|sf| sf.xdg_toplevel == header.object_id)
+                else {
+                    return Err(CompError::BadObject);
+                };
+                sf.max_w = w;
+                sf.max_h = h;
+                Ok(())
+            }
             _ => Err(CompError::UnknownRequest),
         }
     }
 
-    /// xdg close 车道冲刷（M50-XDGSHELL67——policy close 请求队列逐项
-    /// 编组出域：xdg_toplevel.close 事件；对象域已摘 = 静默丢弃（防
-    /// 御域——drop 与 close 竞逐窗）；冲刷后队列清零，记录数出域）。
+    /// xdg_positioner 请求域（M51-XDGPOP75 笔86）：create_positioner
+    /// 派生后的六 setter 语义核在环（set_size/set_anchor_rect/set_
+    /// anchor/set_gravity/set_constraint_adjustment/set_offset）+
+    /// destroy（destructor 摘除）；v3 三请求〔set_reactive/
+    /// set_parent_size/set_parent_configure〕域外 fail-visible 如实挂账。
+    fn dispatch_xdg_positioner(&mut self, header: &WlHeader, body: &[u8]) -> Result<(), CompError> {
+        match header.opcode {
+            xdg_positioner::REQ_DESTROY => {
+                let _ = parse_args(body, &[]).map_err(CompError::Wire)?;
+                // 槽位摘除（destructor 语义——内层 Option take 清位；
+                // 不在册对象 = 表摘除幂等域零故障）。
+                if let Some(slot) = self
+                    .pos_tbl
+                    .iter_mut()
+                    .find(|s| matches!(s, Some((id, _)) if *id == header.object_id))
+                {
+                    slot.take();
+                    self.pos_n -= 1;
+                }
+                self.table.remove(header.object_id);
+                Ok(())
+            }
+            xdg_positioner::REQ_SET_SIZE => {
+                let (args, _) =
+                    parse_args(body, SIG_XDG_POSITIONER_SET_SIZE).map_err(CompError::Wire)?;
+                let Some(WlArg::Int(w)) = args[0] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                let Some(WlArg::Int(h)) = args[1] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                let Some(pos) = self.pos_slot_mut(header.object_id) else {
+                    return Err(CompError::BadObject);
+                };
+                pos.size = (w, h);
+                Ok(())
+            }
+            xdg_positioner::REQ_SET_ANCHOR_RECT => {
+                let (args, _) = parse_args(body, SIG_XDG_POSITIONER_SET_ANCHOR_RECT)
+                    .map_err(CompError::Wire)?;
+                let Some(WlArg::Int(x)) = args[0] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                let Some(WlArg::Int(y)) = args[1] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                let Some(WlArg::Int(w)) = args[2] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                let Some(WlArg::Int(h)) = args[3] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                let Some(pos) = self.pos_slot_mut(header.object_id) else {
+                    return Err(CompError::BadObject);
+                };
+                pos.anchor_rect = (x, y, w, h);
+                Ok(())
+            }
+            xdg_positioner::REQ_SET_ANCHOR => {
+                let (args, _) =
+                    parse_args(body, SIG_XDG_POSITIONER_SET_ANCHOR).map_err(CompError::Wire)?;
+                let Some(WlArg::Uint(a)) = args[0] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                // 值域闸（[`XDG_ANCHOR_MAX`]——官方枚举域越界拒收）。
+                if a > XDG_ANCHOR_MAX {
+                    return Err(CompError::XdgBadEnum);
+                }
+                let Some(pos) = self.pos_slot_mut(header.object_id) else {
+                    return Err(CompError::BadObject);
+                };
+                pos.anchor = a;
+                Ok(())
+            }
+            xdg_positioner::REQ_SET_GRAVITY => {
+                let (args, _) =
+                    parse_args(body, SIG_XDG_POSITIONER_SET_GRAVITY).map_err(CompError::Wire)?;
+                let Some(WlArg::Uint(g)) = args[0] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                if g > XDG_ANCHOR_MAX {
+                    return Err(CompError::XdgBadEnum);
+                }
+                let Some(pos) = self.pos_slot_mut(header.object_id) else {
+                    return Err(CompError::BadObject);
+                };
+                pos.gravity = g;
+                Ok(())
+            }
+            xdg_positioner::REQ_SET_CONSTRAINT_ADJUSTMENT => {
+                let (args, _) = parse_args(body, SIG_XDG_POSITIONER_SET_CONSTRAINT_ADJUSTMENT)
+                    .map_err(CompError::Wire)?;
+                let Some(WlArg::Uint(c)) = args[0] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                // 位域闸（官方六位全谱 = 0x3F——越位拒收）。
+                if c > XDG_CADJ_RESIZE_X
+                    | XDG_CADJ_RESIZE_Y
+                    | XDG_CADJ_FLIP_X
+                    | XDG_CADJ_FLIP_Y
+                    | XDG_CADJ_SLIDER_X
+                    | XDG_CADJ_SLIDER_Y
+                {
+                    return Err(CompError::XdgBadEnum);
+                }
+                let Some(pos) = self.pos_slot_mut(header.object_id) else {
+                    return Err(CompError::BadObject);
+                };
+                pos.cadj = c;
+                Ok(())
+            }
+            xdg_positioner::REQ_SET_OFFSET => {
+                let (args, _) =
+                    parse_args(body, SIG_XDG_POSITIONER_SET_OFFSET).map_err(CompError::Wire)?;
+                let Some(WlArg::Int(x)) = args[0] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                let Some(WlArg::Int(y)) = args[1] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                let Some(pos) = self.pos_slot_mut(header.object_id) else {
+                    return Err(CompError::BadObject);
+                };
+                pos.offset = (x, y);
+                Ok(())
+            }
+            _ => Err(CompError::UnknownRequest), // v3 三请求域外挂账
+        }
+    }
+
+    /// xdg_popup 请求域（M51-XDGPOP75 笔86）：destroy（destructor 角色
+    /// 摘除）/ grab（seat + serial 宣告——v0 记账面，输入 grab 施策挂
+    /// 账如实记档）；v3 reposition 域外 fail-visible 如实挂账。
+    fn dispatch_xdg_popup(&mut self, header: &WlHeader, body: &[u8]) -> Result<(), CompError> {
+        match header.opcode {
+            xdg_popup::REQ_DESTROY => {
+                let _ = parse_args(body, &[]).map_err(CompError::Wire)?;
+                if let Some(sf) = self
+                    .surfaces
+                    .iter_mut()
+                    .flatten()
+                    .find(|sf| sf.xdg_popup == header.object_id)
+                {
+                    sf.xdg_popup = 0;
+                    sf.popup_x = 0;
+                    sf.popup_y = 0;
+                    sf.popup_grabbed = false;
+                    sf.popup_parent_wl = 0;
+                }
+                self.table.remove(header.object_id);
+                Ok(())
+            }
+            xdg_popup::REQ_GRAB => {
+                let (args, _) = parse_args(body, SIG_XDG_POPUP_GRAB).map_err(CompError::Wire)?;
+                let Some(WlArg::Object(seat_id)) = args[0] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                let Some(WlArg::Uint(_serial)) = args[1] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                // seat 在册闸（官方 arg：对象域必须在册 wl_seat）。
+                if self.table.lookup(seat_id) != Some(WlIface::Seat) {
+                    return Err(CompError::BadObject);
+                }
+                let Some(sf) = self
+                    .surfaces
+                    .iter_mut()
+                    .flatten()
+                    .find(|sf| sf.xdg_popup == header.object_id)
+                else {
+                    return Err(CompError::BadObject);
+                };
+                sf.popup_grabbed = true;
+                Ok(())
+            }
+            _ => Err(CompError::UnknownRequest), // reposition v3 域外挂账
+        }
+    }
+
+    /// xdg policy 车道冲刷（M50-XDGSHELL67 close 车道 + M51-XDGPOP75
+    /// 笔86 size/pdone 双车道——policy 请求队列逐项编组出域：xdg_
+    /// toplevel.close 事件 + size-configure 对〔surface.configure +
+    /// xdg_toplevel.configure(w,h,[])〕+ xdg_popup.popup_done 事件；
+    /// 对象域已摘 = 静默丢弃（防御域——drop 与冲刷竞逐窗）；冲刷后
+    /// 队列清零，记录数出域）。
     fn flush_xdg(
         &mut self,
         out: &mut [u8],
         out_len: &mut usize,
         closes: &mut usize,
+        configs: &mut usize,
+        popup_dones: &mut usize,
     ) -> Result<(), CompError> {
         for i in 0..self.close_n {
             if let Some(top_id) = self.close_q[i] {
@@ -2012,6 +2439,47 @@ impl CompSession {
         }
         self.close_q = [None; CLOSE_Q_MAX];
         self.close_n = 0;
+        // size-configure 车道（M51-XDGPOP75 笔86——request_configure
+        // policy 请求冲刷：串号铸造 + 未 ack 位铸造 + configure 对出
+        // 域，官方双向序契约同谱——commit 前必须 ack 最近串号）。
+        for i in 0..self.size_n {
+            if let Some((wl, top, w, h)) = self.size_q[i] {
+                if self.table.lookup(top) == Some(WlIface::XdgToplevel) {
+                    let Some(sf) = self.surfaces.iter_mut().flatten().find(|sf| sf.wl_id == wl)
+                    else {
+                        continue;
+                    };
+                    self.xdg_serial = self.xdg_serial.wrapping_add(1);
+                    let ser = self.xdg_serial;
+                    sf.config_serial = ser;
+                    sf.acked = false;
+                    let n =
+                        encode_xdg_surface_configure_event(&mut out[*out_len..], sf.xdg_surf, ser)
+                            .map_err(CompError::Wire)?;
+                    *out_len += n;
+                    let n =
+                        encode_xdg_toplevel_configure_event(&mut out[*out_len..], top, w, h, &[])
+                            .map_err(CompError::Wire)?;
+                    *out_len += n;
+                    *configs += 1;
+                }
+            }
+        }
+        self.size_q = [None; SIZE_Q_MAX];
+        self.size_n = 0;
+        // popup_done 车道（M51-XDGPOP75 笔86——父窗收场派生域冲刷）。
+        for i in 0..self.pdone_n {
+            if let Some(pop_id) = self.pdone_q[i] {
+                if self.table.lookup(pop_id) == Some(WlIface::XdgPopup) {
+                    let n = encode_xdg_popup_done_event(&mut out[*out_len..], pop_id)
+                        .map_err(CompError::Wire)?;
+                    *out_len += n;
+                    *popup_dones += 1;
+                }
+            }
+        }
+        self.pdone_q = [None; PDONE_Q_MAX];
+        self.pdone_n = 0;
         Ok(())
     }
 
@@ -2270,6 +2738,15 @@ impl CompSession {
             xdg_toplevel: 0,
             config_serial: 0,
             acked: false,
+            xdg_popup: 0,
+            popup_x: 0,
+            popup_y: 0,
+            popup_grabbed: false,
+            popup_parent_wl: 0,
+            min_w: 0,
+            min_h: 0,
+            max_w: 0,
+            max_h: 0,
             title: [0; XDG_TITLE_CAP],
             title_n: 0,
             app_id: [0; XDG_APPID_CAP],
@@ -2480,6 +2957,129 @@ impl CompSession {
         self.close_q[self.close_n] = Some(toplevel_id);
         self.close_n += 1;
         Ok(())
+    }
+
+    // --- M51-XDGPOP75 笔86：popup 尺寸交互族 policy 钩子 + 取证面 ---
+
+    /// positioner 只读快照（对象 id → [`PosDef`]——get_popup 完整性
+    /// 闸消费 + 宿主取证面）。
+    fn pos_get(&self, pos_id: u32) -> Option<PosDef> {
+        self.pos_tbl
+            .iter()
+            .flatten()
+            .find(|(id, _)| *id == pos_id)
+            .map(|(_, def)| *def)
+    }
+
+    /// positioner 可变槽位（六 setter 语义核承载）。
+    fn pos_slot_mut(&mut self, pos_id: u32) -> Option<&mut PosDef> {
+        self.pos_tbl
+            .iter_mut()
+            .flatten()
+            .find(|(id, _)| *id == pos_id)
+            .map(|(_, def)| def)
+    }
+
+    /// 服务端 size-configure 请求（policy 车道——waycomp tiling 面消
+    /// 费域：tiling 矩形随行入队，feed 冲刷域 configure 对出域〔串号
+    /// 铸造 + 未 ack 位铸造〕。官方语义：configure(w,h) 非零值 = 客户
+    /// 端应重定窗尺寸；同窗重入队 = 覆盖（单挂起口径 last-wins）。
+    /// toplevel 角色缺席 / surface 缺席 = BadObject fail-visible）。
+    pub fn request_configure(
+        &mut self,
+        wl_id: u32,
+        width: i32,
+        height: i32,
+    ) -> Result<(), CompError> {
+        let Some(sf) = self.surface_slot(wl_id) else {
+            return Err(CompError::BadObject);
+        };
+        let top_id = sf.xdg_toplevel;
+        if top_id == 0 {
+            return Err(CompError::BadObject);
+        }
+        // 覆盖快径：同窗已入队 = last-wins 覆盖。
+        for slot in self.size_q.iter_mut().flatten() {
+            if slot.0 == wl_id {
+                slot.2 = width;
+                slot.3 = height;
+                return Ok(());
+            }
+        }
+        if self.size_n >= SIZE_Q_MAX {
+            return Err(CompError::XdgSizeQFull);
+        }
+        self.size_q[self.size_n] = Some((wl_id, top_id, width, height));
+        self.size_n += 1;
+        Ok(())
+    }
+
+    /// 服务端 popup_done 请求（policy 车道——父窗收场派生域：close 车道
+    /// 同谱寻址域 = toplevel 对象 id；解析父面 wl id 后扫描子面
+    /// popup_parent_wl 匹配项逐个入队，feed 冲刷域 popup_done 事件出
+    /// 域。父面缺席或无 popup = BadObject fail-visible；多 popup 全谱
+    /// 入队定容 [`PDONE_Q_MAX`] 满容拒收）。
+    pub fn request_popup_done_for_parent(&mut self, parent_top: u32) -> Result<(), CompError> {
+        // 父面解析：toplevel 对象 id → 父 surface（wl id 寻址域）。
+        let Some(parent_wl) = self
+            .surfaces
+            .iter()
+            .flatten()
+            .find(|sf| sf.xdg_toplevel == parent_top)
+            .map(|sf| sf.wl_id)
+        else {
+            return Err(CompError::BadObject);
+        };
+        let pops: [u32; PDONE_Q_MAX] = {
+            let mut found = [0u32; PDONE_Q_MAX];
+            let mut n = 0usize;
+            for sf in self.surfaces.iter().flatten() {
+                if sf.popup_parent_wl == parent_wl && sf.xdg_popup != 0 && n < PDONE_Q_MAX {
+                    found[n] = sf.xdg_popup;
+                    n += 1;
+                }
+            }
+            if n == 0 {
+                return Err(CompError::BadObject);
+            }
+            found
+        };
+        for pop in pops.iter() {
+            if *pop == 0 {
+                break;
+            }
+            if self.pdone_n >= PDONE_Q_MAX {
+                return Err(CompError::XdgDoneQFull);
+            }
+            self.pdone_q[self.pdone_n] = Some(*pop);
+            self.pdone_n += 1;
+        }
+        Ok(())
+    }
+
+    /// toplevel 尺寸宣告取证面（surface_minmax——waycomp tiling 面消
+    /// 费事实源：(min_w, min_h, max_w, max_h)，0 = 未设定；toplevel
+    /// 角色缺席 = None）。
+    pub fn surface_minmax(&self, wl_id: u32) -> Option<(i32, i32, i32, i32)> {
+        self.surface_slot(wl_id)
+            .filter(|sf| sf.xdg_toplevel != 0)
+            .map(|sf| (sf.min_w, sf.min_h, sf.max_w, sf.max_h))
+    }
+
+    /// 最近 configure ack 位取证面（toplevel 角色缺席 = None——waycomp
+    /// size-configure 节流域事实源）。
+    pub fn surface_acked(&self, wl_id: u32) -> Option<bool> {
+        self.surface_slot(wl_id)
+            .filter(|sf| sf.xdg_toplevel != 0)
+            .map(|sf| sf.acked)
+    }
+
+    /// popup 取证面（(popup 对象 id, x, y)——父面局部坐标；popup 角色
+    /// 缺席 = None）。
+    pub fn surface_popup(&self, wl_id: u32) -> Option<(u32, i32, i32)> {
+        self.surface_slot(wl_id)
+            .filter(|sf| sf.xdg_popup != 0)
+            .map(|sf| (sf.xdg_popup, sf.popup_x, sf.popup_y))
     }
 }
 
@@ -4296,5 +4896,223 @@ mod tests {
         let n8 = encode_message(&mut req, 0x60, surface::REQ_DESTROY, &[]).unwrap();
         s.feed(&req[..n8], &mut out).unwrap();
         assert!(s.surface(0x60).is_none());
+    }
+
+    /// xdg_popup 尺寸交互族电气回环（M51-XDGPOP75 笔86——positioner
+    /// 语义核 + popup 角色派生 + configure 出域 + grab 记账 + min/max
+    /// 承载 + size-configure 车道 + popup_done 车道 + NEG 全谱）。
+    #[test]
+    fn xdg_popup_loop_face() {
+        use crate::wayland::{
+            encode_registry_bind, encode_xdg_positioner_set_anchor,
+            encode_xdg_positioner_set_anchor_rect, encode_xdg_positioner_set_constraint_adjustment,
+            encode_xdg_positioner_set_gravity, encode_xdg_positioner_set_offset,
+            encode_xdg_positioner_set_size, encode_xdg_surface_ack_configure,
+            encode_xdg_surface_get_popup, encode_xdg_surface_get_toplevel,
+            encode_xdg_toplevel_set_max_size, encode_xdg_toplevel_set_min_size,
+            encode_xdg_wm_base_create_positioner, encode_xdg_wm_base_get_xdg_surface,
+            xdg_popup as xp, xdg_positioner as xpo, SIG_XDG_POPUP_CONFIGURE,
+            SIG_XDG_POPUP_POPUP_DONE, SIG_XDG_SURFACE_CONFIGURE, SIG_XDG_TOPLEVEL_CONFIGURE,
+        };
+        let mut s = new_session();
+        let mut out = [0u8; 512];
+
+        // (a) 前置链域：get_registry + 四 bind（compositor / seat /
+        //     xdg_wm_base）+ 双 create_surface（父 0x60 / 子 0x66）
+        setup_registry(&mut s);
+        let mut req = [0u8; 192];
+        let mut n = 0usize;
+        n += encode_registry_bind(&mut req[n..], 2, 1, "wl_compositor", 4, 3).unwrap();
+        n += encode_registry_bind(&mut req[n..], 2, 2, "wl_seat", 1, 0x65).unwrap();
+        n += encode_registry_bind(&mut req[n..], 2, 5, "xdg_wm_base", 1, 0x71).unwrap();
+        n += encode_message(
+            &mut req[n..],
+            3,
+            compositor::REQ_CREATE_SURFACE,
+            &[WlArg::NewId(0x60)],
+        )
+        .unwrap();
+        n += encode_message(
+            &mut req[n..],
+            3,
+            compositor::REQ_CREATE_SURFACE,
+            &[WlArg::NewId(0x66)],
+        )
+        .unwrap();
+        let rep = s.feed(&req[..n], &mut out).unwrap();
+        assert_eq!(rep.consumed, n);
+        assert_eq!(
+            rep.out_len, 12,
+            "seat bind 附带 capabilities 事件（官方语义）"
+        );
+
+        // (b) 父链：get_xdg_surface(0x61←0x60) + get_toplevel(0x62) →
+        //     初始 configure 对 32 B → ack 最近串号
+        let mut n2 = 0usize;
+        n2 += encode_xdg_wm_base_get_xdg_surface(&mut req[n2..], 0x71, 0x61, 0x60).unwrap();
+        n2 += encode_xdg_surface_get_toplevel(&mut req[n2..], 0x61, 0x62).unwrap();
+        let rep = s.feed(&req[..n2], &mut out).unwrap();
+        assert_eq!(rep.out_len, 12 + 20, "初始 configure 对 32 B");
+        let m = crate::wayland::parse_message(&out[..12], SIG_XDG_SURFACE_CONFIGURE).unwrap();
+        let Some(WlArg::Uint(ser0)) = m.args[0] else {
+            panic!("surface configure 串号");
+        };
+        let m = crate::wayland::parse_message(&out[12..32], SIG_XDG_TOPLEVEL_CONFIGURE).unwrap();
+        assert_eq!(m.header.object_id, 0x62);
+        assert_eq!(m.args[0], Some(WlArg::Int(0)));
+        let mut n3 = 0usize;
+        n3 += encode_xdg_surface_ack_configure(&mut req, 0x61, ser0).unwrap();
+        s.feed(&req[..n3], &mut out).unwrap();
+        assert_eq!(s.surface_acked(0x60), Some(true));
+
+        // (c) positioner 语义核：create_positioner(0x63) + 六 setter
+        //     全谱 → 无事件域（out_len 0）
+        let mut n4 = 0usize;
+        n4 += encode_xdg_wm_base_create_positioner(&mut req[n4..], 0x71, 0x63).unwrap();
+        n4 += encode_xdg_positioner_set_size(&mut req[n4..], 0x63, 200, 80).unwrap();
+        n4 += encode_xdg_positioner_set_anchor_rect(&mut req[n4..], 0x63, 10, 20, 100, 40).unwrap();
+        n4 += encode_xdg_positioner_set_anchor(&mut req[n4..], 0x63, 7).unwrap();
+        n4 += encode_xdg_positioner_set_gravity(&mut req[n4..], 0x63, 2).unwrap();
+        n4 += encode_xdg_positioner_set_constraint_adjustment(&mut req[n4..], 0x63, 3).unwrap();
+        n4 += encode_xdg_positioner_set_offset(&mut req[n4..], 0x63, 4, 8).unwrap();
+        let rep = s.feed(&req[..n4], &mut out).unwrap();
+        assert_eq!(rep.consumed, n4);
+        assert_eq!(rep.out_len, 0, "setter 全谱无事件");
+
+        // (d) popup 派生：子链 get_xdg_surface(0x67←0x66) +
+        //     get_popup(0x68←0x67, parent 0x61, pos 0x63) → popup
+        //     configure 16 B 出域（placement 金值 (14, 28)）
+        let mut n5 = 0usize;
+        n5 += encode_xdg_wm_base_get_xdg_surface(&mut req[n5..], 0x71, 0x67, 0x66).unwrap();
+        n5 += encode_xdg_surface_get_popup(&mut req[n5..], 0x67, 0x68, 0x61, 0x63).unwrap();
+        let rep = s.feed(&req[..n5], &mut out).unwrap();
+        assert_eq!(rep.consumed, n5);
+        assert_eq!(rep.out_len, 16, "popup configure 16 B");
+        let m = crate::wayland::parse_message(&out[..16], SIG_XDG_POPUP_CONFIGURE).unwrap();
+        assert_eq!(m.header.object_id, 0x68);
+        assert_eq!(m.header.opcode, xp::EV_CONFIGURE);
+        assert_eq!(m.args[0], Some(WlArg::Int(14)), "placement 语义核金值");
+        assert_eq!(m.args[1], Some(WlArg::Int(28)));
+        assert_eq!(s.surface_popup(0x66), Some((0x68, 14, 28)));
+
+        // (e) grab 记账域：seat 0x65 在册 → 放行；非 seat 对象 →
+        //     BadObject fail-visible
+        let n6 = encode_message(
+            &mut req,
+            0x68,
+            xp::REQ_GRAB,
+            &[WlArg::Object(0x65), WlArg::Uint(5)],
+        )
+        .unwrap();
+        s.feed(&req[..n6], &mut out).unwrap();
+        assert!(s.surface(0x66).unwrap().popup_grabbed, "grab 记账位");
+        let n6 = encode_message(
+            &mut req,
+            0x68,
+            xp::REQ_GRAB,
+            &[WlArg::Object(0x99), WlArg::Uint(5)],
+        )
+        .unwrap();
+        assert_eq!(s.feed(&req[..n6], &mut out), Err(CompError::BadObject));
+
+        // (f) min/max 承载域：set_min_size(400,200) + set_max_size(
+        //     1600,900) → 取证面金值
+        let mut n7 = 0usize;
+        n7 += encode_xdg_toplevel_set_min_size(&mut req[n7..], 0x62, 400, 200).unwrap();
+        n7 += encode_xdg_toplevel_set_max_size(&mut req[n7..], 0x62, 1600, 900).unwrap();
+        s.feed(&req[..n7], &mut out).unwrap();
+        assert_eq!(s.surface_minmax(0x60), Some((400, 200, 1600, 900)));
+
+        // (g) size-configure 车道：request_configure(960,540) → 空流
+        //     feed 冲刷 configure 对 32 B（串号铸造 + 未 ack 位铸造）
+        s.request_configure(0x60, 960, 540).unwrap();
+        let rep = s.feed(&[], &mut out).unwrap();
+        assert_eq!(rep.out_len, 12 + 20, "size-configure 对 32 B");
+        assert_eq!(rep.configs, 1);
+        let m = crate::wayland::parse_message(&out[..12], SIG_XDG_SURFACE_CONFIGURE).unwrap();
+        let Some(WlArg::Uint(ser1)) = m.args[0] else {
+            panic!("size configure 串号");
+        };
+        assert_eq!(ser1, ser0.wrapping_add(1), "串号单调铸造");
+        let m = crate::wayland::parse_message(&out[12..32], SIG_XDG_TOPLEVEL_CONFIGURE).unwrap();
+        assert_eq!(
+            m.args[0],
+            Some(WlArg::Int(960)),
+            "configure 非零值 = 客户端应重定窗"
+        );
+        assert_eq!(m.args[1], Some(WlArg::Int(540)));
+        assert_eq!(s.surface_acked(0x60), Some(false), "未 ack 位铸造");
+        //     last-wins 覆盖：同窗重入队 → 单对出域（640×480）
+        s.request_configure(0x60, 800, 600).unwrap();
+        s.request_configure(0x60, 640, 480).unwrap();
+        let rep = s.feed(&[], &mut out).unwrap();
+        assert_eq!(rep.configs, 1, "last-wins 覆盖");
+        let m = crate::wayland::parse_message(&out[12..32], SIG_XDG_TOPLEVEL_CONFIGURE).unwrap();
+        assert_eq!(m.args[0], Some(WlArg::Int(640)));
+        assert_eq!(m.args[1], Some(WlArg::Int(480)));
+
+        // (h) popup_done 车道：request_popup_done_for_parent(0x62) →
+        //     空流 feed 冲刷 popup_done 8 B；无 popup 父面 = BadObject
+        s.request_popup_done_for_parent(0x62).unwrap();
+        let rep = s.feed(&[], &mut out).unwrap();
+        assert_eq!(rep.out_len, 8, "popup_done 8 B");
+        assert_eq!(rep.popup_dones, 1);
+        let m = crate::wayland::parse_message(&out[..8], SIG_XDG_POPUP_POPUP_DONE).unwrap();
+        assert_eq!(m.header.object_id, 0x68);
+        assert_eq!(m.header.opcode, xp::EV_POPUP_DONE);
+        assert_eq!(
+            s.request_popup_done_for_parent(0x66),
+            Err(CompError::BadObject),
+            "无 popup 父面 fail-visible"
+        );
+
+        // (i) NEG 谱①：不完整 positioner（仅 set_size）→ get_popup
+        //     XdgPosIncomplete；未知 positioner → BadObject；枚举越界
+        //     → XdgBadEnum；toplevel 缺位父 → XdgRoleBusy
+        let mut n9 = 0usize;
+        n9 += encode_xdg_wm_base_create_positioner(&mut req[n9..], 0x71, 0x64).unwrap();
+        n9 += encode_xdg_positioner_set_size(&mut req[n9..], 0x64, 100, 40).unwrap();
+        s.feed(&req[..n9], &mut out).unwrap();
+        let n9 = encode_xdg_surface_get_popup(&mut req, 0x67, 0x69, 0x61, 0x64).unwrap();
+        assert_eq!(
+            s.feed(&req[..n9], &mut out),
+            Err(CompError::XdgPosIncomplete),
+            "完整性闸（官方契约）"
+        );
+        let n9 = encode_xdg_surface_get_popup(&mut req, 0x67, 0x69, 0x61, 0x7F).unwrap();
+        assert_eq!(s.feed(&req[..n9], &mut out), Err(CompError::BadObject));
+        let n9 = encode_xdg_positioner_set_anchor(&mut req, 0x63, 9).unwrap();
+        assert_eq!(s.feed(&req[..n9], &mut out), Err(CompError::XdgBadEnum));
+        let mut n10 = 0usize;
+        n10 += encode_message(
+            &mut req[n10..],
+            3,
+            compositor::REQ_CREATE_SURFACE,
+            &[WlArg::NewId(0x70)],
+        )
+        .unwrap();
+        n10 += encode_xdg_wm_base_get_xdg_surface(&mut req[n10..], 0x71, 0x72, 0x70).unwrap();
+        n10 += encode_xdg_surface_get_popup(&mut req[n10..], 0x72, 0x73, 0x72, 0x63).unwrap();
+        assert_eq!(
+            s.feed(&req[..n10], &mut out),
+            Err(CompError::XdgRoleBusy),
+            "无 toplevel 角色父面 → parent 闸"
+        );
+
+        // (j) 收场：popup destroy（角色摘除 + 取证面翻转）→
+        //     positioner destroy（pos_tbl 摘除 → get_popup BadObject）
+        let n11 = encode_message(&mut req, 0x68, xp::REQ_DESTROY, &[]).unwrap();
+        s.feed(&req[..n11], &mut out).unwrap();
+        assert_eq!(s.table().lookup(0x68), None);
+        assert_eq!(s.surface_popup(0x66), None, "popup 角色摘除");
+        let n11 = encode_message(&mut req, 0x63, xpo::REQ_DESTROY, &[]).unwrap();
+        s.feed(&req[..n11], &mut out).unwrap();
+        assert_eq!(s.table().lookup(0x63), None);
+        let n11 = encode_xdg_surface_get_popup(&mut req, 0x67, 0x69, 0x61, 0x63).unwrap();
+        assert_eq!(
+            s.feed(&req[..n11], &mut out),
+            Err(CompError::BadObject),
+            "positioner 摘除后 get_popup fail-visible"
+        );
     }
 }

@@ -381,6 +381,13 @@ pub enum WlIface {
     /// xdg_toplevel（M50-XDGSHELL66 笔76——xdg_surface.get_toplevel
     /// 派生对象：toplevel 应用窗角色）。
     XdgToplevel,
+    /// xdg_positioner（M51-XDGPOP75 笔86——xdg_wm_base.create_
+    /// positioner 派生对象：popup 定位参数装载体，v1 七请求域）。
+    XdgPositioner,
+    /// xdg_popup（M51-XDGPOP75 笔86——xdg_surface.get_popup 派生
+    /// 对象：popup 临时窗角色——configure(x,y) 定位 + popup_done
+    /// 收场契约）。
+    XdgPopup,
 }
 
 /// 接口官方名（registry global 事件 interface string 事实源）。
@@ -402,6 +409,8 @@ pub fn iface_name(iface: WlIface) -> &'static str {
         WlIface::XdgWmBase => "xdg_wm_base",
         WlIface::XdgSurface => "xdg_surface",
         WlIface::XdgToplevel => "xdg_toplevel",
+        WlIface::XdgPositioner => "xdg_positioner",
+        WlIface::XdgPopup => "xdg_popup",
     }
 }
 
@@ -709,15 +718,22 @@ pub mod shm_pool {
 }
 
 /// xdg_wm_base 请求/事件 opcode（M50-XDGSHELL66 笔76——官方
-/// xdg-shell.xml 声明序；请求序 destroy/get_xdg_surface/pong，
-/// 事件 ping——v0 最小面：窗口管理协议入口 + liveness 契约）。
+/// xdg-shell.xml 声明序；事件 ping——窗口管理协议入口 + liveness
+/// 契约。**M51-XDGPOP75 笔86 揭雷①序修正**：官方声明序 destroy/
+/// **create_positioner**/get_xdg_surface/pong 四请求——笔76 v0 最小
+/// 面缺 create_positioner 时将 get_xdg_surface/pong 顶位到 1/2，
+/// 与官方 XML（get_xdg_surface=2 / pong=3）偏差一一目——真件
+/// 客户端（western 同序）首撞即断的谱系雷，随笔86 官方序对齐修正
+/// + create_positioner 补位在环）。
 pub mod xdg_wm_base {
     /// request destroy。
     pub const REQ_DESTROY: u16 = 0;
+    /// request create_positioner（new_id——popup 定位参数装载体）。
+    pub const REQ_CREATE_POSITIONER: u16 = 1;
     /// request get_xdg_surface（new_id + object surface）。
-    pub const REQ_GET_XDG_SURFACE: u16 = 1;
+    pub const REQ_GET_XDG_SURFACE: u16 = 2;
     /// request pong（uint serial——ping 应答，官方 liveness 契约）。
-    pub const REQ_PONG: u16 = 2;
+    pub const REQ_PONG: u16 = 3;
     /// event ping（uint serial——客户端必须回 pong，v0 死亡拒绝禁令
     /// 域外挂账：服务端 v0 不主动 ping，契约面先行）。
     pub const EV_PING: u16 = 0;
@@ -732,7 +748,7 @@ pub mod xdg_surface {
     /// request get_toplevel（new_id）。
     pub const REQ_GET_TOPLEVEL: u16 = 1;
     /// request get_popup（new_id + object parent + object positioner——
-    /// v0 挂账：popup 角色域）。
+    /// M51-XDGPOP75 笔86 在环：popup 临时窗角色派生域）。
     pub const REQ_GET_POPUP: u16 = 2;
     /// request set_window_geometry（int × 4）。
     pub const REQ_SET_WINDOW_GEOMETRY: u16 = 3;
@@ -782,6 +798,148 @@ pub mod xdg_toplevel {
     pub const EV_CONFIGURE_BOUNDS: u16 = 2;
     /// event wm_capabilities（array，v5+）。
     pub const EV_WM_CAPABILITIES: u16 = 3;
+}
+
+/// xdg_positioner 请求 opcode（M51-XDGPOP75 笔86——官方声明序；v1
+/// 七请求 destroy/set_size/set_anchor_rect/set_anchor/set_gravity/
+/// set_constraint_adjustment/set_offset 在环，v3 三请求〔set_reactive/
+/// set_parent_size/set_parent_configure〕域外 fail-visible 如实挂账）。
+pub mod xdg_positioner {
+    /// request destroy（destructor）。
+    pub const REQ_DESTROY: u16 = 0;
+    /// request set_size（int width + int height——popup 内容尺寸宣告）。
+    pub const REQ_SET_SIZE: u16 = 1;
+    /// request set_anchor_rect（int × 4——锚矩形〔父面局部坐标〕）。
+    pub const REQ_SET_ANCHOR_RECT: u16 = 2;
+    /// request set_anchor（uint anchor——锚边枚举，[`XDG_ANCHOR_MAX`]）。
+    pub const REQ_SET_ANCHOR: u16 = 3;
+    /// request set_gravity（uint gravity——重力枚举，[`XDG_ANCHOR_MAX`]）。
+    pub const REQ_SET_GRAVITY: u16 = 4;
+    /// request set_constraint_adjustment（uint——约束调整位域）。
+    pub const REQ_SET_CONSTRAINT_ADJUSTMENT: u16 = 5;
+    /// request set_offset（int × 2——锚点偏移）。
+    pub const REQ_SET_OFFSET: u16 = 6;
+    /// request set_reactive（v3+——域外挂账）。
+    pub const REQ_SET_REACTIVE: u16 = 7;
+    /// request set_parent_size（v3+——域外挂账）。
+    pub const REQ_SET_PARENT_SIZE: u16 = 8;
+    /// request set_parent_configure（v3+——域外挂账）。
+    pub const REQ_SET_PARENT_CONFIGURE: u16 = 9;
+}
+
+/// xdg_popup 请求/事件 opcode（M51-XDGPOP75 笔86——官方声明序；v1
+/// 请求 destroy/grab 在环 + 事件 configure/popup_done 在环，v3
+/// reposition/repositioned 域外 fail-visible 如实挂账）。
+pub mod xdg_popup {
+    /// request destroy（destructor——popup 角色摘除）。
+    pub const REQ_DESTROY: u16 = 0;
+    /// request grab（object seat + uint serial——输入 grab 宣告）。
+    pub const REQ_GRAB: u16 = 1;
+    /// request reposition（object positioner + uint token，v3+——域外挂账）。
+    pub const REQ_REPOSITION: u16 = 2;
+    /// event configure（int × 2——popup 位置〔父面局部坐标〕）。
+    pub const EV_CONFIGURE: u16 = 0;
+    /// event popup_done（——收场契约：客户端应销毁 popup）。
+    pub const EV_POPUP_DONE: u16 = 1;
+    /// event repositioned（uint token，v3+——域外挂账）。
+    pub const EV_REPOSITIONED: u16 = 2;
+}
+
+// --- xdg_shell 枚举语义常量（官方 XML 枚举值逐字对账——M51-XDGPOP75
+// 笔86 placement 语义核 + 域闸） ---
+
+/// xdg_positioner.anchor/gravity 枚举值域上界（官方声明序 none/top/
+/// bottom/left/right/top_left/bottom_left/top_right/bottom_right）。
+pub const XDG_ANCHOR_MAX: u32 = 8;
+/// anchor/gravity 枚举：none。
+pub const XDG_ANCHOR_NONE: u32 = 0;
+/// anchor/gravity 枚举：top。
+pub const XDG_ANCHOR_TOP: u32 = 1;
+/// anchor/gravity 枚举：bottom。
+pub const XDG_ANCHOR_BOTTOM: u32 = 2;
+/// anchor/gravity 枚举：left。
+pub const XDG_ANCHOR_LEFT: u32 = 3;
+/// anchor/gravity 枚举：right。
+pub const XDG_ANCHOR_RIGHT: u32 = 4;
+/// anchor/gravity 枚举：top_left。
+pub const XDG_ANCHOR_TOP_LEFT: u32 = 5;
+/// anchor/gravity 枚举：bottom_left。
+pub const XDG_ANCHOR_BOTTOM_LEFT: u32 = 6;
+/// anchor/gravity 枚举：top_right。
+pub const XDG_ANCHOR_TOP_RIGHT: u32 = 7;
+/// anchor/gravity 枚举：bottom_right。
+pub const XDG_ANCHOR_BOTTOM_RIGHT: u32 = 8;
+/// constraint_adjustment 位域：slider_x（1）。
+pub const XDG_CADJ_SLIDER_X: u32 = 1;
+/// constraint_adjustment 位域：slider_y（2）。
+pub const XDG_CADJ_SLIDER_Y: u32 = 2;
+/// constraint_adjustment 位域：flip_x（4）。
+pub const XDG_CADJ_FLIP_X: u32 = 4;
+/// constraint_adjustment 位域：flip_y（8）。
+pub const XDG_CADJ_FLIP_Y: u32 = 8;
+/// constraint_adjustment 位域：resize_x（16）。
+pub const XDG_CADJ_RESIZE_X: u32 = 16;
+/// constraint_adjustment 位域：resize_y（32）。
+pub const XDG_CADJ_RESIZE_Y: u32 = 32;
+
+/// positioner 定位参数装载体（M51-XDGPOP75 笔86——create_positioner
+/// 派生 + 六 setter 语义核；定容零堆值语义）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PosDef {
+    /// set_size 宣告（popup 内容尺寸）。
+    pub size: (i32, i32),
+    /// set_anchor_rect 宣告（父面局部坐标锚矩形）。
+    pub anchor_rect: (i32, i32, i32, i32),
+    /// set_anchor 宣告（[`XDG_ANCHOR_MAX`] 值域）。
+    pub anchor: u32,
+    /// set_gravity 宣告（[`XDG_ANCHOR_MAX`] 值域）。
+    pub gravity: u32,
+    /// set_constraint_adjustment 宣告（位域记账承载体——约束域 v1
+    /// 域外挂账：flip/slide/resize 不施策如实记档）。
+    pub cadj: u32,
+    /// set_offset 宣告（锚点偏移）。
+    pub offset: (i32, i32),
+}
+
+impl PosDef {
+    /// 完整性闸（官方契约：set_size ∧ set_anchor_rect 双宣告在位才
+    /// 可用于 get_popup——缺位即 [`crate::wayland::comp::CompError::
+    /// XdgPosIncomplete`] fail-visible）。
+    pub fn complete(&self) -> bool {
+        self.size.0 > 0 && self.size.1 > 0 && self.anchor_rect.2 > 0 && self.anchor_rect.3 > 0
+    }
+
+    /// placement 语义核（官方定位公式）：锚点取锚矩形边〔左/右/中 ×
+    /// 上/下/中〕，popup 边缘按重力对齐锚点后施加 offset。返回 popup
+    /// 左上角（父面局部坐标）。约束域（flip/slide/resize + 屏域裁剪）
+    /// v1 域外挂账——raw 计算如实出域。
+    pub fn place(&self) -> (i32, i32) {
+        let (arx, ary, arw, arh) = self.anchor_rect;
+        // 锚点：水平边（left/right/中）× 垂直边（top/bottom/中）。
+        let ax = match self.anchor {
+            XDG_ANCHOR_LEFT | XDG_ANCHOR_TOP_LEFT | XDG_ANCHOR_BOTTOM_LEFT => arx,
+            XDG_ANCHOR_RIGHT | XDG_ANCHOR_TOP_RIGHT | XDG_ANCHOR_BOTTOM_RIGHT => arx + arw,
+            _ => arx + arw / 2,
+        };
+        let ay = match self.anchor {
+            XDG_ANCHOR_TOP | XDG_ANCHOR_TOP_LEFT | XDG_ANCHOR_TOP_RIGHT => ary,
+            XDG_ANCHOR_BOTTOM | XDG_ANCHOR_BOTTOM_LEFT | XDG_ANCHOR_BOTTOM_RIGHT => ary + arh,
+            _ => ary + arh / 2,
+        };
+        // 重力对齐：popup 对应边缘落在锚点（left = popup 右缘贴锚点等）。
+        let (pw, ph) = self.size;
+        let px = match self.gravity {
+            XDG_ANCHOR_LEFT | XDG_ANCHOR_TOP_LEFT | XDG_ANCHOR_BOTTOM_LEFT => ax - pw,
+            XDG_ANCHOR_RIGHT | XDG_ANCHOR_TOP_RIGHT | XDG_ANCHOR_BOTTOM_RIGHT => ax,
+            _ => ax - pw / 2,
+        };
+        let py = match self.gravity {
+            XDG_ANCHOR_TOP | XDG_ANCHOR_TOP_LEFT | XDG_ANCHOR_TOP_RIGHT => ay - ph,
+            XDG_ANCHOR_BOTTOM | XDG_ANCHOR_BOTTOM_LEFT | XDG_ANCHOR_BOTTOM_RIGHT => ay,
+            _ => ay - ph / 2,
+        };
+        (px + self.offset.0, py + self.offset.1)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -923,6 +1081,35 @@ pub const SIG_XDG_TOPLEVEL_SET_APP_ID: &[WlType] = &[WlType::Str];
 pub const SIG_XDG_TOPLEVEL_CONFIGURE: &[WlType] = &[WlType::Int, WlType::Int, WlType::Array];
 /// xdg_toplevel.close：`()`。
 pub const SIG_XDG_TOPLEVEL_CLOSE: &[WlType] = &[];
+/// xdg_wm_base.create_positioner：`(new_id)`（M51-XDGPOP75 笔86）。
+pub const SIG_XDG_WM_BASE_CREATE_POSITIONER: &[WlType] = &[WlType::NewId];
+/// xdg_surface.get_popup：`(new_id, object, object)`（M51-XDGPOP75
+/// 笔86——popup new_id + parent xdg_surface + positioner）。
+pub const SIG_XDG_SURFACE_GET_POPUP: &[WlType] = &[WlType::NewId, WlType::Object, WlType::Object];
+/// xdg_toplevel.set_min_size：`(int, int)`（M51-XDGPOP75 笔86——0 = 未
+/// 设定，官方语义）。
+pub const SIG_XDG_TOPLEVEL_SET_MIN_SIZE: &[WlType] = &[WlType::Int, WlType::Int];
+/// xdg_toplevel.set_max_size：`(int, int)`。
+pub const SIG_XDG_TOPLEVEL_SET_MAX_SIZE: &[WlType] = &[WlType::Int, WlType::Int];
+/// xdg_positioner.set_size：`(int, int)`。
+pub const SIG_XDG_POSITIONER_SET_SIZE: &[WlType] = &[WlType::Int, WlType::Int];
+/// xdg_positioner.set_anchor_rect：`(int × 4)`。
+pub const SIG_XDG_POSITIONER_SET_ANCHOR_RECT: &[WlType] =
+    &[WlType::Int, WlType::Int, WlType::Int, WlType::Int];
+/// xdg_positioner.set_anchor：`(uint)`。
+pub const SIG_XDG_POSITIONER_SET_ANCHOR: &[WlType] = &[WlType::Uint];
+/// xdg_positioner.set_gravity：`(uint)`。
+pub const SIG_XDG_POSITIONER_SET_GRAVITY: &[WlType] = &[WlType::Uint];
+/// xdg_positioner.set_constraint_adjustment：`(uint)`。
+pub const SIG_XDG_POSITIONER_SET_CONSTRAINT_ADJUSTMENT: &[WlType] = &[WlType::Uint];
+/// xdg_positioner.set_offset：`(int, int)`。
+pub const SIG_XDG_POSITIONER_SET_OFFSET: &[WlType] = &[WlType::Int, WlType::Int];
+/// xdg_popup.grab：`(object, uint)`（seat + serial——官方 arg 序）。
+pub const SIG_XDG_POPUP_GRAB: &[WlType] = &[WlType::Object, WlType::Uint];
+/// xdg_popup.configure：`(int, int)`——popup 位置（父面局部坐标）。
+pub const SIG_XDG_POPUP_CONFIGURE: &[WlType] = &[WlType::Int, WlType::Int];
+/// xdg_popup.popup_done：`()`。
+pub const SIG_XDG_POPUP_POPUP_DONE: &[WlType] = &[];
 
 // --- 输入链语义常量（官方 XML 枚举值逐字对账——宿主测试 + t109 消费面） ---
 
@@ -1220,6 +1407,204 @@ pub fn encode_xdg_toplevel_configure_event(
 /// 官方语义：客户端销毁窗口对象不再等 configure）。
 pub fn encode_xdg_toplevel_close_event(buf: &mut [u8], toplevel_id: u32) -> Result<usize, WlError> {
     encode_message(buf, toplevel_id, xdg_toplevel::EV_CLOSE, &[])
+}
+
+// --- xdg_popup 尺寸交互族编组器（M51-XDGPOP75 笔86——官方
+//     xdg-shell.xml 声明序：positioner 六 setter + create_positioner +
+//     get_popup + toplevel min/max + popup grab/configure/done） ---
+
+/// xdg_wm_base.create_positioner 请求编组（popup 定位参数装载体派生）。
+pub fn encode_xdg_wm_base_create_positioner(
+    buf: &mut [u8],
+    wmbase_id: u32,
+    positioner_new_id: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        wmbase_id,
+        xdg_wm_base::REQ_CREATE_POSITIONER,
+        &[WlArg::NewId(positioner_new_id)],
+    )
+}
+
+/// xdg_positioner.set_size 请求编组（popup 内容尺寸宣告）。
+pub fn encode_xdg_positioner_set_size(
+    buf: &mut [u8],
+    positioner_id: u32,
+    width: i32,
+    height: i32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        positioner_id,
+        xdg_positioner::REQ_SET_SIZE,
+        &[WlArg::Int(width), WlArg::Int(height)],
+    )
+}
+
+/// xdg_positioner.set_anchor_rect 请求编组（父面局部坐标锚矩形）。
+pub fn encode_xdg_positioner_set_anchor_rect(
+    buf: &mut [u8],
+    positioner_id: u32,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        positioner_id,
+        xdg_positioner::REQ_SET_ANCHOR_RECT,
+        &[
+            WlArg::Int(x),
+            WlArg::Int(y),
+            WlArg::Int(width),
+            WlArg::Int(height),
+        ],
+    )
+}
+
+/// xdg_positioner.set_anchor 请求编组（锚边枚举）。
+pub fn encode_xdg_positioner_set_anchor(
+    buf: &mut [u8],
+    positioner_id: u32,
+    anchor: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        positioner_id,
+        xdg_positioner::REQ_SET_ANCHOR,
+        &[WlArg::Uint(anchor)],
+    )
+}
+
+/// xdg_positioner.set_gravity 请求编组（重力枚举）。
+pub fn encode_xdg_positioner_set_gravity(
+    buf: &mut [u8],
+    positioner_id: u32,
+    gravity: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        positioner_id,
+        xdg_positioner::REQ_SET_GRAVITY,
+        &[WlArg::Uint(gravity)],
+    )
+}
+
+/// xdg_positioner.set_constraint_adjustment 请求编组（约束调整位域）。
+pub fn encode_xdg_positioner_set_constraint_adjustment(
+    buf: &mut [u8],
+    positioner_id: u32,
+    cadj: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        positioner_id,
+        xdg_positioner::REQ_SET_CONSTRAINT_ADJUSTMENT,
+        &[WlArg::Uint(cadj)],
+    )
+}
+
+/// xdg_positioner.set_offset 请求编组（锚点偏移）。
+pub fn encode_xdg_positioner_set_offset(
+    buf: &mut [u8],
+    positioner_id: u32,
+    x: i32,
+    y: i32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        positioner_id,
+        xdg_positioner::REQ_SET_OFFSET,
+        &[WlArg::Int(x), WlArg::Int(y)],
+    )
+}
+
+/// xdg_surface.get_popup 请求编组（popup 角色派生——parent xdg_
+/// surface + positioner 双参在环）。
+pub fn encode_xdg_surface_get_popup(
+    buf: &mut [u8],
+    xdg_surface_id: u32,
+    popup_new_id: u32,
+    parent_id: u32,
+    positioner_id: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        xdg_surface_id,
+        xdg_surface::REQ_GET_POPUP,
+        &[
+            WlArg::NewId(popup_new_id),
+            WlArg::Object(parent_id),
+            WlArg::Object(positioner_id),
+        ],
+    )
+}
+
+/// xdg_toplevel.set_min_size 请求编组（0 = 未设定，官方语义）。
+pub fn encode_xdg_toplevel_set_min_size(
+    buf: &mut [u8],
+    toplevel_id: u32,
+    width: i32,
+    height: i32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        toplevel_id,
+        xdg_toplevel::REQ_SET_MIN_SIZE,
+        &[WlArg::Int(width), WlArg::Int(height)],
+    )
+}
+
+/// xdg_toplevel.set_max_size 请求编组。
+pub fn encode_xdg_toplevel_set_max_size(
+    buf: &mut [u8],
+    toplevel_id: u32,
+    width: i32,
+    height: i32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        toplevel_id,
+        xdg_toplevel::REQ_SET_MAX_SIZE,
+        &[WlArg::Int(width), WlArg::Int(height)],
+    )
+}
+
+/// xdg_popup.grab 请求编组（seat + serial——官方 arg 序）。
+pub fn encode_xdg_popup_grab(
+    buf: &mut [u8],
+    popup_id: u32,
+    seat_id: u32,
+    serial: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        popup_id,
+        xdg_popup::REQ_GRAB,
+        &[WlArg::Object(seat_id), WlArg::Uint(serial)],
+    )
+}
+
+/// xdg_popup.configure 事件编组（popup 位置——父面局部坐标）。
+pub fn encode_xdg_popup_configure_event(
+    buf: &mut [u8],
+    popup_id: u32,
+    x: i32,
+    y: i32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        popup_id,
+        xdg_popup::EV_CONFIGURE,
+        &[WlArg::Int(x), WlArg::Int(y)],
+    )
+}
+
+/// xdg_popup.popup_done 事件编组（收场契约——客户端应销毁 popup）。
+pub fn encode_xdg_popup_done_event(buf: &mut [u8], popup_id: u32) -> Result<usize, WlError> {
+    encode_message(buf, popup_id, xdg_popup::EV_POPUP_DONE, &[])
 }
 
 /// wl_seat.capabilities 事件编组（M42-INPUT7 输入链——seat bind 后
@@ -1981,10 +2366,13 @@ mod tests {
         assert_eq!(iface_name(WlIface::XdgWmBase), "xdg_wm_base");
         assert_eq!(iface_name(WlIface::XdgSurface), "xdg_surface");
         assert_eq!(iface_name(WlIface::XdgToplevel), "xdg_toplevel");
-        // (b) opcode 官方声明序锚（xdg-shell.xml 逐条对账）。
+        // (b) opcode 官方声明序锚（xdg-shell.xml 逐条对账；
+        // M51-XDGPOP75 笔86 揭雷①序修正——create_positioner 补位，
+        // get_xdg_surface 1→2 / pong 2→3 官方序对齐）。
         assert_eq!(xdg_wm_base::REQ_DESTROY, 0);
-        assert_eq!(xdg_wm_base::REQ_GET_XDG_SURFACE, 1);
-        assert_eq!(xdg_wm_base::REQ_PONG, 2);
+        assert_eq!(xdg_wm_base::REQ_CREATE_POSITIONER, 1);
+        assert_eq!(xdg_wm_base::REQ_GET_XDG_SURFACE, 2);
+        assert_eq!(xdg_wm_base::REQ_PONG, 3);
         assert_eq!(xdg_wm_base::EV_PING, 0);
         assert_eq!(xdg_surface::REQ_DESTROY, 0);
         assert_eq!(xdg_surface::REQ_GET_TOPLEVEL, 1);
@@ -2074,5 +2462,170 @@ mod tests {
         assert_eq!(m.header.opcode, xdg_wm_base::REQ_PONG);
         assert_eq!(m.args[0], Some(WlArg::Uint(99)));
         assert_eq!(m.wire_size(), n);
+    }
+
+    /// xdg_popup 尺寸交互族 wire 面（M51-XDGPOP75 笔86——positioner/
+    /// popup 官方声明序锚 + 编组回环 + PosDef placement 语义核金值 +
+    /// 完整性闸）。
+    #[test]
+    fn xdg_popup_wire_face() {
+        // (a) 接口名事实源（registry global interface string 域）。
+        assert_eq!(iface_name(WlIface::XdgPositioner), "xdg_positioner");
+        assert_eq!(iface_name(WlIface::XdgPopup), "xdg_popup");
+        // (b) opcode 官方声明序锚（xdg-shell.xml 逐条对账）。
+        assert_eq!(xdg_positioner::REQ_DESTROY, 0);
+        assert_eq!(xdg_positioner::REQ_SET_SIZE, 1);
+        assert_eq!(xdg_positioner::REQ_SET_ANCHOR_RECT, 2);
+        assert_eq!(xdg_positioner::REQ_SET_ANCHOR, 3);
+        assert_eq!(xdg_positioner::REQ_SET_GRAVITY, 4);
+        assert_eq!(xdg_positioner::REQ_SET_CONSTRAINT_ADJUSTMENT, 5);
+        assert_eq!(xdg_positioner::REQ_SET_OFFSET, 6);
+        assert_eq!(xdg_positioner::REQ_SET_REACTIVE, 7);
+        assert_eq!(xdg_positioner::REQ_SET_PARENT_SIZE, 8);
+        assert_eq!(xdg_positioner::REQ_SET_PARENT_CONFIGURE, 9);
+        assert_eq!(xdg_popup::REQ_DESTROY, 0);
+        assert_eq!(xdg_popup::REQ_GRAB, 1);
+        assert_eq!(xdg_popup::REQ_REPOSITION, 2);
+        assert_eq!(xdg_popup::EV_CONFIGURE, 0);
+        assert_eq!(xdg_popup::EV_POPUP_DONE, 1);
+        assert_eq!(xdg_popup::EV_REPOSITIONED, 2);
+        // (c) 枚举语义常量锚（官方枚举值逐字对账）。
+        assert_eq!(XDG_ANCHOR_NONE, 0);
+        assert_eq!(XDG_ANCHOR_TOP, 1);
+        assert_eq!(XDG_ANCHOR_BOTTOM, 2);
+        assert_eq!(XDG_ANCHOR_LEFT, 3);
+        assert_eq!(XDG_ANCHOR_RIGHT, 4);
+        assert_eq!(XDG_ANCHOR_TOP_LEFT, 5);
+        assert_eq!(XDG_ANCHOR_BOTTOM_LEFT, 6);
+        assert_eq!(XDG_ANCHOR_TOP_RIGHT, 7);
+        assert_eq!(XDG_ANCHOR_BOTTOM_RIGHT, 8);
+        assert_eq!(XDG_CADJ_SLIDER_X, 1);
+        assert_eq!(XDG_CADJ_SLIDER_Y, 2);
+        assert_eq!(XDG_CADJ_FLIP_X, 4);
+        assert_eq!(XDG_CADJ_FLIP_Y, 8);
+        assert_eq!(XDG_CADJ_RESIZE_X, 16);
+        assert_eq!(XDG_CADJ_RESIZE_Y, 32);
+        // (d) 编组回环全谱（字节金值）。
+        let mut buf = [0u8; 64];
+        let n = encode_xdg_wm_base_create_positioner(&mut buf, 0x40, 0x63).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_WM_BASE_CREATE_POSITIONER).expect("parse");
+        assert_eq!(m.header.opcode, xdg_wm_base::REQ_CREATE_POSITIONER);
+        assert_eq!(m.args[0], Some(WlArg::NewId(0x63)));
+        assert_eq!(n, 12, "8 头 + 4 体（new_id）");
+        let n = encode_xdg_positioner_set_size(&mut buf, 0x63, 200, 80).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_POSITIONER_SET_SIZE).expect("parse");
+        assert_eq!(m.header.opcode, xdg_positioner::REQ_SET_SIZE);
+        assert_eq!(m.args[0], Some(WlArg::Int(200)));
+        assert_eq!(m.args[1], Some(WlArg::Int(80)));
+        assert_eq!(n, 16, "8 头 + 8 体（int×2）");
+        let n =
+            encode_xdg_positioner_set_anchor_rect(&mut buf, 0x63, 10, 20, 100, 40).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_POSITIONER_SET_ANCHOR_RECT).expect("parse");
+        assert_eq!(m.header.opcode, xdg_positioner::REQ_SET_ANCHOR_RECT);
+        assert_eq!(m.args[3], Some(WlArg::Int(40)));
+        assert_eq!(n, 24, "8 头 + 16 体（int×4）");
+        let n =
+            encode_xdg_positioner_set_anchor(&mut buf, 0x63, XDG_ANCHOR_TOP_RIGHT).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_POSITIONER_SET_ANCHOR).expect("parse");
+        assert_eq!(m.header.opcode, xdg_positioner::REQ_SET_ANCHOR);
+        assert_eq!(m.args[0], Some(WlArg::Uint(XDG_ANCHOR_TOP_RIGHT)));
+        assert_eq!(n, 12, "8 头 + 4 体（uint）");
+        let n =
+            encode_xdg_positioner_set_gravity(&mut buf, 0x63, XDG_ANCHOR_BOTTOM).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_POSITIONER_SET_GRAVITY).expect("parse");
+        assert_eq!(m.header.opcode, xdg_positioner::REQ_SET_GRAVITY);
+        assert_eq!(n, 12);
+        let n = encode_xdg_positioner_set_constraint_adjustment(
+            &mut buf,
+            0x63,
+            XDG_CADJ_SLIDER_X | XDG_CADJ_SLIDER_Y,
+        )
+        .expect("encode");
+        let m = parse_message(&buf, SIG_XDG_POSITIONER_SET_CONSTRAINT_ADJUSTMENT).expect("parse");
+        assert_eq!(
+            m.header.opcode,
+            xdg_positioner::REQ_SET_CONSTRAINT_ADJUSTMENT
+        );
+        assert_eq!(m.args[0], Some(WlArg::Uint(3)));
+        assert_eq!(n, 12);
+        let n = encode_xdg_positioner_set_offset(&mut buf, 0x63, 4, 8).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_POSITIONER_SET_OFFSET).expect("parse");
+        assert_eq!(m.header.opcode, xdg_positioner::REQ_SET_OFFSET);
+        assert_eq!(n, 16);
+        let n = encode_xdg_surface_get_popup(&mut buf, 0x67, 0x68, 0x61, 0x63).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_SURFACE_GET_POPUP).expect("parse");
+        assert_eq!(m.header.opcode, xdg_surface::REQ_GET_POPUP);
+        assert_eq!(m.args[0], Some(WlArg::NewId(0x68)));
+        assert_eq!(m.args[1], Some(WlArg::Object(0x61)));
+        assert_eq!(m.args[2], Some(WlArg::Object(0x63)));
+        assert_eq!(n, 20, "8 头 + 12 体（new_id + object ×2）");
+        let n = encode_xdg_toplevel_set_min_size(&mut buf, 0x62, 400, 200).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_TOPLEVEL_SET_MIN_SIZE).expect("parse");
+        assert_eq!(m.header.opcode, xdg_toplevel::REQ_SET_MIN_SIZE);
+        assert_eq!(n, 16);
+        let n = encode_xdg_toplevel_set_max_size(&mut buf, 0x62, 1600, 900).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_TOPLEVEL_SET_MAX_SIZE).expect("parse");
+        assert_eq!(m.header.opcode, xdg_toplevel::REQ_SET_MAX_SIZE);
+        assert_eq!(n, 16);
+        let n = encode_xdg_popup_grab(&mut buf, 0x68, 0x65, 5).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_POPUP_GRAB).expect("parse");
+        assert_eq!(m.header.opcode, xdg_popup::REQ_GRAB);
+        assert_eq!(m.args[0], Some(WlArg::Object(0x65)));
+        assert_eq!(m.args[1], Some(WlArg::Uint(5)));
+        assert_eq!(n, 16, "8 头 + 8 体（object + uint）");
+        let n = encode_xdg_popup_configure_event(&mut buf, 0x68, 14, 28).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_POPUP_CONFIGURE).expect("parse");
+        assert_eq!(m.header.opcode, xdg_popup::EV_CONFIGURE);
+        assert_eq!(m.args[0], Some(WlArg::Int(14)));
+        assert_eq!(m.args[1], Some(WlArg::Int(28)));
+        assert_eq!(n, 16, "8 头 + 8 体（int×2）");
+        let n = encode_xdg_popup_done_event(&mut buf, 0x68).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_POPUP_POPUP_DONE).expect("parse");
+        assert_eq!(m.header.opcode, xdg_popup::EV_POPUP_DONE);
+        assert_eq!(n, 8, "零参 = 纯头");
+        // (e) PosDef placement 语义核金值（官方定位公式）。
+        let pos = PosDef {
+            size: (200, 80),
+            anchor_rect: (10, 20, 100, 40),
+            anchor: XDG_ANCHOR_TOP_RIGHT,
+            gravity: XDG_ANCHOR_BOTTOM,
+            cadj: 3,
+            offset: (4, 8),
+        };
+        assert!(pos.complete());
+        assert_eq!(pos.place(), (14, 28), "锚点(110,20) + 重力 bottom + 偏移");
+        let neg = PosDef {
+            anchor: XDG_ANCHOR_BOTTOM,
+            gravity: XDG_ANCHOR_BOTTOM,
+            offset: (0, 0),
+            ..pos
+        };
+        assert_eq!(
+            neg.place(),
+            (-40, 60),
+            "raw 域负位如实出域（约束域 v1 挂账）"
+        );
+        let left = PosDef {
+            anchor: XDG_ANCHOR_LEFT,
+            gravity: XDG_ANCHOR_RIGHT,
+            offset: (0, 0),
+            ..pos
+        };
+        assert_eq!(left.place(), (10, 0), "左锚右重力 = popup 左缘贴锚点");
+        // (f) 完整性闸（官方契约——双宣告缺位拒收）。
+        let empty = PosDef {
+            size: (0, 0),
+            anchor_rect: (0, 0, 0, 0),
+            anchor: 0,
+            gravity: 0,
+            cadj: 0,
+            offset: (0, 0),
+        };
+        assert!(!empty.complete(), "缺省 positioner 不完整");
+        let half = PosDef {
+            size: (200, 80),
+            ..empty
+        };
+        assert!(!half.complete(), "仅 set_size 仍不完整");
     }
 }

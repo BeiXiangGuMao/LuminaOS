@@ -272,6 +272,18 @@ pub static WLCOMP_CLOSES_ERR: AtomicU64 = AtomicU64::new(0);
 /// 窗格标题刷新数（M50-XDGSHELL67——客户端 set_title → 窗格标题带
 /// 消费链电气取证：非空标题 commit 域刷新计数，t159 断言面）。
 pub static WLCOMP_TITLED: AtomicU64 = AtomicU64::new(0);
+/// size-configure 请求受理数（M51-XDGPOP75 笔86——policy size 车道：
+/// tiling 形变 → request_configure 入队受理计数，t164 断言面）。
+pub static WLCOMP_CFGS: AtomicU64 = AtomicU64::new(0);
+/// size-configure 对出域数（M51-XDGPOP75 笔86——feed 冲刷域 configure
+/// 对出域计数，t164 断言面）。
+pub static WLCOMP_CFGS_SENT: AtomicU64 = AtomicU64::new(0);
+/// popup_done 事件出域数（M51-XDGPOP75 笔86——父窗收场派生域冲刷计
+/// 数，t164 断言面）。
+pub static WLCOMP_PDONES: AtomicU64 = AtomicU64::new(0);
+/// popup_done 入队受理数（M51-XDGPOP75 笔86——close 车道派生域受理
+/// 计数：request_popup_done_for_parent 成功域，t164 断言面）。
+pub static WLCOMP_PDONES_SENT: AtomicU64 = AtomicU64::new(0);
 /// evdev 映射拒收数（M42-WAYCOMP13——键码域外 scancode 排空丢弃取
 /// 证：0x59..=0x7F 杂域/0xE0 前缀扩展域挂账随批，t114 断言面）。
 pub static WLCOMP_KEY_UNMAPPED: AtomicU64 = AtomicU64::new(0);
@@ -1079,6 +1091,7 @@ fn session_loop(conn: u64) {
     let mut session = CompSession::new(GLOBALS);
     let mut windows: Vec<u64> = Vec::new(); // 创建序 = 焦点序（策略面输入）
     let mut slots: Vec<Window> = Vec::new();
+    let mut cfg_track: Vec<(u32, i32, i32)> = Vec::new(); // last-sent configure 跟踪（M51-XDGPOP75 笔86 节流域）
     let mut pools: Vec<(u32, u64)> = Vec::new(); // pool_wl → shm 对象 id（池承接域）
     let mut keymap_pools: Vec<u64> = Vec::new(); // keymap 内容池（M42-WAYCOMP13 收场域）
     let mut stream: Vec<u8> = Vec::new();
@@ -1089,11 +1102,20 @@ fn session_loop(conn: u64) {
         drain_input(&mut session, &windows);
         // xdg close 车道排空（M50-XDGSHELL67——policy close 请求 → 会
         // 话 close 队列，feed 冲刷域 xdg_toplevel.close 出域；受理落账
-        // + 拒收取证双面）。
+        // + 拒收取证双面）。M51-XDGPOP75 笔86：父窗收场 → popup 派生
+        // 域随行（request_popup_done_for_parent——官方语义：父窗亡则
+        // popup 收场，popup_done 事件出域）。
         while let Some(wl) = CLOSE_Q.recv() {
             match session.request_close(wl) {
-                Ok(()) => WLCOMP_CLOSES_REQ.fetch_add(1, Ordering::AcqRel),
-                Err(_) => WLCOMP_CLOSES_ERR.fetch_add(1, Ordering::AcqRel),
+                Ok(()) => {
+                    WLCOMP_CLOSES_REQ.fetch_add(1, Ordering::AcqRel);
+                    if session.request_popup_done_for_parent(wl).is_ok() {
+                        WLCOMP_PDONES.fetch_add(1, Ordering::AcqRel);
+                    }
+                }
+                Err(_) => {
+                    WLCOMP_CLOSES_ERR.fetch_add(1, Ordering::AcqRel);
+                }
             };
         }
         // 流消费探针（非消费双读——环空且终结旗 = EOF 收场域）
@@ -1125,7 +1147,7 @@ fn session_loop(conn: u64) {
                 if rep.drops.n > 0 {
                     pointer_relink(&mut session, &windows, &WLCOMP_RELINK);
                 }
-                policy_sync(&mut session, &mut windows);
+                policy_sync(&mut session, &mut windows, &mut cfg_track);
                 policy_focus(&mut session, &windows);
                 policy_rewrite(&windows, &mut slots);
                 pool_admit(conn, &rep, &mut pools);
@@ -1154,6 +1176,12 @@ fn session_loop(conn: u64) {
                 // xdg close 事件出域数（M50-XDGSHELL67——close 车道冲刷
                 // 域计数，t159 断言面）
                 WLCOMP_CLOSES.fetch_add(rep.closes as u64, Ordering::AcqRel);
+                // size-configure 对出域数（M51-XDGPOP75 笔86——size 车道
+                // 冲刷域计数，t164 断言面）
+                WLCOMP_CFGS_SENT.fetch_add(rep.configs as u64, Ordering::AcqRel);
+                // popup_done 事件出域数（M51-XDGPOP75 笔86——pdone 车道
+                // 冲刷域计数，t164 断言面）
+                WLCOMP_PDONES_SENT.fetch_add(rep.popup_dones as u64, Ordering::AcqRel);
                 // modifiers wire 发出数（M42-WAYCOMP15——Modifiers 记录批）
                 for r in rep.keys.items[..rep.keys.n].iter().flatten() {
                     if prism::wayland::comp::KbKind::Modifiers == r.kind {
@@ -1554,7 +1582,11 @@ fn drain_input(session: &mut CompSession, windows: &[u64]) {
 /// 创建期即入窗（创建序 = 焦点序 v0 口径——同批 create+commit 时窗
 /// 全量在册，窗格形状一次定形）+ cascade tiling 平面几何注入会话
 /// （commit 发布域的损伤裁剪键）。
-fn policy_sync(session: &mut CompSession, windows: &mut Vec<u64>) {
+fn policy_sync(
+    session: &mut CompSession,
+    windows: &mut Vec<u64>,
+    cfg_track: &mut Vec<(u32, i32, i32)>,
+) {
     let (ids, n) = session.surface_ids();
     for id in ids[..n].iter().flatten() {
         if !windows.contains(&u64::from(*id)) {
@@ -1565,8 +1597,56 @@ fn policy_sync(session: &mut CompSession, windows: &mut Vec<u64>) {
         return; // 平面失败（视口越域等）——几何维持上轮态，fail-visible
     };
     for (id, rect) in plan.panes.iter() {
-        let _ = session.set_geometry(*id as u32, *rect);
+        // M51-XDGPOP75 笔86：min/max 尺寸宣告消费域（官方语义——
+        // configure/几何须落 set_min/set_max 承载域内，0 = 未设定；
+        // waycomp tiling 面唯一几何权威域同谱）。
+        let rect = clamp_minmax(*rect, session.surface_minmax(*id as u32));
+        let _ = session.set_geometry(*id as u32, rect);
+        // size-configure 车道（M51-XDGPOP75 笔86——官方语义：configure
+        // (w,h) 非零值 = 客户端应重定窗尺寸。节流三重闸：toplevel 角
+        // 色在环（surface_acked = Some）∧ 最近 configure 已 ack（单挂
+        // 起口径不叠发）∧ 尺寸形变（last-sent 去重——同尺寸零入队）。
+        let wl = *id as u32;
+        let (w, h) = (rect.w as i32, rect.h as i32);
+        if session.surface_acked(wl) != Some(true) {
+            continue; // 挂起 configure 未 ack——不叠发（串号对账域）
+        }
+        if cfg_track
+            .iter()
+            .any(|(wl_sent, w_sent, h_sent)| wl_sent == &wl && w_sent == &w && h_sent == &h)
+        {
+            continue; // 尺寸未形变——零入队（last-sent 去重域）
+        }
+        if session.request_configure(wl, w, h).is_ok() {
+            WLCOMP_CFGS.fetch_add(1, Ordering::AcqRel);
+            cfg_track.retain(|(wl_sent, _, _)| wl_sent != &wl);
+            cfg_track.push((wl, w, h));
+        }
     }
+    // 窗亡域跟踪清尾（drop 摘除窗口的 last-sent 记录退役）。
+    cfg_track.retain(|(wl, _, _)| plan.panes.iter().any(|(id, _)| *id as u32 == *wl));
+}
+
+/// min/max 尺寸宣告钳制（M51-XDGPOP75 笔86 语义核——官方语义：
+/// max 非零上钳 + min 非零下钳；0 = 未设定域跳过）。
+pub fn clamp_minmax(rect: Rect, mm: Option<(i32, i32, i32, i32)>) -> Rect {
+    let Some((min_w, min_h, max_w, max_h)) = mm else {
+        return rect;
+    };
+    let mut r = rect;
+    if max_w > 0 && r.w > max_w as u32 {
+        r.w = max_w as u32;
+    }
+    if max_h > 0 && r.h > max_h as u32 {
+        r.h = max_h as u32;
+    }
+    if min_w > 0 && r.w < min_w as u32 {
+        r.w = min_w as u32;
+    }
+    if min_h > 0 && r.h < min_h as u32 {
+        r.h = min_h as u32;
+    }
+    r
 }
 
 /// destroy 摘除执行（feed 后每轮——**M42-GEOM6 域①重排前置域**）：
