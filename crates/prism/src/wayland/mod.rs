@@ -800,10 +800,10 @@ pub mod xdg_toplevel {
     pub const EV_WM_CAPABILITIES: u16 = 3;
 }
 
-/// xdg_positioner 请求 opcode（M51-XDGPOP75 笔86——官方声明序；v1
-/// 七请求 destroy/set_size/set_anchor_rect/set_anchor/set_gravity/
-/// set_constraint_adjustment/set_offset 在环，v3 三请求〔set_reactive/
-/// set_parent_size/set_parent_configure〕域外 fail-visible 如实挂账）。
+/// xdg_positioner 请求 opcode（M51-XDGPOP75 笔86 官方声明序 + M52-POPCON78
+/// 笔90 v3 三请求在环：v1 七请求 destroy/set_size/set_anchor_rect/
+/// set_anchor/set_gravity/set_constraint_adjustment/set_offset + v3
+/// set_reactive/set_parent_size/set_parent_configure 全谱十请求在环）。
 pub mod xdg_positioner {
     /// request destroy（destructor）。
     pub const REQ_DESTROY: u16 = 0;
@@ -819,29 +819,29 @@ pub mod xdg_positioner {
     pub const REQ_SET_CONSTRAINT_ADJUSTMENT: u16 = 5;
     /// request set_offset（int × 2——锚点偏移）。
     pub const REQ_SET_OFFSET: u16 = 6;
-    /// request set_reactive（v3+——域外挂账）。
+    /// request set_reactive（v3——reactive 重定位宣告，零参）。
     pub const REQ_SET_REACTIVE: u16 = 7;
-    /// request set_parent_size（v3+——域外挂账）。
+    /// request set_parent_size（v3——reactive 重定位父尺寸宣告）。
     pub const REQ_SET_PARENT_SIZE: u16 = 8;
-    /// request set_parent_configure（v3+——域外挂账）。
+    /// request set_parent_configure（v3——reactive 重定位父 configure 串号）。
     pub const REQ_SET_PARENT_CONFIGURE: u16 = 9;
 }
 
-/// xdg_popup 请求/事件 opcode（M51-XDGPOP75 笔86——官方声明序；v1
-/// 请求 destroy/grab 在环 + 事件 configure/popup_done 在环，v3
-/// reposition/repositioned 域外 fail-visible 如实挂账）。
+/// xdg_popup 请求/事件 opcode（M51-XDGPOP75 笔86 官方声明序 + M52-POPCON78
+/// 笔90 v3 reposition/repositioned 在环：请求 destroy/grab/reposition +
+/// 事件 configure/popup_done/repositioned 全谱在环）。
 pub mod xdg_popup {
     /// request destroy（destructor——popup 角色摘除）。
     pub const REQ_DESTROY: u16 = 0;
     /// request grab（object seat + uint serial——输入 grab 宣告）。
     pub const REQ_GRAB: u16 = 1;
-    /// request reposition（object positioner + uint token，v3+——域外挂账）。
+    /// request reposition（object positioner + uint token，v3——重定位）。
     pub const REQ_REPOSITION: u16 = 2;
     /// event configure（int × 2——popup 位置〔父面局部坐标〕）。
     pub const EV_CONFIGURE: u16 = 0;
     /// event popup_done（——收场契约：客户端应销毁 popup）。
     pub const EV_POPUP_DONE: u16 = 1;
-    /// event repositioned（uint token，v3+——域外挂账）。
+    /// event repositioned（uint token，v3——重定位完成回执）。
     pub const EV_REPOSITIONED: u16 = 2;
 }
 
@@ -882,8 +882,9 @@ pub const XDG_CADJ_RESIZE_X: u32 = 16;
 /// constraint_adjustment 位域：resize_y（32）。
 pub const XDG_CADJ_RESIZE_Y: u32 = 32;
 
-/// positioner 定位参数装载体（M51-XDGPOP75 笔86——create_positioner
-/// 派生 + 六 setter 语义核；定容零堆值语义）。
+/// positioner 定位参数装载体（M51-XDGPOP75 笔86 六 setter 语义核 +
+/// M52-POPCON78 笔90 v3 三域随行——reactive 重定位宣告/父尺寸/父
+/// configure 串号；定容零堆值语义）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PosDef {
     /// set_size 宣告（popup 内容尺寸）。
@@ -894,11 +895,17 @@ pub struct PosDef {
     pub anchor: u32,
     /// set_gravity 宣告（[`XDG_ANCHOR_MAX`] 值域）。
     pub gravity: u32,
-    /// set_constraint_adjustment 宣告（位域记账承载体——约束域 v1
-    /// 域外挂账：flip/slide/resize 不施策如实记档）。
+    /// set_constraint_adjustment 宣告（位域——M52-POPCON78 约束域施策
+    /// 位：flip/slide/resize 双轴全谱）。
     pub cadj: u32,
     /// set_offset 宣告（锚点偏移）。
     pub offset: (i32, i32),
+    /// set_reactive 宣告（v3——父面几何变更时重定位宣告）。
+    pub reactive: bool,
+    /// set_parent_size 宣告（v3——reactive 重定位父尺寸〔w, h〕）。
+    pub parent_size: (i32, i32),
+    /// set_parent_configure 宣告（v3——reactive 重定位父 configure 串号）。
+    pub parent_config: u32,
 }
 
 impl PosDef {
@@ -909,10 +916,9 @@ impl PosDef {
         self.size.0 > 0 && self.size.1 > 0 && self.anchor_rect.2 > 0 && self.anchor_rect.3 > 0
     }
 
-    /// placement 语义核（官方定位公式）：锚点取锚矩形边〔左/右/中 ×
-    /// 上/下/中〕，popup 边缘按重力对齐锚点后施加 offset。返回 popup
-    /// 左上角（父面局部坐标）。约束域（flip/slide/resize + 屏域裁剪）
-    /// v1 域外挂账——raw 计算如实出域。
+    /// raw placement 语义核（官方定位公式）：锚点取锚矩形边〔左/右/中
+    /// × 上/下/中〕，popup 边缘按重力对齐锚点后施加 offset。返回 popup
+    /// 左上角（父面局部坐标）。
     pub fn place(&self) -> (i32, i32) {
         let (arx, ary, arw, arh) = self.anchor_rect;
         // 锚点：水平边（left/right/中）× 垂直边（top/bottom/中）。
@@ -940,6 +946,135 @@ impl PosDef {
         };
         (px + self.offset.0, py + self.offset.1)
     }
+
+    /// placement 语义核 v1（M52-POPCON78 笔90 约束域收口——官方施策序
+    /// flip→slide→resize 逐轴 + 屏域裁剪）：`bound` = 约束域矩形（屏域
+    /// /父域——消费方策略面注入，父面局部坐标）。逐轴：① flip（越界
+    /// 且 FLIP 位在——重力对该轴翻转重算一次，翻转后全包容才施策）②
+    /// slide（仍越界且 SLIDER 位在且 popup 全长界内可容——钳到界内）③
+    /// resize（仍越界且 RESIZE 位在——对界求交截尺寸）。末段屏域裁剪
+    /// 无条件施策（合成器永不外报越界 rect——无位域轴保持 raw 位置、
+    /// 尺寸对界求交；完全出界 = 零面积域，零面积快径如实显形）。
+    pub fn place_in_bounds(&self, bound: (i32, i32, i32, i32)) -> PlacedRect {
+        let (bx, by, bw, bh) = bound;
+        let (mut x, mut y) = self.place();
+        let mut w = self.size.0;
+        let mut h = self.size.1;
+        // 零界守卫（bound 零面积 = 未注入约束域——raw 直通：t164 既有
+        // 金值域零扰，消费方 boot 域 set_screen_bound 后施策域生效）。
+        if bw <= 0 || bh <= 0 {
+            return PlacedRect {
+                x,
+                y,
+                w,
+                h,
+                flip_x: false,
+                flip_y: false,
+            };
+        }
+        let mut flip_x = false;
+        let mut flip_y = false;
+        // X 轴：flip → slide → resize（官方施策序逐轴）。
+        let out_x = x < bx || x + w > bx + bw;
+        if out_x && self.cadj & XDG_CADJ_FLIP_X != 0 {
+            let mut flipped = *self;
+            flipped.gravity = flip_gravity_x(self.gravity);
+            let (fx, _) = flipped.place();
+            if fx >= bx && fx + w <= bx + bw {
+                x = fx;
+                flip_x = true;
+            }
+        }
+        if (x < bx || x + w > bx + bw) && self.cadj & XDG_CADJ_SLIDER_X != 0 && w <= bw {
+            x = x.max(bx).min(bx + bw - w);
+        }
+        if (x < bx || x + w > bx + bw) && self.cadj & XDG_CADJ_RESIZE_X != 0 {
+            let nx = x.max(bx);
+            let nend = (x + w).min(bx + bw);
+            x = nx;
+            w = (nend - nx).max(0);
+        }
+        // Y 轴同构。
+        let out_y = y < by || y + h > by + bh;
+        if out_y && self.cadj & XDG_CADJ_FLIP_Y != 0 {
+            let mut flipped = *self;
+            flipped.gravity = flip_gravity_y(self.gravity);
+            let (_, fy) = flipped.place();
+            if fy >= by && fy + h <= by + bh {
+                y = fy;
+                flip_y = true;
+            }
+        }
+        if (y < by || y + h > by + bh) && self.cadj & XDG_CADJ_SLIDER_Y != 0 && h <= bh {
+            y = y.max(by).min(by + bh - h);
+        }
+        if (y < by || y + h > by + bh) && self.cadj & XDG_CADJ_RESIZE_Y != 0 {
+            let ny = y.max(by);
+            let nend = (y + h).min(by + bh);
+            y = ny;
+            h = (nend - ny).max(0);
+        }
+        // 屏域裁剪（无条件——合成器永不外报越界 rect）。
+        let cx0 = x.max(bx);
+        let cx1 = (x + w).min(bx + bw);
+        let cy0 = y.max(by);
+        let cy1 = (y + h).min(by + bh);
+        PlacedRect {
+            x,
+            y,
+            w: (cx1 - cx0).max(0),
+            h: (cy1 - cy0).max(0),
+            flip_x,
+            flip_y,
+        }
+    }
+}
+
+/// 重力 X 轴翻转（官方 flip 语义——锚点不变，重力对该轴镜像：left↔
+/// right；top/bottom/中轴保持）。top_left↔top_right、bottom_left↔
+/// bottom_right 对称对换。
+pub fn flip_gravity_x(g: u32) -> u32 {
+    match g {
+        XDG_ANCHOR_LEFT => XDG_ANCHOR_RIGHT,
+        XDG_ANCHOR_RIGHT => XDG_ANCHOR_LEFT,
+        XDG_ANCHOR_TOP_LEFT => XDG_ANCHOR_TOP_RIGHT,
+        XDG_ANCHOR_TOP_RIGHT => XDG_ANCHOR_TOP_LEFT,
+        XDG_ANCHOR_BOTTOM_LEFT => XDG_ANCHOR_BOTTOM_RIGHT,
+        XDG_ANCHOR_BOTTOM_RIGHT => XDG_ANCHOR_BOTTOM_LEFT,
+        _ => g,
+    }
+}
+
+/// 重力 Y 轴翻转（top↔bottom；left/right/中轴保持）。
+pub fn flip_gravity_y(g: u32) -> u32 {
+    match g {
+        XDG_ANCHOR_TOP => XDG_ANCHOR_BOTTOM,
+        XDG_ANCHOR_BOTTOM => XDG_ANCHOR_TOP,
+        XDG_ANCHOR_TOP_LEFT => XDG_ANCHOR_BOTTOM_LEFT,
+        XDG_ANCHOR_BOTTOM_LEFT => XDG_ANCHOR_TOP_LEFT,
+        XDG_ANCHOR_TOP_RIGHT => XDG_ANCHOR_BOTTOM_RIGHT,
+        XDG_ANCHOR_BOTTOM_RIGHT => XDG_ANCHOR_TOP_RIGHT,
+        _ => g,
+    }
+}
+
+/// placement 约束域产出（M52-POPCON78 笔90）：x/y = flip/slide 后位置
+/// （无施策轴 = raw）；w/h = 屏域裁剪后尺寸（屏域权威渲染域）；flip
+/// 双旗 = 施策实录（t167 断言域）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlacedRect {
+    /// popup 左上 x（父面局部坐标——configure 事件同值出域）。
+    pub x: i32,
+    /// popup 左上 y。
+    pub y: i32,
+    /// 屏域裁剪后宽。
+    pub w: i32,
+    /// 屏域裁剪后高。
+    pub h: i32,
+    /// X 轴 flip 实旗。
+    pub flip_x: bool,
+    /// Y 轴 flip 实旗。
+    pub flip_y: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -1110,6 +1245,16 @@ pub const SIG_XDG_POPUP_GRAB: &[WlType] = &[WlType::Object, WlType::Uint];
 pub const SIG_XDG_POPUP_CONFIGURE: &[WlType] = &[WlType::Int, WlType::Int];
 /// xdg_popup.popup_done：`()`。
 pub const SIG_XDG_POPUP_POPUP_DONE: &[WlType] = &[];
+/// xdg_positioner.set_reactive：`()`（v3——零参宣告，M52-POPCON78 笔90）。
+pub const SIG_XDG_POSITIONER_SET_REACTIVE: &[WlType] = &[];
+/// xdg_positioner.set_parent_size：`(int, int)`（v3——reactive 父尺寸）。
+pub const SIG_XDG_POSITIONER_SET_PARENT_SIZE: &[WlType] = &[WlType::Int, WlType::Int];
+/// xdg_positioner.set_parent_configure：`(uint)`（v3——reactive 父串号）。
+pub const SIG_XDG_POSITIONER_SET_PARENT_CONFIGURE: &[WlType] = &[WlType::Uint];
+/// xdg_popup.reposition：`(object, uint)`（v3——positioner + token）。
+pub const SIG_XDG_POPUP_REPOSITION: &[WlType] = &[WlType::Object, WlType::Uint];
+/// xdg_popup.repositioned 事件：`(uint)`（v3——token 回执）。
+pub const SIG_XDG_POPUP_REPOSITIONED: &[WlType] = &[WlType::Uint];
 
 // --- 输入链语义常量（官方 XML 枚举值逐字对账——宿主测试 + t109 消费面） ---
 
@@ -1605,6 +1750,73 @@ pub fn encode_xdg_popup_configure_event(
 /// xdg_popup.popup_done 事件编组（收场契约——客户端应销毁 popup）。
 pub fn encode_xdg_popup_done_event(buf: &mut [u8], popup_id: u32) -> Result<usize, WlError> {
     encode_message(buf, popup_id, xdg_popup::EV_POPUP_DONE, &[])
+}
+
+/// xdg_positioner.set_reactive 请求编组（v3——零参宣告）。
+pub fn encode_xdg_positioner_set_reactive(
+    buf: &mut [u8],
+    positioner_id: u32,
+) -> Result<usize, WlError> {
+    encode_message(buf, positioner_id, xdg_positioner::REQ_SET_REACTIVE, &[])
+}
+
+/// xdg_positioner.set_parent_size 请求编组（v3——reactive 父尺寸）。
+pub fn encode_xdg_positioner_set_parent_size(
+    buf: &mut [u8],
+    positioner_id: u32,
+    width: i32,
+    height: i32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        positioner_id,
+        xdg_positioner::REQ_SET_PARENT_SIZE,
+        &[WlArg::Int(width), WlArg::Int(height)],
+    )
+}
+
+/// xdg_positioner.set_parent_configure 请求编组（v3——reactive 父串号）。
+pub fn encode_xdg_positioner_set_parent_configure(
+    buf: &mut [u8],
+    positioner_id: u32,
+    serial: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        positioner_id,
+        xdg_positioner::REQ_SET_PARENT_CONFIGURE,
+        &[WlArg::Uint(serial)],
+    )
+}
+
+/// xdg_popup.reposition 请求编组（v3——positioner + token 官方 arg 序）。
+pub fn encode_xdg_popup_reposition(
+    buf: &mut [u8],
+    popup_id: u32,
+    positioner_id: u32,
+    token: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        popup_id,
+        xdg_popup::REQ_REPOSITION,
+        &[WlArg::Object(positioner_id), WlArg::Uint(token)],
+    )
+}
+
+/// xdg_popup.repositioned 事件编组（v3——token 回执；官方序 =
+/// repositioned 先行、configure(x,y) 随行）。
+pub fn encode_xdg_popup_repositioned_event(
+    buf: &mut [u8],
+    popup_id: u32,
+    token: u32,
+) -> Result<usize, WlError> {
+    encode_message(
+        buf,
+        popup_id,
+        xdg_popup::EV_REPOSITIONED,
+        &[WlArg::Uint(token)],
+    )
 }
 
 /// wl_seat.capabilities 事件编组（M42-INPUT7 输入链——seat bind 后
@@ -2591,6 +2803,9 @@ mod tests {
             gravity: XDG_ANCHOR_BOTTOM,
             cadj: 3,
             offset: (4, 8),
+            reactive: false,
+            parent_size: (0, 0),
+            parent_config: 0,
         };
         assert!(pos.complete());
         assert_eq!(pos.place(), (14, 28), "锚点(110,20) + 重力 bottom + 偏移");
@@ -2620,6 +2835,9 @@ mod tests {
             gravity: 0,
             cadj: 0,
             offset: (0, 0),
+            reactive: false,
+            parent_size: (0, 0),
+            parent_config: 0,
         };
         assert!(!empty.complete(), "缺省 positioner 不完整");
         let half = PosDef {
@@ -2627,5 +2845,146 @@ mod tests {
             ..empty
         };
         assert!(!half.complete(), "仅 set_size 仍不完整");
+    }
+
+    /// M52-POPCON78 笔90：约束域收口 face——place_in_bounds 官方施策序
+    /// flip→slide→resize 逐轴金值矩阵 + 屏域裁剪 + 零界守卫 + flip 重
+    /// 力镜像 + v3 编组器字节金值回环。
+    #[test]
+    fn xdg_popup_constraint_face() {
+        // 编组器回环：set_reactive 8 B / set_parent_size 16 B /
+        // set_parent_configure 12 B / reposition 16 B / repositioned 12 B
+        let mut buf = [0u8; 64];
+        let n = encode_xdg_positioner_set_reactive(&mut buf, 0x63).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_POSITIONER_SET_REACTIVE).expect("parse");
+        assert_eq!(m.header.opcode, xdg_positioner::REQ_SET_REACTIVE);
+        assert_eq!(n, 8, "零参 = 纯头");
+        let n = encode_xdg_positioner_set_parent_size(&mut buf, 0x63, 800, 600).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_POSITIONER_SET_PARENT_SIZE).expect("parse");
+        assert_eq!(m.args[0], Some(WlArg::Int(800)));
+        assert_eq!(n, 16);
+        let n = encode_xdg_positioner_set_parent_configure(&mut buf, 0x63, 77).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_POSITIONER_SET_PARENT_CONFIGURE).expect("parse");
+        assert_eq!(m.args[0], Some(WlArg::Uint(77)));
+        assert_eq!(n, 12);
+        let n = encode_xdg_popup_reposition(&mut buf, 0x68, 0x63, 0xAB).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_POPUP_REPOSITION).expect("parse");
+        assert_eq!(m.args[0], Some(WlArg::Object(0x63)));
+        assert_eq!(m.args[1], Some(WlArg::Uint(0xAB)));
+        assert_eq!(n, 16);
+        let n = encode_xdg_popup_repositioned_event(&mut buf, 0x68, 0xAB).expect("encode");
+        let m = parse_message(&buf, SIG_XDG_POPUP_REPOSITIONED).expect("parse");
+        assert_eq!(m.header.opcode, xdg_popup::EV_REPOSITIONED);
+        assert_eq!(m.args[0], Some(WlArg::Uint(0xAB)));
+        assert_eq!(n, 12);
+
+        // flip_gravity 镜像矩阵（锚点不变——轴内对换）。
+        assert_eq!(flip_gravity_x(XDG_ANCHOR_LEFT), XDG_ANCHOR_RIGHT);
+        assert_eq!(flip_gravity_x(XDG_ANCHOR_TOP_RIGHT), XDG_ANCHOR_TOP_LEFT);
+        assert_eq!(flip_gravity_y(XDG_ANCHOR_TOP), XDG_ANCHOR_BOTTOM);
+        assert_eq!(flip_gravity_y(XDG_ANCHOR_BOTTOM_LEFT), XDG_ANCHOR_TOP_LEFT);
+        assert_eq!(flip_gravity_y(XDG_ANCHOR_LEFT), XDG_ANCHOR_LEFT, "轴外保持");
+
+        // 零界守卫：bound 零面积 = raw 直通（t164 金值域零扰）。
+        let p = PosDef {
+            size: (10, 6),
+            anchor_rect: (0, 0, 20, 20),
+            anchor: XDG_ANCHOR_TOP_RIGHT,
+            gravity: XDG_ANCHOR_BOTTOM,
+            cadj: 0,
+            offset: (0, 0),
+            reactive: false,
+            parent_size: (0, 0),
+            parent_config: 0,
+        };
+        let pr = p.place_in_bounds((0, 0, 0, 0));
+        assert_eq!(
+            (pr.x, pr.y, pr.w, pr.h),
+            (p.place().0, p.place().1, 10, 6),
+            "零界 = raw 直通"
+        );
+
+        // flip_y 金值：popup 出上界 → FLIP_Y 翻转后入界（flip_y=true）。
+        // 锚 rect (50,0,10,5)，anchor TOP → ay=0；gravity TOP → py=0-10=-10
+        // 出上界；flip → gravity BOTTOM → py=0 全包容 → y=0。
+        let flip = PosDef {
+            size: (20, 10),
+            anchor_rect: (50, 0, 10, 5),
+            anchor: XDG_ANCHOR_TOP,
+            gravity: XDG_ANCHOR_TOP,
+            cadj: XDG_CADJ_FLIP_Y,
+            offset: (0, 0),
+            reactive: false,
+            parent_size: (0, 0),
+            parent_config: 0,
+        };
+        let pr = flip.place_in_bounds((0, 0, 100, 100));
+        assert_eq!(pr.y, 0, "flip_y 施策后入界");
+        assert!(pr.flip_y && !pr.flip_x);
+        assert_eq!(pr.w, 20);
+
+        // slide_x 金值：右越界 → SLIDER_X 钳到界内（x = 100-20 = 80）。
+        let slide = PosDef {
+            size: (20, 10),
+            anchor_rect: (95, 5, 10, 10),
+            anchor: XDG_ANCHOR_BOTTOM_RIGHT,
+            gravity: XDG_ANCHOR_RIGHT,
+            cadj: XDG_CADJ_SLIDER_X,
+            offset: (0, 0),
+            reactive: false,
+            parent_size: (0, 0),
+            parent_config: 0,
+        };
+        let pr = slide.place_in_bounds((0, 0, 100, 100));
+        assert_eq!(pr.x, 80, "slide_x 钳制金值");
+        assert!(!pr.flip_x, "slide 不翻转");
+        assert_eq!(pr.y, 10);
+
+        // resize_x 金值：右越界且 FLIP/SLIDE 缺位 → RESIZE_X 对界求交
+        // （x=80 不动，w = 100-80 = 20）。
+        let resize = PosDef {
+            size: (60, 10),
+            anchor_rect: (70, 10, 10, 10),
+            anchor: XDG_ANCHOR_BOTTOM_RIGHT,
+            gravity: XDG_ANCHOR_RIGHT,
+            cadj: XDG_CADJ_RESIZE_X,
+            offset: (0, 0),
+            reactive: false,
+            parent_size: (0, 0),
+            parent_config: 0,
+        };
+        let pr = resize.place_in_bounds((0, 0, 100, 100));
+        assert_eq!((pr.x, pr.w), (80, 20), "resize_x 截尺寸金值");
+
+        // 无位域轴：raw 位置保持 + 屏域裁剪（w 截到界内余量）。
+        let raw = PosDef {
+            size: (20, 10),
+            anchor_rect: (95, 5, 10, 10),
+            anchor: XDG_ANCHOR_BOTTOM_RIGHT,
+            gravity: XDG_ANCHOR_RIGHT,
+            cadj: 0,
+            offset: (0, 0),
+            reactive: false,
+            parent_size: (0, 0),
+            parent_config: 0,
+        };
+        let pr = raw.place_in_bounds((0, 0, 100, 100));
+        assert_eq!(pr.x, 105, "raw 位置保持（无位域轴不施策）");
+        assert_eq!(pr.w, 0, "屏域裁剪零余量如实显形");
+
+        // 完全出界：零面积域（零面积快径显形）。
+        let out = PosDef {
+            size: (20, 10),
+            anchor_rect: (50, 5, 10, 10),
+            anchor: XDG_ANCHOR_BOTTOM_RIGHT,
+            gravity: XDG_ANCHOR_RIGHT,
+            cadj: 0,
+            offset: (0, 0),
+            reactive: false,
+            parent_size: (0, 0),
+            parent_config: 0,
+        };
+        let pr = out.place_in_bounds((0, 0, 50, 100));
+        assert_eq!(pr.w, 0, "全出界 = 零面积域");
     }
 }

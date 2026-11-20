@@ -221,6 +221,10 @@ pub enum Stub {
     /// ㉕电气源接线；PIC 从片 IRQ4，级联 EOI 在桩主体内发——从片先、
     /// 主片随行）。
     Irq12,
+    /// 向量 0x44（68）：e1000 NIC 中断面（M52-E1KIRQ77 笔89——IOAPIC
+    /// 路由交付至 BSP LAPIC；LAPIC EOI 在桩主体内发，与 Irq1/Irq12 的
+    /// PIC EOI 分域）。
+    IrqE1k,
 }
 
 /// 桩符号地址（供 [`Idt::set_raw`] 注册）。
@@ -243,6 +247,7 @@ pub fn stub_addr(stub: Stub) -> u64 {
         fn isr_resched();
         fn isr_kbd();
         fn isr_aux();
+        fn isr_e1k();
     }
     let f: unsafe extern "C" fn() = match stub {
         Stub::Timer => isr_timer,
@@ -260,6 +265,7 @@ pub fn stub_addr(stub: Stub) -> u64 {
         Stub::Resched => isr_resched,
         Stub::Irq1 => isr_kbd,
         Stub::Irq12 => isr_aux,
+        Stub::IrqE1k => isr_e1k,
     };
     f as usize as u64
 }
@@ -840,6 +846,37 @@ pub mod stubs {
         "    pop rax",
         "    pop rbp",
         "    iretq",
+        // ---- e1000 NIC 桩（向量 0x44，M52-E1KIRQ77 笔89 中断面）----
+        // isr_kbd/isr_aux 同构：对称保存 caller-saved + rbp → 主体 →
+        // 对称恢复 → iretq。ICR 判读（read-to-clear）与 LAPIC EOI 全在
+        // 主体（IOAPIC→LAPIC 交付域，与 PIC EOI 分域）。
+        ".globl isr_e1k",
+        "isr_e1k:",
+        "    push rbp",
+        "    push rax",
+        "    push rcx",
+        "    push rdx",
+        "    push rsi",
+        "    push rdi",
+        "    push r8",
+        "    push r9",
+        "    push r10",
+        "    push r11",
+        "    mov rbp, rsp",
+        "    and rsp, -16",
+        "    call isr_e1k_body",
+        "    mov rsp, rbp",
+        "    pop r11",
+        "    pop r10",
+        "    pop r9",
+        "    pop r8",
+        "    pop rdi",
+        "    pop rsi",
+        "    pop rdx",
+        "    pop rcx",
+        "    pop rax",
+        "    pop rbp",
+        "    iretq",
     }
 
     /// 定时器钩子：返回 true 表示已填写 plan 并完成切换目标布置
@@ -1154,6 +1191,36 @@ pub mod stubs {
         }
         crate::hw::pic::eoi_slave(); // 级联纪律：从片 EOI 先行
         crate::hw::pic::eoi_master(); // 主片随行（IRQ12 经从片级联）
+    }
+
+    /// NIC 钩子（M52-E1KIRQ77 笔89 中断面：ICR 判读属内核 e1k 策略面
+    /// ——读清与计数全在钩子，桩只管 EOI）。
+    static NIC_HOOK: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+    /// 注册 NIC 钩子（内核 e1k 中断面 bring-up 时调用；IMS 武装先于
+    /// 首次投递，钩子注册先于 IMS 武装——窗口契约同 kbd/aux 先例）。
+    pub fn set_nic_hook(hook: fn()) {
+        NIC_HOOK.store(hook as usize, core::sync::atomic::Ordering::Release);
+    }
+
+    /// NIC 主体（向量 0x44 = e1000 中断面，M52-E1KIRQ77 笔89）：转交
+    /// 钩子（ICR 读清 + 计数全在内核策略面）→ LAPIC EOI（IOAPIC
+    /// 路由交付域——与 Irq1/Irq12 PIC EOI 分域；LAPIC 基址未就绪时
+    /// 跳过 EOI，纯守卫域零交付前提不可达如实记档）。
+    #[no_mangle]
+    extern "C" fn isr_e1k_body() {
+        let hook = NIC_HOOK.load(core::sync::atomic::Ordering::Acquire);
+        if hook != 0 {
+            // SAFETY: 前置条件 —— 地址来自 set_nic_hook 存入的 fn()。
+            // 并发 —— IOAPIC 路由单目标 BSP（物理交付模式单一投递），
+            //         串行；同族 Irq1/Irq12 异源可交错——钩子侧零共享
+            //         态（volatile MMIO 读 + 原子计数）纪律由消费域承载。
+            let f: fn() = unsafe { core::mem::transmute(hook) };
+            f();
+        }
+        if crate::hw::lapic::access_ready() {
+            crate::hw::lapic::eoi();
+        }
     }
 
     /// 可恢复 #PF 钩子（M5：按需分页；参数 = CR2 故障地址 + 错误码，

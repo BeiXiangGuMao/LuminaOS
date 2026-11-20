@@ -47,8 +47,13 @@ const REG_STATUS: usize = 0x0008;
 const REG_EECD: usize = 0x0010;
 /// EEPROM Read Register（8254x 硬件读出车道）。
 const REG_EERD: usize = 0x0014;
-/// Interrupt Mask Clear（IMC——全屏蔽纯轮询口径）。
+/// Interrupt Mask Clear（IMC——bring-up 期全屏蔽；中断面 M52-E1KIRQ77
+/// 笔89 随 IMS 武装切换）。
 const REG_IMC: usize = 0x00D8;
+/// Interrupt Cause Read（ICR——read-to-clear；中断面事实源）。
+const REG_ICR: usize = 0x00C0;
+/// Interrupt Mask Set（IMS——中断使能位域）。
+const REG_IMS: usize = 0x00D0;
 /// Receive Control Register。
 const REG_RCTL: usize = 0x0100;
 /// Transmit Control Register。
@@ -120,6 +125,15 @@ const TCTL_CT: u32 = 0x10 << 12;
 const TCTL_COLD: u32 = 0x40 << 20;
 /// RAH：Address Valid 位（bit 31）。
 const RAH_AV: u32 = 0x8000_0000;
+/// PCI 配置空间：中断 pin/line 双字节（0x3C——低 8 位 line，次 8 位
+/// pin：0x1 = INTA#）。
+const PCI_OFF_INTR: u8 = 0x3C;
+/// ICR/IMS：Transmit Descriptor Written Back（bit 0）。
+const ICR_TXDW: u32 = 0x1;
+/// ICR/IMS：Receive Timer Interrupt（bit 7——RXT0）。
+const ICR_RXT0: u32 = 0x80;
+/// IMS 武装位域（TXDW | RXT0——t166 双源计数域）。
+const IMS_ARM: u32 = ICR_TXDW | ICR_RXT0;
 
 // ---------------------------------------------------------------------------
 // 描述符事实源（legacy TX/RX 描述符 16 B 布局）
@@ -163,6 +177,14 @@ pub static E1K_MAC_RAL: AtomicU64 = AtomicU64::new(0);
 pub static E1K_TX: AtomicU64 = AtomicU64::new(0);
 /// RX 交付帧数（数据面电气取证）。
 pub static E1K_RX: AtomicU64 = AtomicU64::new(0);
+/// 中断面：IRQ 总送达数（M52-E1KIRQ77 笔89——桩钩子域计数）。
+pub static E1K_IRQ: AtomicU64 = AtomicU64::new(0);
+/// 中断面：ICR.TXDW 判读数（TX 完成写回源）。
+pub static E1K_IRQ_TXDW: AtomicU64 = AtomicU64::new(0);
+/// 中断面：ICR.RXT0 判读数（RX 定时器源——slirp 应答域）。
+pub static E1K_IRQ_RXT0: AtomicU64 = AtomicU64::new(0);
+/// 中断面：ICR 零值命中数（伪中断守卫域——spurious 记账）。
+pub static E1K_IRQ_SPUR: AtomicU64 = AtomicU64::new(0);
 
 // ---------------------------------------------------------------------------
 // 错误域（fail-visible 全谱显形——vnet 同谱口径）
@@ -208,9 +230,25 @@ pub struct E1kDev {
     pub mac: [u8; 6],
 }
 
+/// 中断面 bring-up 成果登记面（t166 断言面——M52-E1KIRQ77 笔89）。
+pub struct E1kIrqFace {
+    /// PCI 中断 pin（0x1 = INTA#）。
+    pub pin: u8,
+    /// PCI 中断 line（PIRQ 路由事实源——ISA IRQ 号，IOAPIC 同线输入）。
+    pub line: u8,
+    /// IOAPIC 路由读回（(lo, hi) 双字——vector/trigger/mask/dest 位域）。
+    pub entry: (u32, u32),
+    /// IOAPIC 版本号。
+    pub ioapic_ver: u8,
+    /// IOAPIC 重定向目数。
+    pub ioapic_entries: u8,
+}
+
 /// 全局驱动态（单语境纪律：kmain 自检段串行访问，&raw 手法——vnet
 /// NET_STATE 同谱）。
 struct E1kState {
+    /// PCI dev 槽位（中断面 int line 读出寻址域）。
+    slot: u8,
     /// BAR0 恒等映射窗基址（虚地址 = 物理地址——boot 低 1 GiB 恒等域）。
     base: u64,
     /// TX 环描述符表物理基址。
@@ -563,6 +601,7 @@ pub fn bring_up(frames: &FrameAllocator) -> Option<E1kDev> {
     // SAFETY: kmain 自检串行段独占；登记前 Option 恒 None。
     unsafe {
         (&raw mut E1K_STATE).write(Some(E1kState {
+            slot: dev,
             base,
             tx_desc,
             rx_desc,
@@ -760,4 +799,103 @@ pub fn arp_roundtrip() -> Result<ArpEcho, E1kError> {
 /// 协作式让步垫（轮询间隔域——kmain 语境直呼域）。
 fn task_yield() {
     crate::task::yield_now();
+}
+
+// ---------------------------------------------------------------------------
+// 中断面（M52-E1KIRQ77 笔89 G-1——IOAPIC 路由 + IMS 武装 + 桩钩子计数）
+// ---------------------------------------------------------------------------
+
+/// PCI 中断 pin/line 双字节读出（0x3C：低 8 位 line——PIRQ 路由落点
+/// ISA IRQ 号；次 8 位 pin——0x1 = INTA#）。SeaBIOS 装载事实源。
+fn pci_int_info(dev: u8) -> (u8, u8) {
+    let w = pci_read_dword(0, dev, 0, PCI_OFF_INTR);
+    let line = (w & 0xFF) as u8;
+    let pin = ((w >> 8) & 0xFF) as u8;
+    (pin, line)
+}
+
+/// IRQ 桩钩子（IOAPIC→LAPIC 交付域——ISR 语境）：ICR 读清（read-to-
+/// clear 设备契约——写清/读清即行线解拉）→ 位域计数（TXDW/RXT0 双源
+/// 与零值 spurious 守卫）→ 总送达计数。零环访问零分配——数据面
+/// 仍由轮询车道消费（通知/数据双车道分域，ISR 重入零风险）。
+fn e1k_irq_hook() {
+    let Some(s) = state_mut() else {
+        return;
+    };
+    if !s.up {
+        return;
+    }
+    let icr = rd32(s.base, REG_ICR); // read-to-clear
+    if icr & ICR_TXDW != 0 {
+        E1K_IRQ_TXDW.fetch_add(1, Ordering::AcqRel);
+    }
+    if icr & ICR_RXT0 != 0 {
+        E1K_IRQ_RXT0.fetch_add(1, Ordering::AcqRel);
+    }
+    if icr == 0 {
+        E1K_IRQ_SPUR.fetch_add(1, Ordering::AcqRel);
+    }
+    E1K_IRQ.fetch_add(1, Ordering::AcqRel);
+}
+
+/// 中断面 bring-up（轮询数据面之上的通知车道）：IOAPIC probe（幂等）
+/// → PCI int pin/line 读出 → route（ISA line → 0x44，BSP LAPIC）→
+/// 桩钩子注册 → ICR 读清（stale causes 丢弃）→ IMS 武装（TXDW|RXT0）。
+/// 未 bring-up = None（前置闸）；route 读回失配 = None fail-visible
+/// （装载零虚报）。
+pub fn interrupt_face_up(frames: &FrameAllocator) -> Option<E1kIrqFace> {
+    let slot = state_mut()?.slot;
+    if !state_mut()?.up {
+        return None;
+    }
+    let apic = crate::ioapic::probe(frames)?;
+    let (pin, line) = pci_int_info(slot);
+    if line == 0 || line > 15 || pin == 0 {
+        // 中断装载缺席（SeaBIOS 未编程 int line 域——路由零前提）。
+        crate::console::serial_log_bytes(b"e1k: int line miss");
+        return None;
+    }
+    let entry = crate::ioapic::route(line, crate::ioapic::E1K_IRQ_VECTOR).ok()?;
+    // 钩子注册先于 IMS 武装（投递窗口契约——kbd/aux 先例同谱）。
+    ostd::interrupt::stubs::set_nic_hook(e1k_irq_hook);
+    // ICR 读清（stale causes 丢弃——武装前零虚投）。
+    let _ = state_mut().map(|s| rd32(s.base, REG_ICR));
+    ims_enable(IMS_ARM);
+    Some(E1kIrqFace {
+        pin,
+        line,
+        entry,
+        ioapic_ver: apic.ver,
+        ioapic_entries: apic.entries,
+    })
+}
+
+/// IMS 武装（位域写——RXT0/TXDW 双源；武装即行线可拉）。
+pub fn ims_enable(bits: u32) {
+    if let Some(s) = state_mut() {
+        wr32(s.base, REG_IMS, bits);
+    }
+}
+
+/// IMC 全屏蔽（位域写全 1——NEG 面屏蔽域消费域；中断面退役口径）。
+pub fn imc_mask_all() {
+    if let Some(s) = state_mut() {
+        wr32(s.base, REG_IMC, 0xFFFF_FFFF);
+    }
+}
+
+/// ICR 读清取证面（t166 断言域；bring-up 未达 = None）。
+pub fn icr_read() -> Option<u32> {
+    let s = state_mut()?;
+    Some(rd32(s.base, REG_ICR))
+}
+
+/// 中断面计数读面（(总送达, TXDW, RXT0, spurious) 四元——t166 断言域）。
+pub fn irq_counts() -> (u64, u64, u64, u64) {
+    (
+        E1K_IRQ.load(Ordering::Acquire),
+        E1K_IRQ_TXDW.load(Ordering::Acquire),
+        E1K_IRQ_RXT0.load(Ordering::Acquire),
+        E1K_IRQ_SPUR.load(Ordering::Acquire),
+    )
 }

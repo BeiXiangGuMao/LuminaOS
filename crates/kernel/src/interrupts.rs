@@ -76,6 +76,12 @@ pub fn init_and_enable(log: &mut DualLog) -> u32 {
         // 向量 44：IRQ12 PS/2 aux 第二通道（M42-AUX25 笔㉕；PIC 从片
         // IRQ4，级联双 EOI——电气源接线随批，门表先行）
         idt.set_raw(44, aux_addr);
+        // 向量 0x44：e1000 NIC 中断面（M52-E1KIRQ77 笔89；IOAPIC 路由
+        // 交付域——门表先行惯例，电气源接线随 e1k 中断面 bring-up 随批）
+        idt.set_raw(
+            usize::from(crate::ioapic::E1K_IRQ_VECTOR),
+            ostd::interrupt::stub_addr(Stub::IrqE1k),
+        );
         let ok = idt.entry_points_to(32, timer_addr)
             && idt.entry_points_to(0, ostd::interrupt::stub_addr(Stub::FaultDe))
             && idt.entry_points_to(14, pf_rec_addr)

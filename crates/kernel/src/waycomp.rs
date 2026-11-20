@@ -281,6 +281,9 @@ pub static WLCOMP_CFGS_SENT: AtomicU64 = AtomicU64::new(0);
 /// popup_done 事件出域数（M51-XDGPOP75 笔86——父窗收场派生域冲刷计
 /// 数，t164 断言面）。
 pub static WLCOMP_PDONES: AtomicU64 = AtomicU64::new(0);
+/// repositioned+configure 对出域数（M52-POPCON78 笔90——v3 重定位
+/// 车道冲刷域计数，t167 断言面）。
+pub static WLCOMP_REPOS: AtomicU64 = AtomicU64::new(0);
 /// popup_done 入队受理数（M51-XDGPOP75 笔86——close 车道派生域受理
 /// 计数：request_popup_done_for_parent 成功域，t164 断言面）。
 pub static WLCOMP_PDONES_SENT: AtomicU64 = AtomicU64::new(0);
@@ -1089,6 +1092,14 @@ fn session_loop(conn: u64) {
     let me = task::current_task_id(); // keymap 内容池铸域属主（M42-WAYCOMP13）
     let base = ((seq - 1) as u32) * FB_ID_SESSION_STRIDE;
     let mut session = CompSession::new(GLOBALS);
+    // M52-POPCON78 笔90：屏域约束域注入（place_in_bounds 屏域权威域——
+    // VIEWPORT 全幅，popup 约束域收口事实源）。
+    session.set_screen_bound((
+        0,
+        0,
+        i32::try_from(VIEWPORT.0).unwrap_or(0),
+        i32::try_from(VIEWPORT.1).unwrap_or(0),
+    ));
     let mut windows: Vec<u64> = Vec::new(); // 创建序 = 焦点序（策略面输入）
     let mut slots: Vec<Window> = Vec::new();
     let mut cfg_track: Vec<(u32, i32, i32)> = Vec::new(); // last-sent configure 跟踪（M51-XDGPOP75 笔86 节流域）
@@ -1182,6 +1193,9 @@ fn session_loop(conn: u64) {
                 // popup_done 事件出域数（M51-XDGPOP75 笔86——pdone 车道
                 // 冲刷域计数，t164 断言面）
                 WLCOMP_PDONES_SENT.fetch_add(rep.popup_dones as u64, Ordering::AcqRel);
+                // repositioned+configure 对出域数（M52-POPCON78 笔90——
+                // v3 重定位车道冲刷域计数，t167 断言面）
+                WLCOMP_REPOS.fetch_add(rep.repos as u64, Ordering::AcqRel);
                 // modifiers wire 发出数（M42-WAYCOMP15——Modifiers 记录批）
                 for r in rep.keys.items[..rep.keys.n].iter().flatten() {
                     if prism::wayland::comp::KbKind::Modifiers == r.kind {
