@@ -285,6 +285,7 @@ lumina-build/              ← 编译产物 + 日志 + 报告（源码树外，�
 | v0.38.0 | M46 | harbor 机械执行面四笔（ld-lumina.so 交付批 + 真机回填执行面 + DPMS 背光语义面 + 长稳记录底稿）；自检 146→147，双面板 195→201 |
 | v0.41.0 | M49 | 五候选全开工轮（harbor 收口〔dlclose/fini/TLS 执行域——六族全谱闭环〕+ 基准族 H-P02/H-P03/H-P05 + 进程组/会话域 + TCP 重传面补全 + 残余窗口族定性）；自检 152→156，ABI v0.25，双面板 229→245 |
 | v0.42.0 | M50 | 桌面可用性跃迁轮（EACCES exec 记账域〔ABI v0.26〕+ xdg_shell 电气闭环〔可开应用窗〕+ 文本渲染面 + musl 动态全链真件谱→真执行〔真实 ld-musl ring3 电气贯通〕+ IOPB 挂 TSS 硬件面）；自检 156→161，ABI v0.25→v0.26，双面板 245→265，MATURITY v12 7.1〔等权复归口径〕 |
+| v0.43.0 | M51 | 用户态 exec 动态族 + 矢量字体栅格化 + xdg_popup 尺寸交互族 + 真实 NIC 驱动轮（musl SYS_EXEC 动态分流〔ring3 端到端〕+ glyph::vecfont 8bpp AA + positioner/popup 双接口 + size-configure 车道 + e1000 全链 + ARP 电气回环）；自检 163→165，ABI v0.26 维持，双面板 273→282，MATURITY v13 7.2〔等权合成〕 |
 | v0.40.0 | M48 | PLT/GOT 惰性绑定电气执行 + dlsym 跨模块查找电气面 + init_array 执行域 + 真机三实测开工；自检 149→152，ABI v0.24，双面板 213→229 |
 | v0.39.0 | M47 | 装载计划消费面 + ld-lumina.so 本体 + dlopen 真消费面三笔；自检 148→149，ABI v0.24，双面板 207→213 |
 | 开发线 | M42 用户态桌面链 | **35 笔逐笔落账**（三阶段 + 卫生/损伤/光标/驱动/滚轮/焦点/键盘语义批次）；自检 100→134，ABI v0.23，双面板 130 标记 |
@@ -293,9 +294,9 @@ lumina-build/              ← 编译产物 + 日志 + 报告（源码树外，�
 | 开发线 | M47 装载计划消费面 + dlopen 真消费面 | **两笔落账**（LDCONS53 双电气域 ABI v0.24 + exec_plan 消费面 + ld-lumina.so 本体真件 + DLOPEN54 dlopen 真消费面〔DT_NEEDED 装载序 + ring3 自装载链〕+ liblumina-core.so 依赖库真件）；自检 148→**149**，双面板 207→**213**，v0.39.0 定版 |
 | 开发线 | M51 续作批 | **笔86 XDGPOP75 + 笔87 NIC76 双笔落账**（xdg_popup 尺寸交互族——positioner/popup wire 面 + size-configure 车道 + popup_done 派生域 + wm_base opcode 序揭雷修正；真实 NIC 驱动 e1000——82540EM 全链 + ARP 电气回环）；自检 163→**165**，双面板 273→**282**，v0.43.0 定版随 M51 收尾 |
 
-最新发布：**[Release v0.42.0](../../releases)**——src / artifacts / RELEASE_NOTES /
-SHA256SUMS 四资产。M48–M50 链接面电气域与桌面可用性跃迁进度随里程碑收口
-定版（HEAD 门禁 CI-OK 全绿，冒烟 165/165）。
+最新发布：**[Release v0.43.0](../../releases)**——src / artifacts / RELEASE_NOTES /
+SHA256SUMS 四资产。M51 用户态 exec 动态族/矢量字体/xdg_popup 尺寸交互族/真实
+NIC 驱动四域进度随里程碑收口定版（HEAD 门禁 CI-OK 全绿，冒烟 165/165）。
 
 ## 工程纪律
 
