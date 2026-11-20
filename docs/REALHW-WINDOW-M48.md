@@ -10,6 +10,7 @@
 | R1 窗口 bit24=1 实测回填 | t146 ReconWindow 二态判定核四段打点（MSR 0x6E0 路由复证随行） | bit24=1 逐位判读 + RECON_SEGMENTS 四段全谱装载计划 | 【真机填：bit24=____ 四段=____】 | 【真机填：PASS/FAIL】 |
 | R2 DPMS 背光实测 | SYS_DPMS 四态（ON/STANDBY/SUSPEND/OFF）+ SR01 t94 口径 | 四态逐一切换 + 背光亮度读回 | 【真机填：四态=____ 亮度=____】 | 【真机填：PASS/FAIL】 |
 | R3 24h/72h 1080p@60 长稳 | scripts/longrun-run.sh（t73 粘滞窗 + 磁盘余量核对单随行） | 零 #PF 死亡 + 帧率稳定 ±1 帧 | 【真机填：24h=____ 72h=____ 帧漂=____】 | 【真机填：PASS/FAIL】 |
+| R1′ 真机 PCI level+low 口径复评（M52-PCIQLR81 笔93 随行） | t170 RouteProfile 口径参数化车道（LevelLow bit15|bit13=0xa000 装载 → IMC 屏蔽解除窗 → ICR/IRQ 计数窗 → spur 计数 → 风暴判定 → EdgeHigh 复位回环） | level+low 真机电域零风暴〔PCI INTx 空闲线 deasserted 域——真机 vs QEMU 布尔电平模型差异点：QEMU 空闲线视作 asserted + EOI 重评估窗——真机预期电平触发官方语义〕；翻账/固化裁决随实测回填 | 【真机填：LevelLow 装载读回=____ IRQ 窗=____ spur=____ 风暴=____ 裁决=____】 | 【真机填：PASS/FAIL】 |
 
 ## 回填纪律（零虚构）
 
