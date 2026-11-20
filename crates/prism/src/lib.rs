@@ -408,6 +408,11 @@ pub struct ComposeStats {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 pub mod compute;
 
+/// M52-VULK79 笔91（PR-P04 开工）：GPU 加速车道——Vulkan 命令缓冲/队
+/// 列语义面（Fill/Blit/Blend 三域加速核 + 屏域裁剪 + fence 账户面；
+/// 硬件 Vulkan 队列 ICD/真机 GPU 挂账不变——M40-PRP04 口径同源）。
+pub mod gfx;
+
 /// M42-UNIX3：Wayland wire 协议解析壳 v0——**非 test 门控域**（与
 /// [`compute`] 的纯宿主域口径区分如实记档：compute 无硬件电气可挂；
 /// wayland 的电气面 = bedrock abi v0.20 SYS_UNIXSOCK(42) 套接字域已
