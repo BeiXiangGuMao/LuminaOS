@@ -14,7 +14,7 @@ if [ -n "$EXIST" ]; then
 else
   BODY=$(python3 -c "import json;print(json.dumps(open('/home/z/my-project/lumina-os/releases/RELEASE_NOTES-$V.md').read()))")
   REL_ID=$(curl -s -m 20 -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/json" \
-    -d "{\"tag_name\":\"$V\",\"name\":\"Lumina OS v0.45.0 —— M52 e1000 中断面 + popup 约束域收口 + GPU 加速车道 + 硬件 Vulkan 队列 + 真机 PCI 口径复评面轮\",\"body\":$BODY,\"draft\":false,\"prerelease\":false}" \
+    -d "{\"tag_name\":\"$V\",\"name\":\"Lumina OS v0.45.0 —— M53 e1000↔pulse ConnTable 连接表驱动纵深 + 状态族 activated/tiled 枚举域扩展轮\",\"body\":$BODY,\"draft\":false,\"prerelease\":false}" \
     "$API/releases" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('id',''))")
   [ -z "$REL_ID" ] && { echo "release create failed"; exit 1; }
   echo "release id=$REL_ID"
