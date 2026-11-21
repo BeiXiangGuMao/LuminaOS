@@ -216,6 +216,10 @@ pub enum E1kError {
     /// pulse 接线域相内超界（M53-E1KNET82 笔95——ICMP/DHCP/RST 三相
     /// 有界轮询耗尽，零虚构 fail-visible）。
     PulseTimeout,
+    /// TCP 协议面失配（M53-CONN84 笔97——ConnTable 承接域：握手对账
+    /// fail〔状态机 BadTransition/BadAck/BadParam〕/查表失败〔表错误〕
+    /// /全握手拍段对账失配——零虚构 fail-visible）。
+    TcpFail,
 }
 
 /// TX/RX 帧承载（定容零堆——[`E1K_BUF_SIZE`] 全帧值语义）。
@@ -1031,7 +1035,10 @@ pub enum RxVerdict {
         /// 载荷 [`BOOTP_COOKIE_OFF`] 起四字（BOOTP 魔数域；短载荷零垫）。
         cookie: [u8; 4],
     },
-    /// TCP 线上段采纳（端口对 + flags + checksum 对账过闸出域）。
+    /// TCP 线上段采纳（端口对 + flags + seq/ack + 载荷快照 + checksum
+    /// 对账过闸出域——M53-CONN84 笔97 承接域扩域：段级四元出域供
+    /// ConnTable 查表面消费；载荷快照 ≤ 16 B〔[`PULSE_TCP_HS_DATA`] 同
+    /// 容〕，超容截断由 [`PULSE_TCP_SNAP_MAX`] 对账）。
     Tcp {
         /// 源端口。
         src_port: u16,
@@ -1039,6 +1046,14 @@ pub enum RxVerdict {
         dst_port: u16,
         /// 控制位域（低 12 位线值）。
         flags: u16,
+        /// 发送序号（线序）。
+        seq: u32,
+        /// 确认序号（ACK 置位时有效）。
+        ack_seq: u32,
+        /// 载荷快照（≤ [`PULSE_TCP_SNAP_MAX`]——短载荷域零垫）。
+        payload: [u8; PULSE_TCP_SNAP_MAX],
+        /// 载荷实长（快照域真实长度——截断对账事实源）。
+        payload_len: usize,
     },
 }
 
@@ -1057,6 +1072,46 @@ pub struct PulseEcho {
     pub yiaddr: [u8; 4],
 }
 
+/// 以太 + IPv4 头组帧核（M53-CONN84 笔97 单事实源化——[`ip_tx`] 电信
+/// 道与 ConnTable 承接域 tap 车道共用以太/IPv4 装配核：字节序零扰
+/// 〔原 [`ip_tx`] 装配域逐域同源〕）。`src_mac` 参数化：电信道由
+/// [`mac()`] 实录，tap 回环双腿 src=dst=本机。返回写入帧长（`None` =
+/// 越域 BadLen）。
+fn ip_frame_build(
+    src_mac: [u8; 6],
+    dst_mac: [u8; 6],
+    dst_ip: [u8; 4],
+    proto: u8,
+    payload: &[u8],
+    out: &mut [u8],
+) -> Option<usize> {
+    let ip_total = 20 + payload.len();
+    let flen = 14 + ip_total;
+    if flen > E1K_MAX_FRAME || flen > out.len() {
+        return None;
+    }
+    out[0..6].copy_from_slice(&dst_mac);
+    out[6..12].copy_from_slice(&src_mac);
+    out[12] = 0x08;
+    out[13] = 0x00;
+    out[14] = 0x45; // v4 / IHL 5
+    out[16..18].copy_from_slice(&(ip_total as u16).to_be_bytes());
+    out[22] = 64; // TTL
+    out[23] = proto;
+    out[26..30].copy_from_slice(&E1K_IP);
+    out[30..34].copy_from_slice(&dst_ip);
+    // M53-CONN84 揭雷①：IP 校验域基线雷——复用缓冲二拍组帧时 ck 域残
+    // 留首拍值（反码折叠恰 0xFFFF → ck 写 0 → 接收闸 fail-visible 拒
+    // 收）——域内清零基线修复（vnet::cksum16 契约：「data 中校验域须
+    // 先置零」单事实源内建，缓冲复用域免疫）。
+    out[24] = 0;
+    out[25] = 0;
+    let ip_ck = crate::vnet::cksum16(&out[14..34]);
+    out[24..26].copy_from_slice(&ip_ck.to_be_bytes());
+    out[34..34 + payload.len()].copy_from_slice(payload);
+    Some(flen)
+}
+
 /// 以太 + IPv4 头组帧击发（pulse 接线域 TX 公共车道——payload 为 IP
 /// 载荷〔ICMP 段 / UDP 段 / TCP 段〕；IP 头 checksum 经
 /// [`crate::vnet::cksum16`] 单事实源）。返回 `Err(LinkDown)` = 设备侧
@@ -1065,25 +1120,10 @@ fn ip_tx(dst_mac: [u8; 6], dst_ip: [u8; 4], proto: u8, payload: &[u8]) -> Result
     let Some(mac) = mac() else {
         return Err(E1kError::NotUp);
     };
-    let ip_total = 20 + payload.len();
-    let flen = 14 + ip_total;
-    if flen > E1K_MAX_FRAME {
-        return Err(E1kError::BadLen);
-    }
     let mut f = [0u8; E1K_MAX_FRAME];
-    f[0..6].copy_from_slice(&dst_mac);
-    f[6..12].copy_from_slice(&mac);
-    f[12] = 0x08;
-    f[13] = 0x00;
-    f[14] = 0x45; // v4 / IHL 5
-    f[16..18].copy_from_slice(&(ip_total as u16).to_be_bytes());
-    f[22] = 64; // TTL
-    f[23] = proto;
-    f[26..30].copy_from_slice(&E1K_IP);
-    f[30..34].copy_from_slice(&dst_ip);
-    let ip_ck = crate::vnet::cksum16(&f[14..34]);
-    f[24..26].copy_from_slice(&ip_ck.to_be_bytes());
-    f[34..34 + payload.len()].copy_from_slice(payload);
+    let Some(flen) = ip_frame_build(mac, dst_mac, dst_ip, proto, payload, &mut f) else {
+        return Err(E1kError::BadLen);
+    };
     tx_frame(&f[..flen])
 }
 
@@ -1154,22 +1194,17 @@ pub fn tcp_syn_tx(
     src_port: u16,
     seq: u32,
 ) -> Result<(), E1kError> {
-    let mut seg = [0u8; 20];
-    let Some(seg_len) = pulse::tcp::TcpHdr::encode(
+    let r = tcp_seg_tx(
+        dst_mac,
+        dst_ip,
         src_port,
         dst_port,
         seq,
         0,
         pulse::tcp::FLAG_SYN,
-        8192,
+        PULSE_TCP_WIN,
         &[],
-        &mut seg,
-    ) else {
-        return Err(E1kError::BadLen);
-    };
-    let ck = pulse::tcp::checksum(E1K_IP, dst_ip, &seg[..seg_len]);
-    seg[16..18].copy_from_slice(&ck.to_be_bytes());
-    let r = ip_tx(dst_mac, dst_ip, pulse::tcp::PROTO_TCP, &seg[..seg_len]);
+    );
     if r.is_ok() {
         E1K_TCP_SYN_TX.fetch_add(1, Ordering::AcqRel);
     }
@@ -1359,7 +1394,7 @@ fn rx_dispatch_inner(frame: &[u8]) -> Option<RxVerdict> {
         // TCP 族——pulse::tcp 官方解析核 + checksum 验证闸（RFC 9293：
         // 含校验域整段反码和应恰为 0xFFFF——发送侧 cs = !fold 与段同
         // 折叠自消，udp::verify 同判据；checksum 零规范化归一 0xFFFF）
-        let (hdr, _payload) = pulse::tcp::TcpHdr::parse(seg)?;
+        let (hdr, payload) = pulse::tcp::TcpHdr::parse(seg)?;
         if pulse::tcp::checksum(src_ip, dst_ip, seg) != 0xFFFF {
             E1K_TCP_RX_BADCS.fetch_add(1, Ordering::AcqRel);
             return None;
@@ -1368,10 +1403,17 @@ fn rx_dispatch_inner(frame: &[u8]) -> Option<RxVerdict> {
         if hdr.flags & pulse::tcp::FLAG_RST != 0 {
             E1K_TCP_RST_RX.fetch_add(1, Ordering::AcqRel);
         }
+        let mut snap = [0u8; PULSE_TCP_SNAP_MAX];
+        let sn = payload.len().min(PULSE_TCP_SNAP_MAX);
+        snap[..sn].copy_from_slice(&payload[..sn]);
         return Some(RxVerdict::Tcp {
             src_port: hdr.src_port,
             dst_port: hdr.dst_port,
             flags: hdr.flags,
+            seq: hdr.seq,
+            ack_seq: hdr.ack_seq,
+            payload: snap,
+            payload_len: payload.len(),
         });
     }
     None
@@ -1467,6 +1509,7 @@ pub fn pulse_roundtrip() -> Result<PulseEcho, E1kError> {
             src_port,
             dst_port,
             flags,
+            ..
         }) = hit
         {
             if dst_port == PULSE_TCP_SRC_PORT
@@ -1500,5 +1543,651 @@ pub fn pulse_roundtrip() -> Result<PulseEcho, E1kError> {
         dhcp_ok,
         rst_ok,
         yiaddr,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// ConnTable 承接域（M53-CONN84 笔97——e1k↔pulse 连接表驱动纵深：pulse::
+// tcp 五面承接 + 三相回环之上的 TCP 全握手）。
+//
+// 五面承接谱（pulse::tcp 协议面 → 真实 NIC 车道消费面）：
+//   ① 组帧面——[`tcp_frame_build`] 段组帧核（TcpHdr::encode 编码核 +
+//      伪头校验和 + [`ip_frame_build`] 以太/IPv4 装配核——电车道
+//      [`tcp_seg_tx`] 与 tap 车道同构单事实源）；
+//   ② 查表面——[`pulse::tcp::ConnTable`] 定容 8 槽四元组查表直驱
+//      （镜像键域：各自按入向段 (src, dst) 键槽——[`TcpHsEcho`] 会话
+//      双槽 alloc/lookup_mut/close_key 全谱）；
+//   ③ 状态面——八态机原语消费（active_open/listen_recv/syn_sent_recv/
+//      syn_rcvd_recv/advance 逐拍驱动 + 槽体 state 直写）；
+//   ④ 闸面——tap 注入帧过 [`rx_dispatch`] 全闸（短帧/ethertype/IHL/
+//      IP 校验和/伪头校验和 0xFFFF 五闸同闸——fail-visible 拒收）；
+//   ⑤ 定时面 + 记账面——RtoTimer 武装→on_ack 解除取证 + 逐拍计数与
+//      完成位全谱（零虚构——拍拍留戳）。
+//
+// 全握手拍（三相电气回环之上的 TCP 全生命周期八拍——回环孪生会话）：
+//   拍一 SYN（客户端 SynSent → 服务端 Listen→SynRcvd）
+//   拍二 SYN-ACK（服务端 → 客户端 syn_sent_recv → Established）
+//   拍三 ACK（客户端 → 服务端 syn_rcvd_recv → Established——双端建立）
+//   拍四 DATA（16 B 载荷 + reasm InOrder + 回显逐位对账）
+//   拍五 FIN|ACK（客户端 advance Est→FinWait → 服务端消费 Est→FinWait）
+//   拍六 FIN|ACK（服务端 → 客户端 FinWait→TimeWait——ack 对账 snd_nxt）
+//   拍七 TimeWait 超时收敛（客户端 → ClosedDone——advance timeout 旗）
+//   拍八 close_key 双槽（消费方拆除判定——live==0 复位）。
+//
+// 偏差如实登记（v0 口径）：passive 端半关闭收尾（CLOSE_WAIT/LAST_ACK
+// ——pulse::tcp 押后域）由消费方槽释放承载；ISN 双端金值直载（回环孪
+// 生确定性域——真实网络 ISN 协商由 syn_sent_recv/syn_rcvd_recv 对账
+// 照跑不豁免）；wire 腿为软件交接面（tap 直注 rx_dispatch——slirp 无
+// TCP 监听域，vnet::tcp_loopback_tx 交接环同谱异件；三相电气回环维持
+// slirp 域零扰）。
+// ---------------------------------------------------------------------------
+
+/// TCP 载荷快照容量（verdict 快照域 + 全握手数据拍同容——16 B 定值）。
+pub const PULSE_TCP_SNAP_MAX: usize = 16;
+
+/// TCP 全握手孪生服务端口（47183——与 [`PULSE_TCP_SRC_PORT`] 47182
+/// 相邻域外，slirp 域外端口零冲突）。
+pub const PULSE_TCP_TWIN_PORT: u16 = 47183;
+
+/// TCP 全握手数据拍载荷（16 B 定值——回显逐位对账域）。
+pub const PULSE_TCP_HS_DATA: [u8; 16] = [
+    0xC0, 0xDE, 0x00, 0x01, 0x5A, 0x5A, 0x5A, 0x5A, 0xC0, 0xDE, 0xC0, 0xDE, 0x1E, 0x82, 0x00, 0x2F,
+];
+
+/// TCP 全握手客户端 ISN（金值——回环孪生确定性域）。
+pub const PULSE_TCP_ISN_C: u32 = 0x1E82_1000;
+
+/// TCP 全握手服务端 ISN（金值）。
+pub const PULSE_TCP_ISN_S: u32 = 0x1E82_2000;
+
+/// TCP 全握手通告窗（16 位直用域——ws 协商挂账维持）。
+pub const PULSE_TCP_WIN: u16 = 8192;
+
+/// TCP 全握手 SMSS（以太 MSS 口径 1460——CcState 慢启动基值）。
+pub const PULSE_TCP_SMSS: u32 = 1460;
+
+/// tap 注入计数（软件回环交接面——全握手腿注入取证）。
+pub static E1K_TCP_TAP_INJ: AtomicU64 = AtomicU64::new(0);
+/// 全握手 SYN 拍击发数。
+pub static E1K_TCP_HS_SYN_TX: AtomicU64 = AtomicU64::new(0);
+/// 全握手 SYN-ACK 拍击发数。
+pub static E1K_TCP_HS_SYNACK_TX: AtomicU64 = AtomicU64::new(0);
+/// 全握手 ACK 拍击发数。
+pub static E1K_TCP_HS_ACK_TX: AtomicU64 = AtomicU64::new(0);
+/// 全握手 DATA 拍击发数（数据 + 回显双腿合计）。
+pub static E1K_TCP_HS_DATA_TX: AtomicU64 = AtomicU64::new(0);
+/// 全握手 FIN 拍击发数（双向合计）。
+pub static E1K_TCP_HS_FIN_TX: AtomicU64 = AtomicU64::new(0);
+/// 全握手建立完成位（双端 Established + live==2 对账）。
+pub static E1K_TCP_HS_EST: AtomicU64 = AtomicU64::new(0);
+/// 全握手数据完成位（回显逐位对账过）。
+pub static E1K_TCP_HS_DATA_OK: AtomicU64 = AtomicU64::new(0);
+/// 全握手拆除完成位（TimeWait→ClosedDone + FIN|ACK ack 对账过）。
+pub static E1K_TCP_HS_FIN_OK: AtomicU64 = AtomicU64::new(0);
+/// 全握手收口完成位（close_key 双槽 + live==0）。
+pub static E1K_TCP_HS_CLOSE_OK: AtomicU64 = AtomicU64::new(0);
+/// 全握手失败阶段戳（fail-visible 取证——进入阶段时前推，Err 返回时
+/// 保留当拍阶段号；0 = 全过）。
+pub static E1K_TCP_HS_STAGE: AtomicU64 = AtomicU64::new(0);
+
+/// TCP 段组帧核（五面①——[`pulse::tcp::TcpHdr::encode`] 编码核 + 伪头
+/// 校验和 + [`ip_frame_build`] 以太/IPv4 装配：电车道与 tap 车道同构
+/// 单事实源）。返回写入帧长（None = 段/帧越域）。
+#[allow(clippy::too_many_arguments)]
+pub fn tcp_frame_build(
+    src_mac: [u8; 6],
+    dst_mac: [u8; 6],
+    dst_ip: [u8; 4],
+    src_port: u16,
+    dst_port: u16,
+    seq: u32,
+    ack_seq: u32,
+    flags: u16,
+    window: u16,
+    payload: &[u8],
+    out: &mut [u8],
+) -> Option<usize> {
+    if payload.len() > PULSE_TCP_SNAP_MAX {
+        return None;
+    }
+    let mut seg = [0u8; 20 + PULSE_TCP_SNAP_MAX];
+    let n = pulse::tcp::TcpHdr::encode(
+        src_port, dst_port, seq, ack_seq, flags, window, payload, &mut seg,
+    )?;
+    let ck = pulse::tcp::checksum(E1K_IP, dst_ip, &seg[..n]);
+    seg[16..18].copy_from_slice(&ck.to_be_bytes());
+    ip_frame_build(
+        src_mac,
+        dst_mac,
+        dst_ip,
+        pulse::tcp::PROTO_TCP,
+        &seg[..n],
+        out,
+    )
+}
+
+/// TCP 段电车道击发（五面①电臂——组帧核同构 + tx_frame 透传；段落
+/// [`pulse::tcp`] 编码核单事实源，[`tcp_syn_tx`] 与全握手电车道共用）。
+#[allow(clippy::too_many_arguments)]
+pub fn tcp_seg_tx(
+    dst_mac: [u8; 6],
+    dst_ip: [u8; 4],
+    src_port: u16,
+    dst_port: u16,
+    seq: u32,
+    ack_seq: u32,
+    flags: u16,
+    window: u16,
+    payload: &[u8],
+) -> Result<(), E1kError> {
+    let Some(mac) = mac() else {
+        return Err(E1kError::NotUp);
+    };
+    let mut f = [0u8; E1K_MAX_FRAME];
+    let Some(flen) = tcp_frame_build(
+        mac, dst_mac, dst_ip, src_port, dst_port, seq, ack_seq, flags, window, payload, &mut f,
+    ) else {
+        return Err(E1kError::BadLen);
+    };
+    tx_frame(&f[..flen])
+}
+
+/// 软件回环交接面（五面④闸面——tap 直注 [`rx_dispatch`] 全闸：帧字节
+/// 过短帧/ethertype/IHL/IP 校验和/伪头校验和五闸，fail-visible 拒收；
+/// vnet::tcp_loopback_tx 交接环同谱异件）。
+pub fn tcp_tap_inject(frame: &[u8]) -> Option<RxVerdict> {
+    E1K_TCP_TAP_INJ.fetch_add(1, Ordering::AcqRel);
+    rx_dispatch(frame)
+}
+
+/// TCP 全握手成果（t173 断言面——逐拍完成位实录域）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TcpHsEcho {
+    /// 拍二 SYN-ACK 对账（seq/ack/flags 逐域）。
+    pub synack_ok: bool,
+    /// 双端 Established + live==2。
+    pub established: bool,
+    /// RTO 武装→解除（定时面取证）。
+    pub rto_disarmed: bool,
+    /// 16 B 载荷回显逐位对账。
+    pub data_ok: bool,
+    /// 对称拆：TimeWait→ClosedDone + FIN|ACK ack==snd_nxt 对账。
+    pub fin_ok: bool,
+    /// close_key 双槽 + live==0。
+    pub closed_ok: bool,
+}
+
+/// TCP 全握手拍（三相回环之上的 TCP 全生命周期八拍——回环孪生会话，
+/// t173 LIVE 断言面）： ConnTable 双槽表驱动 + 八态机原语逐拍 + tap
+/// 全闸 + RTO 定时面 + 记账全谱。任一拍失配 = `Err(TcpFail)` 零虚构；
+/// 电气回环三相（[`pulse_roundtrip`]）域外独立拍——slirp 域零扰。
+pub fn tcp_full_handshake() -> Result<TcpHsEcho, E1kError> {
+    let Some(mac) = mac() else {
+        return Err(E1kError::NotUp);
+    };
+    let now0 = ostd::time::now();
+    let mut table: pulse::tcp::ConnTable<8, pulse::tcp::TcpConn> = pulse::tcp::ConnTable::new();
+    // 镜像键域：客户端槽 = 入向段 (twin→client)，服务端槽 = 入向段
+    // (client→twin)——各自按段四元键槽，端口对镜像天然无冲突。
+    let c_key = pulse::tcp::TcpKey {
+        src_ip: E1K_IP,
+        src_port: PULSE_TCP_TWIN_PORT,
+        dst_ip: E1K_IP,
+        dst_port: PULSE_TCP_SRC_PORT,
+    };
+    let s_key = pulse::tcp::TcpKey {
+        src_ip: E1K_IP,
+        src_port: PULSE_TCP_SRC_PORT,
+        dst_ip: E1K_IP,
+        dst_port: PULSE_TCP_TWIN_PORT,
+    };
+    // 查表面双槽预置（主动 CLOSED→SynSent + 被动 Listen；ISN 双端金值
+    // 直载——reasm 基线 = 对端 ISN+1 精确落位）。
+    let (c_st, c_seq0) = pulse::tcp::active_open(PULSE_TCP_ISN_C).map_err(|_| E1kError::TcpFail)?;
+    let c_idx = table
+        .alloc(
+            c_key,
+            pulse::tcp::TcpConn::new(
+                c_st,
+                PULSE_TCP_ISN_C,
+                PULSE_TCP_ISN_S,
+                PULSE_TCP_WIN,
+                PULSE_TCP_SMSS,
+            ),
+        )
+        .map_err(|_| E1kError::TcpFail)?;
+    let s_idx = table
+        .alloc(
+            s_key,
+            pulse::tcp::TcpConn::new(
+                pulse::tcp::ConnState::Listen,
+                PULSE_TCP_ISN_S,
+                PULSE_TCP_ISN_C,
+                PULSE_TCP_WIN,
+                PULSE_TCP_SMSS,
+            ),
+        )
+        .map_err(|_| E1kError::TcpFail)?;
+    if let Some(conn) = table.slot_mut(c_idx) {
+        conn.rto.arm(now0, c_seq0); // 定时面：SYN 武装
+    }
+    let rto_armed0 = table.slot(c_idx).is_some_and(|conn| conn.rto.is_armed());
+    // 拍一 SYN（客户端 TX → tap → 服务端消费 Listen→SynRcvd）。
+    E1K_TCP_HS_STAGE.store(1, Ordering::Release);
+    let mut f = [0u8; E1K_MAX_FRAME];
+    let flen = tcp_frame_build(
+        mac,
+        mac,
+        E1K_IP,
+        PULSE_TCP_SRC_PORT,
+        PULSE_TCP_TWIN_PORT,
+        PULSE_TCP_ISN_C,
+        0,
+        pulse::tcp::FLAG_SYN,
+        PULSE_TCP_WIN,
+        &[],
+        &mut f,
+    )
+    .ok_or(E1kError::BadLen)?;
+    E1K_TCP_HS_SYN_TX.fetch_add(1, Ordering::AcqRel);
+    // 发送窗记账：SYN 消耗 1 序号（RFC 9293 §3.3.1——nxt 推进）。
+    if let Some(conn) = table.slot_mut(c_idx) {
+        conn.swnd.sent(1);
+    }
+    E1K_TCP_HS_STAGE.store(2, Ordering::Release);
+    let v = tcp_tap_inject(&f[..flen]).ok_or(E1kError::TcpFail)?;
+    E1K_TCP_HS_STAGE.store(3, Ordering::Release);
+    let RxVerdict::Tcp {
+        src_port: sp,
+        dst_port: dp,
+        flags,
+        seq,
+        ..
+    } = v
+    else {
+        return Err(E1kError::TcpFail);
+    };
+    if sp != PULSE_TCP_SRC_PORT
+        || dp != PULSE_TCP_TWIN_PORT
+        || seq != PULSE_TCP_ISN_C
+        || flags != pulse::tcp::FLAG_SYN
+    {
+        return Err(E1kError::TcpFail);
+    }
+    {
+        E1K_TCP_HS_STAGE.store(4, Ordering::Release);
+        let conn = table.lookup_mut(&s_key).ok_or(E1kError::TcpFail)?;
+        conn.state = pulse::tcp::listen_recv(conn.state, flags).map_err(|_| E1kError::TcpFail)?;
+    }
+    // 拍二 SYN-ACK（服务端 TX → tap → 客户端 syn_sent_recv → Established；
+    // RTO on_ack 解除）。
+    E1K_TCP_HS_STAGE.store(5, Ordering::Release);
+    let flen = tcp_frame_build(
+        mac,
+        mac,
+        E1K_IP,
+        PULSE_TCP_TWIN_PORT,
+        PULSE_TCP_SRC_PORT,
+        PULSE_TCP_ISN_S,
+        PULSE_TCP_ISN_C.wrapping_add(1),
+        pulse::tcp::FLAG_SYN | pulse::tcp::FLAG_ACK,
+        PULSE_TCP_WIN,
+        &[],
+        &mut f,
+    )
+    .ok_or(E1kError::BadLen)?;
+    E1K_TCP_HS_SYNACK_TX.fetch_add(1, Ordering::AcqRel);
+    // 发送窗记账：SYN 消耗 1 序号（服务端臂）。
+    if let Some(conn) = table.slot_mut(s_idx) {
+        conn.swnd.sent(1);
+    }
+    E1K_TCP_HS_STAGE.store(6, Ordering::Release);
+    let v = tcp_tap_inject(&f[..flen]).ok_or(E1kError::TcpFail)?;
+    E1K_TCP_HS_STAGE.store(7, Ordering::Release);
+    let RxVerdict::Tcp {
+        src_port: sp,
+        dst_port: dp,
+        flags,
+        seq,
+        ack_seq,
+        ..
+    } = v
+    else {
+        return Err(E1kError::TcpFail);
+    };
+    let synack_ok = sp == PULSE_TCP_TWIN_PORT
+        && dp == PULSE_TCP_SRC_PORT
+        && seq == PULSE_TCP_ISN_S
+        && ack_seq == PULSE_TCP_ISN_C.wrapping_add(1)
+        && flags == pulse::tcp::FLAG_SYN | pulse::tcp::FLAG_ACK;
+    if !synack_ok {
+        return Err(E1kError::TcpFail);
+    }
+    let rto_ack_ok = {
+        E1K_TCP_HS_STAGE.store(8, Ordering::Release);
+        let conn = table.lookup_mut(&c_key).ok_or(E1kError::TcpFail)?;
+        let (st, _rcv_nxt) =
+            pulse::tcp::syn_sent_recv(conn.state, PULSE_TCP_ISN_C, flags, ack_seq, PULSE_TCP_ISN_S)
+                .map_err(|_| E1kError::TcpFail)?;
+        conn.state = st; // Established
+                         // RTO 解除 + 发送窗 una 推进（SYN 越域对账——ack=ISN_C+1 ∈
+                         // (ISN_C, ISN_C+1]，双重记账同拍收口）。
+        conn.rto.on_ack(PULSE_TCP_ISN_C.wrapping_add(1))
+            && conn
+                .swnd
+                .on_ack(PULSE_TCP_ISN_C.wrapping_add(1), PULSE_TCP_WIN)
+    };
+    let rto_disarmed =
+        rto_armed0 && rto_ack_ok && !table.slot(c_idx).is_some_and(|conn| conn.rto.is_armed());
+    // 拍三 ACK（客户端 TX → tap → 服务端 syn_rcvd_recv → Established——
+    // 双端建立对账）。
+    E1K_TCP_HS_STAGE.store(9, Ordering::Release);
+    let flen = tcp_frame_build(
+        mac,
+        mac,
+        E1K_IP,
+        PULSE_TCP_SRC_PORT,
+        PULSE_TCP_TWIN_PORT,
+        PULSE_TCP_ISN_C.wrapping_add(1),
+        PULSE_TCP_ISN_S.wrapping_add(1),
+        pulse::tcp::FLAG_ACK,
+        PULSE_TCP_WIN,
+        &[],
+        &mut f,
+    )
+    .ok_or(E1kError::BadLen)?;
+    E1K_TCP_HS_ACK_TX.fetch_add(1, Ordering::AcqRel);
+    E1K_TCP_HS_STAGE.store(10, Ordering::Release);
+    let v = tcp_tap_inject(&f[..flen]).ok_or(E1kError::TcpFail)?;
+    E1K_TCP_HS_STAGE.store(11, Ordering::Release);
+    let RxVerdict::Tcp {
+        src_port: sp,
+        dst_port: dp,
+        flags,
+        seq,
+        ack_seq,
+        ..
+    } = v
+    else {
+        return Err(E1kError::TcpFail);
+    };
+    if sp != PULSE_TCP_SRC_PORT
+        || dp != PULSE_TCP_TWIN_PORT
+        || seq != PULSE_TCP_ISN_C.wrapping_add(1)
+        || ack_seq != PULSE_TCP_ISN_S.wrapping_add(1)
+        || flags != pulse::tcp::FLAG_ACK
+    {
+        return Err(E1kError::TcpFail);
+    }
+    {
+        E1K_TCP_HS_STAGE.store(12, Ordering::Release);
+        let conn = table.lookup_mut(&s_key).ok_or(E1kError::TcpFail)?;
+        conn.state = pulse::tcp::syn_rcvd_recv(conn.state, PULSE_TCP_ISN_S, flags, ack_seq)
+            .map_err(|_| E1kError::TcpFail)?;
+        conn.swnd
+            .on_ack(PULSE_TCP_ISN_S.wrapping_add(1), PULSE_TCP_WIN);
+    }
+    E1K_TCP_HS_STAGE.store(13, Ordering::Release);
+    let established = table
+        .slot(c_idx)
+        .is_some_and(|c| c.state == pulse::tcp::ConnState::Established)
+        && table
+            .slot(s_idx)
+            .is_some_and(|c| c.state == pulse::tcp::ConnState::Established)
+        && table.live() == 2;
+    if !established {
+        return Err(E1kError::TcpFail);
+    }
+    E1K_TCP_HS_EST.store(1, Ordering::Release);
+    // 拍四 DATA（客户端 16 B → tap → 服务端 reasm InOrder → 回显 → 客户
+    // 端逐位对账）。
+    E1K_TCP_HS_STAGE.store(14, Ordering::Release);
+    let flen = tcp_frame_build(
+        mac,
+        mac,
+        E1K_IP,
+        PULSE_TCP_SRC_PORT,
+        PULSE_TCP_TWIN_PORT,
+        PULSE_TCP_ISN_C.wrapping_add(1),
+        PULSE_TCP_ISN_S.wrapping_add(1),
+        pulse::tcp::FLAG_PSH | pulse::tcp::FLAG_ACK,
+        PULSE_TCP_WIN,
+        &PULSE_TCP_HS_DATA,
+        &mut f,
+    )
+    .ok_or(E1kError::BadLen)?;
+    E1K_TCP_HS_DATA_TX.fetch_add(1, Ordering::AcqRel);
+    // 发送窗记账：16 B 数据（客户端臂）。
+    if let Some(conn) = table.slot_mut(c_idx) {
+        conn.swnd.sent(PULSE_TCP_HS_DATA.len() as u32);
+    }
+    E1K_TCP_HS_STAGE.store(15, Ordering::Release);
+    let v = tcp_tap_inject(&f[..flen]).ok_or(E1kError::TcpFail)?;
+    let RxVerdict::Tcp {
+        src_port: sp,
+        dst_port: dp,
+        seq,
+        payload,
+        payload_len,
+        ..
+    } = v
+    else {
+        return Err(E1kError::TcpFail);
+    };
+    if sp != PULSE_TCP_SRC_PORT
+        || dp != PULSE_TCP_TWIN_PORT
+        || seq != PULSE_TCP_ISN_C.wrapping_add(1)
+        || payload_len != PULSE_TCP_HS_DATA.len()
+        || payload != PULSE_TCP_HS_DATA
+    {
+        return Err(E1kError::TcpFail);
+    }
+    E1K_TCP_HS_STAGE.store(16, Ordering::Release);
+    let srv_echo_ok = {
+        let conn = table.lookup_mut(&s_key).ok_or(E1kError::TcpFail)?;
+        if conn.reasm.insert(seq, &payload) != pulse::tcp::ReasmOutcome::InOrder {
+            return Err(E1kError::TcpFail);
+        }
+        let mut got = [0u8; PULSE_TCP_SNAP_MAX];
+        let n = conn.reasm.drain(&mut got);
+        n == PULSE_TCP_HS_DATA.len() && got == PULSE_TCP_HS_DATA
+    };
+    if !srv_echo_ok {
+        return Err(E1kError::TcpFail);
+    }
+    // 服务端回显拍（seq=ISN_S+1, ack=ISN_C+1+16——数据消耗入 ack 域）。
+    E1K_TCP_HS_STAGE.store(17, Ordering::Release);
+    let flen = tcp_frame_build(
+        mac,
+        mac,
+        E1K_IP,
+        PULSE_TCP_TWIN_PORT,
+        PULSE_TCP_SRC_PORT,
+        PULSE_TCP_ISN_S.wrapping_add(1),
+        PULSE_TCP_ISN_C.wrapping_add(1 + PULSE_TCP_HS_DATA.len() as u32),
+        pulse::tcp::FLAG_PSH | pulse::tcp::FLAG_ACK,
+        PULSE_TCP_WIN,
+        &PULSE_TCP_HS_DATA,
+        &mut f,
+    )
+    .ok_or(E1kError::BadLen)?;
+    E1K_TCP_HS_DATA_TX.fetch_add(1, Ordering::AcqRel);
+    // 发送窗记账：16 B 回显（服务端臂）。
+    if let Some(conn) = table.slot_mut(s_idx) {
+        conn.swnd.sent(PULSE_TCP_HS_DATA.len() as u32);
+    }
+    E1K_TCP_HS_STAGE.store(18, Ordering::Release);
+    let v = tcp_tap_inject(&f[..flen]).ok_or(E1kError::TcpFail)?;
+    let RxVerdict::Tcp {
+        src_port: sp,
+        dst_port: dp,
+        seq,
+        payload,
+        payload_len,
+        ..
+    } = v
+    else {
+        return Err(E1kError::TcpFail);
+    };
+    if sp != PULSE_TCP_TWIN_PORT
+        || dp != PULSE_TCP_SRC_PORT
+        || seq != PULSE_TCP_ISN_S.wrapping_add(1)
+        || payload_len != PULSE_TCP_HS_DATA.len()
+    {
+        return Err(E1kError::TcpFail);
+    }
+    E1K_TCP_HS_STAGE.store(19, Ordering::Release);
+    let data_ok = {
+        let conn = table.lookup_mut(&c_key).ok_or(E1kError::TcpFail)?;
+        if conn.reasm.insert(seq, &payload) != pulse::tcp::ReasmOutcome::InOrder {
+            return Err(E1kError::TcpFail);
+        }
+        let mut got = [0u8; PULSE_TCP_SNAP_MAX];
+        let n = conn.reasm.drain(&mut got);
+        let bits_ok = n == PULSE_TCP_HS_DATA.len() && got == PULSE_TCP_HS_DATA;
+        // 滑窗对账：服务端数据 ack 推进（ack=ISN_C+1+16——回显段 ack 域
+        // 对客户端发送侧 una 推进）。
+        let sw_ok = conn.swnd.on_ack(
+            PULSE_TCP_ISN_C.wrapping_add(1 + PULSE_TCP_HS_DATA.len() as u32),
+            PULSE_TCP_WIN,
+        );
+        bits_ok && sw_ok
+    };
+    if !data_ok {
+        return Err(E1kError::TcpFail);
+    }
+    E1K_TCP_HS_DATA_OK.store(1, Ordering::Release);
+    // 拍五 FIN|ACK（客户端 advance Est→FinWait → TX → 服务端消费
+    // Est→FinWait——v0 FIN_WAIT 合并半关闭双态口径）。
+    let fin_seq_c = PULSE_TCP_ISN_C.wrapping_add(1 + PULSE_TCP_HS_DATA.len() as u32);
+    let fin_nxt_c = fin_seq_c.wrapping_add(1); // FIN 消耗 1 序号
+    let srv_nxt = PULSE_TCP_ISN_S.wrapping_add(1 + PULSE_TCP_HS_DATA.len() as u32);
+    {
+        let conn = table.lookup_mut(&c_key).ok_or(E1kError::TcpFail)?;
+        conn.state = pulse::tcp::advance(conn.state, pulse::tcp::FLAG_FIN, 0, fin_nxt_c, false)
+            .map_err(|_| E1kError::TcpFail)?;
+    }
+    let flen = tcp_frame_build(
+        mac,
+        mac,
+        E1K_IP,
+        PULSE_TCP_SRC_PORT,
+        PULSE_TCP_TWIN_PORT,
+        fin_seq_c,
+        srv_nxt,
+        pulse::tcp::FLAG_FIN | pulse::tcp::FLAG_ACK,
+        PULSE_TCP_WIN,
+        &[],
+        &mut f,
+    )
+    .ok_or(E1kError::BadLen)?;
+    E1K_TCP_HS_FIN_TX.fetch_add(1, Ordering::AcqRel);
+    // 发送窗记账：FIN 消耗 1 序号（客户端臂）。
+    if let Some(conn) = table.slot_mut(c_idx) {
+        conn.swnd.sent(1);
+    }
+    let v = tcp_tap_inject(&f[..flen]).ok_or(E1kError::TcpFail)?;
+    let RxVerdict::Tcp {
+        src_port: sp,
+        dst_port: dp,
+        flags,
+        seq,
+        ..
+    } = v
+    else {
+        return Err(E1kError::TcpFail);
+    };
+    if sp != PULSE_TCP_SRC_PORT
+        || dp != PULSE_TCP_TWIN_PORT
+        || seq != fin_seq_c
+        || flags != pulse::tcp::FLAG_FIN | pulse::tcp::FLAG_ACK
+    {
+        return Err(E1kError::TcpFail);
+    }
+    let srv_fin_ok = {
+        let conn = table.lookup_mut(&s_key).ok_or(E1kError::TcpFail)?;
+        conn.state = pulse::tcp::advance(conn.state, flags, 0, srv_nxt, false)
+            .map_err(|_| E1kError::TcpFail)?;
+        // 客户端 FIN seg ack=srv_nxt——服务端发送侧 una 推进对账。
+        let sw_ok = conn.swnd.on_ack(srv_nxt, PULSE_TCP_WIN);
+        conn.state == pulse::tcp::ConnState::FinWait && sw_ok
+    };
+    // 拍六 FIN|ACK（服务端 TX ack=fin_nxt_c——ack 越客户端 FIN 域 →
+    // 客户端 FinWait→TimeWait 对账 snd_nxt）。
+    let fin_seq_s = srv_nxt;
+    let flen = tcp_frame_build(
+        mac,
+        mac,
+        E1K_IP,
+        PULSE_TCP_TWIN_PORT,
+        PULSE_TCP_SRC_PORT,
+        fin_seq_s,
+        fin_nxt_c,
+        pulse::tcp::FLAG_FIN | pulse::tcp::FLAG_ACK,
+        PULSE_TCP_WIN,
+        &[],
+        &mut f,
+    )
+    .ok_or(E1kError::BadLen)?;
+    E1K_TCP_HS_FIN_TX.fetch_add(1, Ordering::AcqRel);
+    // 发送窗记账：FIN 消耗 1 序号（服务端臂）。
+    if let Some(conn) = table.slot_mut(s_idx) {
+        conn.swnd.sent(1);
+    }
+    let v = tcp_tap_inject(&f[..flen]).ok_or(E1kError::TcpFail)?;
+    let RxVerdict::Tcp {
+        src_port: sp,
+        dst_port: dp,
+        flags,
+        seq,
+        ack_seq,
+        ..
+    } = v
+    else {
+        return Err(E1kError::TcpFail);
+    };
+    if sp != PULSE_TCP_TWIN_PORT
+        || dp != PULSE_TCP_SRC_PORT
+        || seq != fin_seq_s
+        || ack_seq != fin_nxt_c
+        || flags != pulse::tcp::FLAG_FIN | pulse::tcp::FLAG_ACK
+    {
+        return Err(E1kError::TcpFail);
+    }
+    let fin_ok = {
+        let conn = table.lookup_mut(&c_key).ok_or(E1kError::TcpFail)?;
+        let st = pulse::tcp::advance(conn.state, flags, ack_seq, fin_nxt_c, false)
+            .map_err(|_| E1kError::TcpFail)?;
+        conn.state = st; // TimeWait
+        if st != pulse::tcp::ConnState::TimeWait {
+            return Err(E1kError::TcpFail);
+        }
+        // 拍七 TimeWait 超时收敛 → ClosedDone（advance timeout 旗）。
+        conn.state =
+            pulse::tcp::advance(st, 0, 0, fin_nxt_c, true).map_err(|_| E1kError::TcpFail)?;
+        conn.state == pulse::tcp::ConnState::ClosedDone
+    } && srv_fin_ok;
+    if !fin_ok {
+        return Err(E1kError::TcpFail);
+    }
+    E1K_TCP_HS_FIN_OK.store(1, Ordering::Release);
+    // 拍八 close_key 双槽（消费方拆除判定——passive 端 v0 押后域随槽
+    // 释放收口；live==0 复位对账）。
+    let c_released = table.close_key(&c_key).map_err(|_| E1kError::TcpFail)?;
+    let s_released = table.close_key(&s_key).map_err(|_| E1kError::TcpFail)?;
+    let closed_ok = table.live() == 0
+        && c_released.state == pulse::tcp::ConnState::ClosedDone
+        && s_released.state == pulse::tcp::ConnState::FinWait;
+    if !closed_ok {
+        return Err(E1kError::TcpFail);
+    }
+    E1K_TCP_HS_CLOSE_OK.store(1, Ordering::Release);
+    Ok(TcpHsEcho {
+        synack_ok,
+        established,
+        rto_disarmed,
+        data_ok,
+        fin_ok,
+        closed_ok,
     })
 }

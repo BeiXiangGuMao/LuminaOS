@@ -889,16 +889,41 @@ pub const XDG_CADJ_RESIZE_Y: u32 = 32;
 pub const XDG_TOPLEVEL_STATE_MAXIMIZED: u8 = 0;
 /// xdg_toplevel.state 枚举：fullscreen（1）。
 pub const XDG_TOPLEVEL_STATE_FULLSCREEN: u8 = 1;
-/// xdg_toplevel.state 枚举：activated（2——焦点宣告，v0 域外挂账）。
+/// xdg_toplevel.state 枚举：activated（2——焦点宣告，M53-XDGACT85
+/// 笔98 本笔转宣告域：kb_focus 联动出域）。
 pub const XDG_TOPLEVEL_STATE_ACTIVATED: u8 = 2;
+/// xdg_toplevel.state 枚举：tiled_left（3——M53-XDGACT85 笔98 本笔
+/// 转宣告域：tiled 边组族锚——0-based face，官方 XML 1-based 实值
+/// 〔maximized 1/fullscreen 2/resizing 3/activated 4/tiled 5-8/
+/// suspended 9〕偏差随行登记：v0 face 同谱自洽域，互操作翻账挂账）。
+pub const XDG_TOPLEVEL_STATE_TILED_LEFT: u8 = 3;
+/// xdg_toplevel.state 枚举：tiled_right（4）。
+pub const XDG_TOPLEVEL_STATE_TILED_RIGHT: u8 = 4;
+/// xdg_toplevel.state 枚举：tiled_top（5）。
+pub const XDG_TOPLEVEL_STATE_TILED_TOP: u8 = 5;
+/// xdg_toplevel.state 枚举：tiled_bottom（6）。
+pub const XDG_TOPLEVEL_STATE_TILED_BOTTOM: u8 = 6;
 
-/// xdg_toplevel 状态族决策核（M53-XDGSTAT83 笔96——官方 configure 序：
-/// 状态旗 → (宽, 高, states 数组字节槽, 有效数)）。全屏 = 屏域全幅
-/// 〔全屏优先——官方 fullscreen 与 maximized 同置时全屏胜〕；最大化 =
-/// 屏域（工作区扣减面挂账如实）；常态 = 恢复几何 min/max 钳制
-/// （clamp_minmax 同谱——max 非零上钳先行 + min 非零下钳后随，0 =
-/// 未设定域跳过）。states 数组按官方枚举序出域（maximized 0 /
-/// fullscreen 1）。
+/// tiled 边组位域掩码（bit0=left bit1=right bit2=top bit3=bottom——
+/// 决策核/会话域共享位序；sbits 载体域为 bit3..6 左移承载）。
+pub const XDG_TILE_BIT_LEFT: u8 = 0b0001;
+/// tiled 边组位域：right。
+pub const XDG_TILE_BIT_RIGHT: u8 = 0b0010;
+/// tiled 边组位域：top。
+pub const XDG_TILE_BIT_TOP: u8 = 0b0100;
+/// tiled 边组位域：bottom。
+pub const XDG_TILE_BIT_BOTTOM: u8 = 0b1000;
+
+/// xdg_toplevel 状态族决策核（M53-XDGSTAT83 笔96 + M53-XDGACT85
+/// 笔98 枚举域扩展——官方 configure 序：状态旗 → (宽, 高, states 数
+/// 组字节槽, 有效数)）。全屏 = 屏域全幅〔全屏优先——官方 fullscreen
+/// 与 maximized 同置时全屏胜〕；最大化 = 屏域（工作区扣减面挂账如
+/// 实）；常态 = 恢复几何 min/max 钳制（clamp_minmax 同谱——max 非零
+/// 上钳先行 + min 非零下钳后随，0 = 未设定域跳过）。states 数组按
+/// 官方枚举序出域（maximized 0 / fullscreen 1 / activated 2 / tiled
+/// 左右上下 3-6）：`activated` = 焦点宣告（kb_focus 联动——决策核
+/// 参数化承载）；`tiled_bits` = 边组位域（bit0=left..bit3=bottom——
+/// 逐位展开枚举序出域）。容量 8 槽（全屏/最大 1 + 焦点 1 + 四边 4）。
 #[allow(clippy::too_many_arguments)]
 pub fn toplevel_state_decide(
     maximized: bool,
@@ -911,17 +936,19 @@ pub fn toplevel_state_decide(
     min_h: i32,
     max_w: i32,
     max_h: i32,
-) -> (u32, u32, [u8; 4], usize) {
-    let mut states = [0u8; 4];
+    activated: bool,
+    tiled_bits: u8,
+) -> (u32, u32, [u8; 8], usize) {
+    let mut states = [0u8; 8];
     let mut n = 0usize;
-    if fullscreen {
+    let (w, h) = if fullscreen {
         states[n] = XDG_TOPLEVEL_STATE_FULLSCREEN;
         n += 1;
-        (screen_w, screen_h, states, n)
+        (screen_w, screen_h)
     } else if maximized {
         states[n] = XDG_TOPLEVEL_STATE_MAXIMIZED;
         n += 1;
-        (screen_w, screen_h, states, n)
+        (screen_w, screen_h)
     } else {
         let mut w = cur_w;
         let mut h = cur_h;
@@ -937,8 +964,25 @@ pub fn toplevel_state_decide(
         if min_h > 0 && h < min_h as u32 {
             h = min_h as u32;
         }
-        (w, h, states, n)
+        (w, h)
+    };
+    if activated {
+        states[n] = XDG_TOPLEVEL_STATE_ACTIVATED;
+        n += 1;
     }
+    let tiled = [
+        (XDG_TILE_BIT_LEFT, XDG_TOPLEVEL_STATE_TILED_LEFT),
+        (XDG_TILE_BIT_RIGHT, XDG_TOPLEVEL_STATE_TILED_RIGHT),
+        (XDG_TILE_BIT_TOP, XDG_TOPLEVEL_STATE_TILED_TOP),
+        (XDG_TILE_BIT_BOTTOM, XDG_TOPLEVEL_STATE_TILED_BOTTOM),
+    ];
+    for (bit, val) in tiled {
+        if tiled_bits & bit != 0 {
+            states[n] = val;
+            n += 1;
+        }
+    }
+    (w, h, states, n)
 }
 
 /// positioner 定位参数装载体（M51-XDGPOP75 笔86 六 setter 语义核 +
@@ -3069,37 +3113,46 @@ mod tests {
         assert_eq!(xdg_toplevel::REQ_SET_FULLSCREEN, 11);
         assert_eq!(xdg_toplevel::REQ_UNSET_FULLSCREEN, 12);
         assert_eq!(xdg_toplevel::REQ_SET_MINIMIZED, 13);
-        // 官方 state 枚举值域。
+        // 官方 state 枚举值域（M53-XDGACT85 笔98 枚举域扩展——activated
+        // 转宣告域 + tiled 边组族 3-6）。
         assert_eq!(XDG_TOPLEVEL_STATE_MAXIMIZED, 0);
         assert_eq!(XDG_TOPLEVEL_STATE_FULLSCREEN, 1);
         assert_eq!(XDG_TOPLEVEL_STATE_ACTIVATED, 2);
+        assert_eq!(XDG_TOPLEVEL_STATE_TILED_LEFT, 3);
+        assert_eq!(XDG_TOPLEVEL_STATE_TILED_RIGHT, 4);
+        assert_eq!(XDG_TOPLEVEL_STATE_TILED_TOP, 5);
+        assert_eq!(XDG_TOPLEVEL_STATE_TILED_BOTTOM, 6);
 
         // 决策核：全屏优先（全屏/最大化同置时全屏胜）。
-        let (w, h, st, n) = toplevel_state_decide(true, true, 500, 400, 1920, 1080, 0, 0, 0, 0);
+        let (w, h, st, n) =
+            toplevel_state_decide(true, true, 500, 400, 1920, 1080, 0, 0, 0, 0, false, 0);
         assert_eq!((w, h, n), (1920, 1080, 1));
         assert_eq!(st[0], XDG_TOPLEVEL_STATE_FULLSCREEN);
         // 最大化 = 屏域全幅（工作区扣减面挂账如实）。
-        let (w, h, st, n) = toplevel_state_decide(true, false, 500, 400, 1920, 1080, 0, 0, 0, 0);
+        let (w, h, st, n) =
+            toplevel_state_decide(true, false, 500, 400, 1920, 1080, 0, 0, 0, 0, false, 0);
         assert_eq!((w, h, n), (1920, 1080, 1));
         assert_eq!(st[0], XDG_TOPLEVEL_STATE_MAXIMIZED);
         // 常态恢复 = 恢复几何（零钳制域）。
-        let (w, h, _st, n) = toplevel_state_decide(false, false, 500, 400, 1920, 1080, 0, 0, 0, 0);
+        let (w, h, _st, n) =
+            toplevel_state_decide(false, false, 500, 400, 1920, 1080, 0, 0, 0, 0, false, 0);
         assert_eq!((w, h, n), (500, 400, 0));
         // 常态恢复 + min 下钳（max 未设定）。
         let (w, h, _, _) =
-            toplevel_state_decide(false, false, 500, 400, 1920, 1080, 800, 600, 0, 0);
+            toplevel_state_decide(false, false, 500, 400, 1920, 1080, 800, 600, 0, 0, false, 0);
         assert_eq!((w, h), (800, 600));
         // 常态恢复 + max 上钳。
         let (w, h, _, _) =
-            toplevel_state_decide(false, false, 500, 400, 1920, 1080, 0, 0, 400, 300);
+            toplevel_state_decide(false, false, 500, 400, 1920, 1080, 0, 0, 400, 300, false, 0);
         assert_eq!((w, h), (400, 300));
         // min/max 交叉域：max 先行 min 后随（clamp_minmax 同谱——min 胜）。
-        let (w, h, _, _) =
-            toplevel_state_decide(false, false, 500, 400, 1920, 1080, 900, 800, 400, 300);
+        let (w, h, _, _) = toplevel_state_decide(
+            false, false, 500, 400, 1920, 1080, 900, 800, 400, 300, false, 0,
+        );
         assert_eq!((w, h), (900, 800));
         // 负 min/max = 未设定域跳过（官方 0 = unset 外延）。
         let (w, h, _, _) =
-            toplevel_state_decide(false, false, 500, 400, 1920, 1080, -1, -1, -1, -1);
+            toplevel_state_decide(false, false, 500, 400, 1920, 1080, -1, -1, -1, -1, false, 0);
         assert_eq!((w, h), (500, 400));
 
         // wire 面五请求编组回环（官方序锚 + SIG 对账）。
@@ -3153,5 +3206,82 @@ mod tests {
             Some(WlArg::Array(bytes)) => assert!(bytes.is_empty(), "空 states 数组"),
             _ => panic!("states 数组缺位"),
         }
+        // M53-XDGACT85 笔98：states 数组扩域编组回环（activated + tiled
+        // 边组——枚举序 2 / 3 / 5 逐位对账）。
+        let n = encode_xdg_toplevel_configure_event(
+            &mut buf,
+            0x62,
+            948,
+            944,
+            &[
+                XDG_TOPLEVEL_STATE_ACTIVATED,
+                XDG_TOPLEVEL_STATE_TILED_LEFT,
+                XDG_TOPLEVEL_STATE_TILED_TOP,
+            ],
+        )
+        .expect("enc");
+        let m = parse_message(&buf[..n], SIG_XDG_TOPLEVEL_CONFIGURE).expect("parse");
+        match m.args[2] {
+            Some(WlArg::Array(bytes)) => {
+                assert_eq!(bytes, &[2u8, 3u8, 5u8]);
+            }
+            _ => panic!("states 数组缺位"),
+        }
+    }
+
+    /// M53-XDGACT85 笔98：状态族 activated/tiled 枚举域扩展——决策核
+    /// 扩域谱（焦点宣告 + tiled 边组逐位展开 + 容量上界）+ states 数
+    /// 组扩域编组回环。
+    #[test]
+    fn toplevel_state_activated_tiled() {
+        // 焦点宣告（常态 + activated）。
+        let (w, h, st, n) =
+            toplevel_state_decide(false, false, 500, 400, 1920, 1080, 0, 0, 0, 0, true, 0);
+        assert_eq!((w, h, n), (500, 400, 1));
+        assert_eq!(st[0], XDG_TOPLEVEL_STATE_ACTIVATED);
+        // 最大化 + 焦点（states 数组枚举序：maximized 0 → activated 2）。
+        let (w, h, st, n) =
+            toplevel_state_decide(true, false, 500, 400, 1920, 1080, 0, 0, 0, 0, true, 0);
+        assert_eq!((w, h, n), (1920, 1080, 2));
+        assert_eq!(st[0], XDG_TOPLEVEL_STATE_MAXIMIZED);
+        assert_eq!(st[1], XDG_TOPLEVEL_STATE_ACTIVATED);
+        // 全屏 + 焦点。
+        let (w, h, st, n) =
+            toplevel_state_decide(true, true, 500, 400, 1920, 1080, 0, 0, 0, 0, true, 0);
+        assert_eq!((w, h, n), (1920, 1080, 2));
+        assert_eq!(st[0], XDG_TOPLEVEL_STATE_FULLSCREEN);
+        assert_eq!(st[1], XDG_TOPLEVEL_STATE_ACTIVATED);
+        // tiled 四边全谱（常态，无焦点）——枚举序 3/4/5/6。
+        let all = XDG_TILE_BIT_LEFT | XDG_TILE_BIT_RIGHT | XDG_TILE_BIT_TOP | XDG_TILE_BIT_BOTTOM;
+        let (w, h, st, n) =
+            toplevel_state_decide(false, false, 500, 400, 1920, 1080, 0, 0, 0, 0, false, all);
+        assert_eq!((w, h, n), (500, 400, 4));
+        assert_eq!(&st[..4], &[3, 4, 5, 6]);
+        // tiled 双边 + 焦点（枚举序：activated 2 先于 tiled 3/5）。
+        let (w, h, st, n) = toplevel_state_decide(
+            false,
+            false,
+            500,
+            400,
+            1920,
+            1080,
+            0,
+            0,
+            0,
+            0,
+            true,
+            XDG_TILE_BIT_LEFT | XDG_TILE_BIT_TOP,
+        );
+        assert_eq!((w, h, n), (500, 400, 3));
+        assert_eq!(&st[..3], &[XDG_TOPLEVEL_STATE_ACTIVATED, 3, 5]);
+        // 容量上界：全屏 + 焦点 + 四边 = 6 ≤ 8 槽。
+        let (w, _h, st, n) =
+            toplevel_state_decide(true, true, 500, 400, 1920, 1080, 0, 0, 0, 0, true, all);
+        assert_eq!((w, n), (1920, 6));
+        assert_eq!(&st[..6], &[1, 2, 3, 4, 5, 6]);
+        // 零态基线（activated=false ∧ tiled=0）= 笔96 金值回归零扰。
+        let (w, h, _st, n) =
+            toplevel_state_decide(false, false, 500, 400, 1920, 1080, 0, 0, 0, 0, false, 0);
+        assert_eq!((w, h, n), (500, 400, 0));
     }
 }

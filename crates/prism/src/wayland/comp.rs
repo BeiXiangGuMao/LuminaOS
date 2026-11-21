@@ -254,6 +254,10 @@ pub struct CompSurface {
     /// 最小化记账位（set_minimized——官方无 unset/无 configure，解除
     /// 由合成器策略域外挂账如实）。
     pub minimized: bool,
+    /// tiled 边组位域（M53-XDGACT85 笔98——bit0=left..bit3=bottom，
+    /// 布局策略域注入面：[`CompSession::set_tiled`] 政策域承载，
+    /// waycomp 布局缺席 v0 如实挂账；决策核/冲刷核逐位展开出域）。
+    pub tiled_bits: u8,
     /// 恢复几何宽（状态请求快照域——常态恢复对账面）。
     pub restored_w: u32,
     /// 恢复几何高。
@@ -841,6 +845,70 @@ impl CompSession {
     pub fn surface_restored(&self, wl_id: u32) -> Option<(u32, u32)> {
         let sf = self.surface(wl_id)?;
         Some((sf.restored_w, sf.restored_h))
+    }
+
+    /// 会话 surface 焦点宣告读面（M53-XDGACT85 笔98——kb_focus 联动
+    /// 取证域：None = 不在册）。
+    pub fn surface_activated(&self, wl_id: u32) -> Option<bool> {
+        let sf = self.surface(wl_id)?;
+        Some(sf.wl_id == self.kb_focus)
+    }
+
+    /// 会话 surface tiled 边组读面（M53-XDGACT85 笔98——政策域取证：
+    /// bit0=left..bit3=bottom；None = 不在册）。
+    pub fn surface_tiled(&self, wl_id: u32) -> Option<u8> {
+        let sf = self.surface(wl_id)?;
+        Some(sf.tiled_bits)
+    }
+
+    /// tiled 布局策略域注入（M53-XDGACT85 笔98——合成器布局政策面：
+    /// 边组位域写入 + 状态族 configure 待发入队〔几何经决策核——
+    /// 现行旗域重施策，states 数组随 sbits 出域〕）。官方协议无
+    /// set_tiled 请求——tiled 为合成器策略宣告（v0 布局缺席如实挂
+    /// 账，政策域 API 先行）。返回 false = 面不在册（fail-visible）。
+    pub fn set_tiled(&mut self, wl_id: u32, bits: u8) -> bool {
+        let Some(sf) = self
+            .surfaces
+            .iter_mut()
+            .flatten()
+            .find(|sf| sf.wl_id == wl_id)
+        else {
+            return false;
+        };
+        sf.tiled_bits = bits & 0b1111;
+        sf.minimized = false;
+        let tiled = sf.tiled_bits;
+        let maxed = sf.maximized;
+        let full = sf.fullscreen;
+        let activated = wl_id == self.kb_focus;
+        let (w, h, _, _) = toplevel_decide(
+            self.bound,
+            maxed,
+            full,
+            if maxed || full {
+                sf.geom.w
+            } else {
+                sf.restored_w
+            },
+            if maxed || full {
+                sf.geom.h
+            } else {
+                sf.restored_h
+            },
+            sf.min_w,
+            sf.min_h,
+            sf.max_w,
+            sf.max_h,
+            activated,
+            tiled,
+        );
+        sf.geom.w = w;
+        sf.geom.h = h;
+        let base = u8::from(maxed) | (u8::from(full) << 1);
+        let sbits = base | (u8::from(activated) << 2) | (tiled << 3);
+        let top = sf.xdg_toplevel;
+        self.state_push(wl_id, top, w as i32, h as i32, sbits);
+        true
     }
 
     /// 会话 buffer 在账数（M42-ELF5 取证面）。
@@ -2360,17 +2428,22 @@ impl CompSession {
                 }
                 sf.maximized = true;
                 sf.minimized = false;
+                // M53-XDGACT85 笔98：焦点/tiled 宣告位随行（kb_focus 联
+                // 动 + 布局策略域注入面）。
+                let wl_id = sf.wl_id;
+                let tiled = sf.tiled_bits;
+                let activated = wl_id == self.kb_focus;
                 // 决策核施策（POPCON78 同谱：施策即记账——官方全序
                 // configure→ack→commit→apply 押后挂账如实）。
                 let (w, h, _, _) = toplevel_decide(
                     self.bound, true, false, sf.geom.w, sf.geom.h, sf.min_w, sf.min_h, sf.max_w,
-                    sf.max_h,
+                    sf.max_h, activated, tiled,
                 );
                 sf.geom.w = w;
                 sf.geom.h = h;
-                let wl_id = sf.wl_id;
                 let top_id = header.object_id;
-                self.state_push(wl_id, top_id, w as i32, h as i32, 0b01);
+                let sbits = 0b01 | (u8::from(activated) << 2) | (tiled << 3);
+                self.state_push(wl_id, top_id, w as i32, h as i32, sbits);
                 Ok(())
             }
             xdg_toplevel::REQ_UNSET_MAXIMIZED => {
@@ -2387,6 +2460,9 @@ impl CompSession {
                 };
                 sf.maximized = false;
                 let full = sf.fullscreen;
+                let wl_id = sf.wl_id;
+                let tiled = sf.tiled_bits;
+                let activated = wl_id == self.kb_focus;
                 let (w, h, _, _) = toplevel_decide(
                     self.bound,
                     false,
@@ -2397,11 +2473,13 @@ impl CompSession {
                     sf.min_h,
                     sf.max_w,
                     sf.max_h,
+                    activated,
+                    tiled,
                 );
                 sf.geom.w = w;
                 sf.geom.h = h;
-                let sbits = if full { 0b10 } else { 0b00 };
-                let wl_id = sf.wl_id;
+                let sbits =
+                    if full { 0b10 } else { 0b00 } | (u8::from(activated) << 2) | (tiled << 3);
                 let top_id = header.object_id;
                 self.state_push(wl_id, top_id, w as i32, h as i32, sbits);
                 Ok(())
@@ -2427,15 +2505,18 @@ impl CompSession {
                 sf.fullscreen = true;
                 sf.maximized = false;
                 sf.minimized = false;
+                let wl_id = sf.wl_id;
+                let tiled = sf.tiled_bits;
+                let activated = wl_id == self.kb_focus;
                 let (w, h, _, _) = toplevel_decide(
                     self.bound, false, true, sf.geom.w, sf.geom.h, sf.min_w, sf.min_h, sf.max_w,
-                    sf.max_h,
+                    sf.max_h, activated, tiled,
                 );
                 sf.geom.w = w;
                 sf.geom.h = h;
-                let wl_id = sf.wl_id;
                 let top_id = header.object_id;
-                self.state_push(wl_id, top_id, w as i32, h as i32, 0b10);
+                let sbits = 0b10 | (u8::from(activated) << 2) | (tiled << 3);
+                self.state_push(wl_id, top_id, w as i32, h as i32, sbits);
                 Ok(())
             }
             xdg_toplevel::REQ_UNSET_FULLSCREEN => {
@@ -2452,6 +2533,9 @@ impl CompSession {
                 };
                 sf.fullscreen = false;
                 let maxed = sf.maximized;
+                let wl_id = sf.wl_id;
+                let tiled = sf.tiled_bits;
+                let activated = wl_id == self.kb_focus;
                 let (w, h, _, _) = toplevel_decide(
                     self.bound,
                     maxed,
@@ -2462,11 +2546,13 @@ impl CompSession {
                     sf.min_h,
                     sf.max_w,
                     sf.max_h,
+                    activated,
+                    tiled,
                 );
                 sf.geom.w = w;
                 sf.geom.h = h;
-                let sbits = if maxed { 0b01 } else { 0b00 };
-                let wl_id = sf.wl_id;
+                let sbits =
+                    if maxed { 0b01 } else { 0b00 } | (u8::from(activated) << 2) | (tiled << 3);
                 let top_id = header.object_id;
                 self.state_push(wl_id, top_id, w as i32, h as i32, sbits);
                 Ok(())
@@ -2848,7 +2934,7 @@ impl CompSession {
                         encode_xdg_surface_configure_event(&mut out[*out_len..], sf.xdg_surf, ser)
                             .map_err(CompError::Wire)?;
                     *out_len += n;
-                    let mut st = [0u8; 4];
+                    let mut st = [0u8; 8];
                     let mut sn = 0usize;
                     if sbits & 0b01 != 0 {
                         st[sn] = super::XDG_TOPLEVEL_STATE_MAXIMIZED;
@@ -2857,6 +2943,23 @@ impl CompSession {
                     if sbits & 0b10 != 0 {
                         st[sn] = super::XDG_TOPLEVEL_STATE_FULLSCREEN;
                         sn += 1;
+                    }
+                    if sbits & 0b100 != 0 {
+                        st[sn] = super::XDG_TOPLEVEL_STATE_ACTIVATED;
+                        sn += 1;
+                    }
+                    // M53-XDGACT85 笔98：tiled 边组族逐位展开（bit3..6 =
+                    // left/right/top/bottom——枚举序 3-6 出域）。
+                    for (bit, val) in [
+                        (0b1_000, super::XDG_TOPLEVEL_STATE_TILED_LEFT),
+                        (0b10_000, super::XDG_TOPLEVEL_STATE_TILED_RIGHT),
+                        (0b100_000, super::XDG_TOPLEVEL_STATE_TILED_TOP),
+                        (0b100_0000, super::XDG_TOPLEVEL_STATE_TILED_BOTTOM),
+                    ] {
+                        if sbits & bit != 0 {
+                            st[sn] = val;
+                            sn += 1;
+                        }
                     }
                     let n = encode_xdg_toplevel_configure_event(
                         &mut out[*out_len..],
@@ -3145,6 +3248,7 @@ impl CompSession {
             maximized: false,
             fullscreen: false,
             minimized: false,
+            tiled_bits: 0,
             restored_w: 0,
             restored_h: 0,
             title: [0; XDG_TITLE_CAP],
@@ -3536,7 +3640,8 @@ fn lock_key_of_wl_key(key: u32) -> bool {
 //   wayland.xml 1.21.0 会话语义 + wire 壳 v0 表复用对账）
 
 /// 状态族决策核薄壳（mod 层 [`super::toplevel_state_decide`] 同参透传
-/// ——bound 元组展开为屏域 w/h，负域零化显形）。
+/// ——bound 元组展开为屏域 w/h，负域零化显形；M53-XDGACT85 笔98：
+/// activated/tiled_bits 扩参透传）。
 #[allow(clippy::too_many_arguments)]
 fn toplevel_decide(
     bound: (i32, i32, i32, i32),
@@ -3548,7 +3653,9 @@ fn toplevel_decide(
     min_h: i32,
     max_w: i32,
     max_h: i32,
-) -> (u32, u32, [u8; 4], usize) {
+    activated: bool,
+    tiled_bits: u8,
+) -> (u32, u32, [u8; 8], usize) {
     super::toplevel_state_decide(
         maximized,
         fullscreen,
@@ -3560,6 +3667,8 @@ fn toplevel_decide(
         min_h,
         max_w,
         max_h,
+        activated,
+        tiled_bits,
     )
 }
 
@@ -3666,6 +3775,140 @@ mod tests {
         // display 固定 id 1 在账 + registry id 2 客户端域登记
         assert_eq!(s.table().lookup(1), Some(WlIface::Display));
         assert_eq!(s.table().lookup(2), Some(WlIface::Registry));
+    }
+
+    /// M53-XDGACT85 笔98：状态族 activated/tiled 会话域真车道（t174-SESS
+    /// 宿主同源镜像）——键盘派生 + kb_focus 联动 set_maximized→
+    /// [maximized, activated] + unset→[activated] + set_tiled 政策域→
+    /// [activated, tiled_left, tiled_top] 冲刷出域 + 域外 NEG。
+    #[test]
+    fn toplevel_state_activated_tiled_sess() {
+        let mut s = new_session();
+        s.set_screen_bound((0, 0, 1920, 1080));
+        // feed 1：get_registry + bind 三件 + get_keyboard + surface 链。
+        let m1 = {
+            let mut b = [0u8; 512];
+            let mut n = 0usize;
+            n += encode_display_get_registry(&mut b[n..], 1, 2).unwrap();
+            n += encode_registry_bind(&mut b[n..], 2, 1, "wl_compositor", 4, 0x72).unwrap();
+            n += encode_registry_bind(&mut b[n..], 2, 2, "wl_seat", 1, 0x73).unwrap();
+            n += encode_registry_bind(&mut b[n..], 2, 5, "xdg_wm_base", 1, 0x71).unwrap();
+            n += crate::wayland::encode_message(
+                &mut b[n..],
+                0x73,
+                crate::wayland::seat::REQ_GET_KEYBOARD,
+                &[WlArg::NewId(0x74)],
+            )
+            .unwrap();
+            n += crate::wayland::encode_message(
+                &mut b[n..],
+                0x72,
+                crate::wayland::compositor::REQ_CREATE_SURFACE,
+                &[WlArg::NewId(0x60)],
+            )
+            .unwrap();
+            n += crate::wayland::encode_xdg_wm_base_get_xdg_surface(&mut b[n..], 0x71, 0x61, 0x60)
+                .unwrap();
+            n += crate::wayland::encode_xdg_surface_get_toplevel(&mut b[n..], 0x61, 0x62).unwrap();
+            b[..n].to_vec()
+        };
+        let mut out = [0u8; 2048];
+        let rep = s.feed(&m1, &mut out).unwrap();
+        assert!(rep.out_len >= 32, "初始 configure 对出域");
+        // 焦点域注入（kb_focus 联动事实源）。
+        s.set_keyboard_focus(0x60).unwrap();
+        assert_eq!(s.surface_activated(0x60), Some(true));
+        // feed 2：ack(ser0=1) + set_maximized → configure(1920,1080,
+        // [maximized, activated])——焦点联动宣告。
+        let m2 = {
+            let mut b = [0u8; 128];
+            let mut n = 0usize;
+            n += crate::wayland::encode_xdg_surface_ack_configure(&mut b[n..], 0x61, 1).unwrap();
+            n += crate::wayland::encode_message(
+                &mut b[n..],
+                0x62,
+                crate::wayland::xdg_toplevel::REQ_SET_MAXIMIZED,
+                &[],
+            )
+            .unwrap();
+            b[..n].to_vec()
+        };
+        let rep = s.feed(&m2, &mut out).unwrap();
+        assert!(rep.out_len >= 32, "feed2 configure 对出域");
+        // 尾锚定（configure 对 = 流尾 36 B——keymap/enter 输入事件先行
+        // 出域，top_cfg 数组域 4 字节对齐恒 24 B）。
+        let m = crate::wayland::parse_message(
+            &out[rep.out_len - 24..rep.out_len],
+            crate::wayland::SIG_XDG_TOPLEVEL_CONFIGURE,
+        )
+        .unwrap();
+        assert_eq!(m.args[0], Some(WlArg::Int(1920)));
+        assert!(matches!(
+            m.args[2],
+            Some(WlArg::Array(b))
+                if b == [crate::wayland::XDG_TOPLEVEL_STATE_MAXIMIZED, crate::wayland::XDG_TOPLEVEL_STATE_ACTIVATED]
+        ));
+        // feed 3：ack + unset_maximized → states=[activated]（焦点维持）。
+        let m3 = {
+            let mut b = [0u8; 128];
+            let mut n = 0usize;
+            n += crate::wayland::encode_xdg_surface_ack_configure(&mut b[n..], 0x61, 2).unwrap();
+            n += crate::wayland::encode_message(
+                &mut b[n..],
+                0x62,
+                crate::wayland::xdg_toplevel::REQ_UNSET_MAXIMIZED,
+                &[],
+            )
+            .unwrap();
+            b[..n].to_vec()
+        };
+        let rep = s.feed(&m3, &mut out).unwrap();
+        assert!(rep.out_len >= 32, "feed3 configure 对出域");
+        let m = crate::wayland::parse_message(
+            &out[rep.out_len - 24..rep.out_len],
+            crate::wayland::SIG_XDG_TOPLEVEL_CONFIGURE,
+        )
+        .unwrap();
+        assert!(matches!(
+            m.args[2],
+            Some(WlArg::Array(b)) if b == [crate::wayland::XDG_TOPLEVEL_STATE_ACTIVATED]
+        ));
+        // feed 4a：ack(ser3) 单独入流（官方序——ack 须先于下一轮铸号，
+        // 陈旧 ack = 域外拒收）。
+        let m4 = {
+            let mut b = [0u8; 64];
+            let n = crate::wayland::encode_xdg_surface_ack_configure(&mut b[..], 0x61, 3).unwrap();
+            b[..n].to_vec()
+        };
+        s.feed(&m4, &mut out).unwrap();
+        // feed 4b：set_tiled 政策域注入 → 空流冲刷 configure(states=
+        // [activated, tiled_left, tiled_top])。
+        assert!(s.set_tiled(
+            0x60,
+            crate::wayland::XDG_TILE_BIT_LEFT | crate::wayland::XDG_TILE_BIT_TOP
+        ));
+        assert_eq!(
+            s.surface_tiled(0x60),
+            Some(crate::wayland::XDG_TILE_BIT_LEFT | crate::wayland::XDG_TILE_BIT_TOP)
+        );
+        let rep = s.feed(&[], &mut out).unwrap();
+        assert!(rep.out_len >= 32, "feed4 configure 对出域");
+        let m = crate::wayland::parse_message(
+            &out[rep.out_len - 24..rep.out_len],
+            crate::wayland::SIG_XDG_TOPLEVEL_CONFIGURE,
+        )
+        .unwrap();
+        assert!(matches!(
+            m.args[2],
+            Some(WlArg::Array(b))
+                if b == [crate::wayland::XDG_TOPLEVEL_STATE_ACTIVATED,
+                         crate::wayland::XDG_TOPLEVEL_STATE_TILED_LEFT,
+                         crate::wayland::XDG_TOPLEVEL_STATE_TILED_TOP]
+        ));
+        // NEG——域外面 fail-visible + 不在册访问器 None。
+        assert!(!s.set_tiled(0x99, crate::wayland::XDG_TILE_BIT_LEFT));
+        assert_eq!(s.surface_activated(0x99), None);
+        assert_eq!(s.surface_tiled(0x99), None);
     }
 
     /// bind + create_surface 双请求单流推进：接口名名单校验 + 对象登
