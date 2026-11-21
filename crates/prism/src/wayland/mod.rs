@@ -882,6 +882,65 @@ pub const XDG_CADJ_RESIZE_X: u32 = 16;
 /// constraint_adjustment 位域：resize_y（32）。
 pub const XDG_CADJ_RESIZE_Y: u32 = 32;
 
+// --- xdg_toplevel 状态族语义常量 + 决策核（M53-XDGSTAT83 笔96——B 线②
+//     开工令：官方 xdg-shell.xml state 枚举声明序 + configure 决策核） ---
+
+/// xdg_toplevel.state 枚举：maximized（0）。
+pub const XDG_TOPLEVEL_STATE_MAXIMIZED: u8 = 0;
+/// xdg_toplevel.state 枚举：fullscreen（1）。
+pub const XDG_TOPLEVEL_STATE_FULLSCREEN: u8 = 1;
+/// xdg_toplevel.state 枚举：activated（2——焦点宣告，v0 域外挂账）。
+pub const XDG_TOPLEVEL_STATE_ACTIVATED: u8 = 2;
+
+/// xdg_toplevel 状态族决策核（M53-XDGSTAT83 笔96——官方 configure 序：
+/// 状态旗 → (宽, 高, states 数组字节槽, 有效数)）。全屏 = 屏域全幅
+/// 〔全屏优先——官方 fullscreen 与 maximized 同置时全屏胜〕；最大化 =
+/// 屏域（工作区扣减面挂账如实）；常态 = 恢复几何 min/max 钳制
+/// （clamp_minmax 同谱——max 非零上钳先行 + min 非零下钳后随，0 =
+/// 未设定域跳过）。states 数组按官方枚举序出域（maximized 0 /
+/// fullscreen 1）。
+#[allow(clippy::too_many_arguments)]
+pub fn toplevel_state_decide(
+    maximized: bool,
+    fullscreen: bool,
+    cur_w: u32,
+    cur_h: u32,
+    screen_w: u32,
+    screen_h: u32,
+    min_w: i32,
+    min_h: i32,
+    max_w: i32,
+    max_h: i32,
+) -> (u32, u32, [u8; 4], usize) {
+    let mut states = [0u8; 4];
+    let mut n = 0usize;
+    if fullscreen {
+        states[n] = XDG_TOPLEVEL_STATE_FULLSCREEN;
+        n += 1;
+        (screen_w, screen_h, states, n)
+    } else if maximized {
+        states[n] = XDG_TOPLEVEL_STATE_MAXIMIZED;
+        n += 1;
+        (screen_w, screen_h, states, n)
+    } else {
+        let mut w = cur_w;
+        let mut h = cur_h;
+        if max_w > 0 && w > max_w as u32 {
+            w = max_w as u32;
+        }
+        if max_h > 0 && h > max_h as u32 {
+            h = max_h as u32;
+        }
+        if min_w > 0 && w < min_w as u32 {
+            w = min_w as u32;
+        }
+        if min_h > 0 && h < min_h as u32 {
+            h = min_h as u32;
+        }
+        (w, h, states, n)
+    }
+}
+
 /// positioner 定位参数装载体（M51-XDGPOP75 笔86 六 setter 语义核 +
 /// M52-POPCON78 笔90 v3 三域随行——reactive 重定位宣告/父尺寸/父
 /// configure 串号；定容零堆值语义）。
@@ -1226,6 +1285,18 @@ pub const SIG_XDG_SURFACE_GET_POPUP: &[WlType] = &[WlType::NewId, WlType::Object
 pub const SIG_XDG_TOPLEVEL_SET_MIN_SIZE: &[WlType] = &[WlType::Int, WlType::Int];
 /// xdg_toplevel.set_max_size：`(int, int)`。
 pub const SIG_XDG_TOPLEVEL_SET_MAX_SIZE: &[WlType] = &[WlType::Int, WlType::Int];
+/// xdg_toplevel.set_maximized：零参（M53-XDGSTAT83 笔96 状态族消费面）。
+pub const SIG_XDG_TOPLEVEL_SET_MAXIMIZED: &[WlType] = &[];
+/// xdg_toplevel.unset_maximized：零参。
+pub const SIG_XDG_TOPLEVEL_UNSET_MAXIMIZED: &[WlType] = &[];
+/// xdg_toplevel.set_fullscreen：`(object)`——官方可空 output（v0 承载
+/// 不入账，output 对象域语义挂账如实）。
+pub const SIG_XDG_TOPLEVEL_SET_FULLSCREEN: &[WlType] = &[WlType::Object];
+/// xdg_toplevel.unset_fullscreen：零参。
+pub const SIG_XDG_TOPLEVEL_UNSET_FULLSCREEN: &[WlType] = &[];
+/// xdg_toplevel.set_minimized：零参（官方无 unset_minimized——解除由
+/// 合成器策略面承接，域外挂账如实）。
+pub const SIG_XDG_TOPLEVEL_SET_MINIMIZED: &[WlType] = &[];
 /// xdg_positioner.set_size：`(int, int)`。
 pub const SIG_XDG_POSITIONER_SET_SIZE: &[WlType] = &[WlType::Int, WlType::Int];
 /// xdg_positioner.set_anchor_rect：`(int × 4)`。
@@ -2986,5 +3057,101 @@ mod tests {
         };
         let pr = out.place_in_bounds((0, 0, 50, 100));
         assert_eq!(pr.w, 0, "全出界 = 零面积域");
+    }
+
+    /// M53-XDGSTAT83 笔96：xdg_toplevel 状态族——官方 opcode 序 + 状态
+    /// 枚举值 + 决策核全谱 + wire 面五请求编组回环。
+    #[test]
+    fn toplevel_state_family() {
+        // 官方 opcode 序（xdg-shell.xml 声明序锚）。
+        assert_eq!(xdg_toplevel::REQ_SET_MAXIMIZED, 9);
+        assert_eq!(xdg_toplevel::REQ_UNSET_MAXIMIZED, 10);
+        assert_eq!(xdg_toplevel::REQ_SET_FULLSCREEN, 11);
+        assert_eq!(xdg_toplevel::REQ_UNSET_FULLSCREEN, 12);
+        assert_eq!(xdg_toplevel::REQ_SET_MINIMIZED, 13);
+        // 官方 state 枚举值域。
+        assert_eq!(XDG_TOPLEVEL_STATE_MAXIMIZED, 0);
+        assert_eq!(XDG_TOPLEVEL_STATE_FULLSCREEN, 1);
+        assert_eq!(XDG_TOPLEVEL_STATE_ACTIVATED, 2);
+
+        // 决策核：全屏优先（全屏/最大化同置时全屏胜）。
+        let (w, h, st, n) = toplevel_state_decide(true, true, 500, 400, 1920, 1080, 0, 0, 0, 0);
+        assert_eq!((w, h, n), (1920, 1080, 1));
+        assert_eq!(st[0], XDG_TOPLEVEL_STATE_FULLSCREEN);
+        // 最大化 = 屏域全幅（工作区扣减面挂账如实）。
+        let (w, h, st, n) = toplevel_state_decide(true, false, 500, 400, 1920, 1080, 0, 0, 0, 0);
+        assert_eq!((w, h, n), (1920, 1080, 1));
+        assert_eq!(st[0], XDG_TOPLEVEL_STATE_MAXIMIZED);
+        // 常态恢复 = 恢复几何（零钳制域）。
+        let (w, h, _st, n) = toplevel_state_decide(false, false, 500, 400, 1920, 1080, 0, 0, 0, 0);
+        assert_eq!((w, h, n), (500, 400, 0));
+        // 常态恢复 + min 下钳（max 未设定）。
+        let (w, h, _, _) =
+            toplevel_state_decide(false, false, 500, 400, 1920, 1080, 800, 600, 0, 0);
+        assert_eq!((w, h), (800, 600));
+        // 常态恢复 + max 上钳。
+        let (w, h, _, _) =
+            toplevel_state_decide(false, false, 500, 400, 1920, 1080, 0, 0, 400, 300);
+        assert_eq!((w, h), (400, 300));
+        // min/max 交叉域：max 先行 min 后随（clamp_minmax 同谱——min 胜）。
+        let (w, h, _, _) =
+            toplevel_state_decide(false, false, 500, 400, 1920, 1080, 900, 800, 400, 300);
+        assert_eq!((w, h), (900, 800));
+        // 负 min/max = 未设定域跳过（官方 0 = unset 外延）。
+        let (w, h, _, _) =
+            toplevel_state_decide(false, false, 500, 400, 1920, 1080, -1, -1, -1, -1);
+        assert_eq!((w, h), (500, 400));
+
+        // wire 面五请求编组回环（官方序锚 + SIG 对账）。
+        let mut buf = [0u8; 64];
+        let n = encode_message(&mut buf, 0x62, xdg_toplevel::REQ_SET_MAXIMIZED, &[]).expect("enc");
+        let m = parse_message(&buf[..n], SIG_XDG_TOPLEVEL_SET_MAXIMIZED).expect("parse");
+        assert_eq!(m.header.object_id, 0x62);
+        assert_eq!(m.header.opcode, xdg_toplevel::REQ_SET_MAXIMIZED);
+        let n =
+            encode_message(&mut buf, 0x62, xdg_toplevel::REQ_UNSET_MAXIMIZED, &[]).expect("enc");
+        let m = parse_message(&buf[..n], SIG_XDG_TOPLEVEL_UNSET_MAXIMIZED).expect("parse");
+        assert_eq!(m.header.opcode, xdg_toplevel::REQ_UNSET_MAXIMIZED);
+        let n = encode_message(
+            &mut buf,
+            0x62,
+            xdg_toplevel::REQ_SET_FULLSCREEN,
+            &[WlArg::Object(0)],
+        )
+        .expect("enc");
+        let m = parse_message(&buf[..n], SIG_XDG_TOPLEVEL_SET_FULLSCREEN).expect("parse");
+        assert_eq!(m.header.opcode, xdg_toplevel::REQ_SET_FULLSCREEN);
+        assert!(matches!(m.args[0], Some(WlArg::Object(0))));
+        let n =
+            encode_message(&mut buf, 0x62, xdg_toplevel::REQ_UNSET_FULLSCREEN, &[]).expect("enc");
+        let m = parse_message(&buf[..n], SIG_XDG_TOPLEVEL_UNSET_FULLSCREEN).expect("parse");
+        assert_eq!(m.header.opcode, xdg_toplevel::REQ_UNSET_FULLSCREEN);
+        let n = encode_message(&mut buf, 0x62, xdg_toplevel::REQ_SET_MINIMIZED, &[]).expect("enc");
+        let m = parse_message(&buf[..n], SIG_XDG_TOPLEVEL_SET_MINIMIZED).expect("parse");
+        assert_eq!(m.header.opcode, xdg_toplevel::REQ_SET_MINIMIZED);
+
+        // configure states 数组编组回环（官方序：maximized 0 / fullscreen 1）。
+        let n = encode_xdg_toplevel_configure_event(
+            &mut buf,
+            0x62,
+            1920,
+            1080,
+            &[XDG_TOPLEVEL_STATE_MAXIMIZED],
+        )
+        .expect("enc");
+        let m = parse_message(&buf[..n], SIG_XDG_TOPLEVEL_CONFIGURE).expect("parse");
+        assert_eq!(m.header.opcode, xdg_toplevel::EV_CONFIGURE);
+        assert_eq!(m.args[0], Some(WlArg::Int(1920)));
+        assert_eq!(m.args[1], Some(WlArg::Int(1080)));
+        match m.args[2] {
+            Some(WlArg::Array(bytes)) => assert_eq!(bytes, &[XDG_TOPLEVEL_STATE_MAXIMIZED]),
+            _ => panic!("states 数组缺位"),
+        }
+        let n = encode_xdg_toplevel_configure_event(&mut buf, 0x62, 0, 0, &[]).expect("enc");
+        let m = parse_message(&buf[..n], SIG_XDG_TOPLEVEL_CONFIGURE).expect("parse");
+        match m.args[2] {
+            Some(WlArg::Array(bytes)) => assert!(bytes.is_empty(), "空 states 数组"),
+            _ => panic!("states 数组缺位"),
+        }
     }
 }

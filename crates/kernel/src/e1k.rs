@@ -213,6 +213,9 @@ pub enum E1kError {
     ArpTimeout,
     /// ARP 应答失配（oper ≠ 2 / spa ≠ 10.0.2.2——噪声帧拒收）。
     ArpMismatch,
+    /// pulse 接线域相内超界（M53-E1KNET82 笔95——ICMP/DHCP/RST 三相
+    /// 有界轮询耗尽，零虚构 fail-visible）。
+    PulseTimeout,
 }
 
 /// TX/RX 帧承载（定容零堆——[`E1K_BUF_SIZE`] 全帧值语义）。
@@ -898,4 +901,604 @@ pub fn irq_counts() -> (u64, u64, u64, u64) {
         E1K_IRQ_RXT0.load(Ordering::Acquire),
         E1K_IRQ_SPUR.load(Ordering::Acquire),
     )
+}
+
+/// pulse 接线域盲区取证快照（(rx 总帧, 分派拒收, ARP 服务) 三元——
+/// t171 LIVE 相诊断域：回环前後差分即车道活性证据）。
+pub fn rx_stats() -> (u64, u64, u64) {
+    (
+        E1K_RX.load(Ordering::Acquire),
+        E1K_RX_MISS.load(Ordering::Acquire),
+        E1K_ARP_SERVED.load(Ordering::Acquire),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// pulse 接线域（M53-E1KNET82 笔95——真实 NIC 数据面接入协议栈消费面）
+//
+// B 线①开工令落域：e1k 数据面（t165/t166 既有 TX 击发 + RX 排水 + ARP
+// 电气回环）之上接入协议栈消费面——TX 侧组帧车道以 pulse::udp /
+// pulse::tcp 官方编码核 + 伪头校验和铸帧（vnet::tcp_external_syn 同谱
+// 异件——virtio 车道模板移植真实 NIC 车道），RX 侧分派闸以
+// pulse::udp::UdpHdr::parse + pulse::tcp::TcpHdr::parse 消费线上段
+// （校验和 fail-visible 域闸 + 段字段裁决出域）。电气回环三相（slirp
+// n1 独立网段零宿主监听依赖的确定性域）：ICMP echo request→reply
+// 反射（slirp icmp_reflect）+ DHCP discover→offer（slirp bootp 服务
+// 域——UDP 线上段真消费）+ TCP SYN→RST（slirp 无监听拒收回执——
+// 真实 TCP 段 checksum/flags 对账）。通知/数据双车道分域纪律维持
+// （t166 口径）：本域纯轮询车道，IMS 通知面零扰。
+// ---------------------------------------------------------------------------
+
+/// 本机 IP（slirp n1 段常规客址——[`ARP_SPA`] 同源公开化；t165 电气回
+/// 环既证该网段存活）。
+pub const E1K_IP: [u8; 4] = [10, 0, 2, 15];
+/// 网关 IP（slirp n1 虚拟网关——[`ARP_TPA`] 同源公开化）。
+pub const E1K_GW_IP: [u8; 4] = [10, 0, 2, 2];
+/// ICMP echo 取证 ID（定值——slirp 反射保真对账键，t171 断言域）。
+pub const PULSE_ICMP_ID: u16 = 0xE1B5;
+/// ICMP echo 取证 seq。
+pub const PULSE_ICMP_SEQ: u16 = 1;
+/// ICMP echo 取证载荷（16 B 定值——逐位反射对账域）。
+pub const PULSE_ICMP_DATA: [u8; 16] = [
+    0x1E, 0x82, 0x95, 0x1E, 0xB5, 0x1E, 0x82, 0x95, 0x1E, 0x82, 0x95, 0x1E, 0x82, 0x95, 0x1E, 0x82,
+];
+/// DHCP 事务 ID（定值——slirp bootp 域不对账 xid，实录域）。
+const DHCP_XID: u32 = 0x1E82_0001;
+/// BOOTP 魔数 cookie（RFC 2131 §3——0x63825363）。
+const BOOTP_COOKIE: [u8; 4] = [0x63, 0x82, 0x53, 0x63];
+/// BOOTP 载荷内 yiaddr 偏移（op/htype/hlen/hops/xid/secs/flags/ciaddr
+/// 头域后——offer 客址事实源）。
+const BOOTP_YIADDR_OFF: usize = 16;
+/// BOOTP 载荷内 cookie 偏移（chaddr 16 + sname 64 + file 128）。
+const BOOTP_COOKIE_OFF: usize = 236;
+/// TCP SYN 取证源端口（定值——RST 对账键，t171 断言域）。
+pub const PULSE_TCP_SRC_PORT: u16 = 47182;
+/// TCP SYN 取证目的端口（1——slirp 宿主侧无监听域，拒收回执确定性）。
+pub const PULSE_TCP_DST_PORT: u16 = 1;
+/// TCP SYN 取证序号（定值）。
+pub const PULSE_TCP_SEQ: u32 = 0x1E82_0001;
+
+/// pulse 接线域计数面（t171 断言域——车道实录零虚构）。
+/// ICMP echo request 击发数（TX 车道电气取证）。
+pub static E1K_ICMP_REQ_TX: AtomicU64 = AtomicU64::new(0);
+/// ICMP echo reply 应答击发数（RX 分派服务域）。
+pub static E1K_ICMP_REPLIES: AtomicU64 = AtomicU64::new(0);
+/// ICMP type 3 拒收回执数（UDP 无监听域——slirp icmp_error 族）。
+pub static E1K_ICMP_UNREACH: AtomicU64 = AtomicU64::new(0);
+/// ARP is-at 应答击发数（RX 分派服务域）。
+pub static E1K_ARP_SERVED: AtomicU64 = AtomicU64::new(0);
+/// UDP 数据报击发数（TX 车道——pulse::udp 编码核消费取证）。
+pub static E1K_UDP_TX: AtomicU64 = AtomicU64::new(0);
+/// UDP 线上段采纳数（RX 分派闸——校验和/长度双闸过闸）。
+pub static E1K_UDP_RX_OK: AtomicU64 = AtomicU64::new(0);
+/// UDP 线上段校验和拒收数（fail-visible——伪头闸不静默）。
+pub static E1K_UDP_RX_BADCS: AtomicU64 = AtomicU64::new(0);
+/// TCP SYN 击发数（TX 车道——pulse::tcp 编码核消费取证）。
+pub static E1K_TCP_SYN_TX: AtomicU64 = AtomicU64::new(0);
+/// TCP 线上段采纳数（RX 分派闸——checksum 对账过闸）。
+pub static E1K_TCP_RX_OK: AtomicU64 = AtomicU64::new(0);
+/// TCP 线上段校验和拒收数（fail-visible）。
+pub static E1K_TCP_RX_BADCS: AtomicU64 = AtomicU64::new(0);
+/// TCP RST 回执数（slirp 无监听拒收域——真实段 flags 取证）。
+pub static E1K_TCP_RST_RX: AtomicU64 = AtomicU64::new(0);
+/// 分派闸拒收总数（rx_dispatch None 路径——fail-visible 显形取证）。
+pub static E1K_RX_MISS: AtomicU64 = AtomicU64::new(0);
+
+/// pulse 回环相证据（t171 断言域——逐相完成位：回环 Err 早退时已
+/// 完成相仍可取证，零虚构）。
+pub static E1K_RT_ICMP: AtomicU64 = AtomicU64::new(0);
+/// DHCP 相完成位。
+pub static E1K_RT_DHCP: AtomicU64 = AtomicU64::new(0);
+/// TCP 相完成位。
+pub static E1K_RT_RST: AtomicU64 = AtomicU64::new(0);
+
+/// RX 分派裁决（t171 断言面——分派闸逐族出域）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RxVerdict {
+    /// ARP request 寻我（oper 1 ∧ tpa == [`E1K_IP`]）→ is-at 应答击发。
+    ArpServed,
+    /// ARP 应答段（oper 2——spa/sha 实录出域，roundtrip 消费域）。
+    ArpReply {
+        /// 应答方 IP（u32 主机序）。
+        spa: u32,
+        /// 应答方 MAC。
+        sha: [u8; 6],
+    },
+    /// ICMP echo request 寻我 → echo reply 击发。
+    IcmpEchoServed,
+    /// ICMP echo reply 段（id/seq/载荷逐位出域——反射保真对账键）。
+    IcmpEchoReply {
+        /// 回执 ID。
+        id: u16,
+        /// 回执 seq。
+        seq: u16,
+        /// 载荷逐位（≤ 16 B 界内——[`PULSE_ICMP_DATA`] 同容对账域）。
+        data: [u8; 16],
+    },
+    /// ICMP type 3 拒收回执（UDP 无监听域——dst_port 越域族证据）。
+    IcmpUnreach,
+    /// UDP 线上段采纳（端口对 + BOOTP 取证域快照出域）。
+    Udp {
+        /// 源端口。
+        src_port: u16,
+        /// 目的端口。
+        dst_port: u16,
+        /// 载荷字节数。
+        len: usize,
+        /// 载荷 [`BOOTP_YIADDR_OFF`] 起四字（DHCP offer 客址事实源；
+        /// 短载荷域零垫）。
+        yiaddr: [u8; 4],
+        /// 载荷 [`BOOTP_COOKIE_OFF`] 起四字（BOOTP 魔数域；短载荷零垫）。
+        cookie: [u8; 4],
+    },
+    /// TCP 线上段采纳（端口对 + flags + checksum 对账过闸出域）。
+    Tcp {
+        /// 源端口。
+        src_port: u16,
+        /// 目的端口。
+        dst_port: u16,
+        /// 控制位域（低 12 位线值）。
+        flags: u16,
+    },
+}
+
+/// pulse 回环成果（t171 断言面——三相实录 + 网关 MAC）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PulseEcho {
+    /// 网关 MAC（ARP 车道实录）。
+    pub gw_mac: [u8; 6],
+    /// ICMP echo 反射回环（id/seq/载荷逐位）。
+    pub icmp_ok: bool,
+    /// DHCP offer 消费（cookie + yiaddr == [`E1K_IP`] 双对账）。
+    pub dhcp_ok: bool,
+    /// TCP RST 消费（checksum 对账 + flags 取证）。
+    pub rst_ok: bool,
+    /// DHCP offer yiaddr 实录（bootp 客址事实源——短载荷域零垫）。
+    pub yiaddr: [u8; 4],
+}
+
+/// 以太 + IPv4 头组帧击发（pulse 接线域 TX 公共车道——payload 为 IP
+/// 载荷〔ICMP 段 / UDP 段 / TCP 段〕；IP 头 checksum 经
+/// [`crate::vnet::cksum16`] 单事实源）。返回 `Err(LinkDown)` = 设备侧
+/// 零完成（DD 位域——e1k tx_frame 语义透传）。
+fn ip_tx(dst_mac: [u8; 6], dst_ip: [u8; 4], proto: u8, payload: &[u8]) -> Result<(), E1kError> {
+    let Some(mac) = mac() else {
+        return Err(E1kError::NotUp);
+    };
+    let ip_total = 20 + payload.len();
+    let flen = 14 + ip_total;
+    if flen > E1K_MAX_FRAME {
+        return Err(E1kError::BadLen);
+    }
+    let mut f = [0u8; E1K_MAX_FRAME];
+    f[0..6].copy_from_slice(&dst_mac);
+    f[6..12].copy_from_slice(&mac);
+    f[12] = 0x08;
+    f[13] = 0x00;
+    f[14] = 0x45; // v4 / IHL 5
+    f[16..18].copy_from_slice(&(ip_total as u16).to_be_bytes());
+    f[22] = 64; // TTL
+    f[23] = proto;
+    f[26..30].copy_from_slice(&E1K_IP);
+    f[30..34].copy_from_slice(&dst_ip);
+    let ip_ck = crate::vnet::cksum16(&f[14..34]);
+    f[24..26].copy_from_slice(&ip_ck.to_be_bytes());
+    f[34..34 + payload.len()].copy_from_slice(payload);
+    tx_frame(&f[..flen])
+}
+
+/// ICMP echo request 击发（pulse 接线域——vnet::icmp_echo_tx 同谱异件：
+/// 真实 NIC 车道承载）。头校验和自算（ICMP 校验域 = 整段反码和）。
+pub fn icmp_echo_tx(dst_mac: [u8; 6], id: u16, seq: u16, payload: &[u8]) -> Result<(), E1kError> {
+    let icmp_len = 8 + payload.len();
+    let mut seg = [0u8; 8 + PULSE_ICMP_DATA.len()];
+    if payload.len() > seg.len() - 8 {
+        return Err(E1kError::BadLen);
+    }
+    seg[0] = 8; // type = echo request
+    seg[4..6].copy_from_slice(&id.to_be_bytes());
+    seg[6..8].copy_from_slice(&seq.to_be_bytes());
+    seg[8..8 + payload.len()].copy_from_slice(payload);
+    let ck = crate::vnet::cksum16(&seg[..icmp_len]);
+    seg[2..4].copy_from_slice(&ck.to_be_bytes());
+    let r = ip_tx(dst_mac, E1K_GW_IP, 1, &seg[..icmp_len]);
+    if r.is_ok() {
+        E1K_ICMP_REQ_TX.fetch_add(1, Ordering::AcqRel);
+    }
+    r
+}
+
+/// DHCP discover 击发（pulse::udp::UdpHdr::encode 编码核 + 伪头校验和
+/// 与广播域——RFC 2131 DISCOVER 组包：BOOTP 载荷 240 B 基线 +
+/// option 53〔DISCOVER〕+ end 域，UDP 68→67 广播 255.255.255.255）。
+pub fn dhcp_discover_tx(dst_mac: [u8; 6]) -> Result<(), E1kError> {
+    let mut bootp = [0u8; 240 + 4];
+    bootp[0] = 1; // op = BOOTREQUEST
+    bootp[1] = 1; // htype = 以太网
+    bootp[2] = 6; // hlen = MAC 6 B
+    bootp[4..8].copy_from_slice(&DHCP_XID.to_be_bytes());
+    bootp[10..12].copy_from_slice(&0x8000u16.to_be_bytes()); // flags = 广播
+    let Some(mac) = mac() else {
+        return Err(E1kError::NotUp);
+    };
+    bootp[28..34].copy_from_slice(&mac); // chaddr
+    bootp[236..240].copy_from_slice(&BOOTP_COOKIE);
+    bootp[240] = 53; // option DHCP message type
+    bootp[241] = 1; // len
+    bootp[242] = 1; // DISCOVER
+    bootp[243] = 255; // end
+    let mut seg = [0u8; 8 + 244];
+    let Some(seg_len) = pulse::udp::UdpHdr::encode(68, 67, &bootp, &mut seg) else {
+        return Err(E1kError::BadLen);
+    };
+    let ck = pulse::udp::checksum(E1K_IP, [255, 255, 255, 255], &seg[..seg_len]);
+    seg[6..8].copy_from_slice(&ck.to_be_bytes());
+    let r = ip_tx(
+        dst_mac,
+        [255, 255, 255, 255],
+        pulse::udp::PROTO_UDP,
+        &seg[..seg_len],
+    );
+    if r.is_ok() {
+        E1K_UDP_TX.fetch_add(1, Ordering::AcqRel);
+    }
+    r
+}
+
+/// TCP SYN 击发（pulse::tcp::TcpHdr::encode 编码核 + 伪头校验和——
+/// vnet::tcp_external_syn 同谱异件：真实 NIC 车道承载）。
+pub fn tcp_syn_tx(
+    dst_mac: [u8; 6],
+    dst_ip: [u8; 4],
+    dst_port: u16,
+    src_port: u16,
+    seq: u32,
+) -> Result<(), E1kError> {
+    let mut seg = [0u8; 20];
+    let Some(seg_len) = pulse::tcp::TcpHdr::encode(
+        src_port,
+        dst_port,
+        seq,
+        0,
+        pulse::tcp::FLAG_SYN,
+        8192,
+        &[],
+        &mut seg,
+    ) else {
+        return Err(E1kError::BadLen);
+    };
+    let ck = pulse::tcp::checksum(E1K_IP, dst_ip, &seg[..seg_len]);
+    seg[16..18].copy_from_slice(&ck.to_be_bytes());
+    let r = ip_tx(dst_mac, dst_ip, pulse::tcp::PROTO_TCP, &seg[..seg_len]);
+    if r.is_ok() {
+        E1K_TCP_SYN_TX.fetch_add(1, Ordering::AcqRel);
+    }
+    r
+}
+
+/// ICMP echo request → echo reply 应答组帧 + 击发（RX 分派服务域——
+/// vnet::build_icmp_reply 同谱闸序：请求闸〔IPv4 IHL 足额 / proto 1 /
+/// 寻我 / type 8 / IP 总长对账 / 双校验和验证〕+ 以太/IP 双交换 +
+/// id/seq/payload 保真 + 校验和重算）。
+fn icmp_echo_serve(frame: &[u8], ihl: usize, ic: usize) -> Option<RxVerdict> {
+    if frame.len() < ic + 8 {
+        return None;
+    }
+    if u16::from_be_bytes([frame[16], frame[17]]) as usize != frame.len() - 14 {
+        return None; // IP 总长与帧长对账
+    }
+    if crate::vnet::cksum16(&frame[14..14 + ihl]) != 0 {
+        return None; // IP 校验和
+    }
+    if frame[ic] != 8 || frame[ic + 1] != 0 {
+        return None; // 非 echo request
+    }
+    if frame[30..34] != E1K_IP {
+        return None; // 不寻我
+    }
+    let icmp_len = frame.len() - ic;
+    if crate::vnet::cksum16(&frame[ic..]) != 0 {
+        return None; // ICMP 校验和
+    }
+    // ICMP 段镜像 + type 8→0 换装 + 校验域清零重算（id/seq/payload 保真
+    // ——以太/IP 头由 ip_tx 重铸，此处仅段域）；dst MAC/IP = 请求方。
+    let mut seg = [0u8; E1K_MAX_FRAME];
+    seg[..icmp_len].copy_from_slice(&frame[ic..ic + icmp_len]);
+    seg[0] = 0; // type = echo reply
+    seg[2..4].copy_from_slice(&[0, 0]);
+    let ic_ck = crate::vnet::cksum16(&seg[..icmp_len]);
+    seg[2..4].copy_from_slice(&ic_ck.to_be_bytes());
+    let dst_mac: [u8; 6] = frame[6..12].try_into().ok()?;
+    let dst_ip: [u8; 4] = frame[26..30].try_into().ok()?;
+    ip_tx(dst_mac, dst_ip, 1, &seg[..icmp_len]).ok()?;
+    E1K_ICMP_REPLIES.fetch_add(1, Ordering::AcqRel);
+    Some(RxVerdict::IcmpEchoServed)
+}
+
+/// ARP is-at 应答击发（RX 分派服务域——vnet::arp_respond 同谱：who-has
+/// [`E1K_IP`] → sha/spa 原样回填应答）。
+fn arp_serve(request: &[u8]) -> Option<RxVerdict> {
+    let mac = mac()?;
+    let mut f = [0u8; 42];
+    f[0..6].copy_from_slice(&request[6..12]); // eth dst = 请求方
+    f[6..12].copy_from_slice(&mac);
+    f[12] = 0x08;
+    f[13] = 0x06;
+    f[14] = 0x00;
+    f[15] = 0x01;
+    f[16] = 0x08;
+    f[17] = 0x00;
+    f[18] = 6;
+    f[19] = 4;
+    f[20] = 0x00;
+    f[21] = 0x02; // oper 应答
+    f[22..28].copy_from_slice(&mac);
+    f[28..32].copy_from_slice(&E1K_IP);
+    f[32..38].copy_from_slice(&request[22..28]); // tha = 请求方 sha
+    f[38..42].copy_from_slice(&request[28..32]); // tpa = 请求方 spa
+    tx_frame(&f[..]).ok()?;
+    E1K_ARP_SERVED.fetch_add(1, Ordering::AcqRel);
+    Some(RxVerdict::ArpServed)
+}
+
+/// RX 分派闸（pulse 接线域核心——真实 NIC 线上帧 → 协议面消费裁决）：
+/// ARP 族（request 寻我服务 / reply 实录出域）+ IPv4 族（ICMP 三目
+/// echo request 服务 / echo reply 出域 / type 3 记账 + UDP pulse::
+/// udp::UdpHdr::parse + 伪头校验和闸〔RFC 768 零校验和可选项同闸〕 +
+/// TCP pulse::tcp::TcpHdr::parse + checksum 对账闸）。闸不过 = None
+/// fail-visible（短帧/域外 ethertype/IHL 不足/校验和失配——零静默
+/// 采纳），拒收计数随族落戳。
+pub fn rx_dispatch(frame: &[u8]) -> Option<RxVerdict> {
+    let v = rx_dispatch_inner(frame);
+    if v.is_none() {
+        E1K_RX_MISS.fetch_add(1, Ordering::AcqRel);
+    }
+    v
+}
+
+fn rx_dispatch_inner(frame: &[u8]) -> Option<RxVerdict> {
+    if frame.len() < 14 {
+        return None; // 以太头足额闸
+    }
+    let et = u16::from_be_bytes([frame[12], frame[13]]);
+    if et == 0x0806 {
+        // ARP 族
+        if frame.len() < 42 {
+            return None;
+        }
+        let oper = u16::from_be_bytes([frame[20], frame[21]]);
+        if oper == 1 && frame[38..42] == E1K_IP {
+            return arp_serve(frame);
+        }
+        if oper == 2 {
+            let spa = u32::from(frame[28]) << 24
+                | u32::from(frame[29]) << 16
+                | u32::from(frame[30]) << 8
+                | u32::from(frame[31]);
+            let mut sha = [0u8; 6];
+            sha.copy_from_slice(&frame[22..28]);
+            return Some(RxVerdict::ArpReply { spa, sha });
+        }
+        return None;
+    }
+    if et != 0x0800 {
+        return None; // IPv4 族域外（ARP 已分流）
+    }
+    if frame.len() < 14 + 20 {
+        return None;
+    }
+    let ihl = usize::from(frame[14] & 0x0F) * 4;
+    if ihl < 20 || frame.len() < 14 + ihl {
+        return None; // IHL 足额闸
+    }
+    if crate::vnet::cksum16(&frame[14..14 + ihl]) != 0 {
+        return None; // IP 头校验和闸（fail-visible）
+    }
+    let ip_total = u16::from_be_bytes([frame[16], frame[17]]) as usize;
+    if ip_total < ihl || 14 + ip_total > frame.len() {
+        return None; // IP 总长对账闸
+    }
+    let proto = frame[23];
+    let ic = 14 + ihl;
+    let seg = &frame[ic..14 + ip_total];
+    let src_ip: [u8; 4] = frame[26..30].try_into().ok()?;
+    let dst_ip: [u8; 4] = frame[30..34].try_into().ok()?;
+    if proto == 1 {
+        // ICMP 族
+        if seg.len() < 8 {
+            return None;
+        }
+        match seg[0] {
+            8 => return icmp_echo_serve(frame, ihl, ic),
+            0 => {
+                if crate::vnet::cksum16(seg) != 0 {
+                    return None; // ICMP 校验和闸
+                }
+                let mut data = [0u8; 16];
+                let n = (seg.len() - 8).min(16);
+                data[..n].copy_from_slice(&seg[8..8 + n]);
+                return Some(RxVerdict::IcmpEchoReply {
+                    id: u16::from_be_bytes([seg[4], seg[5]]),
+                    seq: u16::from_be_bytes([seg[6], seg[7]]),
+                    data,
+                });
+            }
+            3 => {
+                E1K_ICMP_UNREACH.fetch_add(1, Ordering::AcqRel);
+                return Some(RxVerdict::IcmpUnreach);
+            }
+            _ => return None,
+        }
+    }
+    if proto == pulse::udp::PROTO_UDP {
+        // UDP 族——pulse::udp 官方解析核 + 伪头校验和闸
+        let (hdr, payload) = pulse::udp::UdpHdr::parse(seg)?;
+        if hdr.checksum != 0 && !pulse::udp::verify(src_ip, dst_ip, seg) {
+            // RFC 768 零校验和可选项同闸；域外失配 fail-visible 拒收
+            E1K_UDP_RX_BADCS.fetch_add(1, Ordering::AcqRel);
+            return None;
+        }
+        E1K_UDP_RX_OK.fetch_add(1, Ordering::AcqRel);
+        let mut yiaddr = [0u8; 4];
+        if payload.len() >= BOOTP_YIADDR_OFF + 4 {
+            yiaddr.copy_from_slice(&payload[BOOTP_YIADDR_OFF..BOOTP_YIADDR_OFF + 4]);
+        }
+        let mut cookie = [0u8; 4];
+        if payload.len() >= BOOTP_COOKIE_OFF + 4 {
+            cookie.copy_from_slice(&payload[BOOTP_COOKIE_OFF..BOOTP_COOKIE_OFF + 4]);
+        }
+        return Some(RxVerdict::Udp {
+            src_port: hdr.src_port,
+            dst_port: hdr.dst_port,
+            len: payload.len(),
+            yiaddr,
+            cookie,
+        });
+    }
+    if proto == pulse::tcp::PROTO_TCP {
+        // TCP 族——pulse::tcp 官方解析核 + checksum 验证闸（RFC 9293：
+        // 含校验域整段反码和应恰为 0xFFFF——发送侧 cs = !fold 与段同
+        // 折叠自消，udp::verify 同判据；checksum 零规范化归一 0xFFFF）
+        let (hdr, _payload) = pulse::tcp::TcpHdr::parse(seg)?;
+        if pulse::tcp::checksum(src_ip, dst_ip, seg) != 0xFFFF {
+            E1K_TCP_RX_BADCS.fetch_add(1, Ordering::AcqRel);
+            return None;
+        }
+        E1K_TCP_RX_OK.fetch_add(1, Ordering::AcqRel);
+        if hdr.flags & pulse::tcp::FLAG_RST != 0 {
+            E1K_TCP_RST_RX.fetch_add(1, Ordering::AcqRel);
+        }
+        return Some(RxVerdict::Tcp {
+            src_port: hdr.src_port,
+            dst_port: hdr.dst_port,
+            flags: hdr.flags,
+        });
+    }
+    None
+}
+
+/// pulse 三相电气回环（t171 LIVE 断言面——slirp n1 独立网段零宿主
+/// 监听依赖的确定性域）：ARP 车道（网关 MAC 实录）→ ICMP echo 反射
+/// （id/seq/载荷逐位）→ DHCP offer（bootp 服务域——cookie + yiaddr
+/// 双对账）→ TCP RST（无监听拒收回执——checksum 对账 + flags 取证）。
+/// 任一 tx 失败 = Err 透传；相内超界 = Err(PulseTimeout) fail-visible。
+pub fn pulse_roundtrip() -> Result<PulseEcho, E1kError> {
+    // 车道零——网关 MAC 实录（t165 arp_roundtrip 复用：spa 断言内建）。
+    let arp = arp_roundtrip()?;
+    let gw_mac = arp.sha;
+    let mut icmp_ok = false;
+    let mut dhcp_ok = false;
+    let mut rst_ok = false;
+    let mut yiaddr = [0u8; 4];
+    // 相一——ICMP echo 反射回环（重发容忍域——t73 同谱：slirp 反射
+    // 回包滞后双峰实测，中程重发垫；ARP 解阻塞内建于分派闸）。
+    icmp_echo_tx(gw_mac, PULSE_ICMP_ID, PULSE_ICMP_SEQ, &PULSE_ICMP_DATA)?;
+    let deadline = ostd::time::now() + 720;
+    let mut retx = false;
+    while ostd::time::now() < deadline {
+        let hit = rx_frame().and_then(|(frame, len)| rx_dispatch(&frame[..len]));
+        if let Some(RxVerdict::IcmpEchoReply { id, data, .. }) = hit {
+            // id + 载荷双闸锁本自检回声；seq 仅作证据行不作判定闸（t73
+            // 同谱——slirp 反射域重发容忍序错拍）。
+            icmp_ok = id == PULSE_ICMP_ID && data == PULSE_ICMP_DATA;
+            if icmp_ok {
+                break;
+            }
+        }
+        if !retx && deadline - ostd::time::now() <= 360 {
+            retx = true;
+            icmp_echo_tx(
+                gw_mac,
+                PULSE_ICMP_ID,
+                PULSE_ICMP_SEQ.wrapping_add(1),
+                &PULSE_ICMP_DATA,
+            )?;
+        }
+        task_yield();
+    }
+    if !icmp_ok {
+        return Err(E1kError::PulseTimeout);
+    }
+    E1K_RT_ICMP.store(1, Ordering::Release);
+    // 相二——DHCP discover → offer（pulse::udp 线上段真消费；广播 MAC
+    // ——RFC 2131 官方语义；bootp 域广播旗回包零 ARP 前提）。
+    dhcp_discover_tx([0xFF; 6])?;
+    let deadline = ostd::time::now() + 720;
+    let mut retx = false;
+    while ostd::time::now() < deadline {
+        let hit = rx_frame().and_then(|(frame, len)| rx_dispatch(&frame[..len]));
+        if let Some(RxVerdict::Udp {
+            src_port,
+            dst_port,
+            yiaddr: ya,
+            cookie,
+            ..
+        }) = hit
+        {
+            if src_port == 67 && dst_port == 68 {
+                dhcp_ok = cookie == BOOTP_COOKIE && ya == E1K_IP;
+                yiaddr = ya;
+                break;
+            }
+        }
+        if !retx && deadline - ostd::time::now() <= 360 {
+            retx = true;
+            dhcp_discover_tx([0xFF; 6])?;
+        }
+        task_yield();
+    }
+    if !dhcp_ok {
+        return Err(E1kError::PulseTimeout);
+    }
+    E1K_RT_DHCP.store(1, Ordering::Release);
+    // 相三——TCP SYN → RST（slirp 无监听拒收——真实段 checksum/flags）。
+    tcp_syn_tx(
+        gw_mac,
+        E1K_GW_IP,
+        PULSE_TCP_DST_PORT,
+        PULSE_TCP_SRC_PORT,
+        PULSE_TCP_SEQ,
+    )?;
+    let deadline = ostd::time::now() + 720;
+    let mut retx = false;
+    while ostd::time::now() < deadline {
+        let hit = rx_frame().and_then(|(frame, len)| rx_dispatch(&frame[..len]));
+        if let Some(RxVerdict::Tcp {
+            src_port,
+            dst_port,
+            flags,
+        }) = hit
+        {
+            if dst_port == PULSE_TCP_SRC_PORT
+                && src_port == PULSE_TCP_DST_PORT
+                && flags & pulse::tcp::FLAG_RST != 0
+                && flags & pulse::tcp::FLAG_ACK != 0
+            {
+                rst_ok = true;
+                break;
+            }
+        }
+        if !retx && deadline - ostd::time::now() <= 360 {
+            retx = true;
+            tcp_syn_tx(
+                gw_mac,
+                E1K_GW_IP,
+                PULSE_TCP_DST_PORT,
+                PULSE_TCP_SRC_PORT,
+                PULSE_TCP_SEQ,
+            )?;
+        }
+        task_yield();
+    }
+    if !rst_ok {
+        return Err(E1kError::PulseTimeout);
+    }
+    E1K_RT_RST.store(1, Ordering::Release);
+    Ok(PulseEcho {
+        gw_mac,
+        icmp_ok,
+        dhcp_ok,
+        rst_ok,
+        yiaddr,
+    })
 }

@@ -89,8 +89,8 @@ use crate::multiboot1::BOOT_MAGIC;
 /// 随 kern_end 动态扩）。
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126；M42-DMG27 t127（联合域上限细化活体）起 127；M42-DMG28 t128（指针 16px 粗粒度域联动活体）起 128；M42-SPRITE29 笔㉙ t129（光标 sprite 渲染面活体：compose 执行器顶层 sprite 平面 + 热点对位联动）起 129；M42-AUXR3 笔㉚ t130（ring3 aux 驱动进程活体：SYS_AUX_READ/SYS_PTR_INJECT 车道 + 接管态仲裁）起 130；M42-PTRLINK 笔㉛ t131（Enter/Leave 域联动活体：焦点切换取证计数 + 光标格直标强制入账）起 131；M42-WHEEL32 笔㉜ t132（IntelliMouse 轮询命令链 + wl_pointer axis 电气源活体）起 132；M42-CLICKF33 笔㉝ t133（click-to-focus 焦点迁移联动面活体：纯针直迁 + 键盘迁移取证戳 + 幂等/release 闸）起 133；M42-KBREP34 笔㉞ t134（wl_keyboard.repeat_info 键重复公告面活体：键盘派生域 keymap 后随行 + v0 关闭声明口径 + 域闸负例）起 134；M43-AV12036 笔㊱ t135（wl_pointer.axis_value120 离散步进语义活体：wheel 源 frame 域随行 + 流内序锚 + 零步进不随行域闸）起 135；M43-KBREP37 笔㊷ t136（键重复生产域 + set_cursor 请求域活体：repeat_info 真值公告 + delay/rate 重复窗 + 释放撤销 + 修饰键零登记 + 在册面/默认回退双臂）起 136；M43-PRIO38 笔电解 t137（产者优先级域活体：boot 代执面 + waycomp 0/aux 3 级序 + 越界 clamp 语义核）起 137；M43-TSC39 笔㊹ t138（TSC deadline one-shot 定时器活体：CPUID 特性锚 + LVT deadline 使能 + one-shot 交付 + 不再武装零增）起 138；M43-HWDW40 笔㊺ t139（Explorer 型别链 + IMEX 族谱解码活体：ID 0x04 双旗武装 + dw 横轮 HORIZONTAL axis + dz nibble 域 + 按钮 4/5 沿）起 139；M43-CURSOR41 笔㊻ t140（光标直迁域活体：窗亡重排域 stationary 光标位 hit-test 直迁 + 创建期 v0 口径钉住 + 幂等零扰）起 140；M44-MAP42 笔㊼ t141（创建期/map 域直迁活体：首映射批 stationary 光标位 hit-test 直迁零 motion 前提 + wire enter 出域取证 + map 域幂等零扰 + 跨窗直迁/窗亡回迁分戳分域）起 141；M44-AUXW43 笔㊽ t142（boot wheel/explorer 接线切换活体：Explorer 链 boot 武装 + 应答窗收口泵 + boot 态族谱解码全谱 + v0 负向误读域退役对账）起 142；M44-TSCRG44 笔㊾ t143（真机窗口 TSC deadline 全谱对账活体：交付后解除武装 + one-shot 零增判据 + 再武装语义 + 解除武装域）起 143；M45-BIT245 笔㊿ t144（真机窗口 bit24=1 CPUID 逐位对账活体：SDM 权威位义表 32 目 + 逐位判读语义核 + 探测面同源一致）起 144；M45-MPMC46 笔51 t145（MPMC 环替换 SpinLock 串行化活体：ostd MpmcRing 无锁环 + waycomp 输入域零锁直推 + ISR 臂退避域退役 + 三源并发零丢失）起 145；M45-RECON47 笔52 t146（真机窗口 bit24=1 实测对账活体：ReconWindow 二态判定核三源一致 + RECON_SEGMENTS 四段全谱装载计划面 + MSR 0x6E0 路由复证——标记四件 T146-WINDOW/PLAN/ROUTE/OK，双面板 191→195）起 146；M46-LDEXEC49 笔55 t147（harbor 机械执行面 ld-lumina.so 交付批活体：ET_DYN 结构判读 + 装载映射计划面/分级缓冲 + GNU 哈希决议链 + 重定位四类写面〔RELATIVE/GLOB_DAT/JUMP_SLOT 惰性/COPY〕+ TLS Variant II 三模块布点 + DTV 扩容 + init/fini 互逆序 + dlopen 族 + H-P03 四段打点——标记六件 T147-MAP/RELOC/TLS/INIT/BUDGET/OK，双面板 195→201）起 147；M47-LDCONS53 笔60 t148（装载计划消费面 + ld-lumina.so 本体交付批活体：本体真件机械链〔ET_DYN 判读 + exec_plan 消费动作序列 + GNU 哈希决议 + 真件 RELA 四类写面 + 真件 TLS 布点〕+ ring3 消费活体〔SYS_MMAP(46)/SYS_MPROTECT(47) 双车道 + 映射页代码 call + 负例三目〕+ 登记面断言——标记六件 T148-SO/LIVE/REG/OK + 探针面 PROBE/ELEC，双面板 201→207）起 148；M47-DLOPEN54 笔61 t149（dlopen 真消费面活体：DT_NEEDED 装载序真消费链〔ChainRegistry 双真件登记 + dl_adjacency 依赖闭包派生〔DT_NEEDED 声明域走查 ∪ UNDEF 决议闭包 as-needed 派生——lextern_dat 名匹配 core 定义者实边〕+ dl_chain_order BFS 装载序语义核机械消费 + 装载序逐模块 exec_plan 动作金值（5+5）+ 跨模块重定位〔lextern_dat 真名决议 + ldep_fn 绑定登记域→core_fn〕+ dl_open_chain 真消费链〔modid 序/群组插序/幂等域/error 槽一次性消费〕〕+ ring3 自装载链活体〔DLOPEN_ELF 探针：SYS_MMAP(46) 四窗 R|W 分级定点回显 + rep movsb 分级拷贝 + ring3 重定位写面（跨模块决议值烘焙）+ SYS_MPROTECT(47) RX 终旗×2 + call ldlumina_boot（0x5A5A5A5A）+ GOT[2] 间呼 core_fn（0xC0DEC0DE——JUMP_SLOT 跨模块电气证明）+ COPY 槽读回 + BSS 尾零读回 + 负例二目 → EXIT(89)〕+ 登记面四行断言（双 RX 终旗真值保持）——标记四件 T149-CHAIN/LIVE/REG/OK + 探针面 PROBE/ELEC，双面板 207→213）起 149）；M48-PLTGOT55 笔63 t150（PLT/GOT 惰性绑定电气执行活体：真件 lazy_wire 接线判读〔wired=jump_lazy 同镜像守恒〕+ LazyGot 两态机〔wire→resolve 兑现→次调幂等〕+ ring3 惰性绑定电气活体〔PLTGOT_ELF 探针：mmap GOT 窗 + 经典铸面 + 首调 resolver 电水解 + 次调直达零重入 + 负例电气 EXIT(91)〕+ 登记面单行——标记四件 T150-PLT/LIVE/REG/OK + 探针面 PROBE/ELEC，双面板 213→219）起 150）；M48-DLSYM56 笔64 t151（dlsym 跨模块查找电气面活体：dl_sym_chain 三段对账 + DlState::dlsym_chain error 槽 + ring3 探针内电算 GNU 哈希查找活体〔bloom/桶查/桶链走查/名比对/决议兑现——EXIT(92) 负例收口〕——标记四件 T151-SYM/LIVE/REG/OK + 探针面 PROBE/ELEC，双面板 219→225）起 151）；M48-INIT57 笔65 t152（init_array 执行域活体——t147 同谱宿主面：init_faces_of 直收 + init_exec_ledger 执行台账 + fini 互逆序——标记四件 T152-SO/INIT/LEDGER/OK，双面板 225→229）起 152）；M49-DLCLOSE58 笔67 t153（dlclose 真消费链执行域活体——t147/t152 同谱宿主面：链卸载序真消费〔依赖先卸 + Kept 幂等域 + 末次出册〕+ 单件链 fini 执行台账金值〔fini_array 读回原值域 + DT_FINI 直取域 + fini_order 互逆〕+ 三负例〔DlCloseInvalid/RegistryRange/重复 close〕——标记四件 T153-CLOSE/FINI/NEG/OK，双面板 229→233）起 153）；M49-FINI59 笔68 t154（.fini_array 终局执行域活体——终局 fini 台账〔装载序全逆 + 双域金值 + 互逆〕+ 终局清算〔登记序逆序 + 引用耗尽 + 幂等〕+ 两负例——标记四件 T154-EXIT/CLEAR/NEG/OK，双面板 233→237）起 154）；M49-TLS60 笔69 t155（TLS 执行域活体——四模型写面真做〔PT_TLS 真布点 + 槽写金值〕+ DTV 扩展真做〔扩容世代 + GD 兑现 + LE 直算〕+ 三负例——标记四件 T155-WRITE/DTV/NEG/OK，双面板 237→241）起 155）；M49-PGRP62 笔71 t156（进程组/会话域活体——语义核纯函数全谱 m1..m10 + 真车道 kmain 域自铸回环 + SRCH/EPERM 新码首用——标记四件 T156-MATRIX/LIVE/NEG/OK，双面板 241→245）起 156）；M50-EEXEC65 笔75 t157（EACCES exec 记账域活体——语义核 EACCES 维度 e1..e4 + 真车道 ERR_ACCES(16) 新码首用 + 清位对照放行 + err_to_errno 映射核验——标记四件 T157-MATRIX/LIVE/NEG/OK，双面板 245→249）起 157）；M50-TEXT69 笔79 t158（文本渲染消费面活体——FONT8X16 两域 1520 B 直对账 + title_bar_px 全谱 + render_text 画布对账——标记三件 T158-ANCHOR/RENDER/OK，双面板 249→252）起 158）；M50-XDGSHELL67 笔77 t159（xdg_shell 电气闭环活体——真车道全生命周期 + 标题带动态域 + 会话面负例五目——标记四件 T159-LOOP/TITLE/NEG/OK，双面板 252→256）起 159）；M50-IOPB71 笔81 t160（IOPB 挂 TSS 硬件面活体——挂载取证三元组 + 位域全谱 + ring3 端口电气探针直呼 in/out 收割 + 重建面负例——标记四件 T160-IOPB/LIVE/NEG/OK，双面板 256→260）起 160）；M50-MUSLRUN72 笔82 t161（musl 动态全链真件 ring3 真执行活体——双真件页域装载〔prog PD[2] 198 页 + interp PD6[2] 161 页〕+ 解释器真车道〔musl _dlstart 自重定位 → SONAME 自解 → 程序重定位 → 入程序〕+ 静态/损件双 NEG fail-visible——标记四件 T161-DYN/LIVE/NEG/OK + 内容面 T161-DYN-OK，双面板 260→265）起 161）；M51-EXECDYN73 笔84 t162（ring3 SYS_EXEC 动态分流活体——EXEC_IMAGES 尾槽 /bin/busybox-dyn〔ELF 链首 EXEC 槽〕+ exec_load_switch PT_INTERP 动态分流臂 + 同任务 CR3 替换 musl ldso ring3 真执行 + 语义核三目/缺位直呼/车道闸/越界枚举 NEG 三目——标记四件 T162-EXEC/LIVE/NEG/OK，双面板 265→269）起 162）；M51-VECFONT74 笔85 t163（矢量字体栅格化活体——DejaVuSansMono 真件 module 3 媒体通道 + glyph::vecfont 语义面消费 + 4×4 超采样非零缠绕 8bpp AA python 同源金值对账 + composite/损件/画布 NEG 三目——标记四件 T163-ANCHOR/RENDER/NEG/OK，双面板 269→273）起 163）；M51-XDGPOP75 笔86 t164（xdg_popup 尺寸交互族活体——真车道 popup/size 双车道〔configure(1904,944) 单窗盒金值 + placement(14,28) 官方定位公式金值 + min/max 双向钳 (1000,900)〕+ clamp_minmax 语义核全谱 + 会话面 NEG 七目——标记四件 T164-LOOP/POPUP/SIZE/NEG/OK，双面板 273→278）起 164）；M51-NIC76 笔87 t165（真实 NIC 驱动 Intel 82540EM 活体——PCI 8086:100E 探针 + BAR0 MMIO 128 KiB 窗 + CTRL.SLU/STATUS.LU 链路面 + MAC 双车道〔EERD 寄存器车道先行 + RAL/RAH 自动车道回退——车道戳实录零虚构〕+ TX/RX 描述符环装配〔16 目 × 16 B + 2 KiB 缓冲逐帧独立 DMA〕+ 纯轮询数据面〔IMC 全屏蔽——MSI-X/IOAPIC 基础设施缺席如实挂账〕+ ARP 电气回环〔slirp n1 独立网段 who-has 10.0.2.2 应答 spa==0x0A000202 断言 + sha 实录〕+ NEG 三目〔NotUp 前置闸/BadLen 界域守卫/idle 零帧快径〕——标记四件 T165-BRINGUP/LIVE/NEG/OK，双面板 278→282）起 165；M52-E1KIRQ77 笔89 t166（e1000 中断面活体——IOAPIC 路由基础设施〔0xFEC00000 恒等映射 + VERSION/entries 读出 + 全表 mask 收敛〕+ PCI int pin/line 读出 + route〔ISA line → 0x44，BSP LAPIC，edge+high——M52 揭雷① level+low QEMU GSI 风暴首割翻账〕+ 写后读回五位域对账 + IMS 武装（TXDW|RXT0）+ ARP 二轮通知域计数推进 + NEG 三目〔屏蔽零送达/再武装推进/ICR 净域〕——标记四件 T166-IRQ/LIVE/NEG/OK，双面板 282→286）起 166；M52-POPCON78 笔90 t167（popup 约束域收口活体——place_in_bounds 官方施策序〔flip→slide→resize 逐轴 + 屏域裁剪〕+ v3 reposition 面〔repositioned→configure 官方序双事件〕+ 嵌套父域 + popup_done 传递闭包 + NEG 六目——标记五件 T167-LOOP/REPOS/NEST/NEG/OK，双面板 286→291）起 167）；M52-VULK79 笔91 t168（GPU 加速车道活体——prism::gfx 命令缓冲/队列语义面消费〔Vulkan vkCmd* 同构三域——Fill 行块加速 + Blit 行块/forward-copy + Blend Q8 定点混合〕+ 屏域裁剪 + fence 账户面 + 确定性感锚逐位一致——标记四件 T168-CMD/LIVE/NEG/OK，双面板 291→295）起 168）；M52-HWVULK80 笔92 t169（硬件 Vulkan 队列活体——队列族语义面〔VkQueueFamilyProperties 同构枚举金值〕+ ICD 清单扫描〔QEMU TCG 无 ICD Absent fail-visible 显形——真机窗口批次注入域挂账〕+ HwQueue 前置闸〔ICD 未达拒收 + 族旗闸 + Ready 放行 fence 单调〕+ Backend 分流+ 软件执行核金值回归零扰——标记四件 T169-QFAM/ICD/HW/OK）起 169；M52-PCIQLR81 笔93 t170（真机 PCI level+low 口径复评面活体——RouteProfile 口径参数化〔EdgeHigh QEMU 金值域 / LevelLow 真机 PCI INTx 电域口径预置域〕+ 分口径写后读回对账+ IOAPIC_PROFILE 取证戳 + IMC 设备源侧屏蔽安全窗〔零击发源——QEMU 布尔电平模型零风暴纪律〕+ EdgeHigh 金值域复位回环 + 真机电域数值留真机〔REALHW-WINDOW R1′ 复评协议随真机窗口批次击发〕——标记四件 T170-PROF/READBACK/NEG/OK，双面板 295→303〔T169/T170 八件入 required/longrun 双面〕）起 170）。
-const SELFTEST_TOTAL: usize = 170;
+/// 自检项目总数（M2 七项 + M3 四项 + M4 四项 + M5 五项 + M6 五项 + M7 两项 + M8 三项 + M9 三项 + M10 三项 + M11 四项 + M12 起逐块追加；M23-C3 起 71，M24-S1 起 72，M24-C1 起 73，M24-A1 起 74，M31-T1 起 80，M32-T1 起 81，M33-T1 起 82，M34-B2 起 83，M35-BBa 起 84，M35-BBb 起 85，M36-N1 起 86，M36-BB3b 起 87，M37-A1b 起 88，M37-N1 起 89，M38-SP1 起 90，M38-TCP1 起 91，M39-BBLS 起 92，M39-MU 起 93，M39-DPMS 起 94；M40-ASH2 t95 备置撤闸空缺跳号如实登记；M40-CRYSTAL t96 起 95；M40-CAT t97 起 96；M41-笔① t95 转正（栈 grow 缺陷族修复落域）起 97；M41-笔② t98（块层字节域取证矩阵）起 98；M41-笔③ t99（saved-set+补充组矩阵）起 99；M41-笔④ t100（ash 交互面）起 100；M42-FBDEV1 t101（用户态 fb 驱动进程移交链）起 101；M42-FBSVC2 t102（常驻 fbdev 服务活体）起 102；M42-UNIX3 t103（unix socket 域 + Wayland wire 语义面活体）起 103；M42-COMP4 t104（合成器进程面：常驻 waycomp 合流电气面 + 阻塞 accept/EOF 对端终结面 + cascade 仲裁策略承接）起 104；M42-ELF5 t105（用户态 ELF 播种 lane：ring3 编译进程承接）+ t106（桌面链 wl_shm/fd 传递活体）起 106；M42-GEOM6 t107（重排改写面：UPDATE 几何演进活体）+ t108（fbdev 驱动进程 ELF 化迁移活体）起 108；M42-INPUT7 t109（waycomp 主体迁移前置：输入链活体）起 109；M42-WAYCOMP8 t110（waycomp 主体 ELF 化迁移活体）起 110；M42-WAYCOMP10 t111（内核 ISR/抢占路径寄存器契约面标本活体）起 111；M42-WAYCOMP11 t112（卫生批次活体：argv 真消费 + shm 池回收 + 服务重启面）起 112；M42-WAYCOMP12 t113（输入守护 + 阻塞等待双域活体）起 113；M42-WAYCOMP13 t114（evdev 键码映射 + keymap 内容面活体）起 114；M42-WAYCOMP14 t115（wl_pointer axis 族/frame 活体）起 115；M42-WAYCOMP15 t116（wl_keyboard modifiers 语义活体）起 116；M42-WAYCOMP16 t117（输入队列多产者域活体）起 117；M42-WAYCOMP17 t118（kbd→waycomp ISR 转接臂活体）起 118；M42-WAYCOMP18 t119（display.sync/wl_callback 多注册表面活体）起 119；M42-WAYCOMP19 t120（毫秒时间源活体）起 120；M42-DMG20 t121（damage 联合域 SYNC 矩形活体）起 121；M42-DMGC21 t122（commit 发布域批量化活体）起 122；M42-DMGC22 t123（frame callback delete_id 复用面活体）起 123；M42-DMGI24 t124（kbd→waycomp ISR 臂指针/轴域扩展活体）起 124；M42-AUX25 t125（PS/2 aux IRQ12 电气源接线活体）起 125；M42-RDTSC26 t126（rdtsc lfence 序列化读活体）起 126；M42-DMG27 t127（联合域上限细化活体）起 127；M42-DMG28 t128（指针 16px 粗粒度域联动活体）起 128；M42-SPRITE29 笔㉙ t129（光标 sprite 渲染面活体：compose 执行器顶层 sprite 平面 + 热点对位联动）起 129；M42-AUXR3 笔㉚ t130（ring3 aux 驱动进程活体：SYS_AUX_READ/SYS_PTR_INJECT 车道 + 接管态仲裁）起 130；M42-PTRLINK 笔㉛ t131（Enter/Leave 域联动活体：焦点切换取证计数 + 光标格直标强制入账）起 131；M42-WHEEL32 笔㉜ t132（IntelliMouse 轮询命令链 + wl_pointer axis 电气源活体）起 132；M42-CLICKF33 笔㉝ t133（click-to-focus 焦点迁移联动面活体：纯针直迁 + 键盘迁移取证戳 + 幂等/release 闸）起 133；M42-KBREP34 笔㉞ t134（wl_keyboard.repeat_info 键重复公告面活体：键盘派生域 keymap 后随行 + v0 关闭声明口径 + 域闸负例）起 134；M43-AV12036 笔㊱ t135（wl_pointer.axis_value120 离散步进语义活体：wheel 源 frame 域随行 + 流内序锚 + 零步进不随行域闸）起 135；M43-KBREP37 笔㊷ t136（键重复生产域 + set_cursor 请求域活体：repeat_info 真值公告 + delay/rate 重复窗 + 释放撤销 + 修饰键零登记 + 在册面/默认回退双臂）起 136；M43-PRIO38 笔电解 t137（产者优先级域活体：boot 代执面 + waycomp 0/aux 3 级序 + 越界 clamp 语义核）起 137；M43-TSC39 笔㊹ t138（TSC deadline one-shot 定时器活体：CPUID 特性锚 + LVT deadline 使能 + one-shot 交付 + 不再武装零增）起 138；M43-HWDW40 笔㊺ t139（Explorer 型别链 + IMEX 族谱解码活体：ID 0x04 双旗武装 + dw 横轮 HORIZONTAL axis + dz nibble 域 + 按钮 4/5 沿）起 139；M43-CURSOR41 笔㊻ t140（光标直迁域活体：窗亡重排域 stationary 光标位 hit-test 直迁 + 创建期 v0 口径钉住 + 幂等零扰）起 140；M44-MAP42 笔㊼ t141（创建期/map 域直迁活体：首映射批 stationary 光标位 hit-test 直迁零 motion 前提 + wire enter 出域取证 + map 域幂等零扰 + 跨窗直迁/窗亡回迁分戳分域）起 141；M44-AUXW43 笔㊽ t142（boot wheel/explorer 接线切换活体：Explorer 链 boot 武装 + 应答窗收口泵 + boot 态族谱解码全谱 + v0 负向误读域退役对账）起 142；M44-TSCRG44 笔㊾ t143（真机窗口 TSC deadline 全谱对账活体：交付后解除武装 + one-shot 零增判据 + 再武装语义 + 解除武装域）起 143；M45-BIT245 笔㊿ t144（真机窗口 bit24=1 CPUID 逐位对账活体：SDM 权威位义表 32 目 + 逐位判读语义核 + 探测面同源一致）起 144；M45-MPMC46 笔51 t145（MPMC 环替换 SpinLock 串行化活体：ostd MpmcRing 无锁环 + waycomp 输入域零锁直推 + ISR 臂退避域退役 + 三源并发零丢失）起 145；M45-RECON47 笔52 t146（真机窗口 bit24=1 实测对账活体：ReconWindow 二态判定核三源一致 + RECON_SEGMENTS 四段全谱装载计划面 + MSR 0x6E0 路由复证——标记四件 T146-WINDOW/PLAN/ROUTE/OK，双面板 191→195）起 146；M46-LDEXEC49 笔55 t147（harbor 机械执行面 ld-lumina.so 交付批活体：ET_DYN 结构判读 + 装载映射计划面/分级缓冲 + GNU 哈希决议链 + 重定位四类写面〔RELATIVE/GLOB_DAT/JUMP_SLOT 惰性/COPY〕+ TLS Variant II 三模块布点 + DTV 扩容 + init/fini 互逆序 + dlopen 族 + H-P03 四段打点——标记六件 T147-MAP/RELOC/TLS/INIT/BUDGET/OK，双面板 195→201）起 147；M47-LDCONS53 笔60 t148（装载计划消费面 + ld-lumina.so 本体交付批活体：本体真件机械链〔ET_DYN 判读 + exec_plan 消费动作序列 + GNU 哈希决议 + 真件 RELA 四类写面 + 真件 TLS 布点〕+ ring3 消费活体〔SYS_MMAP(46)/SYS_MPROTECT(47) 双车道 + 映射页代码 call + 负例三目〕+ 登记面断言——标记六件 T148-SO/LIVE/REG/OK + 探针面 PROBE/ELEC，双面板 201→207）起 148；M47-DLOPEN54 笔61 t149（dlopen 真消费面活体：DT_NEEDED 装载序真消费链〔ChainRegistry 双真件登记 + dl_adjacency 依赖闭包派生〔DT_NEEDED 声明域走查 ∪ UNDEF 决议闭包 as-needed 派生——lextern_dat 名匹配 core 定义者实边〕+ dl_chain_order BFS 装载序语义核机械消费 + 装载序逐模块 exec_plan 动作金值（5+5）+ 跨模块重定位〔lextern_dat 真名决议 + ldep_fn 绑定登记域→core_fn〕+ dl_open_chain 真消费链〔modid 序/群组插序/幂等域/error 槽一次性消费〕〕+ ring3 自装载链活体〔DLOPEN_ELF 探针：SYS_MMAP(46) 四窗 R|W 分级定点回显 + rep movsb 分级拷贝 + ring3 重定位写面（跨模块决议值烘焙）+ SYS_MPROTECT(47) RX 终旗×2 + call ldlumina_boot（0x5A5A5A5A）+ GOT[2] 间呼 core_fn（0xC0DEC0DE——JUMP_SLOT 跨模块电气证明）+ COPY 槽读回 + BSS 尾零读回 + 负例二目 → EXIT(89)〕+ 登记面四行断言（双 RX 终旗真值保持）——标记四件 T149-CHAIN/LIVE/REG/OK + 探针面 PROBE/ELEC，双面板 207→213）起 149）；M48-PLTGOT55 笔63 t150（PLT/GOT 惰性绑定电气执行活体：真件 lazy_wire 接线判读〔wired=jump_lazy 同镜像守恒〕+ LazyGot 两态机〔wire→resolve 兑现→次调幂等〕+ ring3 惰性绑定电气活体〔PLTGOT_ELF 探针：mmap GOT 窗 + 经典铸面 + 首调 resolver 电水解 + 次调直达零重入 + 负例电气 EXIT(91)〕+ 登记面单行——标记四件 T150-PLT/LIVE/REG/OK + 探针面 PROBE/ELEC，双面板 213→219）起 150）；M48-DLSYM56 笔64 t151（dlsym 跨模块查找电气面活体：dl_sym_chain 三段对账 + DlState::dlsym_chain error 槽 + ring3 探针内电算 GNU 哈希查找活体〔bloom/桶查/桶链走查/名比对/决议兑现——EXIT(92) 负例收口〕——标记四件 T151-SYM/LIVE/REG/OK + 探针面 PROBE/ELEC，双面板 219→225）起 151）；M48-INIT57 笔65 t152（init_array 执行域活体——t147 同谱宿主面：init_faces_of 直收 + init_exec_ledger 执行台账 + fini 互逆序——标记四件 T152-SO/INIT/LEDGER/OK，双面板 225→229）起 152）；M49-DLCLOSE58 笔67 t153（dlclose 真消费链执行域活体——t147/t152 同谱宿主面：链卸载序真消费〔依赖先卸 + Kept 幂等域 + 末次出册〕+ 单件链 fini 执行台账金值〔fini_array 读回原值域 + DT_FINI 直取域 + fini_order 互逆〕+ 三负例〔DlCloseInvalid/RegistryRange/重复 close〕——标记四件 T153-CLOSE/FINI/NEG/OK，双面板 229→233）起 153）；M49-FINI59 笔68 t154（.fini_array 终局执行域活体——终局 fini 台账〔装载序全逆 + 双域金值 + 互逆〕+ 终局清算〔登记序逆序 + 引用耗尽 + 幂等〕+ 两负例——标记四件 T154-EXIT/CLEAR/NEG/OK，双面板 233→237）起 154）；M49-TLS60 笔69 t155（TLS 执行域活体——四模型写面真做〔PT_TLS 真布点 + 槽写金值〕+ DTV 扩展真做〔扩容世代 + GD 兑现 + LE 直算〕+ 三负例——标记四件 T155-WRITE/DTV/NEG/OK，双面板 237→241）起 155）；M49-PGRP62 笔71 t156（进程组/会话域活体——语义核纯函数全谱 m1..m10 + 真车道 kmain 域自铸回环 + SRCH/EPERM 新码首用——标记四件 T156-MATRIX/LIVE/NEG/OK，双面板 241→245）起 156）；M50-EEXEC65 笔75 t157（EACCES exec 记账域活体——语义核 EACCES 维度 e1..e4 + 真车道 ERR_ACCES(16) 新码首用 + 清位对照放行 + err_to_errno 映射核验——标记四件 T157-MATRIX/LIVE/NEG/OK，双面板 245→249）起 157）；M50-TEXT69 笔79 t158（文本渲染消费面活体——FONT8X16 两域 1520 B 直对账 + title_bar_px 全谱 + render_text 画布对账——标记三件 T158-ANCHOR/RENDER/OK，双面板 249→252）起 158）；M50-XDGSHELL67 笔77 t159（xdg_shell 电气闭环活体——真车道全生命周期 + 标题带动态域 + 会话面负例五目——标记四件 T159-LOOP/TITLE/NEG/OK，双面板 252→256）起 159）；M50-IOPB71 笔81 t160（IOPB 挂 TSS 硬件面活体——挂载取证三元组 + 位域全谱 + ring3 端口电气探针直呼 in/out 收割 + 重建面负例——标记四件 T160-IOPB/LIVE/NEG/OK，双面板 256→260）起 160）；M50-MUSLRUN72 笔82 t161（musl 动态全链真件 ring3 真执行活体——双真件页域装载〔prog PD[2] 198 页 + interp PD6[2] 161 页〕+ 解释器真车道〔musl _dlstart 自重定位 → SONAME 自解 → 程序重定位 → 入程序〕+ 静态/损件双 NEG fail-visible——标记四件 T161-DYN/LIVE/NEG/OK + 内容面 T161-DYN-OK，双面板 260→265）起 161）；M51-EXECDYN73 笔84 t162（ring3 SYS_EXEC 动态分流活体——EXEC_IMAGES 尾槽 /bin/busybox-dyn〔ELF 链首 EXEC 槽〕+ exec_load_switch PT_INTERP 动态分流臂 + 同任务 CR3 替换 musl ldso ring3 真执行 + 语义核三目/缺位直呼/车道闸/越界枚举 NEG 三目——标记四件 T162-EXEC/LIVE/NEG/OK，双面板 265→269）起 162）；M51-VECFONT74 笔85 t163（矢量字体栅格化活体——DejaVuSansMono 真件 module 3 媒体通道 + glyph::vecfont 语义面消费 + 4×4 超采样非零缠绕 8bpp AA python 同源金值对账 + composite/损件/画布 NEG 三目——标记四件 T163-ANCHOR/RENDER/NEG/OK，双面板 269→273）起 163）；M51-XDGPOP75 笔86 t164（xdg_popup 尺寸交互族活体——真车道 popup/size 双车道〔configure(1904,944) 单窗盒金值 + placement(14,28) 官方定位公式金值 + min/max 双向钳 (1000,900)〕+ clamp_minmax 语义核全谱 + 会话面 NEG 七目——标记四件 T164-LOOP/POPUP/SIZE/NEG/OK，双面板 273→278）起 164）；M51-NIC76 笔87 t165（真实 NIC 驱动 Intel 82540EM 活体——PCI 8086:100E 探针 + BAR0 MMIO 128 KiB 窗 + CTRL.SLU/STATUS.LU 链路面 + MAC 双车道〔EERD 寄存器车道先行 + RAL/RAH 自动车道回退——车道戳实录零虚构〕+ TX/RX 描述符环装配〔16 目 × 16 B + 2 KiB 缓冲逐帧独立 DMA〕+ 纯轮询数据面〔IMC 全屏蔽——MSI-X/IOAPIC 基础设施缺席如实挂账〕+ ARP 电气回环〔slirp n1 独立网段 who-has 10.0.2.2 应答 spa==0x0A000202 断言 + sha 实录〕+ NEG 三目〔NotUp 前置闸/BadLen 界域守卫/idle 零帧快径〕——标记四件 T165-BRINGUP/LIVE/NEG/OK，双面板 278→282）起 165；M52-E1KIRQ77 笔89 t166（e1000 中断面活体——IOAPIC 路由基础设施〔0xFEC00000 恒等映射 + VERSION/entries 读出 + 全表 mask 收敛〕+ PCI int pin/line 读出 + route〔ISA line → 0x44，BSP LAPIC，edge+high——M52 揭雷① level+low QEMU GSI 风暴首割翻账〕+ 写后读回五位域对账 + IMS 武装（TXDW|RXT0）+ ARP 二轮通知域计数推进 + NEG 三目〔屏蔽零送达/再武装推进/ICR 净域〕——标记四件 T166-IRQ/LIVE/NEG/OK，双面板 282→286）起 166；M52-POPCON78 笔90 t167（popup 约束域收口活体——place_in_bounds 官方施策序〔flip→slide→resize 逐轴 + 屏域裁剪〕+ v3 reposition 面〔repositioned→configure 官方序双事件〕+ 嵌套父域 + popup_done 传递闭包 + NEG 六目——标记五件 T167-LOOP/REPOS/NEST/NEG/OK，双面板 286→291）起 167）；M52-VULK79 笔91 t168（GPU 加速车道活体——prism::gfx 命令缓冲/队列语义面消费〔Vulkan vkCmd* 同构三域——Fill 行块加速 + Blit 行块/forward-copy + Blend Q8 定点混合〕+ 屏域裁剪 + fence 账户面 + 确定性感锚逐位一致——标记四件 T168-CMD/LIVE/NEG/OK，双面板 291→295）起 168）；M52-HWVULK80 笔92 t169（硬件 Vulkan 队列活体——队列族语义面〔VkQueueFamilyProperties 同构枚举金值〕+ ICD 清单扫描〔QEMU TCG 无 ICD Absent fail-visible 显形——真机窗口批次注入域挂账〕+ HwQueue 前置闸〔ICD 未达拒收 + 族旗闸 + Ready 放行 fence 单调〕+ Backend 分流+ 软件执行核金值回归零扰——标记四件 T169-QFAM/ICD/HW/OK）起 169；M52-PCIQLR81 笔93 t170（真机 PCI level+low 口径复评面活体——RouteProfile 口径参数化〔EdgeHigh QEMU 金值域 / LevelLow 真机 PCI INTx 电域口径预置域〕+ 分口径写后读回对账+ IOAPIC_PROFILE 取证戳 + IMC 设备源侧屏蔽安全窗〔零击发源——QEMU 布尔电平模型零风暴纪律〕+ EdgeHigh 金值域复位回环 + 真机电域数值留真机〔REALHW-WINDOW R1′ 复评协议随真机窗口批次击发〕——标记四件 T170-PROF/READBACK/NEG/OK，双面板 295→303〔T169/T170 八件入 required/longrun 双面〕）起 170）；M53-E1KNET82 笔95 t171（e1000↔pulse 接线活体——TX 组帧车道〔pulse::udp/pulse::tcp 官方编码核 + 伪头校验和〕+ RX 分派闸〔ARP 族 + ICMP 三目 + UDP/TCP 解析核 + 校验和 fail-visible〕+ CORE 合成帧语义核七目 + 三相电气回环〔ICMP echo 反射 + DHCP offer 真消费 + TCP SYN→RST——slirp n1 零宿主监听依赖〕——标记五件 T171-CORE/ICMP/UDP/TCP/OK，双面板 303→308）起 171；M53-XDGSTAT83 笔96 t172（xdg_toplevel 状态族消费面活体——标记四件 T172-CORE/WIRE/SESS/OK，双面板 308→312）起 172）。
+const SELFTEST_TOTAL: usize = 172;
 
 /// 内核堆后备区域：静态 4 MiB、4 KiB 对齐（段放置见 KERNEL_HEAP）。
 #[repr(align(4096))]
@@ -8806,6 +8806,648 @@ pub extern "C" fn kmain(magic: u32, info: u32) -> ! {
         ok
     };
     report(&mut log, t170, "pci-irq-profile");
+
+    // t171) e1000↔pulse 接线活体（M53-E1KNET82 笔95——B 线①开工令）：
+    //      真实 NIC 数据面接入协议栈消费面：TX 组帧车道（pulse::udp/
+    //      pulse::tcp 官方编码核 + 伪头校验和——vnet 同谱异件：virtio
+    //      车道模板移植真实 NIC 车道）+ RX 分派闸（ARP 族服务/实录 +
+    //      ICMP 三目 + UDP/TCP 官方解析核 + 校验和 fail-visible）+
+    //      CORE 合成帧语义核（无 wire 铸帧分派五目 + NEG 四目）+
+    //      三相电气回环（ICMP echo 反射 id/seq/载荷逐位 + DHCP offer
+    //      cookie/yiaddr 双对账 + TCP SYN→RST checksum/flags 取证——
+    //      slirp n1 独立网段零宿主监听依赖确定性域）。
+    let t171 = {
+        let mut ok = true;
+        let mut bring = false;
+        let mut core_ok = true;
+        let mut icmp_ok = false;
+        let mut dhcp_ok = false;
+        let mut rst_ok = false;
+        let mut arp_served_d = 0u64;
+        let mut udp_badcs_d = 0u64;
+        let mut tcp_badcs_d = 0u64;
+        let mut icmp_rep_d = 0u64;
+        let mut udp_ok_d = 0u64;
+        let mut tcp_ok_d = 0u64;
+        let mut rst_d = 0u64;
+        let mut gw_mac = [0u8; 6];
+        let mut yiaddr = [0u8; 4];
+        let mut rt_err = "none";
+        let (mut rx0, mut miss0, mut s0) = (0u64, 0u64, 0u64);
+        if let Some(frames) = vmm::global_frames() {
+            if e1k::bring_up(frames).is_some() {
+                bring = true;
+                // CORE——合成帧分派闸语义核（无 wire）：目① ICMP echo
+                // request 寻我（双校验和正确）→ ArpServed 前先 drain 保
+                // 净域；目② 同帧 IP 校验和破坏 → None；目③ UDP 段伪头
+                // 校验和破坏 → None + BADCS 计数；目④ TCP 段 checksum
+                // 正确 → Tcp verdict + flags 出域；目⑤ ARP request 寻
+                // 我 → ArpServed + 计数；目⑥/⑦ ethertype 域外 + 短帧
+                // → None。
+                let mut drain = 0usize;
+                while e1k::rx_frame().is_some() && drain < 64 {
+                    drain += 1;
+                }
+                let arp0 = e1k::E1K_ARP_SERVED.load(Ordering::Acquire);
+                let badcs0 = e1k::E1K_UDP_RX_BADCS.load(Ordering::Acquire);
+                let tbadcs0 = e1k::E1K_TCP_RX_BADCS.load(Ordering::Acquire);
+                // 合成 ICMP echo request（10.0.2.2→10.0.2.15，type 8）
+                let mut f = [0u8; 42];
+                f[12] = 0x08;
+                f[13] = 0x00;
+                f[14] = 0x45;
+                f[16..18].copy_from_slice(&28u16.to_be_bytes()); // IP 总长（20 + 8 ICMP）
+                f[22] = 64;
+                f[23] = 1;
+                f[26..30].copy_from_slice(&e1k::E1K_GW_IP);
+                f[30..34].copy_from_slice(&e1k::E1K_IP);
+                f[34] = 8; // type = echo request
+                f[38..40].copy_from_slice(&e1k::PULSE_ICMP_ID.to_be_bytes());
+                f[40..42].copy_from_slice(&e1k::PULSE_ICMP_SEQ.to_be_bytes());
+                let ip_ck = vnet::cksum16(&f[14..34]);
+                f[24..26].copy_from_slice(&ip_ck.to_be_bytes());
+                let ic_ck = vnet::cksum16(&f[34..42]);
+                f[36..38].copy_from_slice(&ic_ck.to_be_bytes());
+                core_ok &= e1k::rx_dispatch(&f[..42]) == Some(e1k::RxVerdict::IcmpEchoServed);
+                // 目② IP 校验和破坏（末位翻转）→ None
+                let bad = {
+                    let mut b = f;
+                    b[25] ^= 0x01;
+                    b
+                };
+                core_ok &= e1k::rx_dispatch(&bad[..42]).is_none();
+                // 目③ UDP 段伪头校验和破坏（非零错值 + 长度域自洽）→
+                // None + BADCS 计数推进
+                let mut u = [0u8; 14 + 20 + 8 + 4];
+                u[12] = 0x08;
+                u[13] = 0x00;
+                u[14] = 0x45;
+                u[16..18].copy_from_slice(&32u16.to_be_bytes());
+                u[22] = 64;
+                u[23] = 17;
+                u[26..30].copy_from_slice(&e1k::E1K_GW_IP);
+                u[30..34].copy_from_slice(&e1k::E1K_IP);
+                u[34..36].copy_from_slice(&67u16.to_be_bytes());
+                u[36..38].copy_from_slice(&68u16.to_be_bytes());
+                u[38..40].copy_from_slice(&12u16.to_be_bytes());
+                u[42] = 0xAB;
+                u[40..42].copy_from_slice(&0xBEEFu16.to_be_bytes()); // 校验域非零错值
+                let ip_ck2 = vnet::cksum16(&u[14..34]);
+                u[24..26].copy_from_slice(&ip_ck2.to_be_bytes());
+                core_ok &= e1k::rx_dispatch(&u[..]).is_none();
+                // 目④ TCP 段 checksum 正确 → Tcp verdict（RST|ACK 出域）
+                let mut seg = [0u8; 20];
+                let seg_len = pulse::tcp::TcpHdr::encode(
+                    1,
+                    e1k::PULSE_TCP_SRC_PORT,
+                    0x1234,
+                    e1k::PULSE_TCP_SEQ.wrapping_add(1),
+                    pulse::tcp::FLAG_RST | pulse::tcp::FLAG_ACK,
+                    512,
+                    &[],
+                    &mut seg,
+                )
+                .unwrap_or(0);
+                let cs = pulse::tcp::checksum(e1k::E1K_GW_IP, e1k::E1K_IP, &seg[..seg_len]);
+                seg[16..18].copy_from_slice(&cs.to_be_bytes());
+                let mut t = [0u8; 14 + 20 + 20];
+                t[12] = 0x08;
+                t[13] = 0x00;
+                t[14] = 0x45;
+                t[16..18].copy_from_slice(&((20 + seg_len) as u16).to_be_bytes());
+                t[22] = 64;
+                t[23] = 6;
+                t[26..30].copy_from_slice(&e1k::E1K_GW_IP);
+                t[30..34].copy_from_slice(&e1k::E1K_IP);
+                t[34..34 + seg_len].copy_from_slice(&seg[..seg_len]);
+                let ip_ck3 = vnet::cksum16(&t[14..34]);
+                t[24..26].copy_from_slice(&ip_ck3.to_be_bytes());
+                core_ok &= e1k::rx_dispatch(&t[..])
+                    == Some(e1k::RxVerdict::Tcp {
+                        src_port: 1,
+                        dst_port: e1k::PULSE_TCP_SRC_PORT,
+                        flags: pulse::tcp::FLAG_RST | pulse::tcp::FLAG_ACK,
+                    });
+                // 目⑤ ARP request 寻我 → ArpServed + 计数推进
+                let mut a = [0u8; 42];
+                a[12] = 0x08;
+                a[13] = 0x06;
+                a[20] = 0x00;
+                a[21] = 0x01;
+                a[38..42].copy_from_slice(&e1k::E1K_IP);
+                core_ok &= e1k::rx_dispatch(&a[..42]) == Some(e1k::RxVerdict::ArpServed);
+                // 目⑥⑦ ethertype 域外 + 短帧 → None
+                let mut x = [0u8; 20];
+                x[12] = 0x12;
+                x[13] = 0x34;
+                core_ok &= e1k::rx_dispatch(&x[..20]).is_none();
+                core_ok &= e1k::rx_dispatch(&[0u8; 8]).is_none();
+                arp_served_d = e1k::E1K_ARP_SERVED.load(Ordering::Acquire) - arp0;
+                udp_badcs_d = e1k::E1K_UDP_RX_BADCS.load(Ordering::Acquire) - badcs0;
+                tcp_badcs_d = e1k::E1K_TCP_RX_BADCS.load(Ordering::Acquire) - tbadcs0;
+                ok &= core_ok;
+                // LIVE——三相电气回环（slirp n1 零宿主监听依赖确定性域）
+                let rep0 = e1k::E1K_ICMP_REPLIES.load(Ordering::Acquire);
+                let uok0 = e1k::E1K_UDP_RX_OK.load(Ordering::Acquire);
+                let tok0 = e1k::E1K_TCP_RX_OK.load(Ordering::Acquire);
+                let r0 = e1k::E1K_TCP_RST_RX.load(Ordering::Acquire);
+                let (a, b, c) = e1k::rx_stats();
+                (rx0, miss0, s0) = (a, b, c);
+                match e1k::pulse_roundtrip() {
+                    Ok(e) => {
+                        gw_mac = e.gw_mac;
+                        yiaddr = e.yiaddr;
+                        icmp_rep_d = e1k::E1K_ICMP_REPLIES.load(Ordering::Acquire) - rep0;
+                        udp_ok_d = e1k::E1K_UDP_RX_OK.load(Ordering::Acquire) - uok0;
+                        tcp_ok_d = e1k::E1K_TCP_RX_OK.load(Ordering::Acquire) - tok0;
+                        rst_d = e1k::E1K_TCP_RST_RX.load(Ordering::Acquire) - r0;
+                    }
+                    Err(err) => {
+                        rt_err = match err {
+                            e1k::E1kError::PulseTimeout => "phase-timeout",
+                            e1k::E1kError::ArpTimeout => "arp-timeout",
+                            _ => "tx/link",
+                        };
+                    }
+                }
+                // 逐相完成位读面（回环 Err 早退时已完相仍取证——零虚构）。
+                icmp_ok = e1k::E1K_RT_ICMP.load(Ordering::Acquire) == 1;
+                dhcp_ok = e1k::E1K_RT_DHCP.load(Ordering::Acquire) == 1;
+                rst_ok = e1k::E1K_RT_RST.load(Ordering::Acquire) == 1;
+                ok &= icmp_ok && dhcp_ok && rst_ok;
+            }
+        }
+        ok &= bring;
+        let (rx1, miss1, served1) = e1k::rx_stats();
+        let _ = writeln!(
+            log,
+            "LUMINA-T171-CORE disp={} arp_served={} udp_badcs={} tcp_badcs={} rt={} rx=+{} miss=+{} served=+{}（core 段——合成帧分派闸语义核七目 fail-visible + LIVE 相盲区取证差分）",
+            core_ok as u8, arp_served_d, udp_badcs_d, tcp_badcs_d, rt_err,
+            rx1 - rx0,
+            miss1 - miss0,
+            served1 - s0,
+        );
+        let _ = writeln!(
+            log,
+            "LUMINA-T171-ICMP tx=1 reply=+{} echo={}（icmp 段——echo request 击发 → slirp icmp_reflect 反射 → id={:#x}/seq={} 载荷逐位对账）",
+            icmp_rep_d, icmp_ok as u8, e1k::PULSE_ICMP_ID, e1k::PULSE_ICMP_SEQ,
+        );
+        let _ = writeln!(
+            log,
+            "LUMINA-T171-UDP tx=1 ok=+{} dhcp={} yiaddr={:#x}（udp 段——DHCP discover 广播击发〔pulse::udp encode + 伪头校验和〕→ slirp bootp offer 线上段真消费 → cookie 魔数 + yiaddr==10.0.2.15 双对账）",
+            udp_ok_d,
+            dhcp_ok as u8,
+            u32::from(yiaddr[0]) << 24 | u32::from(yiaddr[1]) << 16 | u32::from(yiaddr[2]) << 8
+                | u32::from(yiaddr[3]),
+        );
+        let _ = writeln!(
+            log,
+            "LUMINA-T171-TCP tx=1 ok=+{} rst=+{} rst_ok={} gw={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}（tcp 段——SYN 击发〔pulse::tcp encode〕→ slirp 无监听 RST|ACK 回执 → checksum 对账 + flags 取证）",
+            tcp_ok_d, rst_d, rst_ok as u8, gw_mac[0], gw_mac[1], gw_mac[2], gw_mac[3], gw_mac[4],
+            gw_mac[5],
+        );
+        if ok {
+            let _ = writeln!(log, "LUMINA-T171-OK");
+        }
+        ok
+    };
+    report(&mut log, t171, "e1000-pulse");
+
+    // t172) xdg_toplevel 状态族消费面活体（M53-XDGSTAT83 笔96——B 线②
+    //      开工令）：官方 opcode 声明序五请求（9-13）+ 官方 state 枚举
+    //      （maximized 0 / fullscreen 1）+ 决策核全谱（全屏优先 / 最大化
+    //      屏域 / 常态 min-max 钳制〔max 先行 min 后随〕）+ wire 面编组
+    //      回环 + 会话域五臂真车道（CompSession 直驱——state_q 冲刷
+    //      configure 对出域〔串号铸造 + xdg_surface.configure +
+    //      xdg_toplevel.configure(w,h,states)〕+ geom 施策对账 + 恢复
+    //      几何快照 + minimized 记账 + commit 未 ack 官方闸 + 域外对象
+    //      NEG）。
+    let t172 = {
+        use prism::wayland as w17;
+        let mut ok = true;
+        // CORE——决策核全谱（宿主面金值同源直驱）。
+        let (mw, mh, mst, mn) =
+            w17::toplevel_state_decide(true, false, 500, 400, 1920, 1080, 0, 0, 0, 0);
+        let core_max =
+            mw == 1920 && mh == 1080 && mn == 1 && mst[0] == w17::XDG_TOPLEVEL_STATE_MAXIMIZED;
+        let (fw, fh, fst, fn_full) =
+            w17::toplevel_state_decide(false, true, 500, 400, 1920, 1080, 0, 0, 0, 0);
+        let core_full = fw == 1920
+            && fh == 1080
+            && fn_full == 1
+            && fst[0] == w17::XDG_TOPLEVEL_STATE_FULLSCREEN;
+        let (rw, rh, _, rn) =
+            w17::toplevel_state_decide(false, false, 500, 400, 1920, 1080, 800, 600, 0, 0);
+        let core_clamp = rw == 800 && rh == 600 && rn == 0;
+        let (xw, xh, _, _) =
+            w17::toplevel_state_decide(false, false, 500, 400, 1920, 1080, 900, 800, 400, 300);
+        let core_cross = xw == 900 && xh == 800;
+        ok &= core_max && core_full && core_clamp && core_cross;
+        // WIRE——五请求编组回环（官方序锚）+ configure states 数组。
+        let mut wb = [0u8; 64];
+        let mut wire_ok = true;
+        let n = w17::encode_message(&mut wb, 0x62, w17::xdg_toplevel::REQ_SET_MAXIMIZED, &[])
+            .unwrap_or(0);
+        match w17::parse_message(&wb[..n], w17::SIG_XDG_TOPLEVEL_SET_MAXIMIZED) {
+            Ok(m) => wire_ok &= m.header.opcode == w17::xdg_toplevel::REQ_SET_MAXIMIZED,
+            Err(_) => wire_ok = false,
+        }
+        let n = w17::encode_message(
+            &mut wb,
+            0x62,
+            w17::xdg_toplevel::REQ_SET_FULLSCREEN,
+            &[w17::WlArg::Object(0)],
+        )
+        .unwrap_or(0);
+        match w17::parse_message(&wb[..n], w17::SIG_XDG_TOPLEVEL_SET_FULLSCREEN) {
+            Ok(m) => wire_ok &= m.header.opcode == w17::xdg_toplevel::REQ_SET_FULLSCREEN,
+            Err(_) => wire_ok = false,
+        }
+        let n = w17::encode_xdg_toplevel_configure_event(
+            &mut wb,
+            0x62,
+            1920,
+            1080,
+            &[w17::XDG_TOPLEVEL_STATE_MAXIMIZED],
+        )
+        .unwrap_or(0);
+        match w17::parse_message(&wb[..n], w17::SIG_XDG_TOPLEVEL_CONFIGURE) {
+            Ok(m) => {
+                wire_ok &= m.header.opcode == w17::xdg_toplevel::EV_CONFIGURE;
+                wire_ok &= m.args[0] == Some(w17::WlArg::Int(1920));
+                wire_ok &= matches!(
+                    m.args[2],
+                    Some(w17::WlArg::Array(b)) if b == [w17::XDG_TOPLEVEL_STATE_MAXIMIZED]
+                );
+            }
+            Err(_) => wire_ok = false,
+        }
+        ok &= wire_ok;
+        // SESS——会话域五臂真车道（CompSession 直驱——t104 同谱）。
+        let globals = [
+            w17::comp::GlobalDef {
+                name: 1,
+                iface: w17::WlIface::Compositor,
+                version: 4,
+            },
+            w17::comp::GlobalDef {
+                name: 2,
+                iface: w17::WlIface::Seat,
+                version: 1,
+            },
+            w17::comp::GlobalDef {
+                name: 3,
+                iface: w17::WlIface::Shm,
+                version: 1,
+            },
+            w17::comp::GlobalDef {
+                name: 4,
+                iface: w17::WlIface::Output,
+                version: 2,
+            },
+            w17::comp::GlobalDef {
+                name: 5,
+                iface: w17::WlIface::XdgWmBase,
+                version: 1,
+            },
+        ];
+        let mut s = w17::comp::CompSession::new(globals);
+        s.set_screen_bound((0, 0, 1920, 1080));
+        let mut req = [0u8; 512];
+        let mut out = [0u8; 1024];
+        // feed 1：bind ×2 + create_surface + get_xdg_surface + get_toplevel
+        // （初始 configure 对出域——官方序）。
+        let mut bl = 0usize;
+        bl += w17::encode_display_get_registry(&mut req[bl..], 1, 2).unwrap_or(0);
+        bl +=
+            w17::encode_registry_bind(&mut req[bl..], 2, 1, "wl_compositor", 4, 0x72).unwrap_or(0);
+        bl += w17::encode_registry_bind(&mut req[bl..], 2, 5, "xdg_wm_base", 1, 0x71).unwrap_or(0);
+        bl += w17::encode_message(
+            &mut req[bl..],
+            0x72,
+            w17::compositor::REQ_CREATE_SURFACE,
+            &[w17::WlArg::NewId(0x60)],
+        )
+        .unwrap_or(0);
+        bl +=
+            w17::encode_xdg_wm_base_get_xdg_surface(&mut req[bl..], 0x71, 0x61, 0x60).unwrap_or(0);
+        bl += w17::encode_xdg_surface_get_toplevel(&mut req[bl..], 0x61, 0x62).unwrap_or(0);
+        let mut sess_ok = true;
+        match s.feed(&req[..bl], &mut out) {
+            Ok(rep) => {
+                // 初始 configure 对对账（尾部锚定——globals 公告域先行，
+                // configure 对 = 流尾 32 B〔空 states 数组域〕：
+                // 串号非零 + (0,0,[])）。
+                let mut ser0 = 0u32;
+                if rep.out_len >= 32 {
+                    let cs = rep.out_len - 32;
+                    match w17::parse_message(&out[cs..cs + 12], w17::SIG_XDG_SURFACE_CONFIGURE) {
+                        Ok(m) => {
+                            ser0 = match m.args[0] {
+                                Some(w17::WlArg::Uint(v)) => v,
+                                _ => 0,
+                            };
+                        }
+                        Err(_) => sess_ok = false,
+                    }
+                    match w17::parse_message(
+                        &out[cs + 12..cs + 32],
+                        w17::SIG_XDG_TOPLEVEL_CONFIGURE,
+                    ) {
+                        Ok(m) => {
+                            sess_ok &= m.header.object_id == 0x62;
+                            sess_ok &= m.args[0] == Some(w17::WlArg::Int(0));
+                        }
+                        Err(_) => sess_ok = false,
+                    }
+                } else {
+                    sess_ok = false;
+                }
+                sess_ok &= ser0 != 0;
+                // 策略面几何注入（恢复几何载体——800×600 @(100,50)）。
+                sess_ok &= s
+                    .set_geometry(
+                        0x60,
+                        mirror::Rect {
+                            x: 100,
+                            y: 50,
+                            w: 800,
+                            h: 600,
+                        },
+                    )
+                    .is_ok();
+                // feed 2：ack(ser0) + set_maximized → configure(1920,1080,[0])
+                // + geom 施策对账 + 恢复几何快照对账。
+                let mut bl = 0usize;
+                bl +=
+                    w17::encode_xdg_surface_ack_configure(&mut req[bl..], 0x61, ser0).unwrap_or(0);
+                bl += w17::encode_message(
+                    &mut req[bl..],
+                    0x62,
+                    w17::xdg_toplevel::REQ_SET_MAXIMIZED,
+                    &[],
+                )
+                .unwrap_or(0);
+                match s.feed(&req[..bl], &mut out) {
+                    Ok(rep) => {
+                        let mut ser1 = 0u32;
+                        if rep.out_len >= 32 {
+                            match w17::parse_message(&out[..12], w17::SIG_XDG_SURFACE_CONFIGURE) {
+                                Ok(m) => {
+                                    ser1 = match m.args[0] {
+                                        Some(w17::WlArg::Uint(v)) => v,
+                                        _ => 0,
+                                    };
+                                }
+                                Err(_) => sess_ok = false,
+                            }
+                            match w17::parse_message(
+                                &out[12..rep.out_len],
+                                w17::SIG_XDG_TOPLEVEL_CONFIGURE,
+                            ) {
+                                Ok(m) => {
+                                    sess_ok &= m.header.object_id == 0x62;
+                                    sess_ok &= m.args[0] == Some(w17::WlArg::Int(1920));
+                                    sess_ok &= m.args[1] == Some(w17::WlArg::Int(1080));
+                                    sess_ok &= matches!(
+                                        m.args[2],
+                                        Some(w17::WlArg::Array(b))
+                                            if b == [w17::XDG_TOPLEVEL_STATE_MAXIMIZED]
+                                    );
+                                }
+                                Err(_) => sess_ok = false,
+                            }
+                        } else {
+                            sess_ok = false;
+                        }
+                        sess_ok &= ser1 == ser0 + 1;
+                        sess_ok &= s.surface_states(0x60) == Some((true, false, false));
+                        sess_ok &= s.surface_restored(0x60) == Some((800, 600));
+                        sess_ok &= s
+                            .surface(0x60)
+                            .is_some_and(|sf| sf.geom.w == 1920 && sf.geom.h == 1080);
+                        // feed 3：ack(ser1) + unset_maximized → 恢复几何
+                        // configure(800,600,[]) + geom 对账。
+                        let mut bl = 0usize;
+                        bl += w17::encode_xdg_surface_ack_configure(&mut req[bl..], 0x61, ser1)
+                            .unwrap_or(0);
+                        bl += w17::encode_message(
+                            &mut req[bl..],
+                            0x62,
+                            w17::xdg_toplevel::REQ_UNSET_MAXIMIZED,
+                            &[],
+                        )
+                        .unwrap_or(0);
+                        match s.feed(&req[..bl], &mut out) {
+                            Ok(rep) => {
+                                let mut ser2 = 0u32;
+                                if rep.out_len >= 32 {
+                                    match w17::parse_message(
+                                        &out[12..rep.out_len],
+                                        w17::SIG_XDG_TOPLEVEL_CONFIGURE,
+                                    ) {
+                                        Ok(m) => {
+                                            sess_ok &= m.args[0] == Some(w17::WlArg::Int(800));
+                                            sess_ok &= m.args[1] == Some(w17::WlArg::Int(600));
+                                            sess_ok &= matches!(
+                                                m.args[2],
+                                                Some(w17::WlArg::Array(b)) if b.is_empty()
+                                            );
+                                        }
+                                        Err(_) => sess_ok = false,
+                                    }
+                                    match w17::parse_message(
+                                        &out[..12],
+                                        w17::SIG_XDG_SURFACE_CONFIGURE,
+                                    ) {
+                                        Ok(m) => {
+                                            ser2 = match m.args[0] {
+                                                Some(w17::WlArg::Uint(v)) => v,
+                                                _ => 0,
+                                            };
+                                        }
+                                        Err(_) => sess_ok = false,
+                                    }
+                                } else {
+                                    sess_ok = false;
+                                }
+                                sess_ok &= ser2 == ser1 + 1;
+                                sess_ok &= s.surface_states(0x60) == Some((false, false, false));
+                                sess_ok &= s
+                                    .surface(0x60)
+                                    .is_some_and(|sf| sf.geom.w == 800 && sf.geom.h == 600);
+                                // feed 4：ack(ser2) + set_fullscreen →
+                                // configure(1920,1080,[1]) + 全幅 geom。
+                                let mut bl = 0usize;
+                                bl += w17::encode_xdg_surface_ack_configure(
+                                    &mut req[bl..],
+                                    0x61,
+                                    ser2,
+                                )
+                                .unwrap_or(0);
+                                bl += w17::encode_message(
+                                    &mut req[bl..],
+                                    0x62,
+                                    w17::xdg_toplevel::REQ_SET_FULLSCREEN,
+                                    &[w17::WlArg::Object(0)],
+                                )
+                                .unwrap_or(0);
+                                match s.feed(&req[..bl], &mut out) {
+                                    Ok(rep) => {
+                                        let mut ser3 = 0u32;
+                                        if rep.out_len >= 32 {
+                                            match w17::parse_message(
+                                                &out[..12],
+                                                w17::SIG_XDG_SURFACE_CONFIGURE,
+                                            ) {
+                                                Ok(m) => {
+                                                    ser3 = match m.args[0] {
+                                                        Some(w17::WlArg::Uint(v)) => v,
+                                                        _ => 0,
+                                                    };
+                                                }
+                                                Err(_) => sess_ok = false,
+                                            }
+                                            match w17::parse_message(
+                                                &out[12..rep.out_len],
+                                                w17::SIG_XDG_TOPLEVEL_CONFIGURE,
+                                            ) {
+                                                Ok(m) => {
+                                                    sess_ok &=
+                                                        m.args[0] == Some(w17::WlArg::Int(1920));
+                                                    sess_ok &= matches!(
+                                                        m.args[2],
+                                                        Some(w17::WlArg::Array(b))
+                                                            if b == [w17::XDG_TOPLEVEL_STATE_FULLSCREEN]
+                                                    );
+                                                }
+                                                Err(_) => sess_ok = false,
+                                            }
+                                        } else {
+                                            sess_ok = false;
+                                        }
+                                        sess_ok &= ser3 == ser2 + 1;
+                                        sess_ok &=
+                                            s.surface_states(0x60) == Some((false, true, false));
+                                        // feed 5：ack(ser3) + unset_fullscreen →
+                                        // 恢复几何 + set_minimized 记账（无 configure）。
+                                        let mut bl = 0usize;
+                                        bl += w17::encode_xdg_surface_ack_configure(
+                                            &mut req[bl..],
+                                            0x61,
+                                            ser3,
+                                        )
+                                        .unwrap_or(0);
+                                        bl += w17::encode_message(
+                                            &mut req[bl..],
+                                            0x62,
+                                            w17::xdg_toplevel::REQ_UNSET_FULLSCREEN,
+                                            &[],
+                                        )
+                                        .unwrap_or(0);
+                                        bl += w17::encode_message(
+                                            &mut req[bl..],
+                                            0x62,
+                                            w17::xdg_toplevel::REQ_SET_MINIMIZED,
+                                            &[],
+                                        )
+                                        .unwrap_or(0);
+                                        match s.feed(&req[..bl], &mut out) {
+                                            Ok(rep) => {
+                                                // unset_fullscreen 出恢复几何 configure
+                                                // 对（32 B〔空 states 数组域〕）+
+                                                // minimized 零事件随行。
+                                                sess_ok &= rep.out_len == 32;
+                                                if rep.out_len >= 32 {
+                                                    let cs = rep.out_len - 32;
+                                                    match w17::parse_message(
+                                                        &out[cs + 12..cs + 32],
+                                                        w17::SIG_XDG_TOPLEVEL_CONFIGURE,
+                                                    ) {
+                                                        Ok(m) => {
+                                                            sess_ok &= m.args[0]
+                                                                == Some(w17::WlArg::Int(800));
+                                                            sess_ok &= m.args[1]
+                                                                == Some(w17::WlArg::Int(600));
+                                                            sess_ok &= matches!(
+                                                                m.args[2],
+                                                                Some(w17::WlArg::Array(b))
+                                                                    if b.is_empty()
+                                                            );
+                                                        }
+                                                        Err(_) => sess_ok = false,
+                                                    }
+                                                }
+                                                sess_ok &= s.surface_states(0x60)
+                                                    == Some((false, false, true));
+                                                sess_ok &= s.surface(0x60).is_some_and(|sf| {
+                                                    sf.geom.w == 800 && sf.geom.h == 600
+                                                });
+                                            }
+                                            Err(_) => sess_ok = false,
+                                        }
+                                    }
+                                    Err(_) => sess_ok = false,
+                                }
+                            }
+                            Err(_) => sess_ok = false,
+                        }
+                    }
+                    Err(_) => sess_ok = false,
+                }
+            }
+            Err(_) => sess_ok = false,
+        }
+        ok &= sess_ok;
+        // NEG——域外对象 + 官方 commit 未 ack 闸（fail-visible 全显形）。
+        let mut neg_ok = true;
+        let mut bl = 0usize;
+        bl += w17::encode_message(
+            &mut req[bl..],
+            0x99,
+            w17::xdg_toplevel::REQ_SET_MAXIMIZED,
+            &[],
+        )
+        .unwrap_or(0);
+        neg_ok &= s.feed(&req[..bl], &mut out).is_err();
+        // 未 ack commit 闸（set_maximized 已铸未决串号——直接 commit 拒收）。
+        let mut bl = 0usize;
+        bl += w17::encode_message(
+            &mut req[bl..],
+            0x62,
+            w17::xdg_toplevel::REQ_SET_MAXIMIZED,
+            &[],
+        )
+        .unwrap_or(0);
+        let _ = s.feed(&req[..bl], &mut out); // 铸串号（acked=false）
+        let mut bl = 0usize;
+        bl += w17::encode_surface_commit(&mut req[bl..], 0x60).unwrap_or(0);
+        neg_ok &= matches!(
+            s.feed(&req[..bl], &mut out),
+            Err(w17::comp::CompError::XdgUnacked)
+        );
+        ok &= neg_ok;
+        let _ = writeln!(
+            log,
+            "LUMINA-T172-CORE max={} full={} clamp={} cross={}（core 段——决策核全谱：全屏优先/最大化屏域/常态 min 下钳/max 上钳/min-max 交叉 min 胜〔clamp_minmax 同谱〕）",
+            core_max as u8, core_full as u8, core_clamp as u8, core_cross as u8,
+        );
+        let _ = writeln!(
+            log,
+            "LUMINA-T172-WIRE enc={}（wire 段——五请求官方序编组回环〔set/unset_maximized 9/10 + set/unset_fullscreen 11/12 + set_minimized 13〕+ configure states 数组逐位对账）",
+            wire_ok as u8,
+        );
+        let _ = writeln!(
+            log,
+            "LUMINA-T172-SESS sess={} neg={}（sess 段——会话域五臂真车道：set_maximized→configure(1920,1080,[0])+geom 施策+恢复快照(800,600)→unset 恢复→set_fullscreen→[1]→unset+minimized 记账零事件〔官方无 configure〕；neg 段——域外对象 BadObject + commit 未 ack XdgUnacked 官方闸）",
+            sess_ok as u8, neg_ok as u8,
+        );
+        if ok {
+            let _ = writeln!(log, "LUMINA-T172-OK");
+        }
+        ok
+    };
+    report(&mut log, t172, "xdg-toplevel-state");
 
     // t95) ash 启动链标本流程活体（M40-ASH2 备置 → **M41-笔① 转正**）
     //      ——栈 grow 缺陷族 × syscall entry 致命域修复落域（vmm.rs

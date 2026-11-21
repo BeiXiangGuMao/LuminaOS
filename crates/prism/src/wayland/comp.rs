@@ -80,7 +80,9 @@ use super::{
     SIG_XDG_POSITIONER_SET_PARENT_SIZE, SIG_XDG_POSITIONER_SET_REACTIVE,
     SIG_XDG_POSITIONER_SET_SIZE, SIG_XDG_SURFACE_ACK_CONFIGURE, SIG_XDG_SURFACE_GET_POPUP,
     SIG_XDG_SURFACE_GET_TOPLEVEL, SIG_XDG_SURFACE_SET_WINDOW_GEOMETRY, SIG_XDG_TOPLEVEL_SET_APP_ID,
-    SIG_XDG_TOPLEVEL_SET_MAX_SIZE, SIG_XDG_TOPLEVEL_SET_MIN_SIZE, SIG_XDG_TOPLEVEL_SET_TITLE,
+    SIG_XDG_TOPLEVEL_SET_FULLSCREEN, SIG_XDG_TOPLEVEL_SET_MAXIMIZED, SIG_XDG_TOPLEVEL_SET_MAX_SIZE,
+    SIG_XDG_TOPLEVEL_SET_MINIMIZED, SIG_XDG_TOPLEVEL_SET_MIN_SIZE, SIG_XDG_TOPLEVEL_SET_TITLE,
+    SIG_XDG_TOPLEVEL_UNSET_FULLSCREEN, SIG_XDG_TOPLEVEL_UNSET_MAXIMIZED,
     SIG_XDG_WM_BASE_CREATE_POSITIONER, SIG_XDG_WM_BASE_GET_XDG_SURFACE, SIG_XDG_WM_BASE_PONG,
     WIRE_MAX, XDG_ANCHOR_MAX, XDG_ANCHOR_NONE, XDG_CADJ_FLIP_X, XDG_CADJ_FLIP_Y, XDG_CADJ_RESIZE_X,
     XDG_CADJ_RESIZE_Y, XDG_CADJ_SLIDER_X, XDG_CADJ_SLIDER_Y,
@@ -114,6 +116,13 @@ const POPUP_NEST_MAX: usize = 4;
 /// 服务端 popup_done 待发队列深度（M51-XDGPOP75 笔86——父窗收场
 /// 派生域定容）。
 pub const PDONE_Q_MAX: usize = 4;
+/// 状态族 configure 待发队列容量（M53-XDGSTAT83 笔96——maximized/
+/// fullscreen 官方序双车道）。
+pub const STATE_Q_MAX: usize = 4;
+
+/// 状态族待发项（(wl surface id, xdg_toplevel id, w, h, states 位域
+/// bit0=maximized bit1=fullscreen)——定容队列值语义）。
+pub type StateQItem = (u32, u32, i32, i32, u8);
 /// 单次 feed 的 create_pool 记录上限（定容零堆）。
 pub const MAX_POOLS_PER_FEED: usize = 4;
 /// 单次 feed 的 destroy 摘除记录上限（定容零堆——MAX_POOLS_PER_FEED 同量级）。
@@ -237,6 +246,18 @@ pub struct CompSurface {
     pub max_w: i32,
     /// 最大高度宣告。
     pub max_h: i32,
+    /// 最大化宣告位（set_maximized/unset_maximized 域——M53-XDGSTAT83
+    /// 笔96 状态族消费面）。
+    pub maximized: bool,
+    /// 全屏宣告位（set_fullscreen/unset_fullscreen 域）。
+    pub fullscreen: bool,
+    /// 最小化记账位（set_minimized——官方无 unset/无 configure，解除
+    /// 由合成器策略域外挂账如实）。
+    pub minimized: bool,
+    /// 恢复几何宽（状态请求快照域——常态恢复对账面）。
+    pub restored_w: u32,
+    /// 恢复几何高。
+    pub restored_h: u32,
 }
 
 /// wl_shm 池创建记录（feed 回执——电气面 fd 传递对账域：每记录恰
@@ -724,6 +745,12 @@ pub struct CompSession {
     pdone_q: [Option<u32>; PDONE_Q_MAX],
     /// pdone 队列在队数。
     pdone_n: usize,
+    /// 服务端状态族 configure 待发队列（M53-XDGSTAT83 笔96——
+    /// set/unset_maximized、set/unset_fullscreen 官方序双车道：
+    /// (wl, toplevel, w, h, states 位域 bit0=max bit1=full)）。
+    state_q: [Option<StateQItem>; STATE_Q_MAX],
+    /// state 队列在队数。
+    state_n: usize,
     /// 约束域矩形（M52-POPCON78 笔90——place_in_bounds 屏域权威域；
     /// policy 面注入，父面局部坐标口径。未注入 = 零域——裁剪域零面积
     /// 全谱显形，消费方 boot 域 set_screen_bound 承接）。
@@ -777,6 +804,8 @@ impl CompSession {
             size_n: 0,
             pdone_q: [None; PDONE_Q_MAX],
             pdone_n: 0,
+            state_q: [None::<StateQItem>; STATE_Q_MAX],
+            state_n: 0,
             bound: (0, 0, 0, 0),
         }
     }
@@ -790,6 +819,28 @@ impl CompSession {
     /// 屏域约束域读面（取证面——t167 对账域）。
     pub fn screen_bound(&self) -> (i32, i32, i32, i32) {
         self.bound
+    }
+
+    /// 状态族 configure 待发入队（M53-XDGSTAT83 笔96——满容静默拒收
+    /// 同 size_q 口径如实记档）。
+    fn state_push(&mut self, wl: u32, top: u32, w: i32, h: i32, sbits: u8) {
+        if self.state_n < STATE_Q_MAX {
+            self.state_q[self.state_n] = Some((wl, top, w, h, sbits));
+            self.state_n += 1;
+        }
+    }
+
+    /// 会话 surface 状态旗读面（取证面——t172 断言域：(maximized,
+    /// fullscreen, minimized) 三元；None = 不在册）。
+    pub fn surface_states(&self, wl_id: u32) -> Option<(bool, bool, bool)> {
+        let sf = self.surface(wl_id)?;
+        Some((sf.maximized, sf.fullscreen, sf.minimized))
+    }
+
+    /// 会话 surface 恢复几何读面（取证面——t172 快照对账域）。
+    pub fn surface_restored(&self, wl_id: u32) -> Option<(u32, u32)> {
+        let sf = self.surface(wl_id)?;
+        Some((sf.restored_w, sf.restored_h))
     }
 
     /// 会话 buffer 在账数（M42-ELF5 取证面）。
@@ -2290,6 +2341,153 @@ impl CompSession {
                 sf.max_h = h;
                 Ok(())
             }
+            xdg_toplevel::REQ_SET_MAXIMIZED => {
+                let (args, _) =
+                    parse_args(body, SIG_XDG_TOPLEVEL_SET_MAXIMIZED).map_err(CompError::Wire)?;
+                let _ = args;
+                let Some(sf) = self
+                    .surfaces
+                    .iter_mut()
+                    .flatten()
+                    .find(|sf| sf.xdg_toplevel == header.object_id)
+                else {
+                    return Err(CompError::BadObject);
+                };
+                // 恢复几何快照（常态转态域——仅从双旗全零态入转时快照）。
+                if !sf.maximized && !sf.fullscreen {
+                    sf.restored_w = sf.geom.w;
+                    sf.restored_h = sf.geom.h;
+                }
+                sf.maximized = true;
+                sf.minimized = false;
+                // 决策核施策（POPCON78 同谱：施策即记账——官方全序
+                // configure→ack→commit→apply 押后挂账如实）。
+                let (w, h, _, _) = toplevel_decide(
+                    self.bound, true, false, sf.geom.w, sf.geom.h, sf.min_w, sf.min_h, sf.max_w,
+                    sf.max_h,
+                );
+                sf.geom.w = w;
+                sf.geom.h = h;
+                let wl_id = sf.wl_id;
+                let top_id = header.object_id;
+                self.state_push(wl_id, top_id, w as i32, h as i32, 0b01);
+                Ok(())
+            }
+            xdg_toplevel::REQ_UNSET_MAXIMIZED => {
+                let (args, _) =
+                    parse_args(body, SIG_XDG_TOPLEVEL_UNSET_MAXIMIZED).map_err(CompError::Wire)?;
+                let _ = args;
+                let Some(sf) = self
+                    .surfaces
+                    .iter_mut()
+                    .flatten()
+                    .find(|sf| sf.xdg_toplevel == header.object_id)
+                else {
+                    return Err(CompError::BadObject);
+                };
+                sf.maximized = false;
+                let full = sf.fullscreen;
+                let (w, h, _, _) = toplevel_decide(
+                    self.bound,
+                    false,
+                    full,
+                    if full { sf.geom.w } else { sf.restored_w },
+                    if full { sf.geom.h } else { sf.restored_h },
+                    sf.min_w,
+                    sf.min_h,
+                    sf.max_w,
+                    sf.max_h,
+                );
+                sf.geom.w = w;
+                sf.geom.h = h;
+                let sbits = if full { 0b10 } else { 0b00 };
+                let wl_id = sf.wl_id;
+                let top_id = header.object_id;
+                self.state_push(wl_id, top_id, w as i32, h as i32, sbits);
+                Ok(())
+            }
+            xdg_toplevel::REQ_SET_FULLSCREEN => {
+                let (args, _) =
+                    parse_args(body, SIG_XDG_TOPLEVEL_SET_FULLSCREEN).map_err(CompError::Wire)?;
+                let Some(WlArg::Object(_output)) = args[0] else {
+                    return Err(CompError::Wire(WlError::BadLength));
+                };
+                let Some(sf) = self
+                    .surfaces
+                    .iter_mut()
+                    .flatten()
+                    .find(|sf| sf.xdg_toplevel == header.object_id)
+                else {
+                    return Err(CompError::BadObject);
+                };
+                if !sf.maximized && !sf.fullscreen {
+                    sf.restored_w = sf.geom.w;
+                    sf.restored_h = sf.geom.h;
+                }
+                sf.fullscreen = true;
+                sf.maximized = false;
+                sf.minimized = false;
+                let (w, h, _, _) = toplevel_decide(
+                    self.bound, false, true, sf.geom.w, sf.geom.h, sf.min_w, sf.min_h, sf.max_w,
+                    sf.max_h,
+                );
+                sf.geom.w = w;
+                sf.geom.h = h;
+                let wl_id = sf.wl_id;
+                let top_id = header.object_id;
+                self.state_push(wl_id, top_id, w as i32, h as i32, 0b10);
+                Ok(())
+            }
+            xdg_toplevel::REQ_UNSET_FULLSCREEN => {
+                let (args, _) =
+                    parse_args(body, SIG_XDG_TOPLEVEL_UNSET_FULLSCREEN).map_err(CompError::Wire)?;
+                let _ = args;
+                let Some(sf) = self
+                    .surfaces
+                    .iter_mut()
+                    .flatten()
+                    .find(|sf| sf.xdg_toplevel == header.object_id)
+                else {
+                    return Err(CompError::BadObject);
+                };
+                sf.fullscreen = false;
+                let maxed = sf.maximized;
+                let (w, h, _, _) = toplevel_decide(
+                    self.bound,
+                    maxed,
+                    false,
+                    if maxed { sf.geom.w } else { sf.restored_w },
+                    if maxed { sf.geom.h } else { sf.restored_h },
+                    sf.min_w,
+                    sf.min_h,
+                    sf.max_w,
+                    sf.max_h,
+                );
+                sf.geom.w = w;
+                sf.geom.h = h;
+                let sbits = if maxed { 0b01 } else { 0b00 };
+                let wl_id = sf.wl_id;
+                let top_id = header.object_id;
+                self.state_push(wl_id, top_id, w as i32, h as i32, sbits);
+                Ok(())
+            }
+            xdg_toplevel::REQ_SET_MINIMIZED => {
+                let (args, _) =
+                    parse_args(body, SIG_XDG_TOPLEVEL_SET_MINIMIZED).map_err(CompError::Wire)?;
+                let _ = args;
+                let Some(sf) = self
+                    .surfaces
+                    .iter_mut()
+                    .flatten()
+                    .find(|sf| sf.xdg_toplevel == header.object_id)
+                else {
+                    return Err(CompError::BadObject);
+                };
+                // 官方语义：最小化无 configure/无 unset——记账位，解除
+                // 由合成器策略面承接（域外挂账如实）。
+                sf.minimized = true;
+                Ok(())
+            }
             _ => Err(CompError::UnknownRequest),
         }
     }
@@ -2631,6 +2829,50 @@ impl CompSession {
         }
         self.pdone_q = [None; PDONE_Q_MAX];
         self.pdone_n = 0;
+        // 状态族 configure 车道（M53-XDGSTAT83 笔96——maximized/fullscreen
+        // 官方序双车道冲刷：串号铸造 + 未 ack 位 + configure 对出域
+        // 〔xdg_surface.configure 串号 + xdg_toplevel.configure(w, h,
+        // states 数组)〕——size-configure 车道同谱契约）。
+        for i in 0..self.state_n {
+            if let Some((wl, top, w, h, sbits)) = self.state_q[i] {
+                if self.table.lookup(top) == Some(WlIface::XdgToplevel) {
+                    let Some(sf) = self.surfaces.iter_mut().flatten().find(|sf| sf.wl_id == wl)
+                    else {
+                        continue;
+                    };
+                    self.xdg_serial = self.xdg_serial.wrapping_add(1);
+                    let ser = self.xdg_serial;
+                    sf.config_serial = ser;
+                    sf.acked = false;
+                    let n =
+                        encode_xdg_surface_configure_event(&mut out[*out_len..], sf.xdg_surf, ser)
+                            .map_err(CompError::Wire)?;
+                    *out_len += n;
+                    let mut st = [0u8; 4];
+                    let mut sn = 0usize;
+                    if sbits & 0b01 != 0 {
+                        st[sn] = super::XDG_TOPLEVEL_STATE_MAXIMIZED;
+                        sn += 1;
+                    }
+                    if sbits & 0b10 != 0 {
+                        st[sn] = super::XDG_TOPLEVEL_STATE_FULLSCREEN;
+                        sn += 1;
+                    }
+                    let n = encode_xdg_toplevel_configure_event(
+                        &mut out[*out_len..],
+                        top,
+                        w,
+                        h,
+                        &st[..sn],
+                    )
+                    .map_err(CompError::Wire)?;
+                    *out_len += n;
+                    *configs += 1;
+                }
+            }
+        }
+        self.state_q = [None; STATE_Q_MAX];
+        self.state_n = 0;
         Ok(())
     }
 
@@ -2900,6 +3142,11 @@ impl CompSession {
             min_h: 0,
             max_w: 0,
             max_h: 0,
+            maximized: false,
+            fullscreen: false,
+            minimized: false,
+            restored_w: 0,
+            restored_h: 0,
             title: [0; XDG_TITLE_CAP],
             title_n: 0,
             app_id: [0; XDG_APPID_CAP],
@@ -3287,6 +3534,34 @@ fn lock_key_of_wl_key(key: u32) -> bool {
 // -------------------------------------------------------- 宿主测试谱
 // （M34-P4「宿主测试谱先行」——`cargo test -p prism`；事实源 = 官方
 //   wayland.xml 1.21.0 会话语义 + wire 壳 v0 表复用对账）
+
+/// 状态族决策核薄壳（mod 层 [`super::toplevel_state_decide`] 同参透传
+/// ——bound 元组展开为屏域 w/h，负域零化显形）。
+#[allow(clippy::too_many_arguments)]
+fn toplevel_decide(
+    bound: (i32, i32, i32, i32),
+    maximized: bool,
+    fullscreen: bool,
+    cur_w: u32,
+    cur_h: u32,
+    min_w: i32,
+    min_h: i32,
+    max_w: i32,
+    max_h: i32,
+) -> (u32, u32, [u8; 4], usize) {
+    super::toplevel_state_decide(
+        maximized,
+        fullscreen,
+        cur_w,
+        cur_h,
+        bound.2.max(0) as u32,
+        bound.3.max(0) as u32,
+        min_w,
+        min_h,
+        max_w,
+        max_h,
+    )
+}
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
